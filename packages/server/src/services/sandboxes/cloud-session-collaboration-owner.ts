@@ -405,11 +405,20 @@ function isScheduledCloudDelivery(
 
 function sessionMessageTraceAttributes(
   outcome: { admitted: false } | { admitted: true; receipt: RunnerCloudSessionMessageReceivedFrame },
+  attempts: number,
 ): Record<string, unknown> {
-  if (!outcome.admitted) return { status: "not_admitted" };
+  if (!outcome.admitted) {
+    return {
+      status: "not_admitted",
+      attemptCount: attempts,
+      retryCount: Math.max(0, attempts - 1),
+    };
+  }
   return {
     status: outcome.receipt.status,
     ...(outcome.receipt.status === "accepted" ? { turnId: outcome.receipt.turnId } : {}),
+    attemptCount: attempts,
+    retryCount: Math.max(0, attempts - 1),
   };
 }
 
@@ -570,6 +579,7 @@ export class CloudSessionCollaborationOwner {
     });
     let receipt: RunnerCloudSessionMessageReceivedFrame;
     try {
+      let attempts = 0;
       const admitted = await traceExternalCall(
         this.#perfLogger,
         {
@@ -579,9 +589,16 @@ export class CloudSessionCollaborationOwner {
           sessionId: route.targetSessionId,
           sandboxId: sandbox.id,
         },
-        () => this.#dispatchToRunnerForReceipt(sandbox, request, envelope, scheduled, admission, signal),
+        () =>
+          this.#dispatchToRunnerForReceipt(sandbox, request, envelope, scheduled, admission, signal, () => {
+            attempts += 1;
+          }),
         {
-          resultAttributes: sessionMessageTraceAttributes,
+          resultAttributes: (outcome) => sessionMessageTraceAttributes(outcome, attempts),
+          errorAttributes: () => ({
+            attemptCount: attempts,
+            retryCount: Math.max(0, attempts - 1),
+          }),
           fallbackErrorCode: "CLOUD_SESSION_DISPATCH_FAILED",
         },
       );
@@ -614,10 +631,11 @@ export class CloudSessionCollaborationOwner {
     envelope: CloudSessionTargetEnvelope,
     scheduled: boolean,
     admission: RuntimeDispatchAdmission<RunnerCloudSessionMessageReceivedFrame>,
-    signal?: AbortSignal,
+    signal: AbortSignal | undefined,
+    onAttempt: () => void,
   ): Promise<{ admitted: false } | { admitted: true; receipt: RunnerCloudSessionMessageReceivedFrame }> {
     const outcome = await admission((onDispatched) =>
-      this.#sendSessionMessageToRunner(sandbox, request, envelope, scheduled, onDispatched, signal),
+      this.#sendSessionMessageToRunner(sandbox, request, envelope, scheduled, onDispatched, signal, onAttempt),
     );
     if (!outcome.admitted) return { admitted: false };
     return { admitted: true, receipt: await outcome.result };
@@ -629,7 +647,8 @@ export class CloudSessionCollaborationOwner {
     envelope: CloudSessionTargetEnvelope,
     scheduled: boolean,
     onDispatched: () => void,
-    signal?: AbortSignal,
+    signal: AbortSignal | undefined,
+    onAttempt: () => void,
   ): Promise<RunnerCloudSessionMessageReceivedFrame> {
     signal?.throwIfAborted();
     const connection = this.#dispatchableConnection(sandbox);
@@ -641,6 +660,7 @@ export class CloudSessionCollaborationOwner {
     if (!socket) throw new CloudSessionDispatchUnavailableError();
     const receiptPromise = this.#registerPending(connection, request.requestId);
     if (scheduled) request.sentAt = new Date(this.#now()).toISOString();
+    onAttempt();
     const sent = this.#hub.sendToCurrent(sandbox.id, socket, {
       type: "session:message:run",
       requestId: request.requestId,

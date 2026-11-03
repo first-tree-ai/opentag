@@ -8,11 +8,15 @@ import {
   createErrorReporter,
   createInstrumentedFetch,
   createPerformanceLogger,
+  getCurrentPerformanceContext,
   isExternalTimeoutError,
+  runWithPerformanceContext,
   sanitizeExternalUrl,
   traceExternalCall,
+  updateCurrentPerformanceContext,
 } from "../observability/index.js";
 import { CloudSlackAutoSetupOwner } from "../runtime/cloud-slack-auto-setup-owner.js";
+import { KeyedTaskScheduler } from "../runtime/keyed-task-scheduler.js";
 import { createRuntimeCredentialServices } from "../runtime-credentials/index.js";
 import { RuntimeMcpGatewayTokenStore } from "../runtime-credentials/mcp-gateway-token-store.js";
 import { RuntimeWebGatewayTokenStore } from "../runtime-credentials/web-gateway-token-store.js";
@@ -23,6 +27,8 @@ import { ExternalCallPolicy, ExternalCallPolicyError } from "../services/im/exte
 import { FeishuAdapter } from "../services/im-bindings/feishu/adapter.js";
 import { createImProviderAdapterResolver } from "../services/im-bindings/provider-adapter-resolver.js";
 import { McpOutboundFetcher } from "../services/mcp/mcp-url-policy.js";
+import { CloudDeliveryOwner } from "../services/sandboxes/cloud-delivery-owner.js";
+import { CloudImSteering } from "../services/sandboxes/cloud-im-steering.js";
 import { RouterCloudModelCatalog } from "../services/sandboxes/cloud-model-catalog.js";
 import { CloudRuntimeFence } from "../services/sandboxes/cloud-runtime-fence.js";
 import {
@@ -94,7 +100,7 @@ describe("external call performance logging", () => {
       module: "external",
       perfCategory: "external",
       provider: "github",
-      service: "github",
+      externalService: "github",
       operation: "external.github.http",
       httpMethod: "POST",
       targetHost: "api.github.com",
@@ -104,7 +110,7 @@ describe("external call performance logging", () => {
     expect(logs[1]?.payload).toMatchObject({
       callId: logs[0]?.payload.callId,
       startedAt: logs[0]?.payload.startedAt,
-      service: "github",
+      externalService: "github",
       status: 200,
       attemptCount: 1,
       retryCount: 0,
@@ -112,7 +118,7 @@ describe("external call performance logging", () => {
     });
     expect(logs[3]?.payload).toMatchObject({
       callId: logs[2]?.payload.callId,
-      service: "github",
+      externalService: "github",
       attemptCount: 1,
       retryCount: 0,
       transportCode: "ECONNRESET",
@@ -260,14 +266,14 @@ describe("external call performance logging", () => {
     expect(logs[0]?.payload).toMatchObject({
       perfCategory: "external",
       provider: "slack",
-      service: "slack",
+      externalService: "slack",
       operation: "external.slack.auth.test",
       outcome: "started",
     });
     expect(logs[1]?.payload).toMatchObject({
       callId: logs[0]?.payload.callId,
       startedAt: logs[0]?.payload.startedAt,
-      service: "slack",
+      externalService: "slack",
       attemptCount: 2,
       retryCount: 1,
       outcome: "completed",
@@ -285,7 +291,7 @@ describe("external call performance logging", () => {
     });
     expect(logs).toHaveLength(2);
     expect(logs[1]?.payload).toMatchObject({
-      service: "feishu",
+      externalService: "feishu",
       operation: "external.feishu.chat.get",
       outcome: "failed",
       code: "IM_PROVIDER_CALL_DEADLINE_EXCEEDED",
@@ -408,7 +414,7 @@ describe("external call performance logging", () => {
     expect(logs.filter((l) => l.payload.operation === "external.sandbox-runner.runAcceptance")).toEqual([
       expect.objectContaining({
         payload: expect.objectContaining({
-          service: "sandbox-runner",
+          externalService: "sandbox-runner",
           sandboxId: "sbx-100",
           sessionId: "sess-100",
           turnId: "turn-acc-1",
@@ -418,7 +424,7 @@ describe("external call performance logging", () => {
       }),
       expect.objectContaining({
         payload: expect.objectContaining({
-          service: "sandbox-runner",
+          externalService: "sandbox-runner",
           sandboxId: "sbx-100",
           sessionId: "sess-100",
           turnId: "turn-acc-1",
@@ -431,6 +437,19 @@ describe("external call performance logging", () => {
       }),
     ]);
     expect(logs.filter((l) => l.payload.operation === "external.sandbox-runner.sealWorkspace")).toHaveLength(2);
+
+    // Pre-dispatch rejection on disconnected sandbox -> attemptCount: 0
+    logs.length = 0;
+    await expect(
+      hub.runAcceptance("sbx-missing", { mode: "offline", deadlineAtMs: Date.now() + 5_000 }, { timeoutMs: 1_000 }),
+    ).rejects.toThrow();
+    expect(logs.at(-1)?.payload).toMatchObject({
+      externalService: "sandbox-runner",
+      operation: "external.sandbox-runner.runAcceptance",
+      outcome: "failed",
+      attemptCount: 0,
+      retryCount: 0,
+    });
 
     // FeishuAdapter via createImProviderAdapterResolver with feishuPolicy and validateBinding
     logs.length = 0;
@@ -476,7 +495,7 @@ describe("external call performance logging", () => {
       logs.some(
         (l) =>
           l.payload.operation === "external.feishu.channel.connect" &&
-          l.payload.service === "feishu" &&
+          l.payload.externalService === "feishu" &&
           l.payload.outcome === "completed",
       ),
     ).toBe(true);
@@ -499,13 +518,13 @@ describe("external call performance logging", () => {
       logs.some(
         (l) =>
           l.payload.operation === "external.slack.http" &&
-          l.payload.service === "slack" &&
+          l.payload.externalService === "slack" &&
           l.payload.outcome === "completed",
       ),
     ).toBe(true);
   });
 
-  it("does not deadlock or emit duplicate external logs when re-entering the same ExternalCallPolicy at maxConcurrency", async () => {
+  it("does not deadlock or emit duplicate external logs when re-entering the same ExternalCallPolicy at maxConcurrency and propagates outer deadline AbortSignal", async () => {
     const { logs, perfLogger } = createLogCollector();
     const sharedPolicy = new ExternalCallPolicy({
       allowedHosts: ["open.feishu.cn"],
@@ -540,6 +559,25 @@ describe("external call performance logging", () => {
     expect(results).toHaveLength(8);
     expect(logs).toHaveLength(16);
     expect(logs.filter((l) => l.payload.outcome === "completed")).toHaveLength(8);
+
+    // Outer deadline aborts inner re-entrant action even when inner caller omits signal
+    let innerSignal: AbortSignal | undefined;
+    const deadlinePolicy = new ExternalCallPolicy({
+      defaultTimeoutMs: 20,
+      maxAttempts: 1,
+      performanceLogger: perfLogger,
+    });
+    await expect(
+      deadlinePolicy.run("feishu.resource.outer-timeout", () =>
+        deadlinePolicy.run("feishu.resource.inner-timeout", (sig) => {
+          innerSignal = sig;
+          return new Promise(() => undefined);
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: "IM_PROVIDER_CALL_DEADLINE_EXCEEDED",
+    });
+    expect(innerSignal?.aborted).toBe(true);
   });
 
   it("records attemptCount: 0 on pre-dispatch rejections and timedOut: true on owned deadlines (omitting timedOut on caller abort)", async () => {
@@ -560,7 +598,7 @@ describe("external call performance logging", () => {
     });
     await expect(mcpFetcher.fetchOutbound("acc-1", "https://127.0.0.1/mcp")).rejects.toThrow();
     expect(logs.at(-1)?.payload).toMatchObject({
-      service: "mcp",
+      externalService: "mcp",
       operation: "external.mcp.http",
       outcome: "failed",
       attemptCount: 0,
@@ -571,7 +609,7 @@ describe("external call performance logging", () => {
     logs.length = 0;
     await expect(mcpFetcher.fetchOutbound("acc-1", "https://mcp.example.com/sse")).rejects.toThrow();
     expect(logs.at(-1)?.payload).toMatchObject({
-      service: "mcp",
+      externalService: "mcp",
       operation: "external.mcp.http",
       outcome: "failed",
       attemptCount: 1,
@@ -602,7 +640,7 @@ describe("external call performance logging", () => {
     });
     await expect(skillFetcher.fetchBytes("https://127.0.0.1/skill.md")).rejects.toThrow();
     expect(logs.at(-1)?.payload).toMatchObject({
-      service: "skill-source",
+      externalService: "skill-source",
       operation: "external.skill-source.http",
       outcome: "failed",
       attemptCount: 0,
@@ -611,7 +649,7 @@ describe("external call performance logging", () => {
     logs.length = 0;
     await expect(skillFetcher.fetchBytes("https://skills.example.com/SKILL.md")).rejects.toThrow();
     expect(logs.at(-1)?.payload).toMatchObject({
-      service: "skill-source",
+      externalService: "skill-source",
       operation: "external.skill-source.http",
       outcome: "failed",
       attemptCount: 1,
@@ -637,7 +675,7 @@ describe("external call performance logging", () => {
       occurredAt: "2026-01-01T00:00:00.000Z",
     });
     expect(logs.at(-1)?.payload).toMatchObject({
-      service: "gcp-error-reporting",
+      externalService: "gcp-error-reporting",
       operation: "external.gcp.error-reporting.report",
       outcome: "failed",
       attemptCount: 1,
@@ -665,14 +703,14 @@ describe("external call performance logging", () => {
     });
     expect((await catalog.list()).available).toBe(false);
     expect(logs.at(-1)?.payload).toMatchObject({
-      service: "cloud-router",
+      externalService: "cloud-router",
       operation: "external.cloud-router.http",
       outcome: "failed",
       timedOut: true,
     });
   });
 
-  it("attributes RuntimeProviderProxy traffic to slack and feishu services and traces CloudSessionCollaborationOwner", async () => {
+  it("attributes RuntimeProviderProxy traffic to slack and feishu services, traces CloudImSteering, and isolates KeyedTaskScheduler lane contexts", async () => {
     const { logs, perfLogger } = createLogCollector();
     const baseFetch = vi.fn<typeof fetch>(async (input) => {
       const url = String(input);
@@ -709,8 +747,87 @@ describe("external call performance logging", () => {
     } finally {
       credServices.close();
     }
-    expect(logs.some((l) => l.payload.service === "feishu" && l.payload.outcome === "completed")).toBe(true);
-    expect(logs.some((l) => l.payload.service === "slack" && l.payload.outcome === "completed")).toBe(true);
+    expect(logs.some((l) => l.payload.externalService === "feishu" && l.payload.outcome === "completed")).toBe(true);
+    expect(logs.some((l) => l.payload.externalService === "slack" && l.payload.outcome === "completed")).toBe(true);
+
+    // CloudImSteering pre-dispatch rejection -> attemptCount: 0
+    logs.length = 0;
+    const steering = new CloudImSteering({
+      database: {} as never,
+      custody: {} as never,
+      performanceLogger: perfLogger,
+      connection: async () => undefined,
+      current: () => false,
+      validAllocation: async () => false,
+      context: () => ({}) as never,
+      send: () => false,
+    });
+    await expect(
+      steering.request(
+        {
+          type: "im:steer",
+          requestId: "00000000-0000-4000-8000-000000000010",
+          deliveryId: "deliv-steer-1",
+          imMessageId: "msg-steer-1",
+          sessionId: "sess-steer-1",
+          agentId: "agent-steer-1",
+          placementGeneration: 1,
+          rootDeliveryId: "root-deliv-1",
+          expectedTurnId: "turn-steer-1",
+          attention: "direct",
+          content: {} as never,
+          deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+        () => undefined,
+      ),
+    ).rejects.toThrow("CLOUD_STEER_UNAVAILABLE");
+    expect(logs.at(-1)?.payload).toMatchObject({
+      externalService: "sandbox-runner",
+      operation: "external.sandbox-runner.deliverySteer",
+      agentId: "agent-steer-1",
+      sessionId: "sess-steer-1",
+      deliveryId: "deliv-steer-1",
+      turnId: "turn-steer-1",
+      outcome: "failed",
+      attemptCount: 0,
+      retryCount: 0,
+    });
+
+    // KeyedTaskScheduler isolates sibling tasks' PerformanceExecutionContext stores across a queued lane
+    const scheduler = new KeyedTaskScheduler({
+      maxConcurrent: 1,
+      maxQueuedPerKey: 4,
+      maxQueuedTotal: 8,
+    });
+    let observedInitialDeliveryInB: string | undefined = "unset";
+    let observedFinalDeliveryInA: string | undefined;
+    let observedFinalDeliveryInB: string | undefined;
+    let finishB!: () => void;
+    const bDone = new Promise<void>((resolve) => {
+      finishB = resolve;
+    });
+
+    runWithPerformanceContext({ callId: "root-a", operation: "ImDeliveryWorker.runOnce" }, () => {
+      scheduler.enqueue("lane-1", async () => {
+        updateCurrentPerformanceContext({ deliveryId: "deliv-A", turnId: "turn-A" });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        observedFinalDeliveryInA = getCurrentPerformanceContext()?.deliveryId;
+      });
+    });
+
+    runWithPerformanceContext({ callId: "root-b", operation: "ImDeliveryWorker.runOnce" }, () => {
+      scheduler.enqueue("lane-1", async () => {
+        observedInitialDeliveryInB = getCurrentPerformanceContext()?.deliveryId;
+        updateCurrentPerformanceContext({ deliveryId: "deliv-B", turnId: "turn-B" });
+        observedFinalDeliveryInB = getCurrentPerformanceContext()?.deliveryId;
+        finishB();
+      });
+    });
+
+    await bDone;
+    expect(observedInitialDeliveryInB).toBeUndefined();
+    expect(observedFinalDeliveryInA).toBe("deliv-A");
+    expect(observedFinalDeliveryInB).toBe("deliv-B");
 
     const hub = new RunnerHub({ performanceLogger: perfLogger });
     const fence = new CloudRuntimeFence();
@@ -723,6 +840,14 @@ describe("external call performance logging", () => {
       performanceLogger: perfLogger,
     });
     expect(collabOwner.activeDispatchTargets).toBe(0);
+    const deliveryOwner = new CloudDeliveryOwner({
+      database: {} as never,
+      custody: {} as never,
+      fence,
+      hub,
+      performanceLogger: perfLogger,
+    });
+    expect(deliveryOwner.isModelPathConfigured()).toBe(false);
   });
 
   it("propagates agentId, sessionId, deliveryId, turnId, and sandboxId across Turn execution entrypoints into external call logs", async () => {
@@ -916,13 +1041,20 @@ describe("external call performance logging", () => {
       await app.close();
     }
 
-    const records = chunks
-      .flatMap((c) => c.trim().split("\n"))
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const rawLines = chunks.flatMap((c) => c.trim().split("\n")).filter(Boolean);
+    const records = rawLines.map((line) => JSON.parse(line) as Record<string, unknown>);
+
+    const mcpExternalLine = rawLines.find(
+      (line) => line.includes('"operation":"external.mcp.http"') && line.includes('"outcome":"completed"'),
+    );
+    expect(mcpExternalLine).toContain('"service":"opentag-server"');
+    expect(mcpExternalLine?.match(/"service":/g)).toHaveLength(1);
+    expect(mcpExternalLine).toContain('"externalService":"mcp"');
 
     const mcpExternal = records.find((r) => r.operation === "external.mcp.http" && r.outcome === "completed");
     expect(mcpExternal).toMatchObject({
+      service: "opentag-server",
+      externalService: "mcp",
       accountId: "acc-turn",
       agentId: "agent-turn",
       sessionId,
@@ -961,7 +1093,8 @@ describe("external call performance logging", () => {
       (r) => r.operation === "external.cloud-router.http" && r.outcome === "completed",
     );
     expect(cloudRouterExternal).toMatchObject({
-      service: "cloud-router",
+      service: "opentag-server",
+      externalService: "cloud-router",
       accountId: "acc-turn",
       agentId: "agent-turn",
       sessionId,

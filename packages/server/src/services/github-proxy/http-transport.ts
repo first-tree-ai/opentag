@@ -52,7 +52,7 @@ export class GitHubHttpTransport {
       operation: "external.github.proxy",
       attributes: {
         provider: "github",
-        service: "github",
+        externalService: "github",
         httpMethod: input.method.toUpperCase(),
         ...urlMeta,
       },

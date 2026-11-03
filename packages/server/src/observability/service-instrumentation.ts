@@ -361,6 +361,12 @@ export function instrumentAppOptions<T extends object>(options: T, perfLogger: P
   for (const [containerKey, fields] of CONTAINER_SERVICE_FIELDS) {
     wrapContainerFields(copy, containerKey, fields, perfLogger);
   }
+  if (typeof copy.runnerChannel === "object" && copy.runnerChannel !== null) {
+    copy.runnerChannel = {
+      ...(copy.runnerChannel as Record<string, unknown>),
+      performanceLogger: perfLogger,
+    };
+  }
 
   return copy as T;
 }

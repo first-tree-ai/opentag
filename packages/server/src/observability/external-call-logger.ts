@@ -188,7 +188,7 @@ export function traceExternalCall<T>(
       ...(input.sandboxId ? { sandboxId: input.sandboxId } : {}),
       attributes: {
         provider: input.provider,
-        service: input.provider,
+        externalService: input.provider,
         ...input.attributes,
       },
     },
@@ -329,7 +329,7 @@ export function createInstrumentedFetch(
       operation,
       attributes: {
         provider: options.provider,
-        service: options.provider,
+        externalService: options.provider,
         httpMethod,
         ...urlMeta,
       },

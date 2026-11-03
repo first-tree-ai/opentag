@@ -644,7 +644,7 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
           input.externalMessageId,
           input.failed,
         ),
-      { circuitKey: "feishu:message-reactions", maxAttempts: 1, timeoutMs: 8_000 },
+      { circuitKey: `feishu:message-reactions:${this.#appId}`, maxAttempts: 1, timeoutMs: 8_000 },
     );
   }
 

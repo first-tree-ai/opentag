@@ -10,6 +10,8 @@ import {
 import { eq } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { imMessageDeliveries } from "../../db/schema/index.js";
+import { markExternalCallTimedOut, traceExternalCall } from "../../observability/external-call-logger.js";
+import { type PerformanceLogger, updateCurrentPerformanceContext } from "../../observability/performance-logger.js";
 import type { RuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
 import type { RuntimeBusinessContext } from "../../runtime/runtime-session.js";
 import { InboundReceiptPendingError } from "../im/inbound-admission.js";
@@ -34,6 +36,7 @@ export class CloudImSteering {
     readonly options: {
       database: DatabaseClient;
       custody: RuntimeCustodyStore;
+      performanceLogger?: PerformanceLogger;
       connection(sessionId: string): Promise<SteeringConnection | undefined>;
       current(record: CloudConnectionRecord): boolean;
       validAllocation(record: CloudConnectionRecord): Promise<boolean>;
@@ -43,8 +46,47 @@ export class CloudImSteering {
   ) {}
 
   async request(request: RuntimeImSteerRequest, onDispatched: () => void): Promise<RuntimeImSteerResult> {
+    let attempts = 0;
+    return traceExternalCall(
+      this.options.performanceLogger,
+      {
+        provider: "sandbox-runner",
+        operation: "external.sandbox-runner.deliverySteer",
+        agentId: request.agentId,
+        sessionId: request.sessionId,
+        deliveryId: request.deliveryId,
+        turnId: request.expectedTurnId,
+      },
+      () =>
+        this.#executeRequest(request, onDispatched, () => {
+          attempts += 1;
+        }),
+      {
+        resultAttributes: (res) => ({
+          status: res.status,
+          attemptCount: attempts,
+          retryCount: Math.max(0, attempts - 1),
+        }),
+        errorAttributes: () => ({
+          attemptCount: attempts,
+          retryCount: Math.max(0, attempts - 1),
+        }),
+        fallbackErrorCode: "CLOUD_STEER_FAILED",
+      },
+    );
+  }
+
+  async #executeRequest(
+    request: RuntimeImSteerRequest,
+    onDispatched: () => void,
+    onAttempt: () => void,
+  ): Promise<RuntimeImSteerResult> {
     const connection = await this.options.connection(request.sessionId);
     if (!connection) throw new Error("CLOUD_STEER_UNAVAILABLE");
+    updateCurrentPerformanceContext({
+      computerId: connection.record.computerId,
+      sandboxId: connection.record.scope.sandboxId,
+    });
     const hash = computeRuntimeImSteerInputHash(request);
     const status = await this.options.custody.beginSteerDispatch(request, hash, connection.context);
     if (status === "inbound_pending") throw new InboundReceiptPendingError();
@@ -66,7 +108,7 @@ export class CloudImSteering {
     const result = new Promise<RuntimeImSteerResult>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.#pending.delete(request.requestId);
-        reject(new Error("CLOUD_STEER_RESULT_UNCONFIRMED"));
+        reject(markExternalCallTimedOut(new Error("CLOUD_STEER_RESULT_UNCONFIRMED")));
       }, 5_000);
       this.#pending.set(request.requestId, {
         resolve,
@@ -76,6 +118,7 @@ export class CloudImSteering {
         connectionId: connection.record.connectionId,
       });
     });
+    onAttempt();
     if (!current.send({ type: "delivery:steer", requestId: request.requestId, steer: request })) {
       this.#reject(request.requestId, new Error("CLOUD_STEER_SEND_FAILED"));
     }

@@ -241,6 +241,7 @@ export class CloudDeliveryOwner {
     this.#steering = new CloudImSteering({
       database: this.#database,
       custody: this.#custody,
+      ...(this.#perfLogger ? { performanceLogger: this.#perfLogger } : {}),
       connection: async (id) => {
         const record = this.#fence.connectionForSession(id);
         if (
@@ -339,6 +340,7 @@ export class CloudDeliveryOwner {
       sessionId: request.sessionId,
       deliveryId: request.deliveryId,
     });
+    let attempts = 0;
     await traceExternalCall(
       this.#perfLogger,
       {
@@ -349,17 +351,33 @@ export class CloudDeliveryOwner {
         sessionId: request.sessionId,
         deliveryId: request.deliveryId,
       },
-      () => this.#executeDispatchDelivery(input),
-      { fallbackErrorCode: "CLOUD_DELIVERY_DISPATCH_FAILED" },
+      () =>
+        this.#executeDispatchDelivery(input, () => {
+          attempts += 1;
+        }),
+      {
+        resultAttributes: () => ({
+          attemptCount: attempts,
+          retryCount: Math.max(0, attempts - 1),
+        }),
+        errorAttributes: () => ({
+          attemptCount: attempts,
+          retryCount: Math.max(0, attempts - 1),
+        }),
+        fallbackErrorCode: "CLOUD_DELIVERY_DISPATCH_FAILED",
+      },
     );
   }
 
-  async #executeDispatchDelivery(input: {
-    computerId: string;
-    inputHash: string;
-    installationId: string;
-    request: DirectImMessageDeliveryRequest;
-  }): Promise<void> {
+  async #executeDispatchDelivery(
+    input: {
+      computerId: string;
+      inputHash: string;
+      installationId: string;
+      request: DirectImMessageDeliveryRequest;
+    },
+    onAttempt: () => void,
+  ): Promise<void> {
     const request = input.request;
     const owned = await loadManagedSandboxBySessionId(this.#database, request.sessionId);
     if (!owned) throw new CloudDeliveryDispatchError("environment_not_ready", "The Session has no current Sandbox");
@@ -403,6 +421,7 @@ export class CloudDeliveryOwner {
     });
     assertCloudDispatchStatus(dispatch);
     await this.#assertEnvironmentStillOwned(row, request, input.inputHash);
+    onAttempt();
     const sent = this.#hub.sendToCurrent(row.id, socket, {
       type: "delivery:run",
       requestId: request.requestId,
@@ -1221,6 +1240,7 @@ export class CloudDeliveryOwner {
     connection: CloudConnectionRecord,
     input: { deliveryId: string; turnId: string },
   ): Promise<"none" | "received" | "started" | "reported" | undefined> {
+    let attempts = 0;
     return traceExternalCall(
       this.#perfLogger,
       {
@@ -1232,9 +1252,20 @@ export class CloudDeliveryOwner {
         deliveryId: input.deliveryId,
         turnId: input.turnId,
       },
-      () => this.#executeQueryRunner(connection, input),
+      () =>
+        this.#executeQueryRunner(connection, input, () => {
+          attempts += 1;
+        }),
       {
-        resultAttributes: (phase) => (phase ? { phase } : { timedOut: true }),
+        resultAttributes: (phase) => ({
+          ...(phase ? { phase } : { timedOut: true }),
+          attemptCount: attempts,
+          retryCount: Math.max(0, attempts - 1),
+        }),
+        errorAttributes: () => ({
+          attemptCount: attempts,
+          retryCount: Math.max(0, attempts - 1),
+        }),
         fallbackErrorCode: "CLOUD_DELIVERY_QUERY_FAILED",
       },
     );
@@ -1243,6 +1274,7 @@ export class CloudDeliveryOwner {
   async #executeQueryRunner(
     connection: CloudConnectionRecord,
     input: { deliveryId: string; turnId: string },
+    onAttempt: () => void,
   ): Promise<"none" | "received" | "started" | "reported" | undefined> {
     const socket = this.#socketFor(connection);
     if (!socket) return undefined;
@@ -1255,6 +1287,7 @@ export class CloudDeliveryOwner {
       timer.unref?.();
       this.#pendingQueries.set(requestId, { connectionId: connection.connectionId, resolve, timer });
       try {
+        onAttempt();
         socket.send({
           type: "delivery:query",
           deliveryId: input.deliveryId,

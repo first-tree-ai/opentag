@@ -18,6 +18,7 @@ import {
 } from "@opentag/shared";
 import type { FastifyRequest } from "fastify";
 import type { WebSocket } from "ws";
+import type { PerformanceLogger } from "../observability/performance-logger.js";
 import type { CloudDeliveryOwner } from "../services/sandboxes/cloud-delivery-owner.js";
 import type { CloudConnectionRecord } from "../services/sandboxes/cloud-runtime-fence.js";
 import type {
@@ -62,6 +63,7 @@ export interface RunnerWebSocketRouteOptions {
   /** Override the token-service derived renewal cadence (tests only). */
   credentialRenewalIntervalMs?: number;
   now?: () => number;
+  performanceLogger?: PerformanceLogger;
 }
 
 /** The narrow collaboration surface RunnerConnection routes inbound frames and teardown to. */
@@ -1090,6 +1092,29 @@ export class RunnerConnection {
       this.#options.hub.acknowledge(current.sandboxId, this.#adapter, { type: "server:heartbeat" });
       return;
     }
+    const perfLogger = this.#options.performanceLogger;
+    if (perfLogger?.config.enabled) {
+      return perfLogger.traceAsync(
+        {
+          module: "ws",
+          category: "ws",
+          operation: `runner.ws.frame ${data.type}`,
+          sandboxId: current.sandboxId,
+          sessionId: current.sessionId,
+          ...(this.#cloudConnection ? { computerId: this.#cloudConnection.computerId } : {}),
+          attributes: { frameType: data.type },
+        },
+        () => this.#dispatchBusinessFrame(current, data),
+        { fallbackErrorCode: "RUNNER_FRAME_FAILED" },
+      );
+    }
+    return this.#dispatchBusinessFrame(current, data);
+  }
+
+  async #dispatchBusinessFrame(
+    current: RunnerScope,
+    data: Exclude<RunnerClientFrame, { type: "heartbeat" }>,
+  ): Promise<void> {
     if (data.type === "runner:ready")
       return this.#handleReady(current, data.readiness, data.workspaceRestored === true);
     if (data.type === "acceptance:result") return this.#handleResult(current, data);

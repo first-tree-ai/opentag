@@ -7,7 +7,9 @@ import { redactSensitive, type StructuredError, StructuredErrorSchema } from "@o
 import { traceExternalCall } from "../../observability/external-call-logger.js";
 import type { PerformanceLogger } from "../../observability/performance-logger.js";
 
-const activePolicyStorage = new AsyncLocalStorage<ReadonlySet<ExternalCallPolicy>>();
+const activePolicyStorage = new AsyncLocalStorage<
+  ReadonlyMap<ExternalCallPolicy, { signal: AbortSignal; requestId: string }>
+>();
 
 export type PolicyErrorCategory = "security" | "transient" | "validation" | "availability";
 export type PolicyRetryability = "retryable" | "not_retryable";
@@ -306,42 +308,38 @@ export class ExternalCallPolicy {
   }
 
   async run<T>(operation: string, action: PolicyAction<T>, options: ExternalCallOptions = {}): Promise<T> {
-    const activePolicies = activePolicyStorage.getStore();
-    if (activePolicies?.has(this)) {
-      return action(options.signal ?? new AbortController().signal, randomUUID());
+    const active = activePolicyStorage.getStore()?.get(this);
+    if (active) {
+      return action(composeReentrantSignal(active.signal, options), active.requestId);
     }
-    const nextPolicies = new Set(activePolicies);
-    nextPolicies.add(this);
-    return activePolicyStorage.run(nextPolicies, () => {
-      const provider = operation.startsWith("slack")
-        ? "slack"
-        : operation.startsWith("feishu")
-          ? "feishu"
-          : "im-provider";
-      let attemptsUsed = 0;
-      return traceExternalCall(
-        this.#perfLogger,
-        {
-          provider,
-          operation: `external.${operation}`,
-        },
-        () =>
-          this.#executeRun(operation, action, options, (attemptNumber) => {
-            attemptsUsed = attemptNumber;
-          }),
-        {
-          resultAttributes: () => ({
-            attemptCount: attemptsUsed,
-            retryCount: Math.max(0, attemptsUsed - 1),
-          }),
-          errorAttributes: () => ({
-            attemptCount: attemptsUsed,
-            retryCount: Math.max(0, attemptsUsed - 1),
-          }),
-          fallbackErrorCode: "IM_PROVIDER_CALL_FAILED",
-        },
-      );
-    });
+    const provider = operation.startsWith("slack")
+      ? "slack"
+      : operation.startsWith("feishu")
+        ? "feishu"
+        : "im-provider";
+    let attemptsUsed = 0;
+    return traceExternalCall(
+      this.#perfLogger,
+      {
+        provider,
+        operation: `external.${operation}`,
+      },
+      () =>
+        this.#executeRun(operation, action, options, (attemptNumber) => {
+          attemptsUsed = attemptNumber;
+        }),
+      {
+        resultAttributes: () => ({
+          attemptCount: attemptsUsed,
+          retryCount: Math.max(0, attemptsUsed - 1),
+        }),
+        errorAttributes: () => ({
+          attemptCount: attemptsUsed,
+          retryCount: Math.max(0, attemptsUsed - 1),
+        }),
+        fallbackErrorCode: "IM_PROVIDER_CALL_FAILED",
+      },
+    );
   }
 
   async #executeRun<T>(
@@ -519,7 +517,11 @@ export class ExternalCallPolicy {
       abandonmentTimer = setTimeout(() => abandon?.(), abandonmentWindowMs);
       abandonmentTimer.unref?.();
     };
-    const actionPromise = Promise.resolve().then(() => action(controller.signal, requestId));
+    const nextActive = new Map(activePolicyStorage.getStore());
+    nextActive.set(this, { signal: controller.signal, requestId });
+    const actionPromise = Promise.resolve().then(() =>
+      activePolicyStorage.run(nextActive, () => action(controller.signal, requestId)),
+    );
     const actionSettled = actionPromise.then(
       () => undefined,
       () => undefined,
@@ -715,6 +717,18 @@ export class ExternalCallPolicy {
     this.#active = Math.max(0, this.#active - 1);
     this.#waiters.shift()?.grant();
   }
+}
+
+function composeReentrantSignal(
+  outerSignal: AbortSignal,
+  options: Pick<ExternalCallOptions, "signal" | "timeoutMs">,
+): AbortSignal {
+  const signals: AbortSignal[] = [outerSignal];
+  if (options.signal) signals.push(options.signal);
+  if (options.timeoutMs !== undefined) {
+    signals.push(AbortSignal.timeout(Math.max(1, options.timeoutMs)));
+  }
+  return signals.length === 1 ? outerSignal : AbortSignal.any(signals);
 }
 
 export function limitReadableStream(

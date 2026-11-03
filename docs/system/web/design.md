@@ -38,7 +38,7 @@ Kumo Select on mobile. The selected overflow category stays in its original posi
 
 Task screens use the existing application typography: the list retains the page-title scale,
 while an individual Task title keeps its `h1` semantics and uses 16px medium text with a 24px
-line height. Requests, sent replies and execution summaries use 14px regular text with a 21px line
+line height. Requests and sent replies use 14px regular text with a 21px line
 height; authors use 14px medium and timestamps use 12px regular text. Message headings, emphasis
 and code retain their content formatting. Operational notices remain at 14px. The Activity
 section heading remains accessible without adding a visible label above the conversation.

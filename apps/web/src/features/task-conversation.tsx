@@ -372,6 +372,14 @@ function TaskUnreportedBody({ delivery }: { delivery: TaskTurn["delivery"] }) {
   if (delivery.state === "terminal_rejected" && delivery.reason === "restore_required") {
     return <p className="text-sm text-kumo-danger">{m.tasks_failure_progress_restore_failed()}</p>;
   }
+  // A rejected message is a failure the reader may need to act on, so it reads as one.
+  if (delivery.state === "terminal_rejected") {
+    return (
+      <p className="text-sm text-kumo-danger" data-state="failed">
+        {deliveryStateMessage(delivery)}
+      </p>
+    );
+  }
   return (
     <p className="text-sm text-kumo-subtle" data-state={running ? "progress" : "attention"}>
       {running

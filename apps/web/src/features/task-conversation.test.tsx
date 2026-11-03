@@ -456,3 +456,17 @@ it.each(["direct", "ambient"] as const)(
     expect(header?.textContent).not.toMatch(/Direct|Ambient/);
   },
 );
+
+it("shows a rejected message in the failure colour and other unreported states as quiet notes", () => {
+  const rejected = turn();
+  rejected.report = null;
+  rejected.delivery.state = "terminal_rejected";
+  const view = render(<TaskActivity task={task} turns={[rejected]} pagination={null} />);
+  expect(screen.getByText("The message could not be processed.").className).toContain("text-kumo-danger");
+
+  const pending = turn();
+  pending.report = null;
+  pending.delivery.state = "pending";
+  view.rerender(<TaskActivity task={task} turns={[pending]} pagination={null} />);
+  expect(screen.getByText("Message pending.").className).toContain("text-kumo-subtle");
+});

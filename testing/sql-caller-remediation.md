@@ -25,7 +25,7 @@ A repaired original case does not close another extension of the same finding.
 | 4a — SQL classification and terminal fences | SW-F1, IM-F4, CR-F2 | [Verified locally](verification/sql-caller-repairs-06.md): SQL failures stay outside provider accounting; current attempt and exact terminal-record CAS; 289 distinct cases (90 native PG). |
 | 4b — Runtime test and approval enqueue | AP-F1; AG-F2 Runtime-test portion | [Verified locally](verification/sql-caller-repairs-07.md): lock lifetime ends at synchronous enqueue, existing Runtime test result budget; 59 distinct cases (6 native PG). AG-F2 preparation remains open. |
 | 4c — Send cancellation | IM-F2 | [Verified locally](verification/sql-caller-repairs-08.md): forward the existing operation signal, final reconcile admission, no new sends/allocation after deadline; 217 distinct cases (45 native PG). |
-| 4d — Preparation deadline | AG-F2 preparation portion | Pending; reuse existing operation budget and settle actual admitted wait on deadline/close. |
+| 4d — Preparation deadline | AG-F2 preparation portion | [Verified locally](verification/sql-caller-repairs-09.md): one existing preparation budget covers admitted dispatch waits and readiness; 65 distinct cases, including 2 native PG and 63 Docker unit cases. |
 | 5 — Stop, drain and owner resources | IM-F3, BG-F1, BG-F3, AG-F4, AG-F7, AG-F9 | Pending revalidation of actual owners; stop admission and join underlying work, not only deadline wrappers. Reuse existing owner/cursor stores. |
 | 6 — Auth and OAuth recovery | AA-F1, AA-F2, BG-F2, MC-F1, AG-F13 | Pending revalidation against current Better Auth/MCP changes. Use official transactions/transport and distinguish preparation from uncertain exchange. |
 | 7 — Stable Cloud ownership/recovery | SB-F1, SB-F2, AG-F10 | Pending concrete latest-source resource/placement/lock design; preserve physical UID facts and workspace compatibility. |
@@ -145,3 +145,8 @@ simplifications remain. AG-F2 preparation and IM-F2 cancellation remain open.
 Batch 4c closes IM-F2 across Local/Cloud direct/steer and allocation stages.
 Seventeen original defects and one simplification are repaired locally; 20 defects
 and eight simplifications remain, including Provider preparation under AG-F2.
+
+Batch 4d closes the remaining AG-F2 preparation portion. Eighteen original
+defects and one simplification are repaired locally; 19 defects and eight
+simplifications remain. Ending an admitted wait is not joining its underlying
+SQL/socket work: IM-F3 still owns final shutdown composition and drain.

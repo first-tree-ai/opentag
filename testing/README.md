@@ -26,6 +26,7 @@ contents, and machine-specific operational logs outside the repository.
 - [SQL caller repairs: SQL classification and terminal fences](verification/sql-caller-repairs-06.md)
 - [SQL caller repairs: Runtime test and approval enqueue](verification/sql-caller-repairs-07.md)
 - [SQL caller repairs: IM send cancellation](verification/sql-caller-repairs-08.md)
+- [SQL caller repairs: Provider preparation budget](verification/sql-caller-repairs-09.md)
 
 - [Account, Agent, and Computer management writes](verification/account-agent-computer-writes.md)
 

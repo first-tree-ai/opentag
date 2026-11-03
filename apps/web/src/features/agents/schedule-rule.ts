@@ -65,6 +65,8 @@ function cronText(expression: string): string | undefined {
   const [minute = "", hour = "", dayOfMonth = "", , dayOfWeek = ""] = fields;
   const everyDay = dayOfMonth === "*" && dayOfWeek === "*";
   if (hour === "*") return everyDay ? subHourlyText(minute) : undefined;
+  const hours = /^(\d{1,2})-(\d{1,2})$/.exec(hour);
+  if (hours) return hourlyRangeText(minute, Number(hours[1]), Number(hours[2]), dayOfMonth, dayOfWeek);
   if (!inRange(minute, 59) || !inRange(hour, 23)) return undefined;
   return dayText(`${Number(hour)}:${minute.padStart(2, "0")}`, dayOfMonth, dayOfWeek);
 }
@@ -77,6 +79,21 @@ function subHourlyText(minute: string): string | undefined {
     return count === 1 ? m.agents_schedules_every_minute() : m.agents_schedules_every_minutes({ count: String(count) });
   }
   return inRange(minute, 59) ? m.agents_schedules_hourly({ minute: minute.padStart(2, "0") }) : undefined;
+}
+
+/** `M A-B * * *` and `M A-B * * 1-5`: hourly within a window, every day or on weekdays. */
+function hourlyRangeText(
+  minute: string,
+  start: number,
+  end: number,
+  dayOfMonth: string,
+  dayOfWeek: string,
+): string | undefined {
+  if (!inRange(minute, 59) || start >= end || end > 23 || dayOfMonth !== "*") return undefined;
+  const padded = minute.padStart(2, "0");
+  const window = { start: `${start}:${padded}`, end: `${end}:${padded}` };
+  if (dayOfWeek === "*") return m.agents_schedules_daily_hourly(window);
+  return weekdays(dayOfWeek)?.join() === "1,2,3,4,5" ? m.agents_schedules_weekdays_hourly(window) : undefined;
 }
 
 function dayText(time: string, dayOfMonth: string, dayOfWeek: string): string | undefined {

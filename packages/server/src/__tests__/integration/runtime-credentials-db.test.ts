@@ -1332,3 +1332,27 @@ describe("Cloud internal collaboration execution at the production credential bo
     stack.owner.close();
   });
 });
+
+it.each(["local", "cloud"] as const)("loads a complete %s scope without unrelated reads", async (computerKind) => {
+  const state = await fixture({ computerKind });
+  const queries: string[] = [];
+  const original = state.sql.options.debug;
+  state.sql.options.debug = (_id, query) => {
+    queries.push(query);
+  };
+  try {
+    const snapshot = await new RuntimeScopeResolver(state.database).load(state.session.id);
+    expect(snapshot).toMatchObject({
+      sessionId: state.session.id,
+      sessionKind: "channel",
+      computer: { id: state.computer.id, kind: computerKind },
+      sandbox: null,
+    });
+    expect(queries.filter((q) => q.trimStart().toLowerCase().startsWith("select"))).toHaveLength(
+      computerKind === "local" ? 1 : 2,
+    );
+  } finally {
+    state.sql.options.debug = original;
+    await state.sql.end();
+  }
+});

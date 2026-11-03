@@ -35,7 +35,7 @@ A repaired original case does not close another extension of the same finding.
 | 6c — MCP discovery bounds | AG-F13 | [Verified locally](verification/sql-caller-repairs-15.md): deduplication, four-candidate admission and shared 30-second outbound budget; 254 distinct cases (18 native PG). |
 | 7 — Stable Cloud ownership/recovery | SB-F1, SB-F2, AG-F10 | Pending concrete latest-source resource/placement/lock design; preserve physical UID facts and workspace compatibility. |
 | 8 — Bounded reads, bodies and operator cleanup | IM-F7, BG-F4, AG-F6, OP-F1 | Pending revalidation; reuse existing limits/stream cancellation/owned container cleanup. |
-| With owning batch — Simplification | AG-S3, AG-S4, AG-S5, AG-S6, DW-S1 | Pending current-source revalidation; remove demonstrated redundancy while retaining distinct admission, refresh, quota and recovery safeguards. |
+| 6d — Remaining simplification | AG-S3, AG-S4, AG-S5, AG-S6, DW-S1 | [Verified locally](verification/sql-caller-repairs-16.md): direct Settings credential read, Local-only query removal, one owner read, locked MCP check and unreachable quota deletion; 225 distinct cases (94 native PG). |
 | Observations | AA-R1, CR-R1, IM-R1, IM-R2, TK-R1 | Review measured limits/consumer contracts separately; no outage or necessary code change inferred from a size observation. TK legacy projection requires consumer migration before retirement. |
 | Private billing | Unavailable implementation | Blocked by absent source; public adapter review is not an implementation audit. |
 
@@ -186,3 +186,8 @@ AG-F13 discovery bounds and final Server shutdown are still open.
 Batch 6c closes AG-F13. Twenty-eight original defects and four simplifications
 are repaired locally; nine defects and five simplifications remain. Independent
 review of batch 14 at 1ab43c77 also found no actionable issue (no test rerun).
+
+Batch 6d closes the remaining five simplification IDs. Twenty-eight defects and
+all nine justified simplifications are repaired locally; nine defects remain.
+Independent source reviews of batches 14 and 15 at 1ab43c77/f8eca399 found no
+actionable issue; neither reviewer reran tests or certified final Server shutdown.

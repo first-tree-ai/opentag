@@ -4,7 +4,6 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { agents, mcpServerAuthorizations } from "../db/schema/index.js";
 import { AgentService } from "../services/agents/agent-service.js";
 import { GitHubContextTreeOperations } from "../services/agents/github-context-tree-operations.js";
-import { GitHubExecutionCredentials } from "../services/github-proxy/execution-credentials.js";
 import { GitHubProviderAdapter } from "../services/github-proxy/github-provider-adapter.js";
 import { githubMcpFixture } from "./support/github-mcp.js";
 import { body, proxyAuthorization, proxyRequest } from "./support/github-proxy-fixture.js";
@@ -100,7 +99,6 @@ describe("Context Tree consumes Agent GitHub MCP OAuth", () => {
     const operation = new GitHubContextTreeOperations({
       management: f.github,
       api: f.api,
-      credentials: new GitHubExecutionCredentials(f.github),
       computerKind: async () => "cloud",
       treeHeads: {
         verify: async (input) => {

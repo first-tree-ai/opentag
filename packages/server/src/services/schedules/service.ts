@@ -162,7 +162,7 @@ export class ScheduleService {
     const source = executionId
       ? await this.#options.proofs.authenticate(proof, executionId)
       : await this.#options.proofs.authenticate(proof);
-    const accountId = await this.#options.owners.resolveAccountId(source.agentId);
+    const { accountId } = await this.#options.owners.resolve(source.agentId);
     return {
       source,
       accountId,

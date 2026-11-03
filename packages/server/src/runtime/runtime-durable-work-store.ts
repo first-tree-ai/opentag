@@ -364,8 +364,6 @@ export class PostgresRuntimeDurableWorkStore {
     if (!isAllowedTransition(existing.status, record.status)) {
       throw new RuntimeDurableWorkTransitionError(existing.status, record.status);
     }
-    // Existing receipt updates do not consume a record slot. Only payload growth is quota-bound.
-    await this.#assertPayloadQuota(transaction, computerId, payloadBytes, existing);
     const updated = await transaction
       .update(runtimeDurableWork)
       .set(recordValues(computerId, record))
@@ -442,30 +440,6 @@ export class PostgresRuntimeDurableWorkStore {
         "payload-bytes",
         this.#maxPayloadBytesPerComputer,
         currentPayloadBytes - releasedPayloadBytes,
-        requestedPayloadBytes,
-      );
-    }
-  }
-
-  async #assertPayloadQuota(
-    transaction: DatabaseTransaction,
-    computerId: string,
-    incomingPayloadBytes: number,
-    replacing: RuntimeDurableWorkRow,
-  ): Promise<void> {
-    const currentPayloadBytes = serializedPayloadBytes(replacing.payload);
-    if (incomingPayloadBytes <= currentPayloadBytes) return;
-    const rows = await transaction
-      .select({ payload: runtimeDurableWork.payload })
-      .from(runtimeDurableWork)
-      .where(eq(runtimeDurableWork.computerId, computerId));
-    const retainedPayloadBytes = rows.reduce((total, row) => total + serializedPayloadBytes(row.payload), 0);
-    const requestedPayloadBytes = retainedPayloadBytes - currentPayloadBytes + incomingPayloadBytes;
-    if (requestedPayloadBytes > this.#maxPayloadBytesPerComputer) {
-      throw new RuntimeDurableWorkQuotaExceededError(
-        "payload-bytes",
-        this.#maxPayloadBytesPerComputer,
-        retainedPayloadBytes - currentPayloadBytes,
         requestedPayloadBytes,
       );
     }

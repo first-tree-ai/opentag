@@ -84,7 +84,6 @@ import { ComputerService, MachineAuthService } from "./services/computers/index.
 import { ApplicationCipher } from "./services/crypto.js";
 import { AgentGitHubCredentialService } from "./services/github/agent-github-credential-service.js";
 import { GitHubApiClient } from "./services/github/github-api-client.js";
-import { GitHubExecutionCredentials } from "./services/github-proxy/execution-credentials.js";
 import { ExternalCallPolicy } from "./services/im/external-call-policy.js";
 import { ImFailureReactions } from "./services/im/im-failure-reactions.js";
 import { ImMessageInbox, ImResourceService } from "./services/im/index.js";
@@ -345,7 +344,6 @@ function createContextTreeServices(
         management: github.management,
         api: github.api,
         computerKind,
-        credentials: new GitHubExecutionCredentials(github.management),
       })
     : undefined;
   return {

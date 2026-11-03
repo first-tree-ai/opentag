@@ -8,7 +8,6 @@ import { AgentService } from "../../services/agents/agent-service.js";
 import { ContextTreeOperationService } from "../../services/agents/context-tree-operation-service.js";
 import { GitHubContextTreeOperations } from "../../services/agents/github-context-tree-operations.js";
 import { AgentGitHubCredentialService } from "../../services/github/agent-github-credential-service.js";
-import { GitHubExecutionCredentials } from "../../services/github-proxy/execution-credentials.js";
 import { githubMcpFixture } from "../support/github-mcp.js";
 import { startMigratedTestDatabase } from "./migrated-test-database.js";
 
@@ -101,7 +100,6 @@ it.each([
     const operations = new GitHubContextTreeOperations({
       management,
       api,
-      credentials: new GitHubExecutionCredentials(github),
       computerKind: async () => "local",
       treeHeads: {
         verify: async (input) => {

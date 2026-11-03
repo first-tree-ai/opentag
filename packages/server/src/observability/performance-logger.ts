@@ -26,6 +26,8 @@ export interface PerformanceExecutionContext {
   accountId?: string;
   agentId?: string;
   computerId?: string;
+  sandboxId?: string;
+  environmentGeneration?: number;
   sessionId?: string;
   deliveryId?: string;
 }
@@ -38,6 +40,8 @@ export interface PerformanceStartInput {
   accountId?: string;
   agentId?: string;
   computerId?: string;
+  sandboxId?: string;
+  environmentGeneration?: number;
   sessionId?: string;
   deliveryId?: string;
   attributes?: Record<string, unknown>;
@@ -76,12 +80,23 @@ export interface PerformanceLogger {
 }
 
 const performanceContextStorage = new AsyncLocalStorage<PerformanceExecutionContext>();
+const contextLoggers = new WeakMap<PerformanceExecutionContext, PerformanceLogger>();
 
 export function getCurrentPerformanceContext(): PerformanceExecutionContext | undefined {
   return performanceContextStorage.getStore();
 }
 
+export function getCurrentPerformanceLogger(): PerformanceLogger | undefined {
+  const current = performanceContextStorage.getStore();
+  return current ? contextLoggers.get(current) : undefined;
+}
+
 export function runWithPerformanceContext<T>(context: PerformanceExecutionContext, fn: () => T): T {
+  const parent = performanceContextStorage.getStore();
+  if (parent && !contextLoggers.has(context)) {
+    const parentLogger = contextLoggers.get(parent);
+    if (parentLogger) contextLoggers.set(context, parentLogger);
+  }
   return performanceContextStorage.run(context, fn);
 }
 
@@ -98,6 +113,8 @@ export function updateCurrentPerformanceContext(
   if (patch.accountId !== undefined) current.accountId = patch.accountId;
   if (patch.agentId !== undefined) current.agentId = patch.agentId;
   if (patch.computerId !== undefined) current.computerId = patch.computerId;
+  if (patch.sandboxId !== undefined) current.sandboxId = patch.sandboxId;
+  if (patch.environmentGeneration !== undefined) current.environmentGeneration = patch.environmentGeneration;
   if (patch.sessionId !== undefined) current.sessionId = patch.sessionId;
   if (patch.deliveryId !== undefined) current.deliveryId = patch.deliveryId;
 }
@@ -154,26 +171,38 @@ const FAIL_MESSAGES: Record<PerformanceCategory, string> = {
   external: "External call failed",
 };
 
+const CONTEXT_ID_KEYS = [
+  "requestId",
+  "accountId",
+  "agentId",
+  "computerId",
+  "sandboxId",
+  "environmentGeneration",
+  "sessionId",
+  "deliveryId",
+] as const;
+
+function copyDefinedContextIds(
+  source: Partial<Record<(typeof CONTEXT_ID_KEYS)[number], unknown>>,
+): Partial<Omit<PerformanceExecutionContext, "callId" | "operation">> {
+  const out: Record<string, unknown> = {};
+  for (const key of CONTEXT_ID_KEYS) {
+    const value = source[key];
+    if (value !== undefined && value !== "") out[key] = value;
+  }
+  return out as Partial<Omit<PerformanceExecutionContext, "callId" | "operation">>;
+}
+
 function buildChildContext(
   callId: string,
   input: PerformanceStartInput,
   parent: PerformanceExecutionContext | undefined,
 ): PerformanceExecutionContext {
-  const requestId = input.requestId ?? parent?.requestId;
-  const accountId = input.accountId ?? parent?.accountId;
-  const agentId = input.agentId ?? parent?.agentId;
-  const computerId = input.computerId ?? parent?.computerId;
-  const sessionId = input.sessionId ?? parent?.sessionId;
-  const deliveryId = input.deliveryId ?? parent?.deliveryId;
   return {
     callId,
     operation: input.operation,
-    ...(requestId ? { requestId } : {}),
-    ...(accountId ? { accountId } : {}),
-    ...(agentId ? { agentId } : {}),
-    ...(computerId ? { computerId } : {}),
-    ...(sessionId ? { sessionId } : {}),
-    ...(deliveryId ? { deliveryId } : {}),
+    ...(parent ? copyDefinedContextIds(parent) : {}),
+    ...copyDefinedContextIds(input),
   };
 }
 
@@ -189,12 +218,7 @@ function buildBasePayload(
     callId: child.callId,
     ...(parent?.callId ? { parentCallId: parent.callId } : {}),
     ...(parent?.operation ? { callerOperation: parent.operation } : {}),
-    ...(child.requestId ? { requestId: child.requestId } : {}),
-    ...(child.accountId ? { accountId: child.accountId } : {}),
-    ...(child.agentId ? { agentId: child.agentId } : {}),
-    ...(child.computerId ? { computerId: child.computerId } : {}),
-    ...(child.sessionId ? { sessionId: child.sessionId } : {}),
-    ...(child.deliveryId ? { deliveryId: child.deliveryId } : {}),
+    ...copyDefinedContextIds(child),
     startedAt,
     ...input.attributes,
   };
@@ -242,6 +266,7 @@ export function createPerformanceLogger(
         fail: () => undefined,
       };
     }
+    contextLoggers.set(childContext, loggerInstance);
 
     const startMono = performance.now();
     const port = portFor(input.module);
@@ -371,10 +396,11 @@ export function createPerformanceLogger(
     options?: PerformanceTraceOptions<T>,
   ): Promise<T> => traceOperation(input, fn, options);
 
-  return {
+  const loggerInstance: PerformanceLogger = {
     config,
     startOperation,
     traceAsync,
     traceOperation,
   };
+  return loggerInstance;
 }

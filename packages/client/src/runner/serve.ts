@@ -3,6 +3,7 @@ import { mkdir, rm } from "node:fs/promises";
 import { isIP } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { performance } from "node:perf_hooks";
 import {
   RUNNER_CLOUD_DELIVERY_VERSION,
   RUNNER_REUSE_VERSION,
@@ -45,6 +46,13 @@ import {
   SANDBOX_WORKER_ENTRY,
   type SandboxProbeResult,
 } from "./native-sandbox.js";
+import {
+  createRunnerPerformanceStderrSink,
+  emitRunnerPerformance,
+  type RunnerPerformanceSink,
+  safeRunnerErrorCode,
+  traceRunnerOperation,
+} from "./perf-log.js";
 import { redactAcceptanceRecord } from "./redact.js";
 import { ServeWorkspace } from "./serve-workspace.js";
 import { RunnerShutdownObserver } from "./shutdown-observer.js";
@@ -126,6 +134,7 @@ export interface RunnerServeOptions {
    */
   readonly cloudTurnSeams?: Pick<CloudTurnRunnerOptions, "openExecution" | "runWorker">;
   readonly workspaceFetchImpl?: typeof fetch;
+  readonly onPerformanceLog?: RunnerPerformanceSink;
 }
 
 const DEFAULT_AUTH_TIMEOUT_MS = 5_000;
@@ -303,6 +312,7 @@ interface WorkState {
    * Cleared when the next connection starts.
    */
   credentialInterrupt?: Error;
+  readonly onPerformanceLog?: RunnerPerformanceSink;
 }
 
 /** Assignment identity used to bind a Session bearer to the welcome that produced it. */
@@ -552,6 +562,7 @@ function attachWorkspace(
       token: () => current.token,
       environmentGeneration: () => bridge.scope?.environmentGeneration,
       ...(options.workspaceFetchImpl ? { fetchImpl: options.workspaceFetchImpl } : {}),
+      ...(options.onPerformanceLog ? { onPerformanceLog: options.onPerformanceLog } : {}),
     }),
     sandbox,
     state: () => current,
@@ -642,7 +653,34 @@ interface WebGatewayRuntime {
   readonly extensionPath: string | undefined;
 }
 
-export async function runRunnerServe(config: RunnerServeConfig, options: RunnerServeOptions): Promise<number> {
+function resolveRunnerServePerfSink(
+  config: RunnerServeConfig,
+  rawOptions: RunnerServeOptions,
+  bridge: RunnerChannelBridge,
+  getState: () => WorkState | undefined,
+): RunnerPerformanceSink {
+  if (rawOptions.onPerformanceLog) return rawOptions.onPerformanceLog;
+  return createRunnerPerformanceStderrSink(rawOptions.stderr, () => {
+    const state = getState();
+    return {
+      sandboxName: config.sandboxName,
+      sandboxId: bridge.scope?.sandboxId ?? state?.assignment?.sandboxId,
+      sessionId: bridge.scope?.sessionId ?? state?.assignment?.sessionId,
+      environmentGeneration: bridge.scope?.environmentGeneration ?? state?.assignment?.environmentGeneration,
+      runnerVersion: state?.probe.runnerVersion,
+    };
+  });
+}
+
+export async function runRunnerServe(config: RunnerServeConfig, rawOptions: RunnerServeOptions): Promise<number> {
+  const bootStartedAt = performance.now();
+  let state: WorkState | undefined;
+  const bridge = new RunnerChannelBridge();
+  const perfSink = resolveRunnerServePerfSink(config, rawOptions, bridge, () => state);
+  const options: RunnerServeOptions = {
+    ...rawOptions,
+    onPerformanceLog: perfSink,
+  };
   const gatewayStartup = await startServeWebGateway(config.sandboxName, options);
   if (gatewayStartup.exitCode !== undefined) return gatewayStartup.exitCode;
   const web: WebGatewayRuntime = {
@@ -656,8 +694,6 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
   await mkdir(privateTurnRoot, { recursive: true, mode: 0o700 });
   await mkdir(publicRoot, { recursive: true, mode: 0o700 });
   const journal = await CloudJournal.open(journalDir);
-  const bridge = new RunnerChannelBridge();
-  let state: WorkState | undefined;
   const writeShutdown = createPiDiagnosticStderrWriter(options.stderr);
   const shutdown = new RunnerShutdownObserver({
     env: options.env ?? process.env,
@@ -675,6 +711,7 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
           name,
           workspace,
           extraMounts: [{ source: publicRoot, destination: CLOUD_EXECUTION_MOUNT }],
+          onPerformanceLog: perfSink,
         }))
     )(config.sandboxName, config.workspace);
   } catch (error) {
@@ -742,9 +779,14 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
     await mkdir(config.workspace, { recursive: true, mode: 0o700 });
     if (stopping) return exitCode;
     launchAttempted = true;
+    const launchStarted = performance.now();
     await sandbox.launch();
+    const launchDurationMs = Math.max(0, Math.round(performance.now() - launchStarted));
+    const probeStarted = performance.now();
+    const probe = await sandbox.probe();
+    const probeDurationMs = Math.max(0, Math.round(performance.now() - probeStarted));
     state = {
-      probe: await sandbox.probe(),
+      probe,
       stopping,
       fatal: false,
       present: true,
@@ -759,6 +801,7 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
       credentialWaiters: [],
       assignment: await readRunnerAssignment(config.stateDir),
       turns: undefined as unknown as CloudTurnRunner,
+      onPerformanceLog: perfSink,
     };
     attachWorkspace(config, options, state, sandbox, bridge, web);
     await prepareServeWebExecution(state, webGateway, sandbox, options);
@@ -766,9 +809,21 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
     // which `loadRunnerServeConfig` always supplies (declared 8080 unless PORT overrides). Start
     // it only after native readiness is proven.
     health = await startServeHealthListener(config, options, stopping);
+    emitRunnerPerformance(perfSink, {
+      operation: "runner.boot.ready",
+      durationMs: performance.now() - bootStartedAt,
+      outcome: "success",
+      metrics: {
+        sandboxName: config.sandboxName,
+        runnerVersion: probe.runnerVersion,
+        launchDurationMs,
+        probeDurationMs,
+      },
+    });
     await maintainConnections(config, state, sandbox, options, stopListeners, bridge, rebindAssignment);
     result = stopping ? exitCode : state.fatal ? 5 : 1;
   } catch (error) {
+    emitBootFailure(perfSink, bootStartedAt, config.sandboxName, error);
     reportStartupError(error, options);
     if (error instanceof NativeSandboxError && error.code === "unavailable") launchAttempted = false;
     result = startupExitCode(error);
@@ -797,6 +852,23 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
     });
   }
   return result;
+}
+
+function emitBootFailure(
+  perfSink: RunnerPerformanceSink,
+  bootStartedAt: number,
+  sandboxName: string,
+  error: unknown,
+): void {
+  emitRunnerPerformance(perfSink, {
+    operation: "runner.boot.ready",
+    durationMs: performance.now() - bootStartedAt,
+    outcome: "error",
+    metrics: {
+      sandboxName,
+      errorCode: safeRunnerErrorCode(error) ?? "startup_failed",
+    },
+  });
 }
 
 /** Acceptance-harness path: opens the acceptance run's own channel when an authority was injected. */
@@ -1419,17 +1491,28 @@ interface WorkCallbacks {
  * Sandbox occupation boundary. A failure marks the Runner fatal instead of reusing the namespace.
  */
 async function recycleNativeSandbox(sandbox: NativeSandbox, state: WorkState): Promise<void> {
-  try {
-    await sandbox.destroy();
-    state.present = false;
-    if (state.stopping) return;
-    state.present = true;
-    await sandbox.launch();
-    state.probe = await sandbox.probe();
-  } catch (error) {
-    state.fatal = true;
-    throw error;
-  }
+  await traceRunnerOperation(
+    state.onPerformanceLog,
+    "runner.native_sandbox.reset",
+    async (addMetrics) => {
+      try {
+        await sandbox.destroy();
+        state.present = false;
+        if (state.stopping) return;
+        state.present = true;
+        await sandbox.launch();
+        state.probe = await sandbox.probe();
+        addMetrics({ runnerVersion: state.probe.runnerVersion });
+      } catch (error) {
+        state.fatal = true;
+        throw error;
+      }
+    },
+    {
+      sandboxName: sandbox.name,
+      runnerVersion: state.probe.runnerVersion,
+    },
+  );
 }
 
 function startAcceptance(

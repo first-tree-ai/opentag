@@ -14,6 +14,12 @@ import {
   piDiagnosticError,
 } from "../observability/pi-diagnostics.js";
 import { PiRpcError } from "../providers/pi/rpc-wire.js";
+import {
+  createRunnerPerformanceStderrSink,
+  type RunnerPerformanceLogRecord,
+  safeRunnerErrorCode,
+  traceRunnerOperation,
+} from "../runner/perf-log.js";
 
 const context = {
   turnId: "turn-1",
@@ -280,5 +286,129 @@ describe("Cloud Pi diagnostics", () => {
       throw new Error("closed");
     });
     expect(() => reader.finish({ severity: "ERROR" })).not.toThrow();
+  });
+
+  it("preserves worker_preparation sub-phase durations and emits exception-isolated Runner performance records", async () => {
+    const records: Readonly<Record<string, unknown>>[] = [];
+    const reader = createPiDiagnosticReader(context, (record) => records.push(record));
+    const writer = createPiDiagnosticWriter((line) => reader.consume(Buffer.from(line)));
+
+    writer.emit({ phase: "worker_preparation", event: "start", durationMs: 0 });
+    writer.emit({
+      phase: "worker_preparation",
+      event: "end",
+      durationMs: 45,
+      proxyStartMs: 5,
+      contextTreeSyncMs: 25,
+      skillsAssembleMs: 15,
+    });
+    writer.finish();
+    reader.finish({ severity: "INFO" });
+
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        phase: "worker_preparation",
+        event: "end",
+        durationMs: 45,
+        proxyStartMs: 5,
+        contextTreeSyncMs: 25,
+        skillsAssembleMs: 15,
+      }),
+    );
+
+    const perfRecords: RunnerPerformanceLogRecord[] = [];
+    const stderr = new PassThrough();
+    const stderrChunks: string[] = [];
+    stderr.on("data", (chunk) => stderrChunks.push(chunk.toString()));
+    const stderrSink = createRunnerPerformanceStderrSink(stderr);
+
+    let now = 100;
+    const result = await traceRunnerOperation(
+      (record) => {
+        perfRecords.push(record);
+        stderrSink(record);
+      },
+      "runner.workspace.save",
+      async (addMetrics) => {
+        now = 6100;
+        addMetrics({
+          archiveBytes: 2048,
+          workspaceBytes: 4096,
+          entryCount: 12,
+          omittedCleanRepoCount: 1,
+          sealed: true,
+        });
+        return "saved";
+      },
+      { sandboxName: "ots-test", environmentGeneration: 3 },
+      () => now,
+    );
+
+    expect(result).toBe("saved");
+    expect(perfRecords).toEqual([
+      expect.objectContaining({
+        component: "runner",
+        module: "cloud-runner",
+        operation: "runner.workspace.save",
+        outcome: "success",
+        durationMs: 6000,
+        thresholdMs: 5000,
+        slow: true,
+        severity: "WARNING",
+        sandboxName: "ots-test",
+        environmentGeneration: 3,
+        archiveBytes: 2048,
+        workspaceBytes: 4096,
+        entryCount: 12,
+        omittedCleanRepoCount: 1,
+        sealed: true,
+      }),
+    ]);
+    expect(JSON.parse(stderrChunks.join("").trim())).toMatchObject({
+      operation: "runner.workspace.save",
+      durationMs: 6000,
+      slow: true,
+    });
+
+    const hostileError = new Error("original business failure");
+    Object.defineProperty(hostileError, "code", {
+      get() {
+        throw new Error("code getter boom");
+      },
+    });
+    const proxyError = new Proxy(new Error("proxy failure"), {
+      has() {
+        throw new Error("has trap boom");
+      },
+    });
+    expect(safeRunnerErrorCode(hostileError)).toBeUndefined();
+    expect(safeRunnerErrorCode(proxyError)).toBeUndefined();
+
+    await expect(
+      traceRunnerOperation(undefined, "runner.workspace.restore", async () => {
+        throw hostileError;
+      }),
+    ).rejects.toBe(hostileError);
+
+    const failureRecords: RunnerPerformanceLogRecord[] = [];
+    await expect(
+      traceRunnerOperation(
+        (record) => failureRecords.push(record),
+        "runner.workspace.restore",
+        async () => {
+          throw hostileError;
+        },
+        { sandboxName: "ots-test" },
+        () => 250,
+      ),
+    ).rejects.toBe(hostileError);
+    expect(failureRecords).toEqual([
+      expect.objectContaining({
+        operation: "runner.workspace.restore",
+        outcome: "error",
+        severity: "ERROR",
+        sandboxName: "ots-test",
+      }),
+    ]);
   });
 });

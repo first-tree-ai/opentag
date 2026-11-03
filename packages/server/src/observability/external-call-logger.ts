@@ -22,7 +22,7 @@ const ALLOWED_TRANSPORT_CODES = new Set([
   "AbortError",
 ]);
 
-const FIXED_ROUTE_PROVIDERS = new Set(["github", "cloud-router", "web-router", "cloud-run", "gcp-metadata"]);
+const FIXED_ROUTE_PROVIDERS = new Set(["github", "cloud-router", "web-router", "cloud-run", "gcp-metadata", "gcs"]);
 
 function sanitizePathSegment(segment: string): string {
   if (!segment) return "";

@@ -4,9 +4,9 @@ import { useCallback, useEffect, useState } from "react";
 import { ApiError, browserApi } from "../../api.js";
 import { forgetReboardReview, isReboardReviewFor } from "../../internal/reboard-review.js";
 import { AgentSetupSurface } from "../../onboarding-v2/page.js";
+import { SetupLogo } from "../../onboarding-v2/setup-logo.js";
 import * as m from "../../paraglide/messages.js";
 import { Button, Loader, Text } from "../../ui/design-system.js";
-import { OpenTagLogo } from "../../ui/opentag-logo.js";
 import { AgentAvatar } from "../agents/agent-avatar.js";
 import { agentDetailLink } from "../agents/agent-routes.js";
 import { Redirect } from "../navigation/redirect.js";
@@ -26,12 +26,7 @@ function BrandHome() {
       className="inline-flex rounded-sm focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-kumo-brand"
       to="/agents"
     >
-      <span className="max-sm:hidden">
-        <OpenTagLogo label="" />
-      </span>
-      <span className="sm:hidden">
-        <OpenTagLogo label="" variant="mark" />
-      </span>
+      <SetupLogo />
     </Link>
   );
 }

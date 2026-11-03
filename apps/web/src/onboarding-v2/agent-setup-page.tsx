@@ -56,11 +56,11 @@ import {
   type StatusTone,
   Text,
 } from "../ui/design-system.js";
-import { OpenTagLogo } from "../ui/opentag-logo.js";
 import { ProviderIcon } from "../ui/provider-icon.js";
 import { BrandMark } from "./brand-mark.js";
 import type { FlowState } from "./flow.js";
 import { providerCliWaitingCopy } from "./messaging-readiness-copy.js";
+import { SetupLogo } from "./setup-logo.js";
 import "./onboarding-v2.css";
 import { preparationIsTransitional, preparationSummaryRows } from "./preparation-readiness.js";
 import { CheckLine } from "./readiness-list.js";
@@ -821,7 +821,7 @@ function AgentSetupPageContent({
     >
       {!embedded && (
         <header className="flex items-center justify-between gap-2 p-6">
-          {brandControl ?? <OpenTagLogo label={m.onboarding_v2_brand_name()} />}
+          {brandControl ?? <SetupLogo label={m.onboarding_v2_brand_name()} />}
           <div className="ml-auto flex items-center gap-2">
             {onBackToAgents ? (
               <Button onClick={onBackToAgents} variant="ghost">

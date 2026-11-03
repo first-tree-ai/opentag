@@ -11,9 +11,9 @@ import { useRememberedState, useShellMemory } from "../features/shell/shell-memo
 import * as m from "../paraglide/messages.js";
 import { syncAgentQueries } from "../query/agent-sync.js";
 import { Banner, Button, Icon } from "../ui/design-system.js";
-import { OpenTagLogo } from "../ui/opentag-logo.js";
 import { AgentSetupPage, type AgentSetupPageProps, type AgentSetupPreviewView } from "./agent-setup-page.js";
 import { type AgentDraft, CLOUD_RUNTIME, draftIsSubmittable, emptyDraft, type FlowState } from "./flow.js";
+import { SetupLogo } from "./setup-logo.js";
 import "./onboarding-v2.css";
 import type { AgentSetupAdapter } from "./setup-adapter.js";
 import { AgentStep, DestinationStep, StepRail } from "./steps.js";
@@ -411,7 +411,7 @@ function AgentCreatePage({
     >
       {!embedded && (
         <header className="flex items-center justify-between gap-2 p-6">
-          {brandControl ?? <OpenTagLogo label={m.onboarding_v2_brand_name()} />}
+          {brandControl ?? <SetupLogo label={m.onboarding_v2_brand_name()} />}
           <div className="ml-auto flex items-center gap-2">
             {/*
             Leaving for the Agent list is offered only to an Account that has somewhere to go. An

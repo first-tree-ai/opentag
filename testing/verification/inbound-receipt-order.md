@@ -18,6 +18,14 @@ The Feishu case uses the actual connection manager, normalization, receipts and 
 provider transport/identity responses. It holds newer input during the failed receipt's backoff, takes
 over the connection with a new owner, and verifies ordered delivery to the recording runtime.
 
+Slack semantic-twin cases cover both `message`-first and `app_mention`-first callbacks with distinct
+event IDs but the same message identity. Signed Fastify requests run against migrated PostgreSQL.
+An injected `40001` interrupts only the duplicate receipt's settlement after Inbox deduplication.
+The selector and actual delivery worker hold fresh input until normal receipt recovery settles that
+work, then deliver the original Inbox ID once to the recording runtime. Neither callback order creates
+a second Inbox message or delivery. This verifies the existing conservative barrier, without changing
+its release identity, retry policy or schema.
+
 ## PostgreSQL concurrency and authority
 
 `src/__tests__/integration/inbound-admission.test.ts` covers both providers:

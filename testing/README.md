@@ -78,6 +78,7 @@ Screenshots and browser checks for Web UI changes, one directory per change:
 - [Agent home task table alignment](web-ui/agent-home-task-alignment/README.md)
 - [Agent home schedules](web-ui/agent-home-schedules/README.md)
 - [computer-recovery](web-ui/computer-recovery/README.md)
+- [computer-last-online](web-ui/computer-last-online/README.md)
 - [computer-status-alignment](web-ui/computer-status-alignment/README.md)
 - [connector-polish](web-ui/connector-polish/README.md)
 - [GitHub account settings](web-ui/github-account-review/README.md)

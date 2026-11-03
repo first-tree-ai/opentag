@@ -81,6 +81,70 @@ function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 }
 
+describe("OpenTagApi Computer connect exchange compatibility", () => {
+  const installationId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
+  const computerId = "9fd8c3db-9fb6-4e0b-8ca9-f0f830c4a1a5";
+  const request = {
+    code: "1234567890abcdef",
+    installationId,
+    displayName: "Laptop",
+    platform: "linux" as const,
+    arch: "x64",
+    clientVersion: "0.0.1",
+    machineToken: "otmc_current",
+    reportOutcome: true as const,
+  };
+  function validationError(code: string) {
+    return jsonResponse(
+      {
+        error: {
+          code: "VALIDATION_ERROR",
+          category: "validation",
+          message: "The request payload is invalid",
+          requestId: "request-1",
+          issues: [{ path: [], code, message: "rejected" }],
+        },
+      },
+      400,
+    );
+  }
+
+  it("retries once without the optional fields when an older Server rejects them as unknown", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(validationError("unrecognized_keys"))
+      .mockResolvedValueOnce(jsonResponse({ computerId, installationId, machineToken: "otmc_new" }));
+    const api = new OpenTagApi("https://opentag.example", fetchImpl);
+
+    await expect(api.exchangeComputerConnectCode(request)).resolves.toEqual({
+      computerId,
+      installationId,
+      machineToken: "otmc_new",
+    });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    const retried = JSON.parse(String(fetchImpl.mock.calls[1]?.[1]?.body));
+    expect(retried).not.toHaveProperty("machineToken");
+    expect(retried).not.toHaveProperty("reportOutcome");
+    expect(retried.installationId).toBe(installationId);
+  });
+
+  it("does not retry other validation failures and accepts a token-less already-connected answer", async () => {
+    const rejecting = vi.fn<typeof fetch>().mockResolvedValueOnce(validationError("too_small"));
+    await expect(
+      new OpenTagApi("https://opentag.example", rejecting).exchangeComputerConnectCode(request),
+    ).rejects.toMatchObject({ code: "VALIDATION_ERROR" });
+    expect(rejecting).toHaveBeenCalledTimes(1);
+
+    const connected = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({ computerId, installationId, outcome: "already_connected" }));
+    await expect(
+      new OpenTagApi("https://opentag.example", connected).exchangeComputerConnectCode(request),
+    ).resolves.toEqual({ computerId, installationId, outcome: "already_connected" });
+  });
+});
+
 describe("OpenTagApi Agent methods", () => {
   it("covers computer, session, optional binding, and resource API surfaces", async () => {
     const installationId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";

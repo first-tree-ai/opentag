@@ -6,6 +6,7 @@ import { channelConfig } from "../../core/channel/config.js";
 import { resolveChannelEnvironment } from "../../core/channel/environment.js";
 import * as commandPolicy from "../../core/command/policy.js";
 import { type ComputerConnectResult, runComputerConnect } from "../../core/computer/connect.js";
+import { describeConnectFailure, formatConnectFailure } from "../../core/computer/connect-messages.js";
 import { formatPreparationResultLines } from "../../core/computer/formatting.js";
 import {
   daemonServiceCommand,
@@ -87,16 +88,21 @@ async function connectOrPresentFailure(
   environment: NodeJS.ProcessEnv,
   options: ComputerConnectCommandOptions,
 ): Promise<ComputerConnectResult | undefined> {
+  const serverUrl = options.server ?? environment.OPENTAG_SERVER_URL ?? channelConfig.defaultServerUrl;
   try {
-    const serverUrl = options.server ?? environment.OPENTAG_SERVER_URL ?? channelConfig.defaultServerUrl;
     if (!serverUrl) throw new Error(`The ${channelConfig.channel} channel requires --server for Computer connect`);
     return await runComputerConnect({ code, home, noStart: options.start === false, serverUrl });
   } catch (error) {
     const commandError = commandPolicy.toCommandError(error, "request");
-    process.exitCode = commandPolicy.presentCommand(
-      { ok: false, error: commandError, exitCode: commandPolicy.commandExitCode(commandError) },
-      { json: options.json },
-    );
+    const exitCode = commandPolicy.commandExitCode(commandError);
+    if (options.json) {
+      process.exitCode = commandPolicy.presentCommand({ ok: false, error: commandError, exitCode }, { json: true });
+    } else {
+      const message = describeConnectFailure(commandError, { serverUrl, home });
+      const lines = formatConnectFailure(commandError, message).trimEnd().split("\n");
+      process.stderr.write(`${lines.map(safeLine).join("\n")}\n`);
+      process.exitCode = exitCode;
+    }
     return undefined;
   }
 }
@@ -123,9 +129,8 @@ function presentPersistenceFailure(connection: ComputerConnectResult, home: stri
   const guidance = [
     "Server exchange committed; the one-time connect code was consumed. Do not reuse it.",
     "Local credentials/identity may be incomplete; previous credentials may no longer work. No daemon was started or restarted.",
-    "Fix local storage permissions/free space, then run the local repair below. It accepts only a saved credential for this exact installation.",
-    `Repair: "$HOME/.local/bin/${channelConfig.binName}" computer repair-local --installation-id ${failure.installationId} --home ${quotePosix(home)}`,
-    "If repair reports COMPUTER_CREDENTIAL_UNAVAILABLE, request a NEW connect/repair code in openTag Web after fixing storage. The consumed code cannot be recovered.",
+    "Fix local storage permissions/free space, then get a NEW connect command in openTag Web and run it; this computer keeps its existing Computer.",
+    `Alternative when credentials were saved: "$HOME/.local/bin/${channelConfig.binName}" computer repair-local --installation-id ${failure.installationId} --home ${quotePosix(home)}`,
   ];
   const error = preparationError(
     "COMPUTER_LOCAL_PERSISTENCE_FAILED",
@@ -139,9 +144,11 @@ function presentPersistenceFailure(connection: ComputerConnectResult, home: stri
   if (json) {
     commandPolicy.presentCommand({ ok: false, value, error, exitCode }, { json: true });
   } else {
-    process.stderr.write(
-      `${[connection.message, `${failure.stage}: ${failure.message}`, ...guidance].map(safeLine).join("\n")}\n`,
-    );
+    const lines = [
+      `${connection.message.replace(/; local persistence is incomplete\.$/, ".")} (${failure.stage}: ${failure.message})`,
+      `Next: Fix ${home}'s permissions or free disk space, then get a new connect command from openTag and run it.`,
+    ];
+    process.stderr.write(`${lines.map(safeLine).join("\n")}\n`);
   }
 }
 
@@ -193,10 +200,12 @@ function presentOrdinaryConnection(connection: ComputerConnectResult, home: stri
     return;
   }
   process.stdout.write(`${safeLine(connection.message)}\n`);
-  if (connection.service)
+  // A running service is implied by the line above; only an unexpected state is worth a line.
+  if (connection.service && connection.service.state !== "active" && !connection.serviceError) {
     process.stdout.write(
-      `${safeLine(`Daemon service ${connection.service.serviceId} is ${connection.service.state}`)}\n`,
+      `${safeLine(`The openTag background service (${connection.service.serviceId}) is ${connection.service.state}.`)}\n`,
     );
+  }
   for (const line of guidance) process.stderr.write(`${safeLine(line)}\n`);
   process.exitCode = connection.serviceError ? commandPolicy.commandExitCode(error) : 0;
 }

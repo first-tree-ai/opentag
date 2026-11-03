@@ -12,7 +12,7 @@ const translations = [
     offline: "Offline",
     restore: "Restore connection",
     repair: "Repair connection",
-    copy: "Copy for AI assistant",
+    copy: "Copy for Agent",
     back: "Back to Reviewer settings",
   },
   {
@@ -22,7 +22,7 @@ const translations = [
     offline: "离线",
     restore: "恢复连接",
     repair: "修复连接",
-    copy: "复制给 AI 助手",
+    copy: "复制给 Agent",
     back: "返回 Reviewer 设置",
   },
 ];

@@ -96,6 +96,12 @@ local directory trees used through the normal repository workflow.
 
 Managed synchronization and write commands route through a per-execution Context Tree command gateway in the trusted Local Daemon or Cloud Runner. Only its pinned CLI child receives a GitHub handle; the Agent receives a Unix socket or fixed Cloud loopback endpoint. The Server separately admits each command against the live parent, current Agent GitHub MCP authorization and exact selected tree. See [GitHub platform integration](github-platform-integration.md#context-tree-command-boundary).
 
+Gateway close returns one memoized cleanup Promise to parent-abort and owner callers,
+including failures. It joins the active command and attempts directory cleanup even
+if closing the listener fails. Local CLI stdout uses Node's UTF-8 stream decoder,
+counts incoming bytes before retaining each chunk, and stops collection permanently
+on overflow. The existing process-group TERM/KILL cleanup still joins owned descendants.
+
 Preparation uses `context-tree sync --project-path PROJECT` through this gateway. Responses are parsed
 with the package's public contracts; OpenTag never reads the package's internal registry.
 The path returned by the current sync is the read snapshot. A failed refresh can use

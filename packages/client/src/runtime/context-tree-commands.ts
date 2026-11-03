@@ -45,6 +45,7 @@ export class ContextTreeCommandGateway {
   #settled?: Promise<void>;
   #settle?: () => void;
   #closed = false;
+  #closing?: Promise<void>;
   socketPath?: string;
   port?: number;
 
@@ -212,8 +213,16 @@ export class ContextTreeCommandGateway {
     await writeFile(this.#hint(session.id), JSON.stringify({ id: session.id, source }), { mode: 0o600, flag: "wx" });
   }
 
-  async close(): Promise<void> {
-    if (this.#closed) return;
+  close(): Promise<void> {
+    if (!this.#closing) {
+      this.#closing = this.#close();
+      // Parent abort can initiate cleanup before its owner awaits it.
+      void this.#closing.catch(() => undefined);
+    }
+    return this.#closing;
+  }
+
+  async #close(): Promise<void> {
     this.#closed = true;
     this.#abort.abort();
     this.#server?.closeAllConnections();
@@ -221,9 +230,12 @@ export class ContextTreeCommandGateway {
     try {
       await this.#relay?.close("context_tree_closed");
     } finally {
-      this.#server?.closeAllConnections();
-      if (this.#server) await new Promise<void>((done) => this.#server?.close(() => done()));
-      if (this.#directory) await rm(this.#directory, { recursive: true, force: true });
+      try {
+        this.#server?.closeAllConnections();
+        if (this.#server) await new Promise<void>((done) => this.#server?.close(() => done()));
+      } finally {
+        if (this.#directory) await rm(this.#directory, { recursive: true, force: true });
+      }
     }
   }
 

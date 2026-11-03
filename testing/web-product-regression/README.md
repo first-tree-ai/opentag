@@ -107,7 +107,7 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | C01 | Fresh machine | Run the connect command on a machine that never had openTag | One new Computer, online | Core | connect C01 |
 | C02 | Rerun on a healthy machine | Connected machine; new code; run again | Same Computer, no duplicate, the running service is kept, online | Core | connect C02 |
 | C03 | Service stopped | Stop the local service; run a new connect command | Same Computer, no duplicate, back online | Core | connect C03, C03r |
-| C04 | Disconnected from the web | Disconnect in the web; run a new command (create or recovery code) | Same Computer, no duplicate, back online | Core | connect C04, C04r |
+| C04 | Disconnected on the Server side | Setup (no Web action exists for this): disconnect the Computer through the authorized `POST /api/v1/computers/:id/disconnect` API. Then run a new command (create or recovery code) | Same Computer, no duplicate, back online | Core | connect C04, C04r |
 | C05 | Local identity lost | Delete the local identity file; rerun | Connects; a new Computer is acceptable if the old one shows offline | Edge | connect C05 |
 | C06 | Old version installed | Previous release installed and connected; rerun | Upgrades, same Computer, online | Core | connect C06 |
 | C07 | Expired code | Run a command whose code is past its 15-minute lifetime | Plain failure with the next step; no Computer created | Core | connect C07 |
@@ -117,7 +117,7 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | C11 | Home directory not writable | Run on a machine whose home is read-only | Plain failure; no Computer created; the code is not used up | Edge | connect C11 |
 | C12 | No curl, no system Node.js | Run without curl; run without node | Without curl: plain failure, code not used up. Without node: the bundled runtime connects | Edge | connect C12a, C12b |
 | C13 | Previous CLI release | The previous release reruns its own connect against this Server | Connects, same Computer, online | Edge | connect C13 |
-| C14 | Computer deleted in the web | Disconnect and delete in the web; rerun on the same machine | One new Computer, online | Edge | connect C14 |
+| C14 | Computer removed in the web | On Computers, More → Remove and confirm; rerun on the same machine | One new Computer, online | Edge | connect C14 |
 | C15 | Same command twice | Run the identical, now-used command again | No duplicate, same Computer, online, plain message | Edge | connect C15 |
 | C16 | Machine handed over | Another Account deletes the machine's Computer; this user connects | One new Computer for this user; the other Account's deleted Computer untouched | Edge | connect C16 |
 | C17 | Home lost while offline | Local openTag home removed while the computer is off; rerun | Connects; one new Computer; the original untouched | Edge | connect C17 |

@@ -87,14 +87,14 @@ script-readable CSRF cookie is present; without it the Server would refuse the l
 
 Accounts entering Agent Setup from the application keep the account-level navigation rail throughout creation,
 Computer preparation, messaging connection, and completion. The Agent-specific navigation does not appear inside
-setup. These embedded pages omit their own header, including the brand, Account menu, and Back to agent/Set up later
+setup. These embedded pages omit their own header, including the brand, Account menu, and Back to Agents
 action, and share the shell's single main landmark. The account rail provides the exit from unfinished setup;
 completion provides the central View agent action.
 The account rail's brand mark links to the Agent list, preserving the logo's home action in either layout.
 On phones they follow the shell's existing compact navigation. The same shell and session-local page memory remain
 mounted when moving between the Agent list and setup. An unfinished creation draft, including its current step,
 name, runtime, and destination, is restored on return and cleared once its creation succeeds or the Account session ends.
-An in-flight creation is shared across those visits. While it is pending, the name, runtime, Back, and Create controls
+An in-flight creation is shared across those visits. While it is pending, the name, runtime, and Create controls
 are disabled on both the original and returning form. The active form always receives its outcome: success opens the
 exact Agent's setup, while a refusal keeps the submitted draft available for editing and retry. Its result only clears
 the submitted draft; a departed form cannot clear a later draft or redirect the reader back into setup.
@@ -109,8 +109,11 @@ document still retains its layout and navigation and sign-out continue to work; 
 Restoring a browser tab that retains this hint also resumes full-screen setup, even after Account admission. The
 header's brand link exits to All Agents and retires the hint, so the next setup visit uses the account rail.
 Subsequent setup visits use the application shell.
-After an exact Agent has been admitted, the full-screen header's openTag logo links to the Agent list (`/agents`),
-including on the setup completion screen. The pre-Agent creation header keeps its existing navigation restrictions.
+Setup steps move forward only; they carry no in-flow Back. Leaving setup belongs to the header (or the account rail
+when embedded). After an exact Agent has been admitted, the full-screen header offers **Back to Agents** (**返回 Agent
+列表**) at every step, including the completion screen, and its openTag logo links to the same Agent list
+(`/agents`); on phones the logo shows the mark alone so the logo, Back to Agents, and Account menu share one row. The list resumes unfinished setup through the Agent's Continue setup action. The pre-Agent creation header
+offers both only to an Account that has completed setup; for a first-time Account the list would redirect back to setup.
 The completion screen stays visible until the user navigates away. Its primary action, **View agent**
 (**查看 Agent** in Chinese), opens that Agent's overview. Global navigation provides the return to the Agent list;
 the completion screen does not repeat that destination as a secondary action or redirect automatically.
@@ -131,6 +134,16 @@ container queries for page composition because the Sidebar changes the space ava
 the viewport. The shell follows the website app preview breakpoints: 240px Agent sidebar above 950px, 200px from 641px to 950px,
 and inline scrolling navigation at 640px and below. Compact controls retain account access and Agent switching.
 The same route outlet remains mounted across those changes. Agent roster rows stack identity above status below a 42rem roster container width, keeping names and setup actions readable at 320px.
+
+Agent roster status stays steady through background refreshes. Transient evidence (a refresh that failed, a
+paused offline read, delivery credentials being re-verified, or a runtime Provider probe still running) does not
+replace a row's last settled status; the row keeps it until the next settled answer. A check with no settled answer
+behind it reads as Ready, while unreadable evidence with none reads as Status unavailable. A confirmed problem
+replaces Ready as soon as it is read. When a row's evidence stays transient for a full refresh interval, that row
+alone adds a quiet **Refreshing status** note under its held status; there is no page-level notice. The Agent's own
+page keeps the exact current dependency states. The Server already bounds what it holds: a local Computer without a
+heartbeat for 90 seconds reads as offline, and runtime and messaging observations expire on their own TTLs, so held
+list statuses converge on the Server's next settled answer.
 
 UI changes must be checked at these representative widths when the surface can render there:
 
@@ -301,6 +314,16 @@ without diagnosing the cause from current presence. Skipped occurrences retain t
 does not retry an occurrence. Explanations do not imply a future occurrence when the next trigger is absent;
 future occurrences, when present, follow the current enabled state and time rule. These messages
 do not introduce retries, execution history, or a separate task lifecycle.
+
+## IM recovery confirmation
+
+[Task recovery](../messaging/im-feedback.md) is an owner-authenticated, read-only entry page, including links with an
+operation hint. Choosing an action opens a separate review; discard adds an acknowledgement of permanent file loss
+and unchanged external effects. Before the final POST the page fetches fresh confirmation data and refuses a changed
+revision, changed environment, missing action, or failed read even when cached data exists. A lost POST response leads
+to checking the recorded result, never an automatic second submission. Pending operations refresh their result only.
+The Agent detail page includes a collapsed, paginated recovery-notice list so delivery failures remain discoverable.
+English and Chinese copy distinguish "queued", "saved and released", "released but unverified", and actual completion.
 
 ## Internationalization and copy
 

@@ -18,6 +18,7 @@ import {
 } from "@opentag/shared";
 import type { FastifyRequest } from "fastify";
 import type { WebSocket } from "ws";
+import { type PerformanceLogger, updateCurrentPerformanceContext } from "../observability/performance-logger.js";
 import type { CloudDeliveryOwner } from "../services/sandboxes/cloud-delivery-owner.js";
 import type { CloudConnectionRecord } from "../services/sandboxes/cloud-runtime-fence.js";
 import type {
@@ -62,6 +63,7 @@ export interface RunnerWebSocketRouteOptions {
   /** Override the token-service derived renewal cadence (tests only). */
   credentialRenewalIntervalMs?: number;
   now?: () => number;
+  performanceLogger?: PerformanceLogger;
 }
 
 /** The narrow collaboration surface RunnerConnection routes inbound frames and teardown to. */
@@ -527,6 +529,12 @@ export class RunnerConnection {
     this.#reportOnly = reportOnly;
     this.#cloudNegotiated = cloudNegotiated;
     this.#workspaceNegotiated = workspaceNegotiated;
+    updateCurrentPerformanceContext({
+      sandboxId: validated.sandboxId,
+      sessionId: validated.sessionId,
+      environmentGeneration: validated.environmentGeneration,
+      computerId: fence?.computerId,
+    });
     if (this.#authTimer) clearTimeout(this.#authTimer);
     this.#authTimer = undefined;
     if (fence) {
@@ -1136,16 +1144,31 @@ export class RunnerConnection {
     this.#wantsImInput = data.imInputVersion === 1;
     this.#wantsGithubUserTask = data.githubUserTaskVersion === 1;
     this.#wantsContextTreeExecution = data.contextTreeExecutionVersion === 1;
-    await this.#handleAuth(
-      data.token,
-      data.requestId,
-      data.cloudDeliveryVersion === RUNNER_CLOUD_DELIVERY_VERSION,
-      data.workspaceVersion === RUNNER_WORKSPACE_VERSION,
-      data.renewExpired === true,
-      data.controlToken,
-      data.reuseVersion,
-      data.sessionCollaborationVersion,
-    );
+    const runAuth = () =>
+      this.#handleAuth(
+        data.token,
+        data.requestId,
+        data.cloudDeliveryVersion === RUNNER_CLOUD_DELIVERY_VERSION,
+        data.workspaceVersion === RUNNER_WORKSPACE_VERSION,
+        data.renewExpired === true,
+        data.controlToken,
+        data.reuseVersion,
+        data.sessionCollaborationVersion,
+      );
+    const perfLogger = this.#options.performanceLogger;
+    if (perfLogger) {
+      await perfLogger.traceAsync(
+        {
+          module: "ws",
+          category: "ws",
+          operation: "ws.runner.frame.auth",
+          ...(data.requestId ? { requestId: data.requestId } : {}),
+        },
+        runAuth,
+      );
+      return;
+    }
+    await runAuth();
   }
 
   async #handleAuthenticatedFrame(current: RunnerScope, data: RunnerClientFrame): Promise<void> {
@@ -1155,6 +1178,24 @@ export class RunnerConnection {
     }
     if (!this.#options.hub.isCurrent(current.sandboxId, this.#adapter)) {
       this.#closeWith(RUNNER_WS_CLOSE.staleScope, "this Runner connection was replaced");
+      return;
+    }
+    const perfLogger = this.#options.performanceLogger;
+    if (perfLogger && data.type !== "heartbeat") {
+      await perfLogger.traceAsync(
+        {
+          module: "ws",
+          category: "ws",
+          operation: `ws.runner.frame.${data.type}`,
+          sandboxId: current.sandboxId,
+          sessionId: current.sessionId,
+          environmentGeneration: current.environmentGeneration,
+          ...(this.#cloudConnection ? { computerId: this.#cloudConnection.computerId } : {}),
+          ...("deliveryId" in data && typeof data.deliveryId === "string" ? { deliveryId: data.deliveryId } : {}),
+          ...("requestId" in data && typeof data.requestId === "string" ? { requestId: data.requestId } : {}),
+        },
+        () => this.#dispatchAuthenticatedFrame(current, data),
+      );
       return;
     }
     await this.#dispatchAuthenticatedFrame(current, data);

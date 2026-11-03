@@ -14,6 +14,7 @@ import {
 import { imAttrs, outcomeAttrs, setActiveSpanAttributes, withSpan } from "../../observability/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import { SessionService } from "../sessions/index.js";
+import { createImFeedbackTarget } from "./im-feedback-store.js";
 import { IM_DUPLICATE_PENDING_REASON, IM_QUEUE_CAPACITY, repeatsPendingInput } from "./im-queue-policy.js";
 import { threadRootExternalId } from "./provider-thread-context.js";
 
@@ -381,6 +382,7 @@ export class ImMessageInbox {
                     .where(
                       and(
                         eq(imMessageDeliveries.messageId, previousCurrent.id),
+                        eq(imMessageDeliveries.attemptOrdinal, 0),
                         eq(sessions.imBindingId, imBindingId),
                         eq(sessions.channelId, event.conversation.externalId),
                         isNull(sessions.endedAt),
@@ -732,6 +734,7 @@ export class ImMessageInbox {
       .where(
         and(
           eq(imMessageDeliveries.messageId, pending.id),
+          eq(imMessageDeliveries.attemptOrdinal, 0),
           eq(imMessageDeliveries.sessionId, thread.id),
           eq(imMessageDeliveries.state, "pending"),
           isNull(imMessageDeliveries.reason),
@@ -789,6 +792,7 @@ export class ImMessageInbox {
         .onConflictDoNothing()
         .returning({ id: imMessageDeliveries.id });
       if (deliveryRow && !repeated) {
+        await createImFeedbackTarget(transaction, deliveryRow.id, now);
         deliveryIds.push(deliveryRow.id);
         feedbackDeliveryIds.add(deliveryRow.id);
       }

@@ -164,3 +164,49 @@ it.each([
     expect(moved).toEqual(original);
   },
 );
+
+it("defers Cloud steering behind pending receipt work without sending or releasing custody", async () => {
+  const send = vi.fn(() => true);
+  const release = vi.fn();
+  const steering = new CloudImSteering({
+    database: {} as never,
+    custody: {
+      beginSteerDispatch: vi.fn(async () => "inbound_pending"),
+      releaseSteerDispatch: release,
+    } as unknown as RuntimeCustodyStore,
+    connection: async () => ({ record: {} as never, context: {} as never, send }),
+    current: () => true,
+    validAllocation: async () => true,
+    context: () => ({}) as never,
+    send,
+  });
+  const request: RuntimeImSteerRequest = {
+    type: "im:steer",
+    requestId: randomUUID(),
+    deliveryId: randomUUID(),
+    imMessageId: randomUUID(),
+    sessionId: randomUUID(),
+    agentId: randomUUID(),
+    placementGeneration: 1,
+    rootDeliveryId: randomUUID(),
+    expectedTurnId: "turn",
+    attention: "direct",
+    content: {
+      kind: "text",
+      text: "later",
+      providerRef: {
+        provider: "feishu",
+        teamBrand: "feishu",
+        appId: "app",
+        botOpenId: "bot",
+        chatId: "chat",
+        messageId: "msg",
+      },
+    },
+  };
+  const dispatched = vi.fn();
+  await expect(steering.request(request, dispatched)).rejects.toMatchObject({ code: "IM_DELIVERY_INBOUND_PENDING" });
+  expect(send).not.toHaveBeenCalled();
+  expect(dispatched).not.toHaveBeenCalled();
+  expect(release).not.toHaveBeenCalled();
+});

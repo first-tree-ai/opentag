@@ -14,7 +14,9 @@ contents, and machine-specific operational logs outside the repository.
 - [Managed CLI installation acceptance](managed-cli-entry/README.md)
 - [Slack local live acceptance](slack-live-acceptance.md)
 - [Agent usage and internal Session page benchmark](performance/agent-session/REPORT.md)
+- [Cloud response-time evaluation and offline baseline](performance/cloud-latency/README.md)
 - [Cloud startup performance](performance/cloud-startup/README.md)
+- [Context-token composition and cache audit](performance/context-tokens/README.md)
 
 ## Verification by feature
 
@@ -85,6 +87,7 @@ contents, and machine-specific operational logs outside the repository.
 - [Cloud delivery cancellation reads](performance/cancel-deliveries/README.md)
 - [Database disconnect recovery](verification/database-disconnect.md)
 - [Feishu setup observation consistency](verification/feishu-setup-observation.md)
+- [Accepted inbound receipt ordering](verification/inbound-receipt-order.md)
 - [Feishu user MCP authorization](verification/feishu-user-mcp-authorization.md)
 - [GitHub platform integration](verification/github-platform-integration.md)
 - [Ownership gate reconciliation](verification/ownership-gate.md)
@@ -95,6 +98,7 @@ contents, and machine-specific operational logs outside the repository.
 - [IM Turn budget and recovery](im-turn-budget-recovery/README.md)
 - [Steered IM custody without terminal reports](verification/im-steer-custody.md)
 - [Provider process shutdown](verification/provider-process-custody.md)
+- [IM feedback and safe recovery](verification/im-feedback.md)
 - [IM content and attachment delivery](verification/im-content-delivery.md)
 - [Ordered IM batches and Cloud steering](verification/im-backlog-batching.md)
 - [Inbound receipt recovery](verification/inbound-receipt-recovery.md)
@@ -120,6 +124,7 @@ Screenshots and browser checks for Web UI changes, one directory per change:
 
 - [Context Tree GitHub MCP authorization](web-ui/context-mcp-authorization/README.md)
 - [Agent status layout](web-ui/agent-status/README.md)
+- [Agent home task table alignment](web-ui/agent-home-task-alignment/README.md)
 - [computer-recovery](web-ui/computer-recovery/README.md)
 - [computer-status-alignment](web-ui/computer-status-alignment/README.md)
 - [connector-polish](web-ui/connector-polish/README.md)

@@ -1459,7 +1459,13 @@ describe("ImDeliveryWorker database workflow", () => {
     vi.useFakeTimers();
     try {
       const maintenanceExecute = vi.fn().mockResolvedValue([]);
-      const retentionTransaction = { execute: vi.fn().mockResolvedValue([]) };
+      const feedbackSelect = {
+        from: () => feedbackSelect,
+        where: () => feedbackSelect,
+        limit: () => feedbackSelect,
+        for: vi.fn().mockResolvedValue([]),
+      };
+      const retentionTransaction = { execute: vi.fn().mockResolvedValue([]), select: () => feedbackSelect };
       const database = {
         execute: maintenanceExecute,
         transaction: vi.fn(async (callback: (transaction: typeof retentionTransaction) => Promise<unknown>) =>
@@ -1484,7 +1490,8 @@ describe("ImDeliveryWorker database workflow", () => {
       expect(database.transaction).not.toHaveBeenCalled();
 
       await vi.advanceTimersByTimeAsync(10);
-      expect(database.transaction).toHaveBeenCalledTimes(1);
+      expect(database.transaction).toHaveBeenCalledTimes(2);
+      expect(feedbackSelect.for).toHaveBeenCalledWith("update", { skipLocked: true });
       expect(retentionTransaction.execute).toHaveBeenCalledTimes(5);
       worker.stop();
     } finally {

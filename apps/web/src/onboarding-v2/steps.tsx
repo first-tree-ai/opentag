@@ -58,31 +58,23 @@ export function StepRail({ steps }: { steps: FlowState["steps"] }) {
   );
 }
 
+/*
+ * Steps move forward only. Leaving setup is the header's job (the Agent list, or the logo), so the
+ * flow carries no second, step-by-step way back.
+ */
 function StepNav({
-  back,
-  backDisabled = false,
   label = m.onboarding_v2_nav_next(),
   nextDisabled = false,
   onNext,
   submit = false,
 }: {
-  back?: () => void;
-  backDisabled?: boolean;
   label?: string;
   nextDisabled?: boolean;
   onNext?: () => void;
   submit?: boolean;
 }) {
   return (
-    <div className="flex items-center justify-between gap-3" data-ui="onboarding-v2-nav">
-      <div data-ui="onboarding-v2-nav-back">
-        {back ? (
-          <Button disabled={backDisabled} onClick={back} variant="ghost">
-            <Icon name="arrow-left" />
-            <span>{m.onboarding_v2_nav_back()}</span>
-          </Button>
-        ) : null}
-      </div>
+    <div className="flex items-center justify-end gap-3" data-ui="onboarding-v2-nav">
       <div data-ui="onboarding-v2-nav-next">
         <Button disabled={nextDisabled} onClick={onNext} type={submit ? "submit" : "button"}>
           {label}
@@ -345,14 +337,12 @@ function RuntimePicker({
 
 export function AgentStep({
   draft,
-  onBack,
   onChange,
   onSubmit,
   submitLabel,
   submitting = false,
 }: {
   draft: AgentDraft;
-  onBack?: () => void;
   onChange: (draft: AgentDraft) => void;
   onSubmit: () => void;
   submitLabel?: string;
@@ -384,8 +374,6 @@ export function AgentStep({
         />
         <RuntimePicker disabled={submitting} draft={draft} onChange={change} />
         <StepNav
-          back={onBack}
-          backDisabled={submitting}
           label={submitLabel}
           nextDisabled={submitting || (draft.destination !== "cloud" && draft.runtime === undefined)}
           submit

@@ -6,6 +6,7 @@ import { PARKED_DELIVERY_CODE } from "../db/im-delivery-work.js";
 import { agents, computers, imBindings, imMessageDeliveries, sessionPlacements, sessions } from "../db/schema/index.js";
 import { outcomeAttrs, setActiveSpanAttributes } from "../observability/index.js";
 import type { ServiceLogger } from "../observability/service-logger.js";
+import { InboundReceiptPendingError } from "../services/im/inbound-admission.js";
 import { releaseImBatch } from "./im-delivery-batch.js";
 import { ImDeliveryInputError, rejectInvalidImDelivery } from "./im-delivery-content.js";
 import { isCloudReadinessRetry } from "./im-delivery-ready-wakeup.js";
@@ -256,6 +257,10 @@ export async function handleDeliveryFailure(
   code: string,
   error: unknown,
 ): Promise<void> {
+  if (error instanceof InboundReceiptPendingError) {
+    await recordDeliveryFailure(deps, attempt, error.code, { retryDelayMs: cappedRetryDelayMs(attempt.attemptCount) });
+    return;
+  }
   if (error instanceof ImDeliveryInputError) {
     await rejectInvalidDeliveryInput(deps, attempt, error);
     return;

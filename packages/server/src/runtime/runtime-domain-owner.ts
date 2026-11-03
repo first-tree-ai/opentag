@@ -26,6 +26,7 @@ import {
 } from "@opentag/shared";
 import { outcomeAttrs, runtimeAttrs, setActiveSpanAttributes, tracePromise, withSpan } from "../observability/index.js";
 import type { ServiceLogger } from "../observability/service-logger.js";
+import { InboundReceiptPendingError } from "../services/im/inbound-admission.js";
 import { type ConnectionRegistry, RuntimeRegistrySendError } from "./connection-registry.js";
 import type { AcceptedDeliveryRecord, RecordedTurnRecord, RuntimeCustodyStore } from "./runtime-custody-store.js";
 import type { RuntimeBusinessContext, RuntimeBusinessOptions } from "./runtime-session.js";
@@ -441,6 +442,7 @@ export class RuntimeDomainOwner {
       instanceId,
     });
     signal?.throwIfAborted();
+    if (dispatch === "inbound_pending") throw new InboundReceiptPendingError();
     if (dispatch === "conflict") throw new RuntimeDomainConflictError("The steer dispatch conflicts");
     if (dispatch === "stale_generation") {
       throw new RuntimeDomainRequestError("stale_placement", "The steer dispatch placement is stale");
@@ -655,6 +657,7 @@ export class RuntimeDomainOwner {
       instanceId,
     });
     signal?.throwIfAborted();
+    if (dispatch === "inbound_pending") throw new InboundReceiptPendingError();
     if (dispatch === "conflict") throw new RuntimeDomainConflictError("The delivery dispatch conflicts");
     if (dispatch === "stale_generation") {
       throw new RuntimeDomainRequestError("stale_placement", "The delivery dispatch placement is stale");
@@ -1259,6 +1262,7 @@ export class RuntimeDomainOwner {
 }
 
 function runtimeDomainFailureAttrs(error: unknown): Record<string, unknown> {
+  if (error instanceof InboundReceiptPendingError) return outcomeAttrs("deferred", error.code);
   let code = "RUNTIME_REQUEST_FAILED";
   if (error instanceof RuntimeDomainConflictError) {
     code = "RUNTIME_REQUEST_CONFLICT";

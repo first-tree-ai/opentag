@@ -101,6 +101,8 @@ export function TasksPage({ agentId, showExamples = false }: { agentId?: string;
           task.source.provider,
           task.source.channelId,
           task.source.threadKey,
+          task.source.chatMode,
+          task.source.groupMessageType,
         ]
           .map((value) => foldCase(value ?? ""))
           .join(" ")
@@ -450,7 +452,11 @@ export function TaskDetailPage({
             </span>
           </TaskDetailFact>
           <TaskDetailFact label={m.tasks_source_label()}>
-            <span className="inline-flex items-center gap-1.5">
+            <span
+              className="inline-flex items-center gap-1.5"
+              data-chat-mode={task.source.chatMode ?? undefined}
+              data-group-message-type={task.source.groupMessageType ?? undefined}
+            >
               <ProviderIcon className="size-5" provider={task.source.provider} />
               {sourceLabel(task)}
             </span>
@@ -695,6 +701,12 @@ function TaskBackLink({ agentId, showExamples }: { agentId: string; showExamples
   );
 }
 
+/*
+ * Compact tables sit inside a titled card. Pulling the region out by the cells' own inset (px-3)
+ * lines cell text up with the card title on both edges, while row hover keeps its padding.
+ */
+const COMPACT_TABLE_INSET = "-mx-3";
+
 function TaskTable({
   compact = false,
   showAgent = true,
@@ -709,7 +721,7 @@ function TaskTable({
   const table = (
     <section
       aria-label={m.tasks_table_region()}
-      className="min-w-0 overflow-hidden rounded-lg @min-[40rem]/content:overflow-x-auto @min-[40rem]/content:focus:outline-none @min-[40rem]/content:focus-visible:ring-2 @min-[40rem]/content:focus-visible:ring-kumo-brand @min-[40rem]/content:focus-visible:ring-inset"
+      className={`min-w-0 overflow-hidden rounded-lg ${compact ? COMPACT_TABLE_INSET : ""} @min-[40rem]/content:overflow-x-auto @min-[40rem]/content:focus:outline-none @min-[40rem]/content:focus-visible:ring-2 @min-[40rem]/content:focus-visible:ring-kumo-brand @min-[40rem]/content:focus-visible:ring-inset`}
       // biome-ignore lint/a11y/noNoninteractiveTabindex: The same region remains keyboard-scrollable in wider content areas.
       tabIndex={0}
     >
@@ -769,6 +781,8 @@ function TaskRow({
     <Table.Row
       className="cursor-pointer transition-colors hover:bg-kumo-tint/50 grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 border-b border-kumo-line last:border-b-0 @min-[40rem]/content:table-row @min-[40rem]/content:border-b-0"
       data-ui="task-table-row"
+      data-chat-mode={task.source.chatMode ?? undefined}
+      data-group-message-type={task.source.groupMessageType ?? undefined}
       onClick={(event) => {
         if (
           event.defaultPrevented ||
@@ -794,7 +808,12 @@ function TaskRow({
           </span>
         </Table.Cell>
       ) : null}
-      <Table.Cell className="col-start-1 row-start-2 min-w-0" data-label={m.tasks_source_label()}>
+      <Table.Cell
+        className="col-start-1 row-start-2 min-w-0"
+        data-chat-mode={task.source.chatMode ?? undefined}
+        data-group-message-type={task.source.groupMessageType ?? undefined}
+        data-label={m.tasks_source_label()}
+      >
         <span className={"inline-flex min-w-0 items-center gap-2 @min-[40rem]/content:whitespace-nowrap"}>
           <ProviderIcon className="size-5" provider={task.source.provider} />
           <span>{sourceLabel(task)}</span>

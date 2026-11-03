@@ -48,6 +48,7 @@ export interface RuntimeProxyAuthorization {
   sessionId: string;
   accountId: string;
   agentId: string;
+  source?: RuntimeExecutionRecord["source"];
   cli: RuntimeCliMetadata;
   contextTree?: RuntimeExecutionRecord["contextTree"];
   /** Resolves real upstream material in memory; callers must `recheck()` after this async step. */
@@ -223,6 +224,7 @@ export class RuntimeCredentialBroker {
       sessionId: execution.sessionId,
       accountId: execution.accountId,
       agentId: execution.agentId,
+      source: execution.source,
       cli: material.cli,
       ...(execution.contextTree ? { contextTree: execution.contextTree } : {}),
       resolveMaterial: async (signal) => {

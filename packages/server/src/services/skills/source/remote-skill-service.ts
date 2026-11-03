@@ -9,6 +9,8 @@ import {
   SKILL_ERROR_CODES,
   type SkillErrorCode,
 } from "@opentag/shared";
+import { traceExternalCall } from "../../../observability/external-call-logger.js";
+import type { PerformanceLogger } from "../../../observability/performance-logger.js";
 import type { ServiceLogger } from "../../../observability/service-logger.js";
 import { SkillServiceError, skillSourceInvalid, skillSourceNoSkills } from "../errors.js";
 import { normalizeSkillEntries } from "../skill-archive.js";
@@ -61,6 +63,7 @@ export interface RemoteSkillServiceOptions {
   maxCandidates?: number;
   readLimits?: SkillReadLimits;
   logger?: ServiceLogger;
+  performanceLogger?: PerformanceLogger;
 }
 
 export interface ResolveRemoteSkillsInput {
@@ -109,16 +112,19 @@ export class RemoteSkillService {
   readonly #logger: ServiceLogger | undefined;
   readonly #maxCandidates: number | undefined;
   readonly #measureWorkspace: ((path: string) => Promise<number>) | undefined;
+  readonly #perfLogger: PerformanceLogger | undefined;
   readonly #readLimits: SkillReadLimits | undefined;
   readonly #remoteOptions: { allowLoopback: boolean; resolveAddresses?: (hostname: string) => Promise<string[]> };
 
   constructor(options: RemoteSkillServiceOptions) {
     this.#skills = options.skills;
+    this.#perfLogger = options.performanceLogger;
     this.#fetcher =
       options.fetcher ??
       new SkillSourceFetcher({
         allowLoopback: options.allowLoopback === true,
         ...(options.resolveAddresses === undefined ? {} : { resolveAddresses: options.resolveAddresses }),
+        ...(options.performanceLogger ? { performanceLogger: options.performanceLogger } : {}),
       });
     this.#gitRunner = options.gitRunner;
     this.#logger = options.logger;
@@ -133,11 +139,19 @@ export class RemoteSkillService {
 
   /** The Skills a source holds, with the two facts the user needs: what each is, and what exists. */
   async resolve(input: ResolveRemoteSkillsInput): Promise<ReturnType<typeof ResolveRemoteSkillsResponseSchema.parse>> {
+    const startedAtMs = Date.now();
     const opened = await this.#open(input);
+    const openDurationMs = Math.max(0, Date.now() - startedAtMs);
     try {
       if (opened.listings.length === 0) throw skillSourceNoSkills();
       this.#logger?.debug(
-        { agentId: input.agentId, kind: opened.source.kind, candidates: opened.listings.length },
+        {
+          agentId: input.agentId,
+          kind: opened.source.kind,
+          candidates: opened.listings.length,
+          openDurationMs,
+          durationMs: Math.max(0, Date.now() - startedAtMs),
+        },
         "Remote Skill source resolved",
       );
       return ResolveRemoteSkillsResponseSchema.parse({
@@ -157,7 +171,9 @@ export class RemoteSkillService {
    * without touching the others.
    */
   async install(input: InstallRemoteSkillsInput): Promise<ReturnType<typeof InstallRemoteSkillsResponseSchema.parse>> {
+    const startedAtMs = Date.now();
     const opened = await this.#open(input);
+    const openDurationMs = Math.max(0, Date.now() - startedAtMs);
     try {
       const byName = new Map(opened.listings.map((listing) => [listing.candidate.name.toLowerCase(), listing]));
       const handled = new Set<string>();
@@ -185,6 +201,8 @@ export class RemoteSkillService {
           installed: results.filter((result) => result.status === "installed").length,
           skipped: results.filter((result) => result.status === "skipped_name_conflict").length,
           failed: results.filter((result) => result.status === "failed").length,
+          openDurationMs,
+          durationMs: Math.max(0, Date.now() - startedAtMs),
         },
         "Remote Skill install finished",
       );
@@ -212,6 +230,7 @@ export class RemoteSkillService {
        */
       // One read: the fingerprint is derived from the very bytes that will be packaged, so a
       // publisher cannot answer the comparison with one body and the install with another.
+      const itemStartedAtMs = Date.now();
       const content = await listing.read();
       if (content.fingerprint !== selection.fingerprint) {
         this.#logger?.debug(
@@ -234,7 +253,16 @@ export class RemoteSkillService {
         replace: false,
         source: "url_install",
       });
-      this.#logger?.debug({ agentId: input.agentId, name, status: "installed" }, "Remote Skill installed");
+      this.#logger?.debug(
+        {
+          agentId: input.agentId,
+          name,
+          status: "installed",
+          archiveBytes: normalized.archive.byteLength,
+          durationMs: Math.max(0, Date.now() - itemStartedAtMs),
+        },
+        "Remote Skill installed",
+      );
       return { name, status: "installed" };
     } catch (error) {
       if (error instanceof SkillServiceError) {
@@ -335,14 +363,23 @@ export class RemoteSkillService {
       disposers.push(() => tunnel.close());
       const workspace = await SkillSourceWorkspace.create();
       disposers.push(() => workspace.dispose());
-      const snapshot = await fetchGitSnapshot({
-        source,
-        workspace: workspace.root,
-        signal: signal ?? new AbortController().signal,
-        proxyUrl: tunnel.proxyUrl,
-        ...(this.#gitRunner === undefined ? {} : { run: this.#gitRunner }),
-        ...(this.#measureWorkspace === undefined ? {} : { measureWorkspace: this.#measureWorkspace }),
-      });
+      const snapshot = await traceExternalCall(
+        this.#perfLogger,
+        {
+          provider: "git",
+          operation: "external.git.fetchSnapshot",
+          attributes: { sourceKind: source.kind },
+        },
+        () =>
+          fetchGitSnapshot({
+            source,
+            workspace: workspace.root,
+            signal: signal ?? new AbortController().signal,
+            proxyUrl: tunnel.proxyUrl,
+            ...(this.#gitRunner === undefined ? {} : { run: this.#gitRunner }),
+            ...(this.#measureWorkspace === undefined ? {} : { measureWorkspace: this.#measureWorkspace }),
+          }),
+      );
       disposers.push(() => snapshot.dispose());
       // The listing reads manifests through the snapshot, so a failure here must still release the
       // snapshot's monitor — it polls the workspace, which cleanup has just removed.

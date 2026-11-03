@@ -10,6 +10,8 @@ import { and, asc, eq, inArray, isNotNull, isNull, lte, ne, notInArray, or, sql 
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { computers, imMessageDeliveries, sandboxes, sessionPlacements, sessions } from "../../db/schema/index.js";
 import type { BackgroundFailureSupervisor } from "../../observability/background-failure-supervisor.js";
+import { getCurrentPerformanceLogger, type PerformanceLogger } from "../../observability/performance-logger.js";
+import type { ServiceLogger } from "../../observability/service-logger.js";
 import { type CloudRunAdmin, CloudRunAdminError, type RunnerInstanceIdentityInput } from "../cloud-run/index.js";
 import {
   CloudCapacityExceededError,
@@ -17,6 +19,7 @@ import {
   sandboxNotFound,
   WorkspaceRestoreRequiredError,
   WorkspaceSaveError,
+  WorkspaceSaveFailedError,
 } from "./errors.js";
 import {
   loadManagedSandboxById,
@@ -100,6 +103,8 @@ export interface SandboxRunnerServiceOptions {
   now?: () => Date;
   sleep?: (ms: number) => Promise<void>;
   deleteVerifyTimeoutMs?: number;
+  logger?: ServiceLogger;
+  performanceLogger?: PerformanceLogger;
   /**
    * E5 workspace persistence, present exactly when the deployment configured the object store.
    * With it, Instances are created with the workspace env flag, execution-capable Runners must
@@ -268,6 +273,12 @@ export class SandboxRunnerService {
     | undefined;
   readonly #now: () => Date;
   readonly #sleep: (ms: number) => Promise<void>;
+  readonly #logger: ServiceLogger | undefined;
+  readonly #perfLogger: PerformanceLogger | undefined;
+  readonly #allocationStartMeta = new Map<
+    string,
+    { generation: number; mode: "cold_start" | "warm_reuse"; startedAtMs: number }
+  >();
 
   constructor(database: DatabaseClient, options: SandboxRunnerServiceOptions) {
     if (!options.expectedRunnerVersion) throw new Error("SandboxRunnerService requires the expected Runner version");
@@ -297,6 +308,8 @@ export class SandboxRunnerService {
     this.#sessionWorkBarrier = options.sessionWorkBarrier;
     this.#now = options.now ?? (() => new Date());
     this.#sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+    this.#logger = options.logger;
+    this.#perfLogger = options.performanceLogger;
   }
 
   /** True when this deployment persists workspaces; the Runner capability gates key off this. */
@@ -496,6 +509,19 @@ export class SandboxRunnerService {
       )
       .returning();
     if (!updated) throw runnerConflict("The Sandbox environment changed concurrently");
+    this.#setAllocationStartMeta(updated.id, {
+      generation,
+      mode: "cold_start",
+      startedAtMs: now.getTime(),
+    });
+    this.#emitLifecycleLog("sandbox.lifecycle.provision", {
+      sandboxId: updated.id,
+      sessionId: updated.sessionId,
+      accountId,
+      environmentGeneration: generation,
+      resourceName,
+      startupMode: "cold_start",
+    });
     return { action: "allocate", row: updated };
   }
 
@@ -584,6 +610,16 @@ export class SandboxRunnerService {
     }
     if (!view || view.uid !== row.currentResourceUid) return { ...base, physical: "absent" };
     return { ...base, physical: "present" };
+  }
+
+  async verifySavedForAccount(accountId: string, sandboxId: string, environmentGeneration: number): Promise<boolean> {
+    const owned = await loadOwnedSandbox(this.#database, accountId, sandboxId, { authority: "read" });
+    if (!owned) throw sandboxNotFound();
+    if (owned.sandbox.environmentGeneration !== environmentGeneration) return false;
+    return this.#workspaceSealProven(
+      { storageUri: owned.sandbox.storageUri, sandboxId, sessionId: owned.sessionId, environmentGeneration },
+      environmentGeneration,
+    );
   }
 
   async stopForAccount(
@@ -978,8 +1014,27 @@ export class SandboxRunnerService {
     // re-publish readiness. Return `deferred` (not `stale`) so an authenticated connection that
     // is needed for the E5 seal stays attached instead of being closed by the readiness path.
     if (current.idleReclaimAt !== null) return "deferred";
-    if (current.lifecycle === "ready") return "ready";
+    if (current.lifecycle === "ready") {
+      this.#emitLifecycleLog("sandbox.lifecycle.ready", {
+        sandboxId: current.id,
+        sessionId: current.sessionId,
+        environmentGeneration: current.environmentGeneration,
+        resourceName: current.currentResourceName,
+        resourceUid: current.currentResourceUid,
+        runnerVersion: readiness.runnerVersion,
+        startupMode: "reconnect",
+      });
+      return "ready";
+    }
     if (current.lifecycle !== "preparing") return "stale";
+    const existingStartMeta = this.#allocationStartMeta.get(current.id);
+    if (!existingStartMeta || existingStartMeta.generation !== current.environmentGeneration) {
+      this.#setAllocationStartMeta(current.id, {
+        generation: current.environmentGeneration,
+        mode: "cold_start",
+        startedAtMs: current.lastActivityAt.getTime(),
+      });
+    }
     // No verified UID is tracked yet: stay deferred. Allocation I/O belongs to start/stop only.
     if (current.currentResourceUid === null) return "deferred";
     return (await this.#promoteReadyIfReported(scope.sandboxId)) ? "ready" : "deferred";
@@ -1089,6 +1144,14 @@ export class SandboxRunnerService {
     // E5 proof is version-independent: an execution-capable Runner still must have restored its
     // workspace before anything may report ready.
     if (this.#workspace && options.workspaceRestored !== true) return "workspace_not_restored";
+    this.#emitLifecycleLog("sandbox.lifecycle.ready", {
+      sandboxId: rechecked.id,
+      sessionId: rechecked.sessionId,
+      environmentGeneration: rechecked.environmentGeneration,
+      resourceName: rechecked.currentResourceName,
+      resourceUid: rechecked.currentResourceUid,
+      startupMode: "reconnect",
+    });
     return "ready";
   }
 
@@ -1460,11 +1523,8 @@ export class SandboxRunnerService {
         // The sealed archive could not be proven: keep the physical resource binding and the
         // releasing lifecycle so a later stop retries. Never erased by delete-phase writes.
         await this.#recordError(row, WORKSPACE_SAVE_FAILED, error, { preserveCreateMarkers: true });
-        throw new SandboxServiceError(
-          "SERVICE_UNAVAILABLE",
-          "transient",
+        throw new WorkspaceSaveFailedError(
           `Failed to release the Sandbox environment: the workspace could not be saved (${error.message})`,
-          503,
         );
       }
       // A delete-phase failure must never erase create-phase evidence: `cloud_create_pending`
@@ -1533,6 +1593,15 @@ export class SandboxRunnerService {
       environmentGeneration: row.environmentGeneration,
     };
     if (await this.#workspaceSealProven(scope, row.environmentGeneration)) return;
+    const sealStartedAtMs = this.#now().getTime();
+    const perfHandle = (this.#perfLogger ?? getCurrentPerformanceLogger())?.startOperation({
+      module: "sandboxes",
+      category: "service",
+      operation: "sandbox.lifecycle.seal",
+      sandboxId: row.id,
+      sessionId: row.sessionId,
+      environmentGeneration: row.environmentGeneration,
+    });
     const socket = this.#hub.currentSocket(row.id);
     const snapshot = this.#hub.describe(row.id);
     if (
@@ -1543,24 +1612,41 @@ export class SandboxRunnerService {
       snapshot.scope.environmentGeneration !== row.environmentGeneration ||
       snapshot.scope.resourceName !== row.currentResourceName
     ) {
-      throw new WorkspaceSaveError("no live Runner holds the current allocation");
+      const err = new WorkspaceSaveError("no live Runner holds the current allocation");
+      perfHandle?.fail(err);
+      throw err;
     }
     let result: Awaited<ReturnType<RunnerHub["requestWorkspaceSeal"]>>;
     try {
       result = await this.#hub.requestWorkspaceSeal(row.id, { timeoutMs: workspace.sealTimeoutMs, socket });
     } catch (error) {
-      throw new WorkspaceSaveError(
+      const err = new WorkspaceSaveError(
         error instanceof Error ? error.message : "the workspace seal could not be requested",
       );
+      perfHandle?.fail(err);
+      throw err;
     }
     if (!result.ok) {
-      throw new WorkspaceSaveError(
+      const err = new WorkspaceSaveError(
         `the Runner reported a failed workspace save (${result.code ?? "workspace_save_failed"})`,
       );
+      perfHandle?.fail(err);
+      throw err;
     }
     if (!(await this.#workspaceSealProven(scope, row.environmentGeneration))) {
-      throw new WorkspaceSaveError("the saved workspace archive could not be verified");
+      const err = new WorkspaceSaveError("the saved workspace archive could not be verified");
+      perfHandle?.fail(err);
+      throw err;
     }
+    const sealDurationMs = Math.max(0, this.#now().getTime() - sealStartedAtMs);
+    perfHandle?.complete();
+    this.#emitLifecycleLog("sandbox.lifecycle.seal", {
+      sandboxId: row.id,
+      sessionId: row.sessionId,
+      environmentGeneration: row.environmentGeneration,
+      resourceName: row.currentResourceName,
+      durationMs: sealDurationMs,
+    });
   }
 
   /** The only proof bar: saved + sealed + exact current owner generation, from a fresh read. */
@@ -1742,6 +1828,15 @@ export class SandboxRunnerService {
       )
       .returning({ id: sandboxes.id });
     if (!cleared) return false;
+    this.#allocationStartMeta.delete(row.id);
+    this.#emitLifecycleLog("sandbox.lifecycle.release", {
+      sandboxId: row.id,
+      sessionId: row.sessionId,
+      environmentGeneration: row.environmentGeneration,
+      resourceName,
+      resourceUid,
+      previousLifecycle: expectedLifecycle,
+    });
     if (resourceName !== null) {
       this.#hub.closeScope({
         sandboxId: row.id,
@@ -2418,6 +2513,24 @@ export class SandboxRunnerService {
     if (!adopted) {
       throw runnerConflict("The Sandbox environment changed while the physical Instance was being adopted");
     }
+    this.#allocationStartMeta.delete(candidate.sandboxId);
+    this.#setAllocationStartMeta(adopted.id, {
+      generation: adopted.environmentGeneration,
+      mode: "warm_reuse",
+      startedAtMs: now.getTime(),
+    });
+    this.#emitLifecycleLog("sandbox.lifecycle.borrow", {
+      sandboxId: adopted.id,
+      sessionId: adopted.sessionId,
+      accountId,
+      environmentGeneration: adopted.environmentGeneration,
+      sourceSandboxId: candidate.sandboxId,
+      sourceSessionId: candidate.sessionId,
+      sourceGeneration: candidate.environmentGeneration,
+      resourceName: candidate.resourceName,
+      resourceUid: candidate.resourceUid,
+      startupMode: "warm_reuse",
+    });
     return adopted;
   }
 
@@ -2528,8 +2641,32 @@ export class SandboxRunnerService {
           isNotNull(sandboxes.currentResourceUid),
         ),
       )
-      .returning({ id: sandboxes.id });
+      .returning({
+        id: sandboxes.id,
+        sessionId: sandboxes.sessionId,
+        environmentGeneration: sandboxes.environmentGeneration,
+        currentResourceName: sandboxes.currentResourceName,
+        currentResourceUid: sandboxes.currentResourceUid,
+      });
     if (promoted) {
+      const startMeta = this.#allocationStartMeta.get(sandboxId);
+      this.#allocationStartMeta.delete(sandboxId);
+      const startupMode =
+        startMeta && startMeta.generation === promoted.environmentGeneration ? startMeta.mode : "cold_start";
+      const startupDurationMs =
+        startMeta && startMeta.generation === promoted.environmentGeneration
+          ? Math.max(0, now.getTime() - startMeta.startedAtMs)
+          : undefined;
+      this.#emitLifecycleLog("sandbox.lifecycle.ready", {
+        sandboxId: promoted.id,
+        sessionId: promoted.sessionId,
+        environmentGeneration: promoted.environmentGeneration,
+        resourceName: promoted.currentResourceName,
+        resourceUid: promoted.currentResourceUid,
+        runnerVersion: snapshot.readiness.runnerVersion,
+        startupMode,
+        ...(startupDurationMs !== undefined ? { startupDurationMs } : {}),
+      });
       this.#publishReadiness(sandboxId);
       return true;
     }
@@ -2645,6 +2782,33 @@ export class SandboxRunnerService {
         environmentGeneration: generation,
       }),
     );
+  }
+
+  #setAllocationStartMeta(
+    sandboxId: string,
+    meta: { generation: number; mode: "cold_start" | "warm_reuse"; startedAtMs: number },
+  ): void {
+    this.#allocationStartMeta.delete(sandboxId);
+    if (this.#allocationStartMeta.size >= 1_024) {
+      const oldestKey = this.#allocationStartMeta.keys().next().value;
+      if (oldestKey !== undefined) this.#allocationStartMeta.delete(oldestKey);
+    }
+    this.#allocationStartMeta.set(sandboxId, meta);
+  }
+
+  #emitLifecycleLog(operation: string, fields: Record<string, unknown>, level: "info" | "warn" = "info"): void {
+    try {
+      this.#logger?.[level](
+        {
+          operation,
+          outcome: level === "warn" ? "error" : "success",
+          ...fields,
+        },
+        `Sandbox lifecycle event: ${operation}`,
+      );
+    } catch {
+      // Observability logging must never affect sandbox lifecycle state transitions.
+    }
   }
 
   #toStatus(row: typeof sandboxes.$inferSelect): AccountSandboxRunnerStatusResponse {

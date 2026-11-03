@@ -4,9 +4,9 @@ import { useCallback, useEffect, useState } from "react";
 import { ApiError, browserApi } from "../../api.js";
 import { forgetReboardReview, isReboardReviewFor } from "../../internal/reboard-review.js";
 import { AgentSetupSurface } from "../../onboarding-v2/page.js";
+import { SetupLogo } from "../../onboarding-v2/setup-logo.js";
 import * as m from "../../paraglide/messages.js";
 import { Button, Loader, Text } from "../../ui/design-system.js";
-import { OpenTagLogo } from "../../ui/opentag-logo.js";
 import { AgentAvatar } from "../agents/agent-avatar.js";
 import { agentDetailLink } from "../agents/agent-routes.js";
 import { Redirect } from "../navigation/redirect.js";
@@ -14,6 +14,22 @@ import { useAccount } from "../session/session-context.js";
 import { AccountSignOut } from "../session/sign-out-button.js";
 import { AccountMenu } from "../shell/account-menu.js";
 import { useInAppShell } from "../shell/shell-context.js";
+
+/**
+ * The logo returns to the Agent list wherever setup offers a way out. Phones show the mark alone,
+ * as the compact account rail does, so the logo, Back to Agents, and the Account menu share one row.
+ */
+function BrandHome() {
+  return (
+    <Link
+      aria-label={m.onboarding_v2_brand_name()}
+      className="inline-flex rounded-sm focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-kumo-brand"
+      to="/agents"
+    >
+      <SetupLogo />
+    </Link>
+  );
+}
 
 /** An exact setup target is a uuid; anything else can never name an Agent and fails closed. */
 const AGENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -283,6 +299,7 @@ function TargetedAgentSetup({
         agentId={resolution.agentId}
         key={resolution.agentId}
         onAdopt={onAdopt}
+        onBackToAgents={onBackToAgents}
         onOpenAgent={onOpenAgent}
         onReviewFinished={onReviewFinished}
         onTargetInvalidated={retryResolution}
@@ -295,6 +312,7 @@ function TargetedAgentSetup({
   return (
     <AgentSetupSurface
       accountControl={<AccountMenu placement="page" />}
+      brandControl={accountCompleted ? <BrandHome /> : undefined}
       existingAgentNames={resolution.existingAgentNames}
       onBackToAgents={accountCompleted ? onBackToAgents : undefined}
       onAgentAvailable={onTarget}
@@ -313,6 +331,7 @@ function ExactAgentSetup({
   accountCompleted,
   agentId,
   onAdopt,
+  onBackToAgents,
   onOpenAgent,
   onReviewFinished,
   onTargetInvalidated,
@@ -322,6 +341,7 @@ function ExactAgentSetup({
   accountCompleted: boolean;
   agentId: string;
   onAdopt: (agentId: string) => Promise<void>;
+  onBackToAgents: () => Promise<void>;
   onOpenAgent: (agentId: string) => Promise<void>;
   onReviewFinished: (agentId: string) => Promise<void>;
   onTargetInvalidated: () => void;
@@ -394,14 +414,8 @@ function ExactAgentSetup({
     <AgentSetupSurface
       accountControl={<AccountMenu placement="page" />}
       agentId={agentId}
-      brandControl={
-        <Link
-          className="inline-flex rounded-sm focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-kumo-brand"
-          to="/agents"
-        >
-          <OpenTagLogo label={m.onboarding_v2_brand_name()} />
-        </Link>
-      }
+      brandControl={<BrandHome />}
+      onBackToAgents={() => void onBackToAgents()}
       onOpenAgent={() => onOpenAgent(agentId)}
       onReady={reviewMode ? onReviewFinished : undefined}
       reviewMode={reviewMode}

@@ -3,6 +3,7 @@ import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
+import { createPerformanceLogger, type PerformanceLogger } from "../observability/performance-logger.js";
 import { RuntimeCapabilityStore } from "../runtime-credentials/capability-store.js";
 import {
   type RuntimeConnectionFence,
@@ -139,6 +140,7 @@ async function setup(
   adapter: ProviderProxyAdapter,
   options: {
     logger?: { warn(record: Record<string, unknown>, message: string): void };
+    performanceLogger?: PerformanceLogger;
     connectionFence?: RuntimeConnectionFence;
     brokerConnectionFence?: RuntimeConnectionFence;
     cloud?: boolean;
@@ -205,6 +207,7 @@ async function setup(
     executions,
     ...(options.connectionFence ? { connectionFence: options.connectionFence } : {}),
     ...(options.logger ? { logger: options.logger } : {}),
+    ...(options.performanceLogger ? { performanceLogger: options.performanceLogger } : {}),
     authTimeoutMs: 150,
     revalidateIntervalMs: options.revalidateIntervalMs ?? 60_000,
     ...(options.chunkMaxBytes !== undefined ? { chunkMaxBytes: options.chunkMaxBytes } : {}),
@@ -274,7 +277,18 @@ async function drainBinaryUntilFrame(queue: MessageQueue, type: string): Promise
 
 describe("RuntimeProviderProxyTransport", () => {
   it("authenticates the first-frame ticket and streams a request/response with credits", async () => {
-    const state = await setup(echoAdapter());
+    const perfRecords: Array<Record<string, unknown>> = [];
+    const baseLogger = {
+      debug: (payload: Record<string, unknown>) => perfRecords.push(payload),
+      info: (payload: Record<string, unknown>) => perfRecords.push(payload),
+      warn: (payload: Record<string, unknown>) => perfRecords.push(payload),
+      error: (payload: Record<string, unknown>) => perfRecords.push(payload),
+    };
+    const performanceLogger = createPerformanceLogger(
+      () => baseLogger as unknown as Parameters<typeof createPerformanceLogger>[0] extends () => infer R ? R : never,
+      { enabled: true, level: "debug", slowThresholdMs: 1_000 },
+    );
+    const state = await setup(echoAdapter(), { performanceLogger });
     const { ticket } = state.tickets.issue({
       executionId: state.record.executionId,
       computerId: COMPUTER,
@@ -296,6 +310,92 @@ describe("RuntimeProviderProxyTransport", () => {
     expect(chunk.data.subarray(0, 4).readUInt32BE(0)).toBe(7);
     expect(chunk.data.subarray(4).toString("utf8")).toBe("HELLO");
     expect(await queue.nextJson()).toEqual({ type: "end", streamId: 7 });
+    expect(perfRecords).toContainEqual(
+      expect.objectContaining({
+        module: "runtime-provider-proxy",
+        perfCategory: "ws",
+        operation: "ws.provider_proxy.stream",
+        outcome: "completed",
+        provider: "slack",
+        statusCode: 200,
+        requestBytes: 5,
+        responseBytes: 5,
+        firstByteMs: expect.any(Number),
+      }),
+    );
+    socket.close();
+  });
+
+  it("settles a cancelled stream as failed rather than completed when the upstream generator settles after cancel", async () => {
+    const perfRecords: Array<Record<string, unknown>> = [];
+    const baseLogger = {
+      debug: (payload: Record<string, unknown>) => perfRecords.push(payload),
+      info: (payload: Record<string, unknown>) => perfRecords.push(payload),
+      warn: (payload: Record<string, unknown>) => perfRecords.push(payload),
+      error: (payload: Record<string, unknown>) => perfRecords.push(payload),
+    };
+    const performanceLogger = createPerformanceLogger(
+      () => baseLogger as unknown as Parameters<typeof createPerformanceLogger>[0] extends () => infer R ? R : never,
+      { enabled: true, level: "debug", slowThresholdMs: 1_000 },
+    );
+    let releaseGenerator!: () => void;
+    const generatorWaiting = new Promise<void>((resolve) => {
+      releaseGenerator = resolve;
+    });
+    let generatorFinished!: () => void;
+    const generatorSettled = new Promise<void>((resolve) => {
+      generatorFinished = resolve;
+    });
+    const waitingAdapter: ProviderProxyAdapter = {
+      handle: async () => ({
+        status: 200,
+        headers: { "content-type": "text/plain" },
+        body: {
+          [Symbol.asyncIterator]: () => ({
+            async next() {
+              try {
+                await generatorWaiting;
+                return { done: true as const, value: undefined };
+              } finally {
+                generatorFinished();
+              }
+            },
+          }),
+        },
+      }),
+    };
+    const state = await setup(waitingAdapter, { performanceLogger });
+    const { ticket } = state.tickets.issue({
+      executionId: state.record.executionId,
+      computerId: COMPUTER,
+      instanceId: "instance-1",
+      connectionId: "connection-1",
+    });
+    const { socket, queue } = await connect(state.port, ticket);
+    expect(await queue.nextJson()).toEqual({ type: "ready", executionId: state.record.executionId });
+    socket.send(openFrame(7, state.grant.token, "/api/chat.postMessage"));
+    socket.send(JSON.stringify({ type: "end", streamId: 7 }));
+    const response = await queue.nextJson();
+    expect(response).toMatchObject({ type: "response", streamId: 7, status: 200 });
+    socket.send(JSON.stringify({ type: "cancel", streamId: 7 }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    releaseGenerator();
+    await generatorSettled;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const terminalRecords = perfRecords.filter(
+      (record) => record.operation === "ws.provider_proxy.stream" && record.outcome !== "started",
+    );
+    expect(terminalRecords).toHaveLength(1);
+    expect(terminalRecords[0]).toMatchObject({
+      module: "runtime-provider-proxy",
+      perfCategory: "ws",
+      operation: "ws.provider_proxy.stream",
+      outcome: "failed",
+      errorCode: "cancelled",
+      provider: "slack",
+      statusCode: 200,
+    });
     socket.close();
   });
 

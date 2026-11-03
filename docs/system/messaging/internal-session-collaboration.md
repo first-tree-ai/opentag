@@ -70,10 +70,7 @@ receive role-aware managed instructions and may create further internal Sessions
 
 Local and Cloud use the same managed system-prompt renderer and Session context interface. Shared Session behavior is
 defined once; workspace persistence, isolation, and Context Tree facts are rendered for the execution environment.
-Visible Sessions add one emoji reaction meaning "received, working on it" to the original user message before starting
-a lengthy user task (for example, Feishu OnIt or the provider's equivalent). Approval or completion reactions such as
-thumbs-up or check marks must not be used. The reaction is skipped only for duplicate acknowledgments and observer
-deliveries. Internal Sessions report to their coordinator and do not publish to IM.
+For eligible human IM inputs, the Server owns the working reaction and terminal error-card projection, including durable cleanup and safe recovery. Visible Sessions keep normal progress silent and publish their final result through the provider CLI. Observer copies and internal Sessions do not publish IM reactions or replies for that input. See [IM feedback and recovery](im-feedback.md) for eligibility, batching, failure handling, and recovery authority.
 
 openTag internal Sessions are distinct from Provider-native subagents. When a person explicitly requests an openTag
 internal Session, the visible Session uses `opentag session create` rather than substituting a Provider-native subagent.

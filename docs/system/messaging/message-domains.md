@@ -63,12 +63,11 @@ even when ingress arrives out of order. Late-root thread backfills process the l
 that same order and apply the same suppression rule. Ingress uses the same Agent custody advisory fence
 as delivery claims before making this decision.
 
-After inbound commit, new input requests a projection through the existing provider warning reaction. A Session
-with at least ten eligible pending inputs can mark the new message as backlogged; a capacity-expired message can
-receive the existing terminal-failure marker. These provider calls run outside the transaction and do not reject an
-already committed ingress. Reaction scheduling is bounded and best-effort: provider errors, saturation, process
-restarts and multiple Server instances can still leave missing or stale markers. This projection adds no text
-notification, persistent notification queue or additional retry layer. A marker alone is not a delivery receipt.
+Eligible direct human inputs receive durable Server-owned task feedback: a working reaction after custody acceptance,
+terminal cleanup, and a sanitized error card on failure. Queued input alone creates no backlog reaction or progress
+message. See [IM task feedback and safe recovery](im-feedback.md) for eligibility, native provider differences,
+Account confirmation, explicit retry identity, unknown-send reconciliation, and retention. A reaction alone is not a
+delivery receipt.
 
 ## Durable inbound receipt work
 
@@ -134,7 +133,8 @@ that a previous Server already lost.
 Agent runtimes send human-visible messages by calling the official Feishu or
 Slack CLI directly (see [Direct provider CLI messaging](direct-provider-cli.md)).
 Provider-native text, cards, Blocks, files, threads, and reactions remain
-provider concerns; openTag exposes no hosted send, reply, or reaction API.
+provider concerns; openTag exposes no general hosted send, reply, or reaction API. The Server-owned
+[task feedback surface](im-feedback.md) is a bounded exception for reactions and terminal error cards.
 
 Provider CLI calls pass through the Server's provider proxy. When a registered
 send or reply operation succeeds there, openTag captures the platform-confirmed

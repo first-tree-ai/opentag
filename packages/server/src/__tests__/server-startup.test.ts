@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ImFeedbackActionsService } from "../services/im/im-feedback-actions.js";
 import { closeServerResources, startClosingServerResources } from "../shutdown.js";
 
 const state = vi.hoisted(() => ({
@@ -417,6 +418,7 @@ function defaultConfig() {
 beforeEach(() => {
   vi.clearAllMocks();
   state.schedulerStop.mockReset();
+  state.workerStop.mockReset();
   state.loadCloudBilling.mockReset().mockResolvedValue(undefined);
   state.shutdownTelemetry.mockReset().mockResolvedValue(undefined);
   state.events.length = 0;
@@ -1031,5 +1033,23 @@ it.each([false, true])("joins pending listen before signal cleanup (stop failure
   } finally {
     release();
     await starting;
+  }
+});
+
+it("joins feedback actions after producer shutdown and before the pool", async () => {
+  const feedbackClose = vi.spyOn(ImFeedbackActionsService.prototype, "close").mockImplementation(async () => {
+    state.events.push("feedback:close");
+  });
+  try {
+    await startServer();
+    const options = state.appOptions as { beginShutdown(): Promise<void> };
+    await options.beginShutdown();
+    expect(feedbackClose).not.toHaveBeenCalled();
+    await (state.app as { close(): Promise<void> }).close();
+    expect(feedbackClose).toHaveBeenCalledOnce();
+    expect(state.events.indexOf("feedback:close")).toBeGreaterThan(state.events.indexOf("feishu-connections:stop"));
+    expect(state.events.indexOf("sql:end")).toBeGreaterThan(state.events.indexOf("feedback:close"));
+  } finally {
+    feedbackClose.mockRestore();
   }
 });

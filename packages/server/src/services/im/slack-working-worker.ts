@@ -48,6 +48,7 @@ export class SlackWorkingWorker {
       token(target: WorkingTarget): Promise<string | undefined>;
       api: Pick<DefaultSlackApiClient, "setThreadStatus">;
       logger?: Pick<ServiceLogger, "warn">;
+      clearOnly?: boolean;
     },
   ) {}
 
@@ -92,7 +93,7 @@ export class SlackWorkingWorker {
       await this.options.store.settle(target, { working: false, delayMs: 0, disabled: true });
       return;
     }
-    const working = await this.options.store.desired(target);
+    const working = this.options.clearOnly ? false : await this.options.store.desired(target);
     if (!(await this.options.store.ownsClaim(target))) return;
     try {
       // Always clear an unknown projection, including a process crash after a successful API call.

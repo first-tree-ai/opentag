@@ -46,6 +46,7 @@ import {
   agentImBindingHandoffPath,
   agentImBindingPath,
   agentImBindingUnbindPath,
+  agentImFeedbackPath,
   agentMcpAuthorizationOAuthPath,
   agentMcpAuthorizationPath,
   agentMcpProbePath,
@@ -126,6 +127,11 @@ import {
   type ImBindingSummary,
   ImBindingSummarySchema,
   type ImBindingUnbindRequiredDetail,
+  type ImFeedbackActionRequest,
+  type ImFeedbackList,
+  ImFeedbackListSchema,
+  type ImFeedbackView,
+  ImFeedbackViewSchema,
   type InstallRemoteSkillsResponse,
   InstallRemoteSkillsResponseSchema,
   type InstallSkillPresetResponse,
@@ -134,6 +140,8 @@ import {
   InternalNavigationVisibilitySchema,
   imBindingDiagnosticsPath,
   imBindingDisablePath,
+  imFeedbackActionsPath,
+  imFeedbackPath,
   type ListAccountComputersResponse,
   ListAccountComputersResponseSchema,
   type ListAgentMCPServersResponse,
@@ -798,6 +806,22 @@ export class BrowserApi {
       method: "PUT",
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
       body: JSON.stringify({}),
+    });
+  }
+
+  imFeedbackList(agentId: string, cursor?: string): Promise<ImFeedbackList> {
+    return this.request(agentImFeedbackPath(agentId, cursor), ImFeedbackListSchema);
+  }
+
+  imFeedback(feedbackId: string): Promise<ImFeedbackView> {
+    return this.request(imFeedbackPath(feedbackId), ImFeedbackViewSchema);
+  }
+
+  imFeedbackAction(feedbackId: string, input: ImFeedbackActionRequest): Promise<ImFeedbackView> {
+    return this.request(imFeedbackActionsPath(feedbackId), ImFeedbackViewSchema, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...this.csrfHeaders() },
+      body: JSON.stringify(input),
     });
   }
 

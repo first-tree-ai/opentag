@@ -1706,7 +1706,9 @@ export class CloudTurnRunner {
     if (this.#active?.entryKey === entry.deliveryId && steering) this.#active.steering = steering;
     const openExecution =
       this.#options.openExecution ?? ((input: CloudTurnExecutionOpenInput) => this.#openBridgeExecution(input));
+    const openStartedAtMs = Date.now();
     const execution = await openExecution({ delivery, scope, turnId: entry.turnId, signal });
+    const credentialOpenMs = Math.max(0, Date.now() - openStartedAtMs);
     try {
       // The credential bridge is open, but the worker has not started; close it without calling
       // the worker when a stop or grant revocation landed during the open.
@@ -1725,7 +1727,7 @@ export class CloudTurnRunner {
       });
       const timeoutMs = turnTimeoutMs(delivery, Date.now()) + CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS;
       this.#activity.start(delivery, entry.turnId);
-      return await this.#runWorker({ stdin, timeoutMs }, signal, execution, {
+      return await this.#runWorker({ stdin, timeoutMs, credentialOpenMs }, signal, execution, {
         ...scope,
         turnId: entry.turnId,
         deliveryId: delivery.deliveryId,
@@ -1841,7 +1843,9 @@ export class CloudTurnRunner {
     const openExecution =
       this.#options.openSessionExecution ??
       ((input: CloudSessionExecutionOpenInput) => this.#openSessionBridgeExecution(input));
+    const openStartedAtMs = Date.now();
     const execution = await openExecution({ message, scope, turnId: entry.turnId, signal });
+    const credentialOpenMs = Math.max(0, Date.now() - openStartedAtMs);
     try {
       if (signal.aborted || generation !== this.#channelGeneration) return cancelledBeforeStart();
       const stdin = serializeRunnerCloudSessionWorkerStdin({
@@ -1859,7 +1863,7 @@ export class CloudTurnRunner {
         ...(this.#options.piSessionDirectory ? { piSessionDirectory: this.#options.piSessionDirectory } : {}),
       });
       const timeoutMs = Math.max(1, Date.parse(deadlineAt) - Date.now()) + CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS;
-      return await this.#runWorker({ stdin, timeoutMs }, signal, execution, {
+      return await this.#runWorker({ stdin, timeoutMs, credentialOpenMs }, signal, execution, {
         ...scope,
         turnId: entry.turnId,
         messageId: message.messageId,
@@ -1871,7 +1875,7 @@ export class CloudTurnRunner {
 
   /** Both execution paths use the same transport-failure and completion boundary. */
   async #runWorker(
-    input: { stdin: string; timeoutMs: number },
+    input: { stdin: string; timeoutMs: number; credentialOpenMs?: number },
     signal: AbortSignal,
     execution: CloudTurnExecutionHandle,
     context: PiDiagnosticContext,
@@ -1925,6 +1929,7 @@ export class CloudTurnRunner {
           Boolean(execution.bridgeFailure?.()),
         ),
         execTimeoutMs: input.timeoutMs,
+        ...(input.credentialOpenMs !== undefined ? { credentialOpenMs: input.credentialOpenMs } : {}),
       });
     }
   }

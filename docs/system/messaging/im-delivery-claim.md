@@ -37,6 +37,43 @@ the existing claim marker or recovery lease. Each scan attempts at most eight su
 Pending ingress expiry uses the database clock, as before. The existing dispatch, steer, receipt,
 report, cancellation, retry, and timeout state transitions still apply.
 
+## Accepted receipts awaiting Inbox
+
+A recoverable Slack or Feishu receipt may be acknowledged before its Inbox transaction succeeds.
+Fresh delivery admission waits while the Agent's current binding/generation has receipt work in
+`processing` or `failed` with no matching immutable Inbox event. Active normalization leases and
+retry backoff do not remove this barrier. A matching binding and provider event ID releases the
+barrier even if receipt settlement has not finished; an equal event ID under another binding does not.
+
+Distinct Slack callback event IDs can normalize to one semantic message, including a `message` and
+`app_mention` pair. The duplicate event has no separate Inbox identity, so its receipt releases the
+barrier through normal settlement. If that settlement fails, fresh input waits until receipt recovery
+settles it; semantic deduplication does not authorize dispatch past unresolved receipt work.
+
+Initial recoverable receipt claims and fresh dispatch freezing use the same transaction-scoped Agent
+custody advisory lock as final queue claims. Receipt claims resolve the expected Agent without row
+locks, take that fence, then revalidate and lock the current binding/installation generation before
+inserting. Feishu also rechecks its connection holder, epoch and lease. The dispatch fence precedes
+placement, delivery and Sandbox locks. No provider, model or Cloud I/O occurs under this fence.
+Slack receipt claims lock their route before the installation, matching lifecycle writers.
+
+The selector reads only blocked Agent IDs through two receipt-work projections per batch of at most
+512 Agent identities. The existing partial work indexes exclude completed history; scan cost still
+depends on active receipt work. These fresh hints do not authorize dispatch: final claim and final
+direct/steer freeze recheck under the fence. A receipt arriving between claim and freeze defers the
+new dispatch with `IM_DELIVERY_INBOUND_PENDING` and the existing capped backoff, without a terminal
+state or fabricated report.
+
+The barrier conservatively covers the Agent's other Cloud Sessions as well. Other Agents continue.
+Existing frozen dispatch, acceptance, report replay and acknowledgements continue; a receipt accepted
+after a frozen dispatch linearizes behind it. This protects known accepted work, not completeness of
+unseen provider callbacks or strict cross-entry sender order. A repeatedly failed receipt can delay
+that Agent's fresh input until normal recovery or existing disposition/cleanup releases it. Receipt
+retention, ingress expiry, queue capacity and duplicate suppression keep their existing policies.
+
+There is no schema or persisted-format change. All Server receipt/dispatch writers must use this
+fence for the guarantee; mixed old/new writers or rollback reopen the admission-order gap.
+
 ## Runtime budget and accepted recovery
 
 Message retention is an ingress deadline, not an execution budget. A Local or Cloud Client Turn

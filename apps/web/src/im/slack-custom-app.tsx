@@ -31,7 +31,7 @@ import {
   slackBotConversationUrl,
   slackBotDisplayName,
 } from "./slack-app-manifest.js";
-import { SlackAutoConnect } from "./slack-auto-connect.js";
+import { clearStoredSlackAutoSetup, SlackAutoConnect } from "./slack-auto-connect.js";
 import { slackConfigurationMessage } from "./slack-configuration.js";
 
 export type SlackSetupApi = {
@@ -48,6 +48,7 @@ interface Props {
   bindingId?: string;
   onSaved: () => void;
   onOAuth?: () => void;
+  cloud?: boolean;
   manualOnly?: boolean;
   onDisconnect?: () => void;
   renderTrigger?: (control: {
@@ -69,6 +70,7 @@ function SlackCustomAppFlow({
   bindingId,
   onSaved,
   onOAuth,
+  cloud = false,
   manualOnly = false,
   renderTrigger,
   onDisconnect,
@@ -137,6 +139,7 @@ function SlackCustomAppFlow({
   }
   function finishSave(method: "auto" | "manual" = "manual") {
     if (!mounted.current) return;
+    clearStoredSlackAutoSetup(agentId);
     setSavedMethod(method);
     setAutoResume(false);
     setEditing(undefined);
@@ -218,6 +221,7 @@ function SlackCustomAppFlow({
                 agentId={agentId}
                 view={editing}
                 busy={busy}
+                cloud={cloud}
                 manualOnly={manualOnly}
                 automatic={editing.allowedIntent === "create" || autoResume}
                 onBusy={setBusy}
@@ -430,6 +434,7 @@ function SlackSetupEditor({
   agentId,
   view,
   automatic,
+  cloud = false,
   manualOnly,
   busy,
   onBusy,
@@ -441,6 +446,7 @@ function SlackSetupEditor({
   view: SlackConfigurationView;
   api: SlackSetupApi;
   automatic: boolean;
+  cloud?: boolean;
   manualOnly: boolean;
   busy: boolean;
   onBusy: (busy: boolean) => void;
@@ -463,6 +469,7 @@ function SlackSetupEditor({
           footerAction={footerAction}
           api={api}
           agentId={agentId}
+          cloud={cloud}
           resume={view.allowedIntent !== "create"}
           hidden={manual}
           onBusy={onBusy}

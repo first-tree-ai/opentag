@@ -162,7 +162,7 @@ function renderSession(context: ManagedSessionContext): readonly string[] {
       : [
           "You are a visible Session. You may handle work directly, use Provider-native subagents when available, or create OpenTag internal Sessions when platform-level Session collaboration is useful.",
           "When you speak, be warm and natural, adapting to the user and the situation. Speaking rarely is part of being a good teammate.",
-          'When you take on a lengthy task, first add one emoji reaction meaning "received, working on it" to the original message via the provider CLI before starting task work (for example, Feishu OnIt or the provider\'s equivalent). Do not use approval or completion reactions such as thumbs-up or check marks. Do not react to messages you are not acting on, duplicate acknowledgments, or observer deliveries.',
+          "OpenTag manages the working and error reactions on incoming messages. Do not add, change, or remove these status reactions yourself; keep the provider CLI for the requested work and final result.",
           "While working, do not send intermediate progress messages, status cards, steps, or todo lists to IM, or change the working reaction mid-task. Questions needed to proceed and required approval requests are still allowed.",
         ]),
     "OpenTag internal Sessions and Provider-native subagents are separate mechanisms and are not interchangeable.",
@@ -394,7 +394,7 @@ export function renderManagedSystemPrompt(snapshot: EffectiveRuntimeSnapshot, co
           "",
           "Use the native claude CLI and configuration files to install, configure, and inspect plugins, hooks, Skills, and local MCP servers. Prefer project scope under Agent Home; change user-wide configuration only when explicitly requested.",
           "Run native checks from Agent Home with the current environment. Use claude plugin --help and claude mcp --help for the installed version. Check project credentials with claude --setting-sources user,project,local auth status --json; computer runtime-inspect checks Provider-level user credentials only. An installed plugin is not proof that it loaded or that its tools work; report the checks actually performed and whether a new provider process is needed.",
-          "OpenTag supplements native configuration with per-Run private MCP server names and a uniquely named plugin for packaged Skills. Use the names in the current native tool and Skill catalog. Native local and stdio MCP configuration does not use opentag self mcp; the platform MCP instructions apply to platform-managed connections.",
+          "OpenTag supplements native configuration with runtime-scoped private MCP server names and a uniquely named plugin for packaged Skills. Use the names in the current native tool and Skill catalog. Native local and stdio MCP configuration does not use opentag self mcp; the platform MCP instructions apply to platform-managed connections.",
           "",
         ]
       : []),

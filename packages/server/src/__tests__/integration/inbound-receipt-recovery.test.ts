@@ -321,6 +321,7 @@ it.each(["message", "app_mention"] as const)(
   "recovers interrupted twin-event settlement with %s first without duplicating its input",
   async (firstType) => {
     const f = await fixture();
+    const ingest = vi.spyOn(f.inbox, "ingest");
     const app = f.app();
     const envelope = (type: "message" | "app_mention", eventId: string) => ({
       ...f.event,
@@ -355,6 +356,8 @@ it.each(["message", "app_mention"] as const)(
       const twin = envelope(firstType === "message" ? "app_mention" : "message", "Ev_TWIN");
       expect((await f.send(app.server, twin)).statusCode).toBe(200);
       await expect.poll(async () => (await twinReceipt()).status).toBe("failed");
+      expect(ingest).toHaveBeenCalledTimes(2);
+      await expect(ingest.mock.results[1]?.value).resolves.toMatchObject({ duplicate: true, messageId: original.id });
       expect(await f.client.database.select().from(imMessages)).toHaveLength(1);
       expect(await f.client.database.select().from(imMessageDeliveries)).toHaveLength(1);
       expect((await twinReceipt()).workPayload).not.toBeNull();

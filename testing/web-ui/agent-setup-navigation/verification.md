@@ -171,7 +171,4 @@ header's Back to agent opened the unfinished Agent's overview and appeared not t
 row at every width, the logo shows only its mark on phones, there is no horizontal overflow, and the exit lands on
 the Agent list, where the unfinished Agent offers Continue setup.
 
-- [Before, desktop](back-to-agents-before-1440.png) and [after, desktop](back-to-agents-after-1440.png)
-- [Before, 390px](back-to-agents-before-390.png), [after, 390px](back-to-agents-after-390.png), and
-  [after, 320px](back-to-agents-after-320.png)
-- [Landing on the Agent list](back-to-agents-landing-1440.png)
+Before and after screenshots at each width were reviewed from the local sandbox run and are not committed.

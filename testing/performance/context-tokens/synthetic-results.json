@@ -15,9 +15,9 @@
     {
       "environment": "local",
       "provider": "claude-code",
-      "utf8Bytes": 24040,
-      "utf16CodeUnits": 24006,
-      "roughEnglishTokens": 6002,
+      "utf8Bytes": 24047,
+      "utf16CodeUnits": 24013,
+      "roughEnglishTokens": 6004,
       "sections": [
         {
           "section": "# OpenTag managed instructions",
@@ -27,9 +27,9 @@
         },
         {
           "section": "## Native Claude configuration",
-          "utf8Bytes": 1054,
-          "utf16CodeUnits": 1054,
-          "roughEnglishTokens": 264
+          "utf8Bytes": 1061,
+          "utf16CodeUnits": 1061,
+          "roughEnglishTokens": 266
         },
         {
           "section": "## Platform",
@@ -411,10 +411,12 @@
     "identical": false
   },
   "localRevisionHashChanged": true,
-  "claudeNamespaceChange": {
-    "pluginIdentityChanged": true,
-    "gatewayNamespaceChanged": true,
-    "skillContentUnchanged": true
+  "claudeNamespaceContinuity": {
+    "pluginIdentityStable": true,
+    "gatewayNamespaceStable": true,
+    "skillContentUnchanged": true,
+    "privatePathsChanged": true,
+    "differentRuntimeIdentityChanged": true
   },
   "usageExamples": [
     {

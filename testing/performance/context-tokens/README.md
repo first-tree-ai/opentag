@@ -4,10 +4,12 @@ Issue: [#1121](https://github.com/first-tree-ai/opentag/issues/1121). Source bas
 `bb1d4e104d5577173ef237e2111bc48777acb0d9` (2026-11-03).
 Contract: [Agent Runtime](../../../docs/system/runtime/agent-runtime-contract.md#context-composition-and-token-interpretation).
 
-**PARTIAL:** source inspection and an offline synthetic reproduction are complete. No new-release
+**PARTIAL:** source inspection and offline synthetic reproduction are complete; the approved
+runtime-scoped Claude namespace optimization is implemented. No new-release
 real Session sample was supplied or retrieved. The original user's cost regression, cache hit rate,
-and savings remain unproven. No production behavior, history, persistence, billing, or logs change
-in this audit. No provider/model API, real IM task, deployment, or online database was used.
+and savings remain unproven. Only Claude's private namespace lifetime changes; history, persistence,
+billing, credentials' execution scope, and logs do not change. No external provider/model API, real
+IM task, deployment, or online database was used.
 
 ## Reproduce
 
@@ -20,7 +22,7 @@ The [harness](../../../scripts/performance/context-token-audit.mts) calls the re
 and IM-input builders and Claude bridge with synthetic
 identities, a synthetic Skill, and an `.invalid` gateway. It creates private temporary files, opens
 no listener, makes no HTTP request, starts no provider, and removes its files on exit. It asserts
-prompt stability, repeated Session instructions, namespace churn, and provider total-token rules.
+prompt stability, repeated Session instructions, runtime namespace continuity/isolation, and provider total-token rules.
 [synthetic-results.json](synthetic-results.json) records its output. Random names and temporary
 paths are represented by comparison booleans; raw configuration and credentials are not emitted.
 
@@ -53,7 +55,7 @@ then sum only the calls owned by that Turn. A single total cannot establish repe
 | IM history supplement | `loadDirectHistory` selects prior IM messages after the previous accepted/steered boundary, with thread-root handling, deduplication, a 100-item and 40 KiB budget. | It is not the full provider transcript. Thread roots follow the same acceptance boundary; queued/ambient messages may be new to the model. |
 | Context Tree | `prepareContextTree` / Cloud preparation supplies location/status/guidance; the Agent reads relevant pages with tools. | Cloud's system text contains ready Tree commit (first 12 hex digits), path, and availability. A changed value can rewrite the prefix before history; sync itself does not inject all pages. |
 | Skills | Native metadata/catalog plus explicit body/resource reads. Claude wraps packaged Skills in a native plugin and skips already-native Skill directories. | Catalog names, descriptions, locations and order may affect the prompt. Skill body reads remain in native history until compaction. |
-| MCP | Native catalog, tool description/schema or Pi proxy discovery, followed by tool calls/results. | Claude private names change per Run; Codex private name changes per runtime creation; Pi Local private registration is randomized, while Cloud uses `opentag-mcp`. Credentials and endpoints belong to execution configuration, not an instruction to put secrets in model context. |
+| MCP | Native catalog, tool description/schema or Pi proxy discovery, followed by tool calls/results. | Claude private names are stable within one runtime; a new runtime selects new names. Codex private name changes per runtime creation; Pi Local private registration is randomized, while Cloud uses `opentag-mcp`. Credentials and endpoints belong to execution configuration, not an instruction to put secrets in model context. |
 | Collaboration / schedules | `buildSessionMessageInput`, including schedule metadata where supplied. | Different envelope from ordinary IM. The numeric fixture below covers visible IM only. |
 
 Source owners: `packages/client/src/runtime/{managed-instructions,agent-turn-runner,session-message-inbox}.ts`,
@@ -88,7 +90,7 @@ Platform/Agent text, a 67-character Session instruction, no ambient resources or
 
 | Managed prompt only | Exact UTF-8 bytes | Rough English tokens |
 | --- | ---: | ---: |
-| Local Claude Code | 24,040 | 6,002 |
+| Local Claude Code | 24,047 | 6,004 |
 | Local Codex | 24,100 | 6,017 |
 | Local Pi | 22,986 | 5,738 |
 | Cloud Pi | 22,023 | 5,499 |
@@ -111,12 +113,13 @@ from this character offset.
 1. **Confirmed repeated instruction:** nonempty `instructions.session` occurs in the system prompt
    and each ordinary IM input. Size grows with user Session instructions and Turn count. Repeating
    text in an appended message is extra context, but does not prove all older input is uncached.
-2. **Confirmed naming churn:** two calls to the real Claude bridge with the same Skill and gateway
-   produce different plugin identities and gateway namespaces, with identical Skill bodies. The
-   runtime calls this bridge for every Run. Existing bridge tests explicitly require unique Run
-   names to avoid native-plugin collisions. This is a candidate cause of catalog/prefix churn,
-   **not proof of a cache miss in the affected user's native request**. Claude's final catalog and
-   actual cache counters were not captured.
+2. **Baseline naming churn, removed within a runtime:** the source baseline generated new plugin
+   identities and gateway namespaces for every Run, even with identical Skills and gateway
+   capabilities. The approved fix creates the names once per `ClaudeCodeAgentRuntime` and passes
+   them to every bridge. The harness now confirms equal names and Skill bodies, distinct temporary
+   paths across bridges, and distinct names for another runtime. This removes one catalog-change
+   source, **not proof of a cache hit or savings in the affected user's native request**. Private
+   temporary paths, native catalog contents, and other request components can still change.
 3. **Confirmed fixed prompt size:** managed instructions alone have the sizes above. This is a
    measurable optimization target, not evidence that all these tokens are charged at uncached
    rates each Turn.
@@ -126,7 +129,7 @@ from this character offset.
    new processing timestamp to that system prompt.
 5. **Not established:** a universal failure to resume, repeated injection of the entire Tree,
    abnormal cache hit rates, a billing overcharge, the reported user's root cause, or a savings
-   percentage. No runtime optimization is implemented before the gated design decision below.
+   percentage. Only optimization A below is implemented; B–D remain proposals.
 
 ## Usage normalization and billing
 
@@ -182,18 +185,19 @@ of this public repository. Prefer aggregate sizes and semantic equality markers 
 No new collection, stored hashes, logging fields, SQL path, retention policy, or model experiment is
 approved by this protocol; any such design needs separate human confirmation.
 
-## Reviewable optimization proposals (not implemented)
+## Optimization A and remaining proposals
 
-**A — stabilize Claude names within one runtime lifetime (recommended first).** Allocate the
-private plugin/server identity once in `ClaudeCodeAgentRuntime`, then pass it to each Run bridge.
-Keep temporary paths, loopback ports, credentials and cleanup scoped to each Run. Each runtime
-still receives a distinct identity, and a restart can choose a new one. Native user/plugin/MCP
-configuration remains additive; no fixed global name is reserved. No schema, persisted namespace,
-binding, history, retention, permissions, or gateway authorization changes. This changes native
-catalog identity across Turns and needs explicit approval before implementation. Verify same
-runtime/same catalog yields stable names, concurrent runtimes remain isolated, token rotation and
-failed-run cleanup work, and native Skills/tool names still resolve. Exact cache savings remain a
-separate acceptance test.
+**A — stabilize Claude names within one runtime lifetime (approved and implemented).** The
+private plugin/server identity is allocated once in `ClaudeCodeAgentRuntime` and passed to each
+Run bridge. Temporary paths, loopback ports, credentials and cleanup remain scoped to each Run.
+Each runtime receives a distinct identity; resuming a saved binding in a new runtime chooses new
+names. Native user/plugin/MCP configuration remains additive; no fixed global name is reserved.
+No schema, persisted namespace, binding, history, retention, permissions, or gateway authorization
+changes. Regression tests check stable names, fresh credentials and ports, rejection of another
+bridge's credential, independent cleanup, unchanged binding content, new names after resume, and
+cleanup after spawn failure. The native-process fixture checks actual tool and packaged-Skill names
+across two Runs with different gateway credentials using a loopback model fixture. Exact provider
+cache behavior, real-model output quality, and savings remain separate acceptance work.
 
 **B — one authoritative copy of Session instructions.** After approval, keep Session instructions
 in the managed native system prompt and remove the ordinary IM duplicate. Preserve dynamic
@@ -221,7 +225,7 @@ no separate Claude namespace or Session-instruction deduplication work item. Pro
 
 | Candidate | Scope / gate | Existing ownership |
 | --- | --- | --- |
-| A: stable Claude runtime catalog identity | The in-memory design above; needs approval; first implementation candidate. | #1121, this audit's owner. |
+| A: stable Claude runtime catalog identity | Approved in-memory design implemented with offline/native-fixture regression. | #1121, same PR owner. |
 | B: remove duplicate Session instructions | Instruction placement and all input paths; needs approved semantics. | #1121, retain as proposal until A/sample results clarify priority. |
 | Real sample analysis | Existing authorized post-release exports; no new collection. | #1121 remains open and PARTIAL. |
 | Cloud stages and latency metrics | Do not recreate measurement framework. | #1108 / PR #1115, separate owner. |
@@ -235,13 +239,18 @@ the deduplication snapshot is not a permanent claim that no duplicate exists.
 ## Validation
 
 - Offline harness and its TypeScript check pass; all recorded measurements are synthetic.
-- Ten existing targeted Client suites pass (316 tests): managed instructions, IM input, Session
+- The baseline audit's ten targeted Client suites passed (316 tests): managed instructions, IM input, Session
   manager/bindings, Cloud continuity/worker, Claude bridge, and Claude/Codex/Pi adapters. The first
   attempt needed the Shared package build in this fresh checkout; the rerun passes.
 - `pnpm check` passes with existing baseline warnings. The harness lives under `scripts/`, matching the
   existing tooling scope excluded from runtime patch coverage; it is formatted, executed and typechecked.
-- Application builds, the full regression matrix, Agent Runtime coverage and PostgreSQL integration
-  were not run: no shipped runtime implementation, covered tests, schemas, dependencies, or database
-  behavior changed. The Shared build only supplies package exports for the existing Client tests.
+- After optimization A, the focused Claude/prompt suites pass (113 tests), Client and harness
+  TypeScript checks pass, and the synthetic output is regenerated for runtime namespace continuity.
+- Client build and the native loopback fixture pass with Claude Code 2.1.210. Agent Runtime coverage
+  passes all 821 tests across 32 suites, with 100% statements, branches, functions, and lines.
+  One native fixture attempt had a Session lookup failure; an unchanged rerun passed. See the
+  [native fixture record](../../verification/claude-native-plugins.md#runtime-namespace-regression).
+  No database behavior changes; PostgreSQL integration and the full repository regression matrix
+  remain CI's responsibility.
 - No live model/IM/cache-cost acceptance, new-release Session sample, deployment, merge, or billing
   reconciliation. The original Issue is not closed by this evidence PR.

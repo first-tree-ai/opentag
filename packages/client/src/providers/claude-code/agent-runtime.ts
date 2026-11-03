@@ -42,7 +42,11 @@ import {
 import { createLogger } from "../../observability/logger.js";
 import { claudePermissionRules } from "../native-permissions.js";
 import { probeClaudeEnvironmentCredential } from "./credential-probe.js";
-import { type ClaudeCodeHostedToolBridge, startClaudeCodeHostedToolBridge } from "./hosted-tool-bridge.js";
+import {
+  type ClaudeCodeHostedToolBridge,
+  createClaudeCodeBridgeIdentity,
+  startClaudeCodeHostedToolBridge,
+} from "./hosted-tool-bridge.js";
 import {
   ClaudeCodeProcess,
   type ClaudeCodeProcessClient,
@@ -166,6 +170,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   readonly #hostedTools?: AgentHostedTools;
   readonly #skillPaths: readonly string[];
   readonly #startHostedToolBridge: typeof startClaudeCodeHostedToolBridge;
+  readonly #bridgeIdentity = createClaudeCodeBridgeIdentity();
   readonly #systemPrompt: string;
   readonly #textBlocks = new Map<string, TextBlockState>();
   readonly #tools = new Map<string, ToolState>();
@@ -236,6 +241,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
           this.#skillPaths,
           mcpGateway,
           this.#cwd,
+          this.#bridgeIdentity,
         );
         process = this.#createProcess(this.#arguments(request, hostedToolBridge));
       } catch (error) {

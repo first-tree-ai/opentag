@@ -16,13 +16,14 @@ native configuration and commands, preferably at project scope under the existin
 Provider homes, native login, and Session history locations stay unchanged. Global settings retain
 their native scope; project directories do not isolate them.
 Claude discovers synced project Skills natively. External packaged Skills, including Context Tree
-Skills, are linked into a private plugin with a fresh explicit `opentag-<random-id>` name per Run,
-without linking project Skills a second time. Skill names use that Run's namespace, as listed in
+Skills, are linked into a private plugin with a fresh explicit `opentag-<random-id>` name per runtime,
+without linking project Skills a second time. Skill names use that runtime's namespace, as listed in
 the native catalog. Unavailable external Skills are skipped. Skills retain native metadata
 and original resources; edits remain visible during a run. Claude honors
 skill `allowed-tools` grants, which can pre-approve commands otherwise subject to approval. Approvals
 are practical guardrails, not isolation from writable skills or approval-free file reads and uploads.
-OpenTag's supplementary temporary MCP configuration uses fresh service names per Run, keeping
+OpenTag's supplementary temporary MCP configuration uses runtime-scoped service names with fresh
+execution credentials per Run, keeping
 platform tools and their grant rules separate from native user servers. The gateway name stays
 short enough to preserve its original tool-name budget. Native plugins and hooks execute as trusted local code and can run outside tool
 approvals, and a model-written project configuration can enable them on the next Run. The inherited

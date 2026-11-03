@@ -11,7 +11,10 @@ import {
   runtimeUsageTotalTokens,
 } from "@opentag/shared";
 // biome-ignore-end lint/correctness/noUndeclaredDependencies: End the source-resolved tooling import.
-import { startClaudeCodeHostedToolBridge } from "../../packages/client/src/providers/claude-code/hosted-tool-bridge.js";
+import {
+  createClaudeCodeBridgeIdentity,
+  startClaudeCodeHostedToolBridge,
+} from "../../packages/client/src/providers/claude-code/hosted-tool-bridge.js";
 import { buildAgentInput } from "../../packages/client/src/runtime/agent-turn-runner.js";
 import {
   type ManagedSessionContext,
@@ -132,10 +135,12 @@ const afterTreeUpdate = renderManagedSystemPrompt(snapshot, {
 assert.notEqual(beforeTreeUpdate, afterTreeUpdate);
 
 const scratch = await mkdtemp(join(tmpdir(), "opentag-context-token-audit-"));
-let claudeNamespaceChange: {
-  pluginIdentityChanged: boolean;
-  gatewayNamespaceChanged: boolean;
+let claudeNamespaceContinuity: {
+  pluginIdentityStable: boolean;
+  gatewayNamespaceStable: boolean;
   skillContentUnchanged: boolean;
+  privatePathsChanged: boolean;
+  differentRuntimeIdentityChanged: boolean;
 };
 try {
   const skill = join(scratch, "synthetic-skill");
@@ -143,32 +148,46 @@ try {
   const content =
     "---\nname: synthetic-skill\ndescription: Synthetic offline audit skill.\n---\nInspect only synthetic files.\n";
   await writeFile(join(skill, "SKILL.md"), content);
-  const open = (runId: string) =>
-    startClaudeCodeHostedToolBridge(undefined, runId, new AbortController().signal, [skill], {
-      url: "https://synthetic.invalid/api/v1/mcp",
-      token: "synthetic-not-a-credential",
-    });
+  const runtimeIdentity = createClaudeCodeBridgeIdentity();
+  const open = (runId: string, identity = runtimeIdentity) =>
+    startClaudeCodeHostedToolBridge(
+      undefined,
+      runId,
+      new AbortController().signal,
+      [skill],
+      {
+        url: "https://synthetic.invalid/api/v1/mcp",
+        token: "synthetic-not-a-credential",
+      },
+      undefined,
+      identity,
+    );
   const bridges: Awaited<ReturnType<typeof open>>[] = [];
   try {
     bridges.push(await open("synthetic-turn-1"));
     bridges.push(await open("synthetic-turn-2"));
-    const [a, b] = await Promise.all(
+    bridges.push(await open("synthetic-other-runtime", createClaudeCodeBridgeIdentity()));
+    const [a, b, other] = await Promise.all(
       bridges.map(async (bridge) => ({
         plugin: JSON.parse(await readFile(join(bridge.pluginPath, ".claude-plugin/plugin.json"), "utf8")).name,
         gateway: Object.keys(JSON.parse(await readFile(bridge.configPath, "utf8")).mcpServers)[0],
         skill: await readFile(join(bridge.pluginPath, "skills/synthetic-skill/SKILL.md"), "utf8"),
       })),
     );
-    assert(a && b);
-    claudeNamespaceChange = {
-      pluginIdentityChanged: a.plugin !== b.plugin,
-      gatewayNamespaceChanged: a.gateway !== b.gateway,
+    assert(a && b && other);
+    claudeNamespaceContinuity = {
+      pluginIdentityStable: a.plugin === b.plugin,
+      gatewayNamespaceStable: a.gateway === b.gateway,
       skillContentUnchanged: a.skill === b.skill,
+      privatePathsChanged: bridges[0]?.pluginPath !== bridges[1]?.pluginPath,
+      differentRuntimeIdentityChanged: a.plugin !== other.plugin && a.gateway !== other.gateway,
     };
-    assert.deepEqual(claudeNamespaceChange, {
-      pluginIdentityChanged: true,
-      gatewayNamespaceChanged: true,
+    assert.deepEqual(claudeNamespaceContinuity, {
+      pluginIdentityStable: true,
+      gatewayNamespaceStable: true,
       skillContentUnchanged: true,
+      privatePathsChanged: true,
+      differentRuntimeIdentityChanged: true,
     });
   } finally {
     await Promise.all(bridges.map((bridge) => bridge.close()));
@@ -212,7 +231,7 @@ process.stdout.write(
       },
       cloudTreeCommitChange: prefix(beforeTreeUpdate, afterTreeUpdate),
       localRevisionHashChanged,
-      claudeNamespaceChange,
+      claudeNamespaceContinuity,
       usageExamples,
     },
     null,

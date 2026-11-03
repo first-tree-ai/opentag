@@ -134,7 +134,8 @@ Codex likewise retain their native project configuration.
 Context Tree preparation supplies tree location, availability, and guidance, not every tree page.
 Selected pages and Skill bodies enter context when the Agent reads them. Native Skill catalogs and
 MCP tool descriptions/schema can add input independently of the managed prompt. Local Claude's
-private plugin and MCP names change per Run; Codex's private MCP name lives for one runtime;
+private plugin and MCP names remain stable within one runtime; Codex's private MCP name also lives
+for one runtime;
 Cloud Pi uses the fixed `opentag-mcp` adapter entry. These are distinct from rotating credentials.
 
 Native continuity does not guarantee a prompt-cache hit. Request input, cache reads/writes,
@@ -190,11 +191,15 @@ platform bearers, not to user-managed native credentials. Native configuration r
 does not become Server plugin state or a platform-managed MCP registration. User-wide configuration
 keeps its native effect across projects; an Agent cwd does not isolate global settings.
 
-OpenTag adds its own MCP services through a supplementary temporary MCP configuration with fresh
-service names for each Run. The gateway name stays at 11 characters, preserving its existing
+OpenTag adds its own MCP services through a supplementary temporary MCP configuration with private
+service names generated once per runtime and reused across its Runs. The gateway name stays at
+11 characters, preserving its existing
 model-facing tool-name budget. External packaged Skills use a private plugin with an explicit,
-randomly generated name per Run. A native user plugin named `opentag` remains loadable alongside
-platform resources. Tool grants use that Run's exact service names; Skill names come from the
+randomly generated name per runtime. A native user plugin named `opentag` remains loadable alongside
+platform resources. Every Run still receives fresh configuration, ports, and execution credentials;
+cleanup removes only that Run's resources. Names are not persisted in the Session binding, so a resumed
+binding in a new runtime receives a new private identity. Tool grants use the runtime's exact
+service names; Skill names come from the
 current native catalog. Existing cwd, Provider Home, login, and conversation
 history locations do not change. Codex, Pi, and Cloud resource policies retain their own rules.
 

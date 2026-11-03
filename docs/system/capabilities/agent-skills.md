@@ -248,7 +248,7 @@ have, verifies the sha256, and materializes it:
 
 Local Claude discovers its project Skills in `.claude/skills` through native configuration. OpenTag
 does not also link those paths into its private plugin. External packaged Skills, including Context
-Tree Skills, use the private plugin's per-Run namespace, `opentag-<random-id>:<name>`, as listed in the
+Tree Skills, use the private plugin's per-runtime namespace, `opentag-<random-id>:<name>`, as listed in the
 current native catalog. The unique name avoids shadowing a user plugin named `opentag`. Root comparison
 uses canonical filesystem paths so aliases of Agent Home do not offer a project Skill twice.
 This preserves the original resources. Native user plugins and Skills are separate from the

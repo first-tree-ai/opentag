@@ -109,7 +109,9 @@ function serveModel(response, body) {
     state.catalog = names;
     const serialized = JSON.stringify(body);
     state.projectSkill = serialized.includes("project-fixture");
-    state.packagedSkill = /opentag-[a-f0-9]{16}:packaged-fixture/.test(serialized);
+    const userContext = JSON.stringify((body.messages ?? []).filter((message) => message.role === "user"));
+    state.packagedSkillName = [...userContext.matchAll(/opentag-[a-f0-9]{16}:packaged-fixture/g)].at(-1)?.[0];
+    state.packagedSkill = Boolean(state.packagedSkillName);
     state.duplicateProjectSkill = /opentag-[a-f0-9]{16}:project-fixture/.test(serialized);
     state.managedTool = names.find((name) => /^mcp__g[a-f0-9]{10}__managed_echo$/.test(name));
     state.hostedTool = names.find((name) => /^mcp__h[a-f0-9]{10}__hosted_echo$/.test(name));
@@ -277,7 +279,10 @@ try {
   assert.ok(enabled.projectSkill);
   assert.ok(enabled.packagedSkill);
   assert.equal(enabled.duplicateProjectSkill, false);
-  await run(runtime, "enabled-two", "otmg_fixture_two");
+  const enabledTwo = await run(runtime, "enabled-two", "otmg_fixture_two");
+  assert.equal(enabledTwo.managedTool, enabled.managedTool);
+  assert.equal(enabledTwo.hostedTool, enabled.hostedTool);
+  assert.equal(enabledTwo.packagedSkillName, enabled.packagedSkillName);
   assert.equal(hostedCalls.length, 2);
   assert.deepEqual(
     [...new Set(mcpCalls.filter((call) => call.kind === "managed").map((call) => call.token))],
@@ -324,7 +329,7 @@ try {
   assert.equal(await readFile(mcpPath, "utf8"), originalMcp);
   const version = (await exec(command, ["--version"], { env: environment })).stdout.trim();
   process.stdout.write(
-    `${JSON.stringify({ ok: true, version, reports, nativeMcpCalls: mcpCalls.length, hostedCalls: hostedCalls.length, longToolCalls: 4, maxModelToolNameLength: 128, projectSkillLoadedOnce: true, hookCount: hookBeforeDisable.count, sharedFilesUnchanged: true, unavailableDurationMs })}\n`,
+    `${JSON.stringify({ ok: true, version, reports, nativeMcpCalls: mcpCalls.length, hostedCalls: hostedCalls.length, longToolCalls: 4, maxModelToolNameLength: 128, projectSkillLoadedOnce: true, runtimeNamespacesStable: true, hookCount: hookBeforeDisable.count, sharedFilesUnchanged: true, unavailableDurationMs })}\n`,
   );
 } finally {
   await runtime?.close();

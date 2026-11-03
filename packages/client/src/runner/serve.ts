@@ -47,6 +47,7 @@ import {
 } from "./native-sandbox.js";
 import { redactAcceptanceRecord } from "./redact.js";
 import { ServeWorkspace } from "./serve-workspace.js";
+import { RunnerShutdownObserver } from "./shutdown-observer.js";
 import {
   NativeSandboxWebGateway,
   type NativeWebExecutionAuthority,
@@ -654,6 +655,12 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
   await mkdir(publicRoot, { recursive: true, mode: 0o700 });
   const journal = await CloudJournal.open(journalDir);
   const bridge = new RunnerChannelBridge();
+  const writeShutdown = createPiDiagnosticStderrWriter(options.stderr);
+  const shutdown = new RunnerShutdownObserver({
+    env: options.env ?? process.env,
+    scope: () => bridge.scope,
+    write: (record) => writeShutdown(`${JSON.stringify(record)}\n`),
+  });
   let sandbox: NativeSandbox;
   try {
     // ONLY the public per-turn subtree is mounted read-only at the fixed execution mount. The
@@ -717,6 +724,7 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
   };
 
   const requestStop = (code: number) => {
+    shutdown.start("request");
     stopping = true;
     exitCode = code;
     if (state) {
@@ -767,15 +775,24 @@ export async function runRunnerServe(config: RunnerServeConfig, options: RunnerS
     // Mark it before settling the controller so an interrupted turn's verified reset can only
     // delete the namespace, never relaunch it ahead of cleanup; then await the live worker and
     // abort it before any sandbox deletion.
-    await settleCloudController(state);
-    // The probe listener and process handlers are released even when sandbox cleanup throws.
-    try {
-      if (!(await cleanupRunner(sandbox, state, launchAttempted, options))) result = 5;
-    } finally {
-      await webGateway?.close();
-      await health?.close();
-      removeSignals();
-    }
+    await shutdown.cleanup(async () => {
+      await shutdown.measure("controller_drain", () => settleCloudController(state));
+      // The probe listener and process handlers are released even when sandbox cleanup throws.
+      try {
+        if (
+          !(await shutdown.measure("native_cleanup", () => cleanupRunner(sandbox, state, launchAttempted, options), {
+            falseIsFailure: true,
+          }))
+        )
+          result = 5;
+      } finally {
+        await shutdown.measure("gateway_health_close", async () => {
+          await webGateway?.close();
+          await health?.close();
+          removeSignals();
+        });
+      }
+    });
   }
   return result;
 }

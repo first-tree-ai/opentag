@@ -133,7 +133,11 @@ date and time can wrap without squeezing the other facts.
 The conversation follows the facts without a visible Activity heading; its existing Activity heading
 remains available to assistive technology. Requests and sent replies use 14px
 regular text with a 21px line height. Authors use 14px medium text and timestamps use 12px regular
-text. Operational notices stay at 14px. Message headings, emphasis and monospace code retain their
+text. A message header carries no per-message status: a request shows its author, how it reached the
+Agent (direct or ambient) and its time; an Agent message shows the Agent and its time, plus the message
+kind only for kinds other than plain text, such as a card or an image. Execution outcomes are left to
+the Task's status fact, failures to their explanation in the message body, and an unreported message
+explains its state (pending, expired, cancelled or not processed) once, in the body. Operational notices stay at 14px. Message headings, emphasis and monospace code retain their
 content formatting. Wide code, native message payloads and message tables scroll locally, with named,
 keyboard-focusable regions. The conversation's 768px reading width, message order, paging and scroll
 anchoring are unchanged.

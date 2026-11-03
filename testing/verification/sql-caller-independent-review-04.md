@@ -38,6 +38,7 @@ HTTP waits do not establish that drain for disconnected clients. These are desig
 review observations, not completed IM-F3 repair or full Server acceptance.
 
 Batch 32 exact review at 9a6db831 found no actionable regression. Batch 33
-exact review at 41b921c7 found no actionable regression. Batch 34 source review
-found no actionable regression; exact-commit review remains required. CI, merge,
+exact review at 41b921c7 found no actionable regression. Batch 34 exact review
+at 481ff05a found no actionable regression. Batch 35 source review found no
+actionable regression; exact-commit review remains required. CI, merge,
 deployment, private billing and live provider acceptance are not inferred.

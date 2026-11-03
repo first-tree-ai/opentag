@@ -105,10 +105,7 @@ export function registerSkillUploadRoute(app: FastifyInstance, options: SkillUpl
     scope.addContentTypeParser(SKILL_UPLOAD_CONTENT_TYPE, (_request, payload, done) => {
       done(null, payload);
     });
-    scope.addHook("onRequest", async (request, reply) => {
-      await options.authenticate(request, reply);
-    });
-    scope.post(options.path, async (request, reply) => {
+    scope.post(options.path, { onRequest: options.authenticate }, async (request, reply) => {
       // Bound elapsed transfer time, including a peer that sends no bytes, and destroy its stream so
       // a stalled read cannot pin the request open.
       const timer = setTimeout(

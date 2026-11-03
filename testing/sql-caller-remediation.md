@@ -455,3 +455,15 @@ work, join them after child routes close, then close billing/readiness/SQL and
 telemetry with the existing error-collecting helper. High-level Slack/Context Tree,
 Inbox, Cloud and MCP ports must be included. No private hook mutation or generic
 lifecycle framework; late callback facts remain owned by their existing routes.
+
+
+[Application request work and shutdown phases](verification/sql-caller-repairs-35.md)
+passes 228 individually identified Docker cases (230 passing executions),
+26 native PostgreSQL. One app boundary owns
+actual asynchronous request phases through lost clients, avoiding new service
+owners for OAuth and HTTP ingress. Two scoped auth hooks become route options;
+RuntimeWeb's redundant race is removed while its response deadline stays intact.
+CloudModel/billing preClose cannot block subsequent connection teardown. Batch 34
+exact review found no actionable defect; batch 35 source review found none and
+exact review remains pending. Main wiring and actual signal/fault acceptance are
+still open IM-F3. Totals remain 36/37 fixes and 9/9 recorded simplifications.

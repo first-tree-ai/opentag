@@ -24,8 +24,8 @@ prove the SQL tail has completed without execution custody. Host 53 owning cases
 server typecheck and repository gates pass. Docker snapshots and logs remain in
 the local report directory. PGlite is not counted as native PostgreSQL.
 
-Independent source review found no actionable regression; exact-commit review is
-pending. Batch 33 exact review at 41b921c7 found no actionable defect. Main must
+Independent source review found no actionable regression; exact-commit review at
+481ff05a also found no actionable defect. Batch 33 exact review at 41b921c7 found no actionable defect. Main must
 still start every producer/owner stop without awaiting websocket-dependent work,
 join actual child route shutdown, then dispose billing/readiness/SQL/telemetry.
 IM-F3 remains open until that composition and actual shutdown fault tests pass.

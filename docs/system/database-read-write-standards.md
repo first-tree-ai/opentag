@@ -66,6 +66,11 @@ Finding a deviation does not authorize its implementation.
   shared 30-second statement / 35-second elapsed budgets, measured separately
   from the shorter startup migration budget.
 
+HTTP authentication hooks belong in route options so application shutdown can
+retain their actual Promises through client disconnect. Ordinary callers need
+no extra drain set. Detached work and operations hidden by timeout races retain
+an explicit owner until actual settlement.
+
 ## Migrations
 
 Run commands from the repository root; see the [migration policy](https://github.com/first-tree-ai/opentag/blob/main/packages/server/drizzle/README.md) for schema drift and rollback guidance.

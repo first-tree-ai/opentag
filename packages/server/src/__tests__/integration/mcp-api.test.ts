@@ -74,6 +74,7 @@ interface Harness {
   app: ReturnType<typeof createApp>;
   database: DatabaseClient;
   servers: McpServerService;
+  oauth: McpOAuthClient;
 }
 
 /**
@@ -161,6 +162,7 @@ async function boot(): Promise<Harness> {
     app,
     database: client.database,
     servers,
+    oauth,
   };
 }
 
@@ -886,5 +888,68 @@ it.each(["bearer", "oauth"] as const)("app close joins a detached %s probe throu
   } finally {
     release.resolve();
     await closing;
+  }
+});
+
+it("joins a disconnected OAuth callback through one-time exchange and credential commit", async () => {
+  const server = await fixture({ toolPages: [{ tools: [] }] });
+  const h = await boot();
+  const definition = await createServerOverHttp(h, {
+    name: "callback-drain",
+    url: server.endpoint,
+    defaultAuthKind: "oauth",
+  });
+  await attachOverHttp(h, h.agentA, definition.id);
+  const path = AGENT_MCP_AUTHORIZATION_OAUTH_TEMPLATE.replace(":agentId", h.agentA).replace(
+    ":mcpServerId",
+    definition.id,
+  );
+  const start = await h.app.inject({ method: "POST", url: path, headers: ACCESS_HEADER, payload: {} });
+  const authorize = await fetch((start.json() as { authorizationUrl: string }).authorizationUrl, {
+    redirect: "manual",
+  });
+  const location = new URL(authorize.headers.get("location") as string);
+  const entered = deferred();
+  const release = deferred();
+  const exchange = h.oauth.exchangeAuthorizationCode.bind(h.oauth);
+  const spy = vi.spyOn(h.oauth, "exchangeAuthorizationCode").mockImplementationOnce(async (...args) => {
+    const result = await exchange(...args);
+    entered.resolve();
+    await release.promise;
+    return result;
+  });
+  const address = await h.app.listen({ host: "127.0.0.1", port: 0 });
+  const abort = new AbortController();
+  const response = fetch(`${address}${MCP_OAUTH_CALLBACK_PATH}${location.search}`, {
+    headers: { cookie: flowCookieFrom(start) },
+    signal: abort.signal,
+    redirect: "manual",
+  }).then(
+    () => undefined,
+    (error: unknown) => error,
+  );
+  let closing: Promise<void> | undefined;
+  let closed = false;
+  try {
+    await entered.promise;
+    abort.abort();
+    expect(await response).toMatchObject({ name: "AbortError" });
+    closing = h.app.close().then(() => {
+      closed = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(closed).toBe(false);
+    release.resolve();
+    await closing;
+    expect(await h.servers.readAgentServer(h.accountId, h.agentA, definition.id)).toMatchObject({
+      authorization: { status: "active", hasCredential: true },
+    });
+    expect(spy).toHaveBeenCalledOnce();
+  } finally {
+    release.resolve();
+    abort.abort();
+    await response;
+    await closing;
+    spy.mockRestore();
   }
 });

@@ -199,15 +199,15 @@ function ScheduleRow({
       <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
         <div className="min-w-0 flex-1 basis-48">
           <Text as="h3" headingSize="body" variant="heading">
-            <button
+            <Button
               aria-expanded={expanded}
-              className="flex min-w-0 cursor-pointer items-center gap-2 rounded-sm border-0 bg-transparent p-0 text-left text-inherit focus-visible:outline-2 focus-visible:outline-kumo-brand"
+              className="!h-auto !w-auto max-w-full justify-start gap-2 !px-0 text-left !font-[inherit] !text-[length:inherit] !text-inherit hover:!bg-transparent"
               onClick={() => onToggle(item.id)}
-              type="button"
+              variant="ghost"
             >
               <Icon className="size-4 shrink-0 text-kumo-subtle" name={expanded ? "chevron-down" : "chevron-right"} />
               <span className="wrap-anywhere">{item.name}</span>
-            </button>
+            </Button>
           </Text>
         </div>
         <div className="ml-auto flex shrink-0 items-center gap-2">

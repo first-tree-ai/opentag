@@ -98,6 +98,20 @@ const agent = {
 const creationIntentId = "a3adbe5e-8e8e-4ac2-a013-b026684ab185";
 
 describe("Agent contracts", () => {
+  it.each(["Atlas", "研发助理", "Atlas-研发-2", "a1", "a".repeat(64), "中".repeat(21)])(
+    "accepts the Agent name %j",
+    (name) => {
+      expect(AgentNameSchema.parse(name)).toBe(name);
+    },
+  );
+
+  it.each(["-atlas", "研发 助理", "研发助理！", "café", "a_b", "中".repeat(65)])(
+    "refuses the Agent name %j",
+    (name) => {
+      expect(AgentNameSchema.safeParse(name).success).toBe(false);
+    },
+  );
+
   it("normalizes canonical names and strict create/update payloads", () => {
     expect(AgentNameSchema.parse("  code-reviewer  ")).toBe("code-reviewer");
     expect(
@@ -132,16 +146,16 @@ describe("Agent contracts", () => {
     });
   });
 
-  it.each(["", "UPPER", "has space", "under_score", "-leading"])("rejects invalid canonical name %j", (name) =>
+  it.each(["", "has space", "under_score", "-leading", "中".repeat(22)])("rejects invalid canonical name %j", (name) =>
     expect(() => AgentNameSchema.parse(name)).toThrow(),
   );
 
   it.each([
     ["", "Agent name is required"],
-    ["a".repeat(65), "Agent name must be at most 64 characters"],
+    ["a".repeat(65), "Agent name must be at most 64 bytes (21 Chinese characters)"],
     [
-      "Bestony",
-      "Agent name must start with a lowercase letter or number and contain only lowercase letters, numbers, and hyphens",
+      "Best ony",
+      "Agent name may contain only letters, numbers, Chinese characters, and hyphens, and must not start with a hyphen",
     ],
   ])("provides a stable validation message for %j", (name, message) => {
     const result = AgentNameSchema.safeParse(name);

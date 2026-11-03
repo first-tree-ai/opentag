@@ -6,8 +6,20 @@ export const RUNTIME_DEFAULT_MAX_DURATION_MS = 30 * 60 * 1_000;
 export const RUNTIME_MAX_DURATION_MS = 24 * 60 * 60 * 1_000;
 // Changing this policy requires a migration that advances every active Agent runtime config revision.
 export const OPENTAG_PLATFORM_INSTRUCTIONS = "You run inside OpenTag. IM output is never sent automatically.";
-/** Upper bound on an Agent slug, shared with `AgentNameSchema` so both budgets agree. */
+/**
+ * Upper bound on an Agent slug in UTF-8 bytes, shared with `AgentNameSchema` so both budgets
+ * agree: 64 ASCII characters or 21 Han characters. Counting bytes keeps the reserved platform
+ * instruction budget exact whatever script the name uses.
+ */
 export const AGENT_SLUG_MAX_LENGTH = 64;
+/**
+ * The characters an Agent name (its slug) may use: ASCII letters in either case, digits, Han
+ * characters, and hyphens, starting with anything but a hyphen. Uniqueness is case-insensitive.
+ * The source is unanchored so the client can embed it when reading the slug back from the
+ * platform layer.
+ */
+export const AGENT_SLUG_CHARACTERS = String.raw`[A-Za-z0-9\p{Script=Han}][A-Za-z0-9\p{Script=Han}-]*`;
+export const AGENT_NAME_PATTERN = new RegExp(`^${AGENT_SLUG_CHARACTERS}$`, "u");
 
 const utf8 = new TextEncoder();
 

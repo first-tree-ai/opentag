@@ -78,7 +78,7 @@ describe("creation step navigation", () => {
       />,
     );
 
-    const rule = "Use lowercase letters, numbers, and hyphens (-), starting with a letter or number.";
+    const rule = "Use Chinese characters, letters, numbers, and hyphens (-); don't start with a hyphen.";
     expect(screen.getByText(rule)).toBeTruthy();
     const input = screen.getByLabelText("Agent name");
     const describedBy = input.getAttribute("aria-describedby")?.split(" ") ?? [];
@@ -90,7 +90,7 @@ describe("creation step navigation", () => {
   it("names a refused name briefly instead of repeating the character rule", () => {
     render(
       <AgentStep
-        draft={{ destination: "local", name: "研发助理", runtime: "codex" }}
+        draft={{ destination: "local", name: "研发助理!", runtime: "codex" }}
         onChange={() => undefined}
         onSubmit={() => undefined}
         submitLabel="Create Agent"
@@ -100,7 +100,7 @@ describe("creation step navigation", () => {
     const input = screen.getByLabelText("Agent name");
     fireEvent.blur(input);
 
-    const rule = "Use lowercase letters, numbers, and hyphens (-), starting with a letter or number.";
+    const rule = "Use Chinese characters, letters, numbers, and hyphens (-); don't start with a hyphen.";
     expect(screen.getByText("The name has characters that aren't allowed.")).toBeTruthy();
     expect(screen.getAllByText(rule)).toHaveLength(1);
     expect(input.getAttribute("aria-invalid")).toBe("true");

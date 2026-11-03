@@ -51,7 +51,8 @@ describe("OpenTag Web App Shell", () => {
     });
     fireEvent.click(task);
     expect(await screen.findByText("Please investigate the failed deployment.")).toBeTruthy();
-    expect(screen.getByLabelText("Task details").textContent).toContain("Reviewer");
+    // The Agent's own Task page does not repeat the Agent among the Task facts.
+    expect(screen.getByLabelText("Task details").textContent).not.toContain("Reviewer");
     expect(screen.getByRole("heading", { name: "Activity" })).toBeTruthy();
     expect(window.location.pathname).toBe(`/agents/${agentId}/tasks/${taskSessionId}`);
   });

@@ -27,7 +27,7 @@ A repaired original case does not close another extension of the same finding.
 | 4c — Send cancellation | IM-F2 | [Verified locally](verification/sql-caller-repairs-08.md): forward the existing operation signal, final reconcile admission, no new sends/allocation after deadline; 217 distinct cases (45 native PG). |
 | 4d — Preparation deadline | AG-F2 preparation portion | [Verified locally](verification/sql-caller-repairs-09.md): one existing preparation budget covers admitted dispatch waits and readiness; 65 distinct cases, including 2 native PG and 63 Docker unit cases. |
 | 5a — Background stop and GC work bound | BG-F1, BG-F3; IM-F3 GC portion | [Verified locally](verification/sql-caller-repairs-10.md): actual pass Promises replace running flags; page quota/cursor; 87 distinct cases (59 native PG). Main already awaits these stop ports. |
-| 5b — Stop, drain and owner resources | IM-F3 remaining, AG-F9 | AG-F9 [verified locally](verification/sql-caller-repairs-22.md): existing close event reclaims cascading grants/tickets/MCP/Web records. IM-F3 admission and underlying owner/connection drain remains pending. |
+| 5b — Stop, drain and owner resources | IM-F3, AG-F9 | AG-F9 [verified locally](verification/sql-caller-repairs-22.md). IM-F3 [verified locally](verification/sql-caller-repairs-37.md): component owners, actual HTTP work, main composition and built Server PG17 signal controls. Separate Google transport observation AA-R1 and final broad validation remain. |
 | 5c — Client Context Tree resources | AG-F7, AG-F8 | [Verified locally](verification/sql-caller-repairs-11.md): memoized cleanup and bounded UTF-8 collection; 94 distinct cases, 27 repeated in Docker. AG-F8 moves from batch 8 to share the same client validation scope. |
 | 5d — Setup authority and read simplification | AG-F4; AG-S1, AG-S2 | [Verified locally](verification/sql-caller-repairs-12.md): exact callback target before send/success; shared one-query summary and direct creation replay; 162 distinct cases (21 native PG). |
 | 6a — Account/auth | AA-F1, AA-F2; AA-S1 | [Verified locally](verification/sql-caller-repairs-13.md): official adapter transaction and scoped internal Account read, precise errors and simpler setup; 199 distinct cases (106 native PG). |
@@ -477,3 +477,25 @@ lost-peer final SQL. Batch 35 exact review found no actionable defect; batch 36
 source review found no composition defect. Actual Server signal/fault tests and
 the pending-listen/prewarm boundary remain open IM-F3. Fixed/simplified totals
 remain 36/37 and 9/9 until that final acceptance.
+
+
+[Actual Server process and pending-listen shutdown](verification/sql-caller-repairs-37.md)
+passes 26 identified Docker cases (29 passing executions), four actual built Server
+PG17 cases. Signal shutdown retains real listen work, preserves SQL through exact
+Runtime registration cleanup, prevents late prewarm/readiness and exits without
+application backends under release, official timeout, bind-failure and DNS controls.
+IM-F3 is now repaired locally: all 37 recorded defects and nine simplifications
+have local fixes. Batch 36 exact review found no actionable defect; batch 37 exact
+review and final broad checks remain. The remediation is not yet complete because
+AA-R1 is independently actionable, and IM-R2 still needs representative measurement.
+
+AA-R1 minimal follow-up: preserve built-in Google and its existing subject,
+issuer, state/code, token parsing, redirect refusal and final official transaction.
+Pinned 1.7.2 exposes no fetch/timeout/signal provider option. Apply a narrow pinned
+core patch that forwards a native AbortSignal to its existing token helper and
+creates a ten-second Google token-exchange budget, covering headers and body.
+Do not cancel a fully parsed token's final SQL because the browser disconnects;
+do not retry an uncertain one-time code. No JWKS change (not reachable through
+OpenTag's published flow), global fetch override, new SQL/pool or provider migration.
+Validate paused headers/body, exactly one exchange, new-flow recovery, healthy SQL
+and confirmed-token persistence during shutdown before broader Server regression.

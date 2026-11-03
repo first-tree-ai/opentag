@@ -32,7 +32,7 @@ Failed logs and snapshots remain in the local report directory.
 
 Batch 35 exact review at 429b1607 found no actionable regression. Independent
 batch 36 source review found no actionable defect in the composition; exact
-commit review is pending. A final late-start boundary remains: SIGTERM during
+commit review at e2f48e99 also found no actionable defect. A final late-start boundary remains: SIGTERM during
 pending listen must not announce readiness, start prewarm or reopen a listener.
 The pinned Fastify listen.signal path has a separately reproduced unobserved
 close rejection on cleanup failure, so it cannot be adopted blindly. Actual

@@ -124,6 +124,7 @@ import { registerWebApp } from "./web-app.js";
 export interface CreateAppOptions {
   /** Starts producer shutdown before request/connection drain; cleanup is joined before resource disposal. */
   beginShutdown?: () => unknown;
+  shutdownSignal?: AbortSignal;
   /** Final shared-resource cleanup, after request work and child route shutdown. */
   closeResources?: () => unknown;
   /** Drizzle client used by the readiness probe. The production bootstrap also exposes it through TaskService. */
@@ -737,7 +738,7 @@ export function createApp(options: CreateAppOptions = {}) {
   const retain = (handle: (...args: never[]) => unknown) =>
     function (this: FastifyInstance, ...args: unknown[]) {
       const reply = args[1] as import("fastify").FastifyReply;
-      if (closing) return reply.code(503).send({ error: "server_closing" });
+      if (closing || options.shutdownSignal?.aborted) return reply.code(503).send({ error: "server_closing" });
       const result = Reflect.apply(handle, this, args);
       if (result !== reply && result && typeof (result as PromiseLike<unknown>).then === "function") {
         const operation = Promise.resolve(result);

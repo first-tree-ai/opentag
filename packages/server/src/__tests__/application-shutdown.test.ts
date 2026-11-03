@@ -99,3 +99,18 @@ describe("application request work ownership", () => {
     expect(events).toEqual(["begin", "connection close", "joined", "resources"]);
   });
 });
+
+it("refuses a new HTTP phase as soon as the external shutdown signal is set", async () => {
+  const shutdown = new AbortController();
+  const handle = vi.fn(async () => "should not run");
+  const app = createApp({ shutdownSignal: shutdown.signal });
+  app.get("/late", handle);
+  await app.ready();
+  try {
+    shutdown.abort();
+    expect((await app.inject({ url: "/late" })).statusCode).toBe(503);
+    expect(handle).not.toHaveBeenCalled();
+  } finally {
+    await app.close();
+  }
+});

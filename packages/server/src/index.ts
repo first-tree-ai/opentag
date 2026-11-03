@@ -552,6 +552,8 @@ export function installProcessFatalHandlers(
 export async function startServer(): Promise<void> {
   const readiness = new BootstrapReadiness();
   let app: ReturnType<typeof createApp> | undefined;
+  const shutdown = new AbortController();
+  let listenAttempt: Promise<unknown> | undefined;
   const uninstallFatalHandlers = installProcessFatalHandlers(() => app?.log);
   let databaseSql: ReturnType<typeof createDatabaseClient>["sql"] | undefined;
   let cloudBilling: CloudBilling | undefined;
@@ -1186,27 +1188,34 @@ export async function startServer(): Promise<void> {
       publicUrl: config.publicUrl,
       sessions: sessionService,
     });
+    let stopping: Promise<void> | undefined;
+    const beginShutdown = () => {
+      shutdown.abort();
+      stopping ??= startClosingServerResources([
+        ["schedule scheduler", () => scheduleScheduler.stop()],
+        ["channel target poller", () => channelTargetPoller.stop()],
+        ["sandbox idle reclaimer", () => sandboxIdleReclaimer?.stop()],
+        ["IM delivery worker", () => imDeliveryWorker.stop()],
+        ["IM message inbox", () => imMessageInbox.close()],
+        ["Slack working worker", () => slackWorkingWorker.stop()],
+        ["IM failure reactions", () => imFailureReactions?.close()],
+        ["MCP refresh worker", () => mcpRefreshWorker.stop()],
+        ["skill garbage collector", () => skillRuntime.gc?.stop()],
+        ["GitHub Context Tree operations", () => githubContextTreeOperations?.close()],
+        ["platform runtime", () => platformRuntime.close()],
+        ["Feishu setup service", () => feishuSetupService.stop()],
+        ["Feishu connections", () => feishuConnections.stop()],
+        ["Cloud Session work", () => cloudSessionOwner?.close()],
+        ["Cloud runtime tests", () => cloudModelRuntime?.tester.close()],
+        ["Cloud model work", () => cloudModelService?.close()],
+        ["runner image prewarm worker", () => runnerImagePrewarmWorker?.stop()],
+      ]);
+      void stopping.catch(() => undefined);
+      return stopping;
+    };
     app = createApp({
-      beginShutdown: () =>
-        startClosingServerResources([
-          ["schedule scheduler", () => scheduleScheduler.stop()],
-          ["channel target poller", () => channelTargetPoller.stop()],
-          ["sandbox idle reclaimer", () => sandboxIdleReclaimer?.stop()],
-          ["IM delivery worker", () => imDeliveryWorker.stop()],
-          ["IM message inbox", () => imMessageInbox.close()],
-          ["Slack working worker", () => slackWorkingWorker.stop()],
-          ["IM failure reactions", () => imFailureReactions?.close()],
-          ["MCP refresh worker", () => mcpRefreshWorker.stop()],
-          ["skill garbage collector", () => skillRuntime.gc?.stop()],
-          ["GitHub Context Tree operations", () => githubContextTreeOperations?.close()],
-          ["platform runtime", () => platformRuntime.close()],
-          ["Feishu setup service", () => feishuSetupService.stop()],
-          ["Feishu connections", () => feishuConnections.stop()],
-          ["Cloud Session work", () => cloudSessionOwner?.close()],
-          ["Cloud runtime tests", () => cloudModelRuntime?.tester.close()],
-          ["Cloud model work", () => cloudModelService?.close()],
-          ["runner image prewarm worker", () => runnerImagePrewarmWorker?.stop()],
-        ]),
+      beginShutdown,
+      shutdownSignal: shutdown.signal,
       closeResources: closeSharedResources,
       environment: config.environment,
       revision: config.buildRevision,
@@ -1397,7 +1406,11 @@ export async function startServer(): Promise<void> {
     skillRuntime.gc?.start();
     channelTargetPoller.start();
     const closeForSignal = () => {
-      void app?.close().catch((error) => {
+      void beginShutdown();
+      void closeServerResources([
+        ["startup listener", () => listenAttempt],
+        ["application", () => app?.close()],
+      ]).catch((error) => {
         const failures = (error instanceof AggregateError ? error.errors : [error]).map((failure) => ({
           detail: formatStartupError(failure, knownSecrets),
           cause:
@@ -1421,7 +1434,9 @@ export async function startServer(): Promise<void> {
     reportIgnoredCloudBilling(config, app.log);
     reportIgnoredGitHubConfiguration(app.log);
     readiness.complete("application");
-    await app.listen({ host: config.host, port: config.port });
+    listenAttempt = app.listen({ host: config.host, port: config.port });
+    await listenAttempt;
+    if (shutdown.signal.aborted) return;
     readiness.complete("listen");
     runnerImagePrewarmWorker?.start();
   } catch (error) {

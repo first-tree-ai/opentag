@@ -960,3 +960,43 @@ describe("Server startup", () => {
     }
   });
 });
+
+it.each([false, true])("joins pending listen before signal cleanup (stop failure=%s)", async (stopFails) => {
+  state.prewarmEnabled = true;
+  let markEntered!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    markEntered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const app = state.app as { listen: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> };
+  app.listen.mockImplementation(async () => {
+    markEntered();
+    await gate;
+    state.events.push("listen");
+  });
+  if (stopFails) state.schedulerStop.mockRejectedValue(new Error("Controlled stop error"));
+  const starting = startServer();
+  try {
+    await entered;
+    process.listeners("SIGTERM").at(-1)?.("SIGTERM");
+    expect((state.appOptions as { shutdownSignal: AbortSignal }).shutdownSignal.aborted).toBe(true);
+    expect(state.events).toContain("scheduler:stop");
+    expect(state.events).toContain("inbox:close");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(app.close).not.toHaveBeenCalled();
+    expect(state.sql.end).not.toHaveBeenCalled();
+    release();
+    await starting;
+    await vi.waitFor(() => expect(state.sql.end).toHaveBeenCalledOnce());
+    expect(state.events).not.toContain("ready:listen");
+    expect(state.events).not.toContain("prewarm:start");
+    expect(app.close).toHaveBeenCalledOnce();
+    if (stopFails) await vi.waitFor(() => expect(process.exitCode).toBe(1));
+  } finally {
+    release();
+    await starting;
+  }
+});

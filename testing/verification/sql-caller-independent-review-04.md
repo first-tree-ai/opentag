@@ -40,7 +40,7 @@ review observations, not completed IM-F3 repair or full Server acceptance.
 Batch 32 exact review at 9a6db831 found no actionable regression. Batch 33
 exact review at 41b921c7 found no actionable regression. Batch 34 exact review
 at 481ff05a found no actionable regression. Batch 35 exact review at 429b1607 found no
-actionable regression. Batch 36 source review found no actionable composition
-defect; pending-listen signal behavior still requires actual verification and
+actionable regression. Batch 36 exact review at e2f48e99 found no actionable composition
+defect. Batch 37 source review found none; actual Server/DNS controls pass and
 exact-commit review remains required. CI, merge,
 deployment, private billing and live provider acceptance are not inferred.

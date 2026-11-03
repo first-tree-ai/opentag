@@ -97,7 +97,12 @@ export async function createImFeedbackTarget(tx: DatabaseTransaction, deliveryId
 
 export async function startImFeedback(tx: DatabaseTransaction, rootDeliveryId: string, now: Date): Promise<void> {
   const rows = await tx
-    .select({ id: imMessageDeliveries.id, turnId: imMessageDeliveries.turnId, sandbox: sandboxes })
+    .select({
+      id: imMessageDeliveries.id,
+      turnId: imMessageDeliveries.turnId,
+      payload: imMessageDeliveries.dispatchPayload,
+      sandbox: sandboxes,
+    })
     .from(imMessageDeliveries)
     .leftJoin(sandboxes, eq(sandboxes.sessionId, imMessageDeliveries.sessionId))
     .where(
@@ -107,6 +112,13 @@ export async function startImFeedback(tx: DatabaseTransaction, rootDeliveryId: s
       ),
     );
   for (const row of rows.sort((a, b) => a.id.localeCompare(b.id))) {
+    if (row.payload?.replyRole === "observer") {
+      await tx
+        .update(imFeedbackTargets)
+        .set(observerFeedbackUpdate(now))
+        .where(eq(imFeedbackTargets.deliveryId, row.id));
+      continue;
+    }
     await createImFeedbackTarget(tx, row.id, now);
     await tx
       .update(imFeedbackTargets)
@@ -223,6 +235,7 @@ export class ImFeedbackStore {
           eq(agents.createdByUserId, target.accountId),
           ne(agents.status, "deleted"),
           isNull(users.suspendedAt),
+          sql`not (${sessions.kind} = 'channel' and ${imMessages.threadKey} is not null and exists (select 1 from im_message_deliveries sibling inner join sessions owner on owner.id = sibling.session_id where sibling.message_id = ${imMessages.id} and owner.kind = 'thread' and owner.thread_key = ${imMessages.threadKey}))`,
           ne(imMessages.operation, "deleted"),
           or(
             ne(imBindings.provider, "slack"),
@@ -264,6 +277,7 @@ export class ImFeedbackStore {
 
   async #queuedChange(target: FeedbackTarget, delivery: typeof imMessageDeliveries.$inferSelect) {
     const now = this.now();
+    if (delivery.dispatchPayload?.replyRole === "observer") return observerFeedbackUpdate(now);
     if (["expired", "terminal_rejected"].includes(delivery.state)) return rejectedFeedbackUpdate(delivery, now);
     if (delivery.state !== "accepted" && delivery.state !== "steered") return;
     const root = delivery.steerTargetDeliveryId
@@ -430,7 +444,12 @@ function terminalFeedbackUpdate(target: FeedbackTarget, report: TurnReportReques
     effects: report.executionEffects,
     reportHash: report.resultHash,
     actionsExpireAt: new Date(now.getTime() + FEEDBACK_ACTION_TTL_MS),
-    cardState: failed && target.deliveryId === report.deliveryId ? ("pending" as const) : target.cardState,
+    cardState:
+      failed && target.deliveryId === report.deliveryId
+        ? ("pending" as const)
+        : !failed && !target.cardMessageId && target.cardState === "pending"
+          ? ("none" as const)
+          : target.cardState,
     revision: sql`${imFeedbackTargets.revision} + 1`,
     nextAttemptAt: now,
     updatedAt: now,
@@ -480,6 +499,17 @@ function rejectedFeedbackUpdate(delivery: typeof imMessageDeliveries.$inferSelec
     cardState: silent ? ("none" as const) : ("pending" as const),
     settledAt: silent ? now : null,
     revision: sql`${imFeedbackTargets.revision} + 1`,
+    updatedAt: now,
+  };
+}
+
+function observerFeedbackUpdate(now: Date) {
+  return {
+    state: "stale" as const,
+    desiredReaction: "none" as const,
+    settledAt: now,
+    nextAttemptAt: now,
+    revision: sql`${imFeedbackTargets.revision}+1`,
     updatedAt: now,
   };
 }

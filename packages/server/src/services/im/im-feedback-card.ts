@@ -49,9 +49,9 @@ function actionResult(action?: FeedbackAction): string | undefined {
 }
 
 export function feedbackCardContent(target: FeedbackTarget, action?: FeedbackAction) {
-  const resolved = action?.state === "succeeded";
+  const resolved = action?.state === "succeeded" || target.state === "completed";
   const checking = action && ["confirmed", "submitting", "checking"].includes(action.state);
-  const result = actionResult(action);
+  const result = actionResult(action) ?? (target.state === "completed" ? "Task completed" : undefined);
   const attribution = action ? ` · ${action.actorDisplayName.slice(0, 255)} · ${action.updatedAt.toISOString()}` : "";
   const title = result
     ? `${resolved ? "✅" : checking ? "⏳" : "⚠️"} ${result}${attribution}`
@@ -143,7 +143,7 @@ export function renderFeedbackCard(target: FeedbackTarget, publicUrl: string, ac
       config: { wide_screen_mode: true, update_multi: true },
       header: {
         title: { tag: "plain_text", content: content.result ? "Task status" : "Task failed" },
-        template: action?.state === "succeeded" ? "green" : "red",
+        template: action?.state === "succeeded" || target.state === "completed" ? "green" : "red",
       },
       elements: [
         { tag: "div", text: { tag: "plain_text", content: content.title } },

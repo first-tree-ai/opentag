@@ -22,6 +22,7 @@ export const ImFeedbackViewSchema = z
   .object({
     id: z.string().uuid(),
     agentId: z.string().uuid(),
+    taskId: z.string().uuid(),
     sessionId: z.string().uuid(),
     revision: z.number().int().positive().safe(),
     state: ImFeedbackStateSchema,

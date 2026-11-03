@@ -30,12 +30,20 @@ unknown results, locale layout, keyboard control and accessibility.
 
 ## Local validation
 
-Focused server validation: 51 feedback tests and 60 affected delivery-worker tests passed. The new feedback
-implementation has 89.43% line coverage and 82.97% statement coverage in the focused feedback run. Five PostgreSQL feedback
+Focused server validation: 54 feedback tests and 60 affected delivery-worker tests passed. The new feedback
+implementation has 89.55% line coverage and 83.15% statement coverage in the focused feedback run. Five PostgreSQL feedback
 checks passed, including the populated query plans. Shared package validation passed 781 tests. The changed managed
 IM instruction checks passed 65 client tests; the change does not alter Agent Runtime coverage-owned implementation.
-The Server and Web production builds passed. Final full migration/Web regression and repository gates are recorded
-in the pull request.
+The complete workspace build and all package types passed. Web behavior, CSRF and Kumo contract checks passed 27 tests;
+English/Chinese screenshots cover the current owned controls. Twelve custody regression cases and eleven PostgreSQL
+feedback/Cloud custody cases also passed after the retained-report hook change.
+
+The full local Web run recorded 2,386 passed and three Kumo contract failures; all three were repaired and their owning
+checks passed. The full PostgreSQL run recorded 1,084 passed and fifteen failures: eight needed the built CLI artifact,
+six hit their five-second test windows, and one was a subsequent schema-creation failure. After the complete build and
+container isolation, all fifteen original failure cases passed with their existing assertions and timeouts. These
+results are combined verification across runs, not a claim that one local full-suite invocation passed. CI must pass
+for the PR's current head.
 
 An initial concurrent full integration run was interrupted after several disconnected-DB failures. A serial
 investigation observed a PostgreSQL container removed while its test connection was active, followed by Docker

@@ -7,7 +7,7 @@ import { PageHeader } from "../components/kumo/page-header/page-header.js";
 import { m } from "../paraglide/messages.js";
 import { queryKeys } from "../query/keys.js";
 import { Button, Checkbox, Collapsible, Text } from "../ui/design-system.js";
-import { agentDetailLink } from "./agents/agent-routes.js";
+import { agentDetailLink, agentTaskDetailLink } from "./agents/agent-routes.js";
 
 type FeedbackApi = Pick<typeof browserApi, "imFeedback" | "imFeedbackAction">;
 type Selection = { kind: ImFeedbackActionKind; revision: number; generation: number | null };
@@ -236,6 +236,7 @@ export function ImFeedbackPage({
         <Collapsible.Panel className="space-y-3">
           <p>{m.im_feedback_code({ code: view.errorCode ?? "—" })}</p>
           <p className="break-all">{m.im_feedback_source({ session: view.sessionId })}</p>
+          <Link {...agentTaskDetailLink(view.agentId, view.taskId)}>{m.im_feedback_task()}</Link>
         </Collapsible.Panel>
       </Collapsible.Root>
       <div className="flex flex-wrap items-center gap-4">

@@ -9,6 +9,7 @@ const ID = "11111111-1111-4111-8111-111111111111";
 const view = (overrides: Partial<ImFeedbackView> = {}): ImFeedbackView => ({
   id: ID,
   agentId: "22222222-2222-4222-8222-222222222222",
+  taskId: "55555555-5555-4555-8555-555555555555",
   sessionId: "33333333-3333-4333-8333-333333333333",
   revision: 2,
   state: "workspace_blocked",
@@ -53,6 +54,13 @@ describe("Account-owned IM recovery", () => {
     await renderInRouter(<ImFeedbackPage feedbackId={ID} operation="discard" api={client} />);
     await screen.findByText("Workspace version 3");
     expect(client.imFeedbackAction).not.toHaveBeenCalled();
+  });
+  it("links technical details to the original Task", async () => {
+    await renderInRouter(<ImFeedbackPage feedbackId={ID} api={api()} />);
+    fireEvent.click(await screen.findByRole("button", { name: "Technical details" }));
+    expect((await screen.findByRole("link", { name: "Open Task" })).getAttribute("href")).toBe(
+      "/agents/22222222-2222-4222-8222-222222222222/tasks/55555555-5555-4555-8555-555555555555",
+    );
   });
   it("requires explicit second confirmation and loss acknowledgement for discard", async () => {
     const client = api();

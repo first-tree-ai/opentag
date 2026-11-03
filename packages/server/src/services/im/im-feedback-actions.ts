@@ -200,6 +200,7 @@ export class ImFeedbackActionsService {
         return ImFeedbackViewSchema.parse({
           id: t.id,
           agentId: t.agentId,
+          taskId: t.messageId,
           sessionId: t.sessionId,
           revision: t.revision,
           state: t.state,

@@ -622,38 +622,50 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       for (const claim of claims) {
         const scope = await this.#deliveryScope(transaction, claim.deliveryId);
         if (!scope || !retainedClaimMatches(scope, claim, request, context)) continue;
-        if (scope.delivery.state === "pending" || scope.delivery.state === "expired") {
-          await settleRetainedBatch(transaction, scope.delivery, this.#now());
-          await transaction
-            .update(imMessageDeliveries)
-            .set({
-              state: "accepted",
-              inputHash: claim.inputHash,
-              turnId: claim.turnId,
-              reportOwnerInstanceId: context.instanceId,
-              resultHash: claim.resultHash,
-              acceptedAt: this.#now(),
-              steerTargetDeliveryId: null,
-              reason: null,
-              lastErrorCode: null,
-            })
-            .where(
-              and(
-                eq(imMessageDeliveries.id, claim.deliveryId),
-                inArray(imMessageDeliveries.state, ["pending", "expired"]),
-                eq(imMessageDeliveries.dispatchRequestId, claim.dispatchRequestId),
-                eq(imMessageDeliveries.dispatchInputHash, claim.inputHash),
-              ),
-            );
-          continue;
-        }
-        if (scope.delivery.state !== "accepted" || scope.delivery.turnId !== claim.turnId) continue;
-        await transaction
-          .update(imMessageDeliveries)
-          .set({ reportOwnerInstanceId: context.instanceId, resultHash: claim.resultHash })
-          .where(eq(imMessageDeliveries.id, claim.deliveryId));
+        await this.#restoreRetainedDelivery(transaction, scope, claim, context);
       }
     });
+  }
+
+  async #restoreRetainedDelivery(
+    transaction: DatabaseTransaction,
+    scope: DeliveryScope,
+    claim: NonNullable<SessionReconcileResult["retainedReports"]>[number],
+    context: RuntimeBusinessContext,
+  ): Promise<void> {
+    if (scope.delivery.state === "pending" || scope.delivery.state === "expired") {
+      await settleRetainedBatch(transaction, scope.delivery, this.#now());
+      const restored = await transaction
+        .update(imMessageDeliveries)
+        .set({
+          state: "accepted",
+          inputHash: claim.inputHash,
+          turnId: claim.turnId,
+          reportOwnerInstanceId: context.instanceId,
+          resultHash: claim.resultHash,
+          acceptedAt: this.#now(),
+          steerTargetDeliveryId: null,
+          reason: null,
+          lastErrorCode: null,
+        })
+        .where(
+          and(
+            eq(imMessageDeliveries.id, claim.deliveryId),
+            inArray(imMessageDeliveries.state, ["pending", "expired"]),
+            eq(imMessageDeliveries.dispatchRequestId, claim.dispatchRequestId),
+            eq(imMessageDeliveries.dispatchInputHash, claim.inputHash),
+          ),
+        )
+        .returning({ id: imMessageDeliveries.id });
+      if (restored.length) await startImFeedback(transaction, claim.deliveryId, this.#now());
+      return;
+    }
+    if (scope.delivery.state !== "accepted" || scope.delivery.turnId !== claim.turnId) return;
+    await transaction
+      .update(imMessageDeliveries)
+      .set({ reportOwnerInstanceId: context.instanceId, resultHash: claim.resultHash })
+      .where(eq(imMessageDeliveries.id, claim.deliveryId));
+    if (!scope.delivery.reportedAt) await startImFeedback(transaction, claim.deliveryId, this.#now());
   }
 
   async getDelivery(deliveryId: string): Promise<AcceptedDeliveryRecord | undefined> {

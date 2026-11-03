@@ -12,7 +12,9 @@ The Server owns task reactions and system error cards. The Agent still sends its
 
 Eligible inputs are direct human messages delivered to visible, non-observer Sessions. Ambient observations,
 internal messages, duplicate-pending copies, deleted inputs, and a Channel copy owned by a Thread do not gain
-feedback merely from receipt. Ingress records a queued projection; custody acceptance requests a working reaction
+feedback merely from receipt. Dispatch-time observer roles and later Thread ownership are rechecked before
+projection. Retained custody only reopens feedback for unreported work. A confirmed later completion updates an
+existing expiry card, or suppresses it if it has not been sent. Ingress records a queued projection; custody acceptance requests a working reaction
 on that exact native input: Slack `eyes`, Feishu `OnIt`. Heartbeats and approval waits do not change it.
 
 A terminal success removes the working reaction without adding a normal-operation card or completion emoji.
@@ -37,7 +39,7 @@ owns automatic save retries; this feedback layer adds no automatic save or task 
 ## Account operations
 
 Card links open an authenticated Account page. Opening a URL and refreshing details are read-only. The page shows
-the exact Session, workspace generation, effects warning, selected operation, and the last-save boundary; when its
+the original Task link, exact Session, workspace generation, effects warning, selected operation, and the last-save boundary; when its
 time cannot be verified, the page says so. The Agent detail page also exposes recovery notices when a card cannot
 be delivered. Lists are owner-scoped and paginated in batches of twenty.
 

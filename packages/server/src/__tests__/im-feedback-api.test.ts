@@ -12,6 +12,7 @@ const accountId = randomUUID(),
 const view: ImFeedbackView = {
   id,
   agentId,
+  taskId: "55555555-5555-4555-8555-555555555555",
   sessionId: randomUUID(),
   revision: 2,
   state: "failed",

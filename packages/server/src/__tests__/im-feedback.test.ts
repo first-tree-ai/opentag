@@ -159,6 +159,41 @@ async function workspaceFixture() {
 }
 
 describe("durable IM feedback", () => {
+  it("retires an ingress projection when dispatch establishes an observer-only copy", async () => {
+    const h = await fixture();
+    await db.database
+      .update(imFeedbackTargets)
+      .set({ state: "queued", desiredReaction: "none" })
+      .where(eq(imFeedbackTargets.deliveryId, h.frame.deliveryId));
+    await db.database
+      .update(imMessageDeliveries)
+      .set({ dispatchPayload: { ...h.request, replyRole: "observer" } })
+      .where(eq(imMessageDeliveries.id, h.frame.deliveryId));
+    await db.database.transaction((tx) => startImFeedback(tx, h.frame.deliveryId, clock));
+    await h.finish();
+    await h.worker.runOnce();
+    expect((await h.target()).state).toBe("stale");
+    expect(h.transport.post).not.toHaveBeenCalled();
+    expect(h.transport.reaction).not.toHaveBeenCalled();
+  });
+  it.each([false, true])(
+    "settles an input-expiry card after retained custody proves completion (bound=%s)",
+    async (bound) => {
+      const h = await fixture();
+      await db.database
+        .update(imFeedbackTargets)
+        .set({ state: "failed", errorCode: "input_expired", desiredReaction: "warning", cardState: "pending" })
+        .where(eq(imFeedbackTargets.deliveryId, h.frame.deliveryId));
+      if (bound) await h.worker.runOnce();
+      await h.finish("completed", "completed");
+      await h.worker.runOnce();
+      expect((await h.target()).state).toBe("completed");
+      if (bound) {
+        expect(h.transport.update).toHaveBeenCalledOnce();
+        expect(renderFeedbackCard(await h.target(), "https://app.test").slack.text).toContain("Task completed");
+      } else expect(h.transport.post).not.toHaveBeenCalled();
+    },
+  );
   it("settles its projection lease", async () => {
     const h = await fixture();
     const target = await h.store.claim();

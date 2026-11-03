@@ -221,6 +221,7 @@
   "ComputerConnectCodeModeSchema",
   "ComputerConnectCodeStateSchema",
   "ComputerConnectCodeStatusSchema",
+  "ComputerConnectOutcomeSchema",
   "ComputerConnectionStatusSchema",
   "ComputerImCliReadinessCollectionSchema",
   "ComputerImCliReadinessSchema",

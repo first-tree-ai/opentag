@@ -157,6 +157,8 @@ export {
   ComputerConnectCodeStatusSchema,
   type ComputerConnectionStatus,
   ComputerConnectionStatusSchema,
+  type ComputerConnectOutcome,
+  ComputerConnectOutcomeSchema,
   type ComputerImCliReadiness,
   type ComputerImCliReadinessCollection,
   ComputerImCliReadinessCollectionSchema,

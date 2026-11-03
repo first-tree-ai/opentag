@@ -233,7 +233,7 @@ describe("AgentSetupPage stages", () => {
       const issue = vi.spyOn(memory.computerAdapter.connect, "issue");
       renderSetup(memory.adapter, { computerAdapter: memory.computerAdapter });
       await settle(12);
-      expect(screen.getByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Copy for Agent" })).toBeTruthy();
       expect(screen.queryByRole("button", { name: /Use this computer:/ })).toBeNull();
       expect(issue).toHaveBeenCalledOnce();
       expect(issue.mock.calls[0]?.[0]).toMatchObject({ mode: "repair", target: { computerId: SETUP_COMPUTER_ID } });
@@ -247,7 +247,7 @@ describe("AgentSetupPage stages", () => {
       });
       expect((await memory.computerAdapter.inventory.computers()).computers).toHaveLength(1);
       expect(issue).toHaveBeenCalledOnce();
-      expect(screen.queryByRole("button", { name: "Copy for AI assistant" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Copy for Agent" })).toBeNull();
     },
   );
 
@@ -356,7 +356,7 @@ describe("AgentSetupPage stages", () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
     renderSetup(memory.adapter);
     await settle();
-    expect(screen.getByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy for Agent" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Get connection help" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Assistant requested a repair?" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();

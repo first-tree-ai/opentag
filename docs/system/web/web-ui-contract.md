@@ -368,6 +368,17 @@ field, the method labels, and the installed states — goes through Paraglide. D
 copy into the message catalog as if it were an omission; the exception and its reason are recorded in
 `mcp-server-integration.md`.
 
+A state uses one label everywhere it appears. For example, a messaging binding that needs new permissions reads
+"Messaging permissions need updating" (需要更新消息权限) on the Agent list, the Agent page, the settings index, and the
+messaging page, with the single action Update permissions. Page subtitles, field helpers, and notes appear only when they
+add information the title or control does not already give. So the Tasks, messaging, Computer, Usage, and Account pages carry no
+subtitle, and Account shows the sign-in email as plain text without explanatory helpers. The Soul editor's description
+holds only the formatting hint while editing. The Model page shows one line by the model field only when the computer's
+model list can't be read. Usage notes unreported Tasks as a muted line under the totals, not a warning banner.
+Self-configuration sits on the Model page beside Ask for approval, with the other rules about what the Agent may do on
+its own. Why: repeated or differing wording makes one state read as several, and copy that restates the page is more
+to read with nothing more to act on.
+
 Controls use concise action labels. Errors explain what happened and what the user can do next. Messages stay short:
 they say what happened and the next step, without internal states (such as "already connected" or "nothing
 changed") or parenthetical mechanics. Explanatory text appears only when it adds information the reader needs, such

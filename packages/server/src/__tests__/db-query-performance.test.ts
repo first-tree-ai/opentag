@@ -1,5 +1,6 @@
 import postgres, { type Sql } from "postgres";
 import { describe, expect, it } from "vitest";
+import { createApp } from "../app.js";
 import { DatabaseQueryTimeoutError } from "../db/query-deadline.js";
 import { instrumentDatabaseSql, summarizeSqlQuery } from "../db/query-performance.js";
 import { createPerformanceLogger } from "../observability/performance-logger.js";
@@ -117,6 +118,120 @@ describe("database query performance logging", () => {
       dbTarget: "agents",
       paramCount: 2,
     });
+
+    for (const literalSql of [
+      "select 'from REVIEW_PRIVATE_LITERAL_BODY'::integer",
+      "select 'it''s from REVIEW_PRIVATE_LITERAL_BODY'::text",
+      "select E'it\\'s from REVIEW_PRIVATE_LITERAL_BODY'::text",
+      "select $$from REVIEW_PRIVATE_LITERAL_BODY$$::integer",
+      "select $tag$from REVIEW_PRIVATE_LITERAL_BODY$tag$::integer",
+      "select '/* open' as a, 'close */ from REVIEW_PRIVATE_LITERAL_BODY' as b",
+      "select 'from REVIEW_PRIVATE_LITERAL_BODY",
+      "select $$from REVIEW_PRIVATE_LITERAL_BODY",
+      'select "from REVIEW_PRIVATE_LITERAL_BODY"',
+    ]) {
+      const summary = summarizeSqlQuery([literalSql], []);
+      expect(summary).toEqual({
+        sqlCommand: "SELECT",
+        paramCount: 0,
+      });
+      expect(summary.dbTarget).toBeUndefined();
+    }
+
+    expect(summarizeSqlQuery(["select 'from REVIEW_PRIVATE_LITERAL_BODY' as label from \"accounts\""], [])).toEqual({
+      sqlCommand: "SELECT",
+      dbTarget: "accounts",
+      paramCount: 0,
+    });
+  });
+
+  it("never leaks single-quoted or dollar-quoted SQL literal bodies into dbTarget on success or 22P02 warn failure", async () => {
+    const literalQueries = [
+      "select 'from REVIEW_PRIVATE_LITERAL_BODY'::integer",
+      "select $$from REVIEW_PRIVATE_LITERAL_BODY$$::integer",
+      "select $tag$from REVIEW_PRIVATE_LITERAL_BODY$tag$::integer",
+      "select E'it\\'s from REVIEW_PRIVATE_LITERAL_BODY'::integer",
+    ];
+
+    const debugRecords: Array<{ level: string; payload: Record<string, unknown>; message: string }> = [];
+    const debugPerfLogger = createPerformanceLogger(
+      () =>
+        ({
+          isLevelEnabled: () => true,
+          debug: (payload: Record<string, unknown>, message: string) =>
+            debugRecords.push({ level: "debug", payload, message }),
+          info: (payload: Record<string, unknown>, message: string) =>
+            debugRecords.push({ level: "info", payload, message }),
+          warn: (payload: Record<string, unknown>, message: string) =>
+            debugRecords.push({ level: "warn", payload, message }),
+        }) as never,
+    );
+
+    const successSql = instrumentDatabaseSql(
+      createFakeSql(async () => [{ value: 1 }]),
+      debugPerfLogger,
+    );
+    for (const queryText of literalQueries) {
+      await successSql.unsafe(queryText);
+    }
+
+    expect(debugRecords).toHaveLength(literalQueries.length * 2);
+    for (const record of debugRecords) {
+      expect(record.payload.sqlCommand).toBe("SELECT");
+      expect(record.payload.dbTarget).toBeUndefined();
+      expect("dbTarget" in record.payload).toBe(false);
+    }
+    expect(JSON.stringify(debugRecords)).not.toContain("REVIEW_PRIVATE_LITERAL_BODY");
+
+    const chunks: string[] = [];
+    const app = createApp({
+      loggerStream: { write: (chunk) => chunks.push(String(chunk)) },
+      performanceLogging: { enabled: false },
+    });
+    try {
+      const warnPerfLogger = createPerformanceLogger(() => app.log, {
+        enabled: true,
+        level: "debug",
+      });
+      const failingSql = instrumentDatabaseSql(
+        createFakeSql(async (queryText) => {
+          throw Object.assign(new Error(`invalid input syntax for type integer: ${queryText}`), {
+            code: "22P02",
+          });
+        }),
+        warnPerfLogger,
+      );
+
+      for (const queryText of literalQueries) {
+        await expect(failingSql.unsafe(queryText)).rejects.toThrow();
+      }
+    } finally {
+      await app.close();
+    }
+
+    const emittedWarnRecords = chunks
+      .flatMap((chunk) => chunk.trim().split("\n"))
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+    const failedQueryRecords = emittedWarnRecords.filter(
+      (record) => record.operation === "db.query" && record.outcome === "failed",
+    );
+    expect(failedQueryRecords).toHaveLength(literalQueries.length);
+    for (const record of failedQueryRecords) {
+      expect(record).toMatchObject({
+        module: "database",
+        perfCategory: "db",
+        operation: "db.query",
+        sqlCommand: "SELECT",
+        sqlState: "22P02",
+        code: "DATABASE_QUERY_FAILED",
+        errorCode: "DATABASE_QUERY_FAILED",
+        outcome: "failed",
+      });
+      expect(record.dbTarget).toBeUndefined();
+      expect("dbTarget" in record).toBe(false);
+    }
+    expect(chunks.join("")).not.toContain("REVIEW_PRIVATE_LITERAL_BODY");
   });
 
   it("emits started and completed logs for tagged-template, unsafe, and transactional queries", async () => {

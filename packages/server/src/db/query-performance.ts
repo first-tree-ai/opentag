@@ -55,12 +55,121 @@ const TARGET_PATTERNS: readonly RegExp[] = [
   /\btable\s+(?:if\s+exists\s+)?"?([A-Za-z_][A-Za-z0-9_.]*)"?/i,
 ];
 
-function stripSqlComments(raw: string): string {
-  return raw
-    .replace(/\/\*[\s\S]*?\*\//g, " ")
-    .replace(/--[^\r\n]*/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+const IDENTIFIER_CHAR_PATTERN = /[A-Za-z0-9_$\x80-\xff]/;
+const STRING_PREFIX_CHAR_PATTERN = /^[EeBbXxNn]$/;
+// biome-ignore lint/suspicious/noControlCharactersInRegex: SQL dollar-quote tags allow non-ASCII bytes >= 0x80
+const DOLLAR_TAG_PATTERN = /^\$(?:[A-Za-z_\x80-\xff][A-Za-z0-9_\x80-\xff]*)?\$/;
+const SIMPLE_DOUBLE_QUOTED_IDENTIFIER = /^"([A-Za-z_][A-Za-z0-9_.]*)"/;
+
+function skipLineComment(raw: string, start: number): number {
+  let i = start + 2;
+  while (i < raw.length && raw[i] !== "\n" && raw[i] !== "\r") {
+    i += 1;
+  }
+  return i;
+}
+
+function skipBlockComment(raw: string, start: number): number {
+  let depth = 1;
+  let i = start + 2;
+  while (i < raw.length && depth > 0) {
+    const pair = raw.slice(i, i + 2);
+    if (pair === "/*") {
+      depth += 1;
+      i += 2;
+    } else if (pair === "*/") {
+      depth -= 1;
+      i += 2;
+    } else {
+      i += 1;
+    }
+  }
+  return i;
+}
+
+function skipSingleQuotedLiteral(raw: string, quoteStart: number): number {
+  let i = quoteStart + 1;
+  while (i < raw.length) {
+    const ch = raw[i];
+    if (ch === "\\") {
+      i += 2;
+      continue;
+    }
+    if (ch === "'") {
+      if (raw[i + 1] === "'") {
+        i += 2;
+        continue;
+      }
+      return i + 1;
+    }
+    i += 1;
+  }
+  return raw.length;
+}
+
+function skipDollarQuotedLiteral(raw: string, start: number): number | undefined {
+  const match = DOLLAR_TAG_PATTERN.exec(raw.slice(start));
+  if (!match) return undefined;
+  const delimiter = match[0];
+  const closeIndex = raw.indexOf(delimiter, start + delimiter.length);
+  return closeIndex === -1 ? raw.length : closeIndex + delimiter.length;
+}
+
+function consumeDoubleQuotedIdentifier(raw: string, start: number): { nextIndex: number; replacement: string } {
+  const simpleMatch = SIMPLE_DOUBLE_QUOTED_IDENTIFIER.exec(raw.slice(start));
+  if (simpleMatch && raw[start + simpleMatch[0].length] !== '"') {
+    return { nextIndex: start + simpleMatch[0].length, replacement: simpleMatch[0] };
+  }
+  let i = start + 1;
+  while (i < raw.length) {
+    if (raw[i] === '"') {
+      if (raw[i + 1] === '"') {
+        i += 2;
+        continue;
+      }
+      return { nextIndex: i + 1, replacement: " '' " };
+    }
+    i += 1;
+  }
+  return { nextIndex: raw.length, replacement: " '' " };
+}
+
+function prefixedLiteralQuoteOffset(raw: string, index: number): number {
+  if (index > 0 && IDENTIFIER_CHAR_PATTERN.test(raw[index - 1] ?? "")) return 0;
+  const ch = raw[index] ?? "";
+  if ((ch === "U" || ch === "u") && raw[index + 1] === "&" && raw[index + 2] === "'") return 2;
+  if (STRING_PREFIX_CHAR_PATTERN.test(ch) && raw[index + 1] === "'") return 1;
+  return 0;
+}
+
+function consumeSqlToken(raw: string, index: number): { nextIndex: number; replacement: string } {
+  const pair = raw.slice(index, index + 2);
+  if (pair === "--") return { nextIndex: skipLineComment(raw, index), replacement: " " };
+  if (pair === "/*") return { nextIndex: skipBlockComment(raw, index), replacement: " " };
+
+  const prefixOffset = prefixedLiteralQuoteOffset(raw, index);
+  if (prefixOffset > 0 || raw[index] === "'") {
+    return { nextIndex: skipSingleQuotedLiteral(raw, index + prefixOffset), replacement: " '' " };
+  }
+  if (raw[index] === "$") {
+    const nextIndex = skipDollarQuotedLiteral(raw, index);
+    if (nextIndex !== undefined) return { nextIndex, replacement: " '' " };
+  }
+  if (raw[index] === '"') {
+    return consumeDoubleQuotedIdentifier(raw, index);
+  }
+  return { nextIndex: index + 1, replacement: raw[index] ?? "" };
+}
+
+function stripSqlCommentsAndLiterals(raw: string): string {
+  let out = "";
+  let index = 0;
+  while (index < raw.length) {
+    const step = consumeSqlToken(raw, index);
+    out += step.replacement;
+    index = step.nextIndex;
+  }
+  return out.replace(/\s+/g, " ").trim();
 }
 
 function extractTargetTable(cleanedSql: string): string | undefined {
@@ -82,7 +191,7 @@ export function summarizeSqlQuery(
   dbTarget?: string;
   paramCount: number;
 } {
-  const skeleton = stripSqlComments(strings.slice(0, 64).join(" $param "));
+  const skeleton = stripSqlCommentsAndLiterals(strings.slice(0, 64).join(" $1 "));
   const firstToken = skeleton.split(/\s+/, 1)[0]?.toUpperCase() ?? "";
   const sqlCommand = KNOWN_SQL_COMMANDS.has(firstToken) ? firstToken : "OTHER";
   const dbTarget = extractTargetTable(skeleton);

@@ -61,7 +61,9 @@ interface ProxyStream {
   id: number;
   state: "opening" | "open" | "closed";
   abort: AbortController;
+  abortCode?: string;
   authorization?: Awaited<ReturnType<RuntimeCredentialBroker["beginRequest"]>>;
+  sessionId?: string;
   requestBody: AsyncByteQueue;
   uploadCredit: number;
   downloadCredit: number;
@@ -303,6 +305,7 @@ class ProxyDataConnection {
     const broker = this.#transport.broker;
     const adapter = this.#transport.adapters?.get(frame.provider);
     const perfHandle = startProxyStreamPerf(this.#transport.performanceLogger, frame.provider, frame.method);
+    let responseStatus: number | undefined;
     try {
       if (!broker || !adapter) throw new RuntimeCredentialError("provider_mismatch");
       const authorization = await broker.beginRequest({
@@ -316,7 +319,8 @@ class ProxyDataConnection {
         throw new RuntimeCredentialError("credential_scope_denied");
       }
       stream.authorization = authorization;
-      if (stream.state === "closed") return;
+      stream.sessionId = authorization.sessionId;
+      if (this.#settleIfStreamCancelled(perfHandle, stream, frame.provider)) return;
       stream.state = "open";
       const request: ProviderProxyRequest = {
         executionId: authorization.executionId,
@@ -335,7 +339,8 @@ class ProxyDataConnection {
         },
       };
       const response = await adapter.handle(request, authorization);
-      if (this.#streamClosed(stream)) return;
+      responseStatus = response.status;
+      if (this.#settleIfStreamCancelled(perfHandle, stream, frame.provider, responseStatus)) return;
       const head = {
         type: "response" as const,
         streamId: stream.id,
@@ -352,14 +357,12 @@ class ProxyDataConnection {
       stream.responseStarted = true;
       this.#sendJson(head);
       await this.#pipeResponseBody(stream, response.body);
+      if (this.#settleIfStreamCancelled(perfHandle, stream, frame.provider, responseStatus)) return;
       completeProxyStreamPerf(perfHandle, stream, frame.provider, response.status);
-      if (!this.#streamClosed(stream)) {
-        this.#sendJson({ type: "end", streamId: stream.id });
-        this.#closeStream(stream);
-      }
+      this.#sendJson({ type: "end", streamId: stream.id });
+      this.#closeStream(stream);
     } catch (error) {
-      const code = errorCodeOf(error);
-      failProxyStreamPerf(perfHandle, stream, frame.provider, error, code);
+      const code = this.#settleFailedStreamPerf(perfHandle, stream, frame.provider, error, responseStatus);
       // A stream that already ended or was aborted locally must not emit a late terminal frame:
       // the client may have finished it already, and a stale cancel/error would be a violation.
       if (this.#streamClosed(stream)) return;
@@ -371,6 +374,30 @@ class ProxyDataConnection {
       }
       this.#closeStream(stream);
     }
+  }
+
+  #settleIfStreamCancelled(
+    perfHandle: PerformanceOperationHandle | undefined,
+    stream: ProxyStream,
+    provider: RuntimeCredentialProvider,
+    statusCode?: number,
+  ): boolean {
+    if (!this.#streamClosed(stream) && !stream.abort.signal.aborted) return false;
+    failProxyStreamPerf(perfHandle, stream, provider, undefined, stream.abortCode ?? "cancelled", statusCode);
+    return true;
+  }
+
+  #settleFailedStreamPerf(
+    perfHandle: PerformanceOperationHandle | undefined,
+    stream: ProxyStream,
+    provider: RuntimeCredentialProvider,
+    error: unknown,
+    statusCode?: number,
+  ): string {
+    const closedOrAborted = this.#streamClosed(stream) || stream.abort.signal.aborted;
+    const code = stream.abortCode ?? (closedOrAborted ? "cancelled" : errorCodeOf(error));
+    failProxyStreamPerf(perfHandle, stream, provider, closedOrAborted ? undefined : error, code, statusCode);
+    return code;
   }
 
   #logStreamFailure(provider: RuntimeCredentialProvider, code: string): void {
@@ -491,6 +518,7 @@ class ProxyDataConnection {
     } catch (error) {
       if (this.#streamClosed(stream)) return;
       const code = errorCodeOf(error);
+      stream.abortCode = code;
       this.#logStreamFailure(stream.authorization.provider, code);
       if (stream.responseStarted) this.#sendJson({ type: "cancel", streamId: stream.id, code });
       else this.#sendJson({ type: "error", streamId: stream.id, code });
@@ -609,7 +637,7 @@ function completeProxyStreamPerf(
   if (!perfHandle) return;
   perfHandle.complete({
     statusCode,
-    ...(stream.authorization?.sessionId ? { sessionId: stream.authorization.sessionId } : {}),
+    ...(stream.sessionId ? { sessionId: stream.sessionId } : {}),
     ...proxyStreamAttributes(stream, provider),
   });
 }
@@ -620,12 +648,14 @@ function failProxyStreamPerf(
   provider: RuntimeCredentialProvider,
   error: unknown,
   code: string,
+  statusCode?: number,
 ): void {
   if (!perfHandle) return;
   perfHandle.fail(
     error,
     {
-      ...(stream.authorization?.sessionId ? { sessionId: stream.authorization.sessionId } : {}),
+      ...(statusCode !== undefined ? { statusCode } : {}),
+      ...(stream.sessionId ? { sessionId: stream.sessionId } : {}),
       ...proxyStreamAttributes(stream, provider),
     },
     code,

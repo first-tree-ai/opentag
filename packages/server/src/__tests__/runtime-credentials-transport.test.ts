@@ -321,6 +321,79 @@ describe("RuntimeProviderProxyTransport", () => {
     socket.close();
   });
 
+  it("settles a cancelled stream as failed rather than completed when the upstream generator settles after cancel", async () => {
+    const perfRecords: Array<Record<string, unknown>> = [];
+    const baseLogger = {
+      debug: (payload: Record<string, unknown>) => perfRecords.push(payload),
+      info: (payload: Record<string, unknown>) => perfRecords.push(payload),
+      warn: (payload: Record<string, unknown>) => perfRecords.push(payload),
+      error: (payload: Record<string, unknown>) => perfRecords.push(payload),
+    };
+    const performanceLogger = createPerformanceLogger(
+      () => baseLogger as unknown as Parameters<typeof createPerformanceLogger>[0] extends () => infer R ? R : never,
+      { enabled: true, level: "debug", slowThresholdMs: 1_000 },
+    );
+    let releaseGenerator!: () => void;
+    const generatorWaiting = new Promise<void>((resolve) => {
+      releaseGenerator = resolve;
+    });
+    let generatorFinished!: () => void;
+    const generatorSettled = new Promise<void>((resolve) => {
+      generatorFinished = resolve;
+    });
+    const waitingAdapter: ProviderProxyAdapter = {
+      handle: async () => ({
+        status: 200,
+        headers: { "content-type": "text/plain" },
+        body: {
+          [Symbol.asyncIterator]: () => ({
+            async next() {
+              try {
+                await generatorWaiting;
+                return { done: true as const, value: undefined };
+              } finally {
+                generatorFinished();
+              }
+            },
+          }),
+        },
+      }),
+    };
+    const state = await setup(waitingAdapter, { performanceLogger });
+    const { ticket } = state.tickets.issue({
+      executionId: state.record.executionId,
+      computerId: COMPUTER,
+      instanceId: "instance-1",
+      connectionId: "connection-1",
+    });
+    const { socket, queue } = await connect(state.port, ticket);
+    expect(await queue.nextJson()).toEqual({ type: "ready", executionId: state.record.executionId });
+    socket.send(openFrame(7, state.grant.token, "/api/chat.postMessage"));
+    socket.send(JSON.stringify({ type: "end", streamId: 7 }));
+    const response = await queue.nextJson();
+    expect(response).toMatchObject({ type: "response", streamId: 7, status: 200 });
+    socket.send(JSON.stringify({ type: "cancel", streamId: 7 }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    releaseGenerator();
+    await generatorSettled;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const terminalRecords = perfRecords.filter(
+      (record) => record.operation === "ws.provider_proxy.stream" && record.outcome !== "started",
+    );
+    expect(terminalRecords).toHaveLength(1);
+    expect(terminalRecords[0]).toMatchObject({
+      module: "runtime-provider-proxy",
+      perfCategory: "ws",
+      operation: "ws.provider_proxy.stream",
+      outcome: "failed",
+      errorCode: "cancelled",
+      provider: "slack",
+      statusCode: 200,
+    });
+    socket.close();
+  });
+
   it("rejects a ticket replay and a bad ticket", async () => {
     const state = await setup(echoAdapter());
     const { ticket } = state.tickets.issue({

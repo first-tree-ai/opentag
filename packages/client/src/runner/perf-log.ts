@@ -57,9 +57,13 @@ const THRESHOLDS_MS: Readonly<Record<RunnerPerformanceOperation, number>> = {
 const SAFE_ERROR_CODE = /^[a-zA-Z0-9_-]{1,64}$/;
 
 export function safeRunnerErrorCode(error: unknown): string | undefined {
-  if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
-  const code = (error as { code?: unknown }).code;
-  return typeof code === "string" && SAFE_ERROR_CODE.test(code) ? code : undefined;
+  try {
+    if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
+    const code = (error as { code?: unknown }).code;
+    return typeof code === "string" && SAFE_ERROR_CODE.test(code) ? code : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function createRunnerPerformanceStderrSink(
@@ -123,31 +127,51 @@ export async function traceRunnerOperation<T>(
   initialMetrics?: RunnerPerformanceMetrics,
   nowMs: () => number = () => performance.now(),
 ): Promise<T> {
-  const startedAt = nowMs();
+  if (!sink) {
+    return fn(() => undefined);
+  }
+  let startedAt = 0;
+  try {
+    startedAt = nowMs();
+  } catch {
+    startedAt = 0;
+  }
   let extraMetrics: RunnerPerformanceMetrics = initialMetrics ? { ...initialMetrics } : {};
   const addMetrics = (metrics: RunnerPerformanceMetrics) => {
-    extraMetrics = { ...extraMetrics, ...metrics };
+    try {
+      extraMetrics = { ...extraMetrics, ...metrics };
+    } catch {
+      // Performance logging must never alter Runner execution or state transitions.
+    }
   };
   try {
     const result = await fn(addMetrics);
-    emitRunnerPerformance(sink, {
-      operation,
-      durationMs: nowMs() - startedAt,
-      outcome: "success",
-      metrics: extraMetrics,
-    });
+    try {
+      emitRunnerPerformance(sink, {
+        operation,
+        durationMs: nowMs() - startedAt,
+        outcome: "success",
+        metrics: extraMetrics,
+      });
+    } catch {
+      // Performance logging must never alter Runner execution or state transitions.
+    }
     return result;
   } catch (error) {
-    const errorCode = safeRunnerErrorCode(error);
-    emitRunnerPerformance(sink, {
-      operation,
-      durationMs: nowMs() - startedAt,
-      outcome: "error",
-      metrics: {
-        ...extraMetrics,
-        ...(errorCode ? { errorCode } : {}),
-      },
-    });
+    try {
+      const errorCode = safeRunnerErrorCode(error);
+      emitRunnerPerformance(sink, {
+        operation,
+        durationMs: nowMs() - startedAt,
+        outcome: "error",
+        metrics: {
+          ...extraMetrics,
+          ...(errorCode ? { errorCode } : {}),
+        },
+      });
+    } catch {
+      // Performance logging must never replace the original operation error.
+    }
     throw error;
   }
 }

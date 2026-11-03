@@ -17,6 +17,7 @@ import { PiRpcError } from "../providers/pi/rpc-wire.js";
 import {
   createRunnerPerformanceStderrSink,
   type RunnerPerformanceLogRecord,
+  safeRunnerErrorCode,
   traceRunnerOperation,
 } from "../runner/perf-log.js";
 
@@ -368,5 +369,46 @@ describe("Cloud Pi diagnostics", () => {
       durationMs: 6000,
       slow: true,
     });
+
+    const hostileError = new Error("original business failure");
+    Object.defineProperty(hostileError, "code", {
+      get() {
+        throw new Error("code getter boom");
+      },
+    });
+    const proxyError = new Proxy(new Error("proxy failure"), {
+      has() {
+        throw new Error("has trap boom");
+      },
+    });
+    expect(safeRunnerErrorCode(hostileError)).toBeUndefined();
+    expect(safeRunnerErrorCode(proxyError)).toBeUndefined();
+
+    await expect(
+      traceRunnerOperation(undefined, "runner.workspace.restore", async () => {
+        throw hostileError;
+      }),
+    ).rejects.toBe(hostileError);
+
+    const failureRecords: RunnerPerformanceLogRecord[] = [];
+    await expect(
+      traceRunnerOperation(
+        (record) => failureRecords.push(record),
+        "runner.workspace.restore",
+        async () => {
+          throw hostileError;
+        },
+        { sandboxName: "ots-test" },
+        () => 250,
+      ),
+    ).rejects.toBe(hostileError);
+    expect(failureRecords).toEqual([
+      expect.objectContaining({
+        operation: "runner.workspace.restore",
+        outcome: "error",
+        severity: "ERROR",
+        sandboxName: "ots-test",
+      }),
+    ]);
   });
 });

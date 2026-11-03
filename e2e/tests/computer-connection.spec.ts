@@ -290,7 +290,9 @@ test("connects another Computer from Agent settings without moving the Agent", a
     }),
   ).toBeVisible();
   const task = await copyTask(page, page.locator('[data-ui="computer-connect"]'));
-  expect(task).toContain("this computer's current environment");
+  // The same two-line text as every connect surface: the inert Agent line, then the command.
+  expect(task).toMatch(/^: 'openTag: connect this computer to my account\. Run the next line as-is/);
+  expect(task.split("\n")).toHaveLength(2);
   const machine = await temporaryComputer();
   try {
     const newId = await machine.connect(task);

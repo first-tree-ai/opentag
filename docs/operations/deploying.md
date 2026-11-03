@@ -287,9 +287,8 @@ single-replica stop-then-start replacement; do not run an older and newer Server
 database without shipping the tolerant reader first. To roll back safely across this boundary, follow this ordered
 sequence:
 
-1. **Quiesce the current Server**: stop the running Server container (or pause Feishu connections and wait for detached
-   `#enrichChatMetadata` background tasks to drain) so no live Feishu WebSocket writer or background enrichment task can
-   write `chatMode` or `groupMessageType` while cleanup is in progress.
+1. **Quiesce the current Server**: stop the running Server container so no live Feishu WebSocket writer or detached
+   `#enrichChatMetadata` background task can write `chatMode` or `groupMessageType` while cleanup is in progress.
 2. **Audit both tables**:
 
 ```sql

@@ -1896,4 +1896,176 @@ describe("FeishuConnectionManager", () => {
     });
     await manager.stop();
   });
+
+  it("coalesces concurrent cold-channel backfills and repairs a warm channel after a failed single-row update", async () => {
+    const value = await connectionFixture();
+    const owner = crypto.randomUUID();
+    const attemptId = await validatingConnectionAttempt(value, owner);
+    let releaseColdMetadata: ((metadata: FeishuChatMetadata | undefined) => void) | undefined;
+    const sharedLookup = new Promise<FeishuChatMetadata | undefined>((resolve) => {
+      releaseColdMetadata = resolve;
+    });
+    const resolveChatMetadata = vi
+      .fn<({ chatId }: { chatId: string }) => Promise<FeishuChatMetadata | undefined>>()
+      .mockReturnValueOnce(sharedLookup)
+      .mockReturnValueOnce(sharedLookup)
+      .mockResolvedValue({ chatMode: "topic" });
+    const fake = fakeConnectionAdapter({ appId: "cli_coalesce", resolveChatMetadata });
+    fake.adapter.normalizeInbound = (envelope) => normalizeFeishuMessage(envelope);
+
+    const cold1Id = crypto.randomUUID();
+    const cold2Id = crypto.randomUUID();
+    const failedWarmId = crypto.randomUUID();
+    const repairWarmId = crypto.randomUUID();
+    const inbox = {
+      ingest: vi
+        .fn()
+        .mockResolvedValueOnce({ messageId: cold1Id, deliveryIds: ["d1"], duplicate: false })
+        .mockResolvedValueOnce({ messageId: cold2Id, deliveryIds: ["d2"], duplicate: false })
+        .mockResolvedValueOnce({ messageId: failedWarmId, deliveryIds: ["d3"], duplicate: false })
+        .mockResolvedValueOnce({ messageId: repairWarmId, deliveryIds: ["d4"], duplicate: false }),
+    };
+    const manager = new FeishuConnectionManager({
+      database: connectionDatabase.database,
+      inbox: inbox as never,
+      instanceId: owner,
+      imBindings: value.imBindings,
+      createAdapter: () => fake.adapter,
+    });
+    await manager.activateAtomicAttempt({
+      attemptId,
+      ownerInstanceId: owner,
+      agentId: value.agent.id,
+      appId: "cli_coalesce",
+      appSecret: "secret",
+    });
+    const [binding] = await connectionDatabase.database
+      .select()
+      .from(imBindings)
+      .where(eq(imBindings.agentId, value.agent.id));
+    if (!binding) throw new Error("Expected activated Feishu binding");
+
+    await connectionDatabase.database.insert(imMessages).values(
+      [
+        [cold1Id, "ev_c1", "om_c1"],
+        [cold2Id, "ev_c2", "om_c2"],
+      ].map(([id, providerEventId, externalMessageId]) => ({
+        id: id as string,
+        imBindingId: binding.id,
+        providerEventId: providerEventId as string,
+        channelId: "oc_cold",
+        externalMessageId: externalMessageId as string,
+        providerRevisionKey: "1",
+        operation: "created" as const,
+        direction: "inbound" as const,
+        authorKind: "human" as const,
+        authorExternalId: "ou_human",
+        content: { version: 1 as const, fallbackText: externalMessageId as string, blocks: [], truncated: false },
+        providerContext: { provider: "feishu" as const, chatType: "group" },
+        occurredAt: connectionNow,
+        receivedAt: connectionNow,
+      })),
+    );
+
+    const updateWhereSqls: string[] = [];
+    let failNextImMessageUpdate = false;
+    const realUpdate = connectionDatabase.database.update.bind(connectionDatabase.database);
+    const updateSpy = vi.spyOn(connectionDatabase.database, "update").mockImplementation(((table: unknown) => {
+      const builder = realUpdate(table as never);
+      if (table !== imMessages) return builder;
+      const realSet = builder.set.bind(builder);
+      builder.set = ((values: unknown) => {
+        const setBuilder = realSet(values as never);
+        const realWhere = setBuilder.where.bind(setBuilder);
+        setBuilder.where = ((condition: unknown) => {
+          const query = realWhere(condition as never);
+          updateWhereSqls.push(query.toSQL().sql);
+          if (failNextImMessageUpdate) {
+            failNextImMessageUpdate = false;
+            return Promise.reject(new Error("transient update failure")) as never;
+          }
+          return query;
+        }) as typeof setBuilder.where;
+        return setBuilder;
+      }) as typeof builder.set;
+      return builder;
+    }) as typeof connectionDatabase.database.update);
+
+    try {
+      const send = (eventId: string, messageId: string, createTime: number) =>
+        fake.getHandlers().message?.({
+          messageId,
+          chatId: "oc_cold",
+          chatType: "group",
+          senderId: "ou_human",
+          content: messageId,
+          rawContentType: "text",
+          resources: [],
+          mentions: [],
+          mentionAll: false,
+          mentionedBot: false,
+          createTime,
+          raw: { header: { event_id: eventId, tenant_key: "tenant_1" } },
+        } as never);
+
+      await Promise.all([send("ev_c1", "om_c1", 1), send("ev_c2", "om_c2", 2)]);
+      releaseColdMetadata?.({ chatMode: "topic" });
+
+      await vi.waitFor(() => {
+        expect(updateWhereSqls).toHaveLength(2);
+      });
+      expect(updateWhereSqls.filter((sql) => sql.includes('"channel_id" ='))).toHaveLength(1);
+      expect(updateWhereSqls.filter((sql) => sql.includes('"im_messages"."id" ='))).toHaveLength(1);
+
+      await connectionDatabase.database.insert(imMessages).values(
+        [
+          [failedWarmId, "ev_c3", "om_c3"],
+          [repairWarmId, "ev_c4", "om_c4"],
+        ].map(([id, providerEventId, externalMessageId]) => ({
+          id: id as string,
+          imBindingId: binding.id,
+          providerEventId: providerEventId as string,
+          channelId: "oc_cold",
+          externalMessageId: externalMessageId as string,
+          providerRevisionKey: "1",
+          operation: "created" as const,
+          direction: "inbound" as const,
+          authorKind: "human" as const,
+          authorExternalId: "ou_human",
+          content: { version: 1 as const, fallbackText: externalMessageId as string, blocks: [], truncated: false },
+          providerContext: { provider: "feishu" as const, chatType: "group" },
+          occurredAt: connectionNow,
+          receivedAt: connectionNow,
+        })),
+      );
+
+      failNextImMessageUpdate = true;
+      await send("ev_c3", "om_c3", 3);
+      await vi.waitFor(() => {
+        expect(updateWhereSqls).toHaveLength(3);
+      });
+      const [unrepaired] = await connectionDatabase.database
+        .select({ providerContext: imMessages.providerContext })
+        .from(imMessages)
+        .where(eq(imMessages.id, failedWarmId));
+      expect(unrepaired?.providerContext).toEqual({ provider: "feishu", chatType: "group" });
+
+      await send("ev_c4", "om_c4", 4);
+      await vi.waitFor(async () => {
+        const [repaired] = await connectionDatabase.database
+          .select({ providerContext: imMessages.providerContext })
+          .from(imMessages)
+          .where(eq(imMessages.id, failedWarmId));
+        expect(repaired?.providerContext).toEqual({
+          provider: "feishu",
+          chatType: "group",
+          chatMode: "topic",
+        });
+      });
+      expect(updateWhereSqls.at(-1)).toContain('"channel_id" =');
+    } finally {
+      updateSpy.mockRestore();
+      await manager.stop();
+    }
+  });
 });

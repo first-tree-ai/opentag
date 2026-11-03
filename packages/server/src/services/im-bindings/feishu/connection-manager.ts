@@ -30,6 +30,7 @@ type InboundReceipt = { receiptId: string; attempt?: number; receivedAt?: Date }
 const DEFAULT_LEASE_MS = 30_000;
 const DEFAULT_MAINTENANCE_MS = 10_000;
 const CONNECTION_SCAN_PAGE_SIZE = 100;
+const BACKFILLED_CHATS_MAX_ENTRIES = 10_000;
 /** The channel-free Bot info probe is a bounded metadata read, not channel work. */
 const CANDIDATE_BOT_PROBE_TIMEOUT_MS = 5_000;
 
@@ -78,7 +79,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
   readonly #onCardAction?: (event: unknown, bindingId: string, generation: number) => Promise<unknown>;
   readonly #afterActivationAgentLocked: (() => Promise<void>) | undefined;
   readonly #owned = new Map<string, OwnedChannel>();
-  readonly #backfilledChats = new Set<string>();
+  readonly #backfilledChats = new Map<string, Promise<void> | "done">();
   readonly #maintenanceControllers = new Map<string, AbortController>();
   readonly #maintenanceFailures = new Map<string, number>();
   readonly #maintenanceNextAt = new Map<string, number>();
@@ -154,6 +155,7 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     this.#timer = undefined;
     const owned = [...this.#owned.entries()];
     this.#owned.clear();
+    this.#backfilledChats.clear();
     await Promise.allSettled(
       owned.map(async ([imBindingId, entry]) => {
         await entry.adapter.channel.disconnect().catch(() => this.#onDiagnostic("FEISHU_CONNECTION_DISCONNECT_FAILED"));
@@ -890,33 +892,39 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
     }
   }
 
-  async #enrichChatMetadata(
-    adapter: FeishuAdapter,
-    input: { imBindingId: string; messageId: string; chatId: string },
-  ): Promise<void> {
-    const channelKey = `${input.imBindingId}:${input.chatId}`;
+  #setBackfillState(channelKey: string, state: Promise<void> | "done"): void {
+    this.#backfilledChats.delete(channelKey);
+    this.#backfilledChats.set(channelKey, state);
+    while (this.#backfilledChats.size > BACKFILLED_CHATS_MAX_ENTRIES) {
+      const oldest = this.#backfilledChats.keys().next().value;
+      if (oldest === undefined) break;
+      this.#backfilledChats.delete(oldest);
+    }
+  }
+
+  async #resolveChatPatch(adapter: FeishuAdapter, channelKey: string, chatId: string): Promise<string | undefined> {
     let metadata: Awaited<ReturnType<FeishuAdapter["resolveChatMetadata"]>>;
     try {
-      metadata = await adapter.resolveChatMetadata?.({ chatId: input.chatId });
+      metadata = await adapter.resolveChatMetadata?.({ chatId });
     } catch (error) {
       this.#backfilledChats.delete(channelKey);
       throw error;
     }
     if (!metadata?.chatMode) {
       this.#backfilledChats.delete(channelKey);
-      return;
+      return undefined;
     }
-    const patch = {
+    return JSON.stringify({
       chatMode: metadata.chatMode,
       ...(metadata.groupMessageType ? { groupMessageType: metadata.groupMessageType } : {}),
-    };
-    const scope = this.#backfilledChats.has(channelKey)
-      ? and(eq(imMessages.id, input.messageId), eq(imMessages.imBindingId, input.imBindingId))
-      : and(eq(imMessages.imBindingId, input.imBindingId), eq(imMessages.channelId, input.chatId));
+    });
+  }
+
+  async #updateChatContext(scope: ReturnType<typeof and>, patchJson: string): Promise<void> {
     await this.#database
       .update(imMessages)
       .set({
-        providerContext: sql`${imMessages.providerContext} || ${JSON.stringify(patch)}::jsonb`,
+        providerContext: sql`${imMessages.providerContext} || ${patchJson}::jsonb`,
       })
       .where(
         and(
@@ -925,7 +933,42 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
           sql`${imMessages.providerContext} ->> 'chatMode' is null`,
         ),
       );
-    this.#backfilledChats.add(channelKey);
+  }
+
+  async #enrichChatMetadata(
+    adapter: FeishuAdapter,
+    input: { imBindingId: string; messageId: string; chatId: string },
+  ): Promise<void> {
+    const channelKey = `${input.imBindingId}:${input.chatId}`;
+    const patchJson = await this.#resolveChatPatch(adapter, channelKey, input.chatId);
+    if (!patchJson) return;
+    const existing = this.#backfilledChats.get(channelKey);
+    if (!existing) {
+      const backfill = this.#updateChatContext(
+        and(eq(imMessages.imBindingId, input.imBindingId), eq(imMessages.channelId, input.chatId)),
+        patchJson,
+      );
+      this.#setBackfillState(channelKey, backfill);
+      try {
+        await backfill;
+        if (this.#backfilledChats.get(channelKey) === backfill) this.#setBackfillState(channelKey, "done");
+      } catch (error) {
+        if (this.#backfilledChats.get(channelKey) === backfill) this.#backfilledChats.delete(channelKey);
+        throw error;
+      }
+      return;
+    }
+    try {
+      if (existing !== "done") await existing;
+      else this.#setBackfillState(channelKey, "done");
+      await this.#updateChatContext(
+        and(eq(imMessages.id, input.messageId), eq(imMessages.imBindingId, input.imBindingId)),
+        patchJson,
+      );
+    } catch (error) {
+      this.#backfilledChats.delete(channelKey);
+      throw error;
+    }
   }
 
   async #enrichSenderName(

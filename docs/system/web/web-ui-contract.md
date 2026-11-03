@@ -135,6 +135,16 @@ the viewport. The shell follows the website app preview breakpoints: 240px Agent
 and inline scrolling navigation at 640px and below. Compact controls retain account access and Agent switching.
 The same route outlet remains mounted across those changes. Agent roster rows stack identity above status below a 42rem roster container width, keeping names and setup actions readable at 320px.
 
+Agent roster status stays steady through background refreshes. Transient evidence (a refresh that failed, a
+paused offline read, delivery credentials being re-verified, or a runtime Provider probe still running) does not
+replace a row's last settled status; the row keeps it until the next settled answer. A check with no settled answer
+behind it reads as Ready, while unreadable evidence with none reads as Status unavailable. A confirmed problem
+replaces Ready as soon as it is read. When a row's evidence stays transient for a full refresh interval, that row
+alone adds a quiet **Refreshing status** note under its held status; there is no page-level notice. The Agent's own
+page keeps the exact current dependency states. The Server already bounds what it holds: a local Computer without a
+heartbeat for 90 seconds reads as offline, and runtime and messaging observations expire on their own TTLs, so held
+list statuses converge on the Server's next settled answer.
+
 UI changes must be checked at these representative widths when the surface can render there:
 
 | Width | Acceptance purpose |

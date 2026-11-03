@@ -364,16 +364,24 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("heading", { level: 1, name: "Reviewer" })).toBeNull();
   });
 
-  it("marks retained Agent rows unconfirmed after a transient primary refresh failure", async () => {
+  it("keeps retained Agent rows on their last settled status through a transient primary refresh failure", async () => {
     let agentListStatus: number | undefined;
     installApi({ agentListStatus: () => agentListStatus, bound: true });
     window.history.replaceState({}, "", "/agents");
     render(<App />);
     expect(await screen.findByText("Ready")).toBeTruthy();
+    const listReads = () =>
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(([input, init]) => String(input) === "/api/v1/agents" && (init?.method ?? "GET") === "GET")
+        .length;
+    const readsBefore = listReads();
 
     agentListStatus = 503;
     fireEvent(window, new Event("focus"));
-    expect(await screen.findByText("Status unavailable")).toBeTruthy();
+    await waitFor(() => expect(listReads()).toBeGreaterThan(readsBefore));
+    await waitFor(() => expect(screen.getByText("Ready")).toBeTruthy());
+    expect(screen.queryByText("Status unavailable")).toBeNull();
     expect(screen.getByText("Reviewer")).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();
   });

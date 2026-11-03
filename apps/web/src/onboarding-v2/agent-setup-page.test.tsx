@@ -1604,6 +1604,20 @@ describe("AgentSetupPage preparation rows across stages", () => {
   });
 });
 
+describe("AgentSetupPage runtime sign-in", () => {
+  it("offers Sign in with the terminal steps on the runtime row", async () => {
+    const memory = createMemorySetupAdapter({ agent: setupAgent(), runtimeStatus: "sign-in" });
+    renderSetup(memory.adapter);
+    await settle();
+
+    const row = document.querySelector('[data-component="runtime"]') as HTMLElement;
+    const toggle = within(row).getByRole("button", { name: "Sign in" });
+    fireEvent.click(toggle);
+    expect(within(row).getByText("codex login")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
+  });
+});
+
 describe("AgentSetupPage preparation polling", () => {
   it("follows the real first-connect heartbeats: waiting, install at 30s, ready after t60", async () => {
     const memory = createMemorySetupAdapter({

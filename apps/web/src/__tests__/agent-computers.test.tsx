@@ -103,10 +103,11 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByText("Claude Code sign-in required")).toBeTruthy();
-    // The row names its next step: setup is where the Computer's runtime checks are re-run.
-    expect(screen.getByRole("link", { name: "Continue setup" }).getAttribute("href")).toBe(
-      `/agents/setup?agentId=${agentId}`,
+    // The row names its next step: sign in, on the setup step that shows how and re-runs the check.
+    expect(screen.getByRole("link", { name: "Sign in" }).getAttribute("href")).toBe(
+      `/agents/setup?agentId=${agentId}#sign-in`,
     );
+    expect(screen.queryByRole("link", { name: "Continue setup" })).toBeNull();
     expect(screen.queryByText("Cannot receive new work")).toBeNull();
     expect(screen.queryByRole("link", { name: "View Computer" })).toBeNull();
     expect(screen.queryByText("Available")).toBeNull();
@@ -261,8 +262,8 @@ describe("OpenTag Web App Shell", () => {
         options: { computerProviderReadiness: readiness("install") },
       },
       {
-        exit: "Continue setup",
-        href: `/agents/setup?agentId=${agentId}`,
+        exit: "Sign in",
+        href: `/agents/setup?agentId=${agentId}#sign-in`,
         label: "Codex sign-in required",
         options: { computerProviderReadiness: readiness("sign-in") },
       },

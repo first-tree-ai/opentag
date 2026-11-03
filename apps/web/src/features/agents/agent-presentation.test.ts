@@ -173,6 +173,10 @@ describe("The single action a list row offers", () => {
 
   it("names where each fixable blocked state gets fixed", () => {
     expect(agentRowAction(row(bound("online", "install")))).toMatchObject({ label: "Continue setup" });
+    expect(agentRowAction(row(bound("online", "sign-in")))).toMatchObject({
+      label: "Sign in",
+      link: { hash: "sign-in", to: "/agents/setup" },
+    });
     expect(agentRowAction(row(messaging("reauthorization_required")))).toMatchObject(settings("Update permissions"));
     expect(agentRowAction(row(messaging("error")))).toMatchObject(settings("Reconnect channel"));
     expect(agentRowAction(row(messaging("disabled")))).toMatchObject(settings("Reconnect channel"));

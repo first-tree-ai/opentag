@@ -208,7 +208,7 @@ describe("RuntimeTestAction", () => {
     const hang = deferred<AgentRuntimeTestResponse>();
     vi.spyOn(browserApi, "testAgentRuntime").mockReturnValueOnce(hang.promise);
     const pendingView = renderAction();
-    expect(screen.getByText("使用已保存的模型设置发送一个简短请求。此操作可能会消耗 Provider 配额。")).toBeTruthy();
+    expect(screen.getByText("使用已保存的模型设置发送一个简短请求。此操作可能会消耗模型服务配额。")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "运行测试" }));
     expect(await screen.findByRole("button", { name: "正在测试…" })).toBeTruthy();
     pendingView.unmount();

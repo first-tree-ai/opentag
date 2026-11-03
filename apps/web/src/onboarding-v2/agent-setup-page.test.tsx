@@ -475,7 +475,7 @@ describe("AgentSetupPage stages", () => {
     expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("install-required");
     expect(rowTitle("messaging-support")).toContain("Messaging support");
     expect(rowTitle("messaging-support")).toContain("Installation required");
-    expect(rowDetail("messaging-support")).toContain("Continue messaging setup in your coding assistant on Review Mac");
+    expect(rowDetail("messaging-support")).toContain("Continue messaging setup in your Agent on Review Mac");
     expect(`${rowTitle("messaging-support")} ${rowDetail("messaging-support")}`).not.toMatch(/Lark|Slack/);
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
   });

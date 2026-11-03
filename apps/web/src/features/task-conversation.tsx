@@ -151,7 +151,7 @@ export function TaskActivity({
             onClick={scrollToLatest}
           >
             <Icon name="chevron-down" />
-            <span>Jump to latest</span>
+            <span>{m.tasks_jump_to_latest()}</span>
           </Button>
         </div>
       ) : null}

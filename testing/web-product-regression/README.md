@@ -38,7 +38,7 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | AL-02 | Running Task count | Have an Agent with running Tasks | Its row shows how many Tasks are running | Core | unit: `features/agents/agents-page.test.tsx` |
 | AL-03 | One action per fixable row | Agents with setup unfinished, Computer offline, messaging needing permissions | Each fixable row offers exactly one link to where it gets fixed (Continue setup, Restore connection, Update permissions); a paused Agent offers none | Core | unit: `features/agents/agent-presentation.test.ts` |
 | AL-04 | Runtime needs sign-in | Computer reports the Agent's Claude Code or Codex as signed out | Row shows "{runtime} sign-in required" and one Sign in link that opens setup with the sign-in steps shown | Core | unit: `__tests__/agent-computers.test.tsx` |
-| AL-05 | Status stays steady while refreshing | Leave the list open through background refreshes | Statuses do not flicker or reorder between refreshes | Edge | unit: `features/agents/agents-page.test.tsx` |
+| AL-05 | Status stays steady while refreshing | Load the list right after the Server or a Computer restarts, then leave it open through background refreshes | A row with no answer yet reads "Checking" (never Ready) until its first answer; after that, statuses do not flicker or reorder between refreshes | Edge | unit: `features/agents/agents-page.test.tsx`, `features/agents/agent-list-status.test.ts` |
 | AL-06 | Uppercase and Chinese names | Agents named, for example, "Atlas研发" | Names show as typed in the list and on the Agent page | Core | manual |
 | AL-07 | Long names | An Agent with a long name | Name wraps or truncates inside its row and in the Agent switcher; no overflow | Edge | smoke: `navigation-polish.spec.ts` |
 
@@ -53,7 +53,7 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | AS-05 | Header on phones | First-time full-screen setup header (an Account with no Agents yet) at 390 and 320px | Logo shows the mark only; Back to Agents and the Account menu stay on one row at the top right | Edge | manual |
 | AS-06 | Name rule is stated up front | Open the name field before typing | Hint states the allowed characters (letters in either case, digits, Chinese, hyphens; no leading hyphen) | Core | unit: `onboarding-v2/steps.test.tsx` |
 | AS-07 | Name refused | Type a name with a space or punctuation, or one starting with a hyphen | Short error "The name has characters that aren't allowed"; Create is refused | Core | unit: `onboarding-v2/steps.test.tsx`, `onboarding-v2/flow.test.ts` |
-| AS-08 | Name length | 64 letters, then 65; 21 Chinese characters, then 22 | 64 letters and 21 Chinese characters are accepted; one more is refused with the length error | Edge | unit: `onboarding-v2/flow.test.ts` |
+| AS-08 | Name length | 64 letters, then 65; 21 Chinese characters, then 22 | 64 letters and 21 Chinese characters are accepted; one more shows the length error while typing, before Create | Edge | unit: `onboarding-v2/flow.test.ts`, `onboarding-v2/steps.test.tsx` |
 | AS-09 | Name taken, any case | Create "Atlas" when "atlas" exists | Refused with "An Agent with this name already exists. Names aren't case-sensitive."; offers to open the existing Agent | Core | unit: `__tests__/agent-setup-boundary.test.tsx`, `onboarding-v2/creation-error-message.test.ts` |
 | AS-10 | Runtime choice is called an Agent | Creation step with Local | Choice is labelled "Agent to use"; no "Runtime" in the creation copy | Core | unit: `onboarding-v2/steps.test.tsx` |
 | AS-11 | Cloud availability | Deployment with Cloud off, still checking, or failed to answer | Cloud card says why it is unavailable or checking; a failed read offers Try again; Local stays selectable | Edge | unit: `onboarding-v2/steps.test.tsx` (checking and failed states are unit-only; a manual run can check Cloud off) |
@@ -144,7 +144,7 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | TK-02 | Next page fails | Load more Tasks when the next page fails | Loaded Tasks stay; the failure offers a retry | Edge | unit: `__tests__/agent-tasks.test.tsx` |
 | TK-03 | Task detail | Open a Task | Uses the full page width; leads with the outcome | Core | unit: `features/task-conversation.test.tsx`; sweep |
 | TK-04 | Each reply once | Task with Agent replies | Each reply appears once in the timeline, without per-message status labels | Core | unit: `features/task-conversation.test.tsx`, `features/task-outgoing-replies.test.tsx` |
-| TK-05 | Cancel a Task | Cancel a queued Task (only queued Tasks offer Cancel) | Asks to confirm; the status updates | Edge | unit: `features/task-cancel.test.tsx` |
+| TK-05 | Cancel a Task | Cancel a queued Task (only queued Tasks offer Cancel) | Asks to confirm; the status reads "已取消" / "Cancelled" (not Completed) and the Task still appears under the Completed filter | Edge | unit: `features/task-cancel.test.tsx`, `features/tasks-page.test.tsx` |
 | TK-06 | Narrow Agent workspace | Agent home, Tasks, and Skills in a narrow Agent workspace | Stay usable without overflow | Edge | smoke: `app.spec.ts` |
 
 ## Account

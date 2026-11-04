@@ -1668,17 +1668,19 @@ describe("CloudDeliveryOwner", () => {
   it("reads the Sandbox only for a nonempty backlog: one SELECT in total for an empty one, two otherwise", async () => {
     const counter = countedDatabase();
     const closeSessionExecutions = vi.fn(() => []);
+    const prepareSessionExecutionClose = vi.fn(() => closeSessionExecutions);
     const empty = await cloudScope();
     const emptyOwner = makeOwner({
       database: counter.database,
-      credentialsOwner: { closeSessionExecutions },
+      credentialsOwner: { prepareSessionExecutionClose },
     }).owner;
     counter.reset();
     expect(await emptyOwner.cancelSessionDeliveries(empty.scope.sessionId)).toEqual([]);
     // Nothing to cancel: the eligible-delivery read is the whole stop path, and the credential
     // executions are still closed.
     expect(counter.selects()).toBe(1);
-    expect(closeSessionExecutions).toHaveBeenCalledWith(empty.scope.sessionId, "execution_closed");
+    expect(prepareSessionExecutionClose).toHaveBeenCalledWith(empty.scope.sessionId, "execution_closed");
+    expect(closeSessionExecutions).toHaveBeenCalledOnce();
 
     for (const count of [1, 10, 100]) {
       const { scope, cloud } = await cloudScope();

@@ -410,12 +410,13 @@ export class McpOAuthClient {
     accountId: string,
     mcpEndpoint: string,
     resourceMetadataUrl?: string,
+    signal?: AbortSignal,
   ): Promise<{ metadata: McpProtectedResourceMetadata; challengeScope?: string }> {
     const candidates = resourceMetadataUrl ? [resourceMetadataUrl] : protectedResourceMetadataUrls(mcpEndpoint);
     const result = await firstPublishedDocument(
       candidates,
       async (candidate) => {
-        const document = await this.#readJsonDocument(accountId, candidate);
+        const document = await this.#readJsonDocument(accountId, candidate, signal);
         if (document === undefined) return undefined;
         const authorizationServers = stringArray(document, "authorization_servers");
         if (authorizationServers.length === 0) return undefined;
@@ -454,8 +455,15 @@ export class McpOAuthClient {
    * published. Only a 2xx JSON object counts as published; a miss is not an error, and a non-2xx is
    * reported by the caller as a candidate that did not work.
    */
-  async #readJsonDocument(accountId: string, url: string): Promise<Record<string, unknown> | undefined> {
-    const response = await this.#fetcher.fetchOutbound(accountId, url, { headers: { accept: "application/json" } });
+  async #readJsonDocument(
+    accountId: string,
+    url: string,
+    signal?: AbortSignal,
+  ): Promise<Record<string, unknown> | undefined> {
+    const response = await this.#fetcher.fetchOutbound(accountId, url, {
+      headers: { accept: "application/json" },
+      ...(signal ? { signal } : {}),
+    });
     if (response.status < 200 || response.status >= 300) return undefined;
     return json(response);
   }
@@ -465,7 +473,11 @@ export class McpOAuthClient {
    * the well-known URL was built from — a mismatch is a mix-up attack and is refused outright rather
    * than normalized (no case folding, no default-port or trailing-slash tolerance).
    */
-  async authorizationServerMetadata(accountId: string, issuer: string): Promise<McpAuthorizationServerMetadata> {
+  async authorizationServerMetadata(
+    accountId: string,
+    issuer: string,
+    signal?: AbortSignal,
+  ): Promise<McpAuthorizationServerMetadata> {
     if (issuer === FEISHU_MCP_ISSUER) {
       return {
         ...FEISHU_OAUTH_METADATA,
@@ -481,7 +493,7 @@ export class McpOAuthClient {
     const result = await firstPublishedDocument(
       authorizationServerMetadataUrls(issuer),
       async (candidate) => {
-        const document = await this.#readJsonDocument(accountId, candidate);
+        const document = await this.#readJsonDocument(accountId, candidate, signal);
         if (document === undefined) return undefined;
         /*
          * The document's `issuer` must equal the issuer string its well-known URL was built from,
@@ -521,6 +533,7 @@ export class McpOAuthClient {
   async registerDynamically(
     accountId: string,
     metadata: McpAuthorizationServerMetadata,
+    signal?: AbortSignal,
   ): Promise<McpClientCredentials> {
     const endpoint = metadata.registrationEndpoint;
     if (!endpoint) {
@@ -531,6 +544,7 @@ export class McpOAuthClient {
     }
     const response = await this.#fetcher.fetchOutbound(accountId, endpoint, {
       method: "POST",
+      ...(signal ? { signal } : {}),
       headers: { accept: "application/json", "content-type": "application/json" },
       body: JSON.stringify({
         application_type: "web",

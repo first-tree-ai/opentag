@@ -6,6 +6,7 @@ import type { RuntimeExecutionRecord } from "../runtime-credentials/types.js";
 import { AgentGitHubAuthorizationError } from "../services/github/agent-github-credential-service.js";
 import type { GitHubManagementService } from "../services/github/github-management-service.js";
 import { GitHubRuntimePolicy } from "../services/github-proxy/runtime-policy.js";
+import { deferred } from "./support/deferred.js";
 
 const ACCOUNT = randomUUID(),
   AGENT = randomUUID(),
@@ -48,14 +49,23 @@ function fixture() {
       }
     | undefined;
   let configs: { agentId: string; contextTrees: { repository: string }[] }[] = [];
+  const beforeRead = vi.fn(async () => undefined);
   const database = {
     select: (projection: Record<string, unknown>) => {
       const chain = {
         from: () => chain,
         innerJoin: () => chain,
         where: () => ("contextTrees" in projection ? Promise.resolve(configs) : chain),
-        limit: async () =>
-          "scheduledOrigin" in projection ? (message ? [message] : []) : delivery ? [{ id: source.deliveryId }] : [],
+        limit: async () => {
+          await beforeRead();
+          return "scheduledOrigin" in projection
+            ? message
+              ? [message]
+              : []
+            : delivery
+              ? [{ id: source.deliveryId }]
+              : [];
+        },
       };
       return chain;
     },
@@ -79,6 +89,7 @@ function fixture() {
   const input = () => ({ accountId: ACCOUNT, agentId: AGENT, sessionId: SESSION, source: execution.source });
   return {
     policy,
+    beforeRead,
     input,
     connection,
     execution,
@@ -179,3 +190,34 @@ describe("GitHub user-task authority", () => {
     await expect(f.policy.admit({ ...f.input(), signal: abort.signal })).rejects.toThrow();
   });
 });
+
+it.each([false, true])(
+  "cancels after provenance SQL before another authority query (recursive: %s)",
+  async (recursive) => {
+    const f = fixture(),
+      abort = new AbortController(),
+      entered = deferred(),
+      resume = deferred();
+    if (recursive) {
+      const root = f.execution.source;
+      f.execution.source = { kind: "session-message", messageId: randomUUID() };
+      f.setMessage({
+        scheduledOrigin: null,
+        sourceSessionId: SESSION,
+        userTaskSource: { sessionId: SESSION, source: root },
+      });
+    }
+    f.beforeRead.mockImplementationOnce(async () => {
+      entered.resolve();
+      await resume.promise;
+    });
+    const operation = f.policy.admit({ ...f.input(), signal: abort.signal });
+    const result = expect(operation).rejects.toThrow();
+    await entered.promise;
+    abort.abort();
+    resume.resolve();
+    await result;
+    expect(f.beforeRead).toHaveBeenCalledTimes(1);
+    expect(f.getOverview).not.toHaveBeenCalled();
+  },
+);

@@ -155,6 +155,7 @@ describe("SkillService", () => {
     expect(repacked.archive.byteLength).toBeGreaterThan(maxArchiveBytes);
     const service = new SkillService({
       database: h.database,
+      proofs: h.proofs,
       store,
       keyPrefix: "skills",
       readLimits: { maxArchiveBytes },
@@ -231,19 +232,21 @@ describe("SkillService", () => {
     const service = h.serviceWith(new FakeSkillObjectStore());
 
     const bytes = await h.archive("agent-made");
-    const detail = await service.uploadForAgent(first, {
+    const detail = await service.uploadForAgent(await h.runtimeSource(first), {
       bytes,
       format: "tar.gz",
       declaredSha256: h.sha256(bytes),
       replace: false,
     });
     expect(detail.source).toBe("agent_upload");
-    expect((await service.listForAgent(first)).skills.map((skill) => skill.name)).toEqual(["agent-made"]);
-    expect((await service.listForAgent(sibling)).skills).toEqual([]);
-    await expect(service.openBundleForAgent(sibling, "agent-made")).rejects.toMatchObject({
+    expect((await service.listForAgent(await h.runtimeSource(first))).skills.map((skill) => skill.name)).toEqual([
+      "agent-made",
+    ]);
+    expect((await service.listForAgent(await h.runtimeSource(sibling))).skills).toEqual([]);
+    await expect(service.openBundleForAgent(await h.runtimeSource(sibling), "agent-made")).rejects.toMatchObject({
       code: SKILL_ERROR_CODES.NOT_FOUND,
     });
-    const bundle = await service.openBundleForAgent(first, "agent-made");
+    const bundle = await service.openBundleForAgent(await h.runtimeSource(first), "agent-made");
     expect(bundle.sha256).toBe(detail.archiveSha256);
   });
 
@@ -268,7 +271,7 @@ describe("SkillService", () => {
       fileCount: 1,
     });
     expect(await service.list(accountId, agentId)).toMatchObject({ storage: "unavailable" });
-    expect((await service.listForAgent(agentId)).skills).toHaveLength(1);
+    expect((await service.listForAgent(await h.runtimeSource(agentId))).skills).toHaveLength(1);
     expect((await service.manifestForComputer(boundComputer, agentId)).skills).toHaveLength(1);
 
     const [row] = await service.list(accountId, agentId).then((response) => response.skills);
@@ -281,7 +284,7 @@ describe("SkillService", () => {
     await expect(service.openBundleForComputer(boundComputer, agentId, skillId)).rejects.toMatchObject({
       code: SKILL_ERROR_CODES.STORAGE_UNAVAILABLE,
     });
-    await expect(service.openBundleForAgent(agentId, "row-only")).rejects.toMatchObject({
+    await expect(service.openBundleForAgent(await h.runtimeSource(agentId), "row-only")).rejects.toMatchObject({
       code: SKILL_ERROR_CODES.STORAGE_UNAVAILABLE,
     });
 

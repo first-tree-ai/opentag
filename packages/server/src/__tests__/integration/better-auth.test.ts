@@ -9,7 +9,7 @@ import { BetterAuthSessionTokens } from "../../auth/session-tokens.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { authIdentities, authSessions, users } from "../../db/schema/index.js";
 import { createUserAuthPreHandler, resolveAuthenticatedUserId } from "../../plugins/user-auth.js";
-import { AuthService, DevBrowserAuthService, PostAuthenticationService } from "../../services/auth/index.js";
+import { AuthService, DevBrowserAuthService } from "../../services/auth/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 const GOOGLE_ISSUER = "https://accounts.google.com";
@@ -23,12 +23,10 @@ function sessionAuthService(auth: ReturnType<typeof createAuth>): AuthService {
 
 let testDatabase: MigratedTestDatabase;
 let client: ReturnType<typeof createDatabaseClient>;
-let postAuthentication: PostAuthenticationService;
 
 beforeAll(async () => {
   testDatabase = await startMigratedTestDatabase();
   client = createDatabaseClient(testDatabase.databaseUrl);
-  postAuthentication = new PostAuthenticationService(client.database);
 }, 120_000);
 
 afterAll(async () => {
@@ -42,7 +40,6 @@ beforeEach(async () => {
 
 function createAuth(devSignIn?: () => Promise<string>) {
   return createBetterAuth(client.database, {
-    onSessionCreating: (userId) => postAuthentication.ensureAccountReady(userId).then(() => undefined),
     publicUrl: PUBLIC_URL,
     secret: "better-auth-integration-secret-at-least-32-characters",
     secureCookies: false,
@@ -55,7 +52,6 @@ function createAuth(devSignIn?: () => Promise<string>) {
 /** The same composition with the password credential turned on, which is off unless a deployment asks for it. */
 function createPasswordAuth() {
   return createBetterAuth(client.database, {
-    onSessionCreating: (userId) => postAuthentication.ensureAccountReady(userId).then(() => undefined),
     publicUrl: PUBLIC_URL,
     secret: "better-auth-integration-secret-at-least-32-characters",
     secureCookies: false,

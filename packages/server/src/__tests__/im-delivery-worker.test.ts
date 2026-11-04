@@ -982,6 +982,9 @@ describe("ImDeliveryWorker database workflow", () => {
           fixture.computerId,
           fixture.instanceId,
           expect.objectContaining({ desired: "stopped" }),
+          undefined,
+          undefined,
+          expect.any(AbortSignal),
         );
         expect(domain.requestReconcile.mock.calls[0]?.[2]).not.toHaveProperty("runtime");
       } else {

@@ -27,7 +27,10 @@ Custody is loaded fresh for each scan and grouped in memory by Agent and Session
 remains Agent-wide; Cloud custody remains Session-scoped and also respects Local custody for the
 same Agent. These snapshots can postpone eligibility, but cannot authorize a dispatch.
 
-For each selected candidate, a short transaction takes the Agent advisory lock, locks the delivery
+For each selected candidate, a short transaction tries the Agent advisory lock with
+`pg_try_advisory_xact_lock`. A busy Agent is skipped without taking its delivery lock or changing
+attempt/claim state; the same bounded scan can reach unrelated Agents. Ingress retains its blocking
+serialization on that key. An acquired claim transaction locks the delivery
 by primary key with `FOR UPDATE SKIP LOCKED`, and re-reads eligibility, metadata, and custody without
 the hint cache. It checks the expected Agent identity and Cloud queue head again before persisting
 the existing claim marker or recovery lease. Each scan attempts at most eight such transactions.
@@ -81,6 +84,22 @@ starting the Provider, with `executionEffects: not_started`. Execution and Slack
 same budget calculation; a running Provider must still honor abort and complete its native cleanup
 before the Client can report. A Client upgrade does not change an already running Turn's timer.
 
+The Worker carries its existing operation signal into Local reconcile preparation,
+Local/Cloud direct dispatch and steer. Reconcile admission runs after preparation.
+Owners check the signal after asynchronous custody/model work and before the first
+frame; Cloud allocation checks it after the Sandbox lookup/ensure and before
+starting allocation. Already-issued SQL and shared model reads retain their own
+bounds. A cancelled unsent attempt retains committed dispatch correlation for
+identity-based recovery; cancellation never erases custody or rejects already-sent
+receipts and reports.
+
+The Runtime domain close port stops new requests, rejects pending waiters and
+joins admitted preparation, completion, send and custody-release work. Closing a
+waiter does not establish that its transport or SQL has ended. Already-sent
+requests retain deferred dispatch correlation; an unsent reservation can release
+through the existing retry path. Callers must await this close port before
+disposing its shared database pool.
+
 For accepted Local custody, a reconcile response does not settle the delivery. `busy`, `running`,
 `reporting`, `recovery_required`, and `rejected` are recorded as distinct deferred status codes.
 `ready` and `stopped` without a recorded report mean `IM_DELIVERY_RECOVERY_AWAITING_REPORT`.
@@ -94,6 +113,9 @@ These responses and reconcile transport failures use the existing capped exponen
 while the delivery is still accepted, unreported, and at that attempt; a late report or newer
 attempt wins. The response never fabricates a report, expires accepted custody, or dispatches
 the input again. Only the actual report settles custody.
+The operation deadline uses that same attempt-fenced recovery helper. Generic failure writes also
+exclude reported rows and require the captured attempt count, so an older timeout cannot change
+terminal report metadata or a newer attempt's schedule.
 
 The expiry pass also sweeps accepted custody that no work path can reach any more: an ended Session,
 an inactive binding, a deleted Agent, or a superseded placement generation puts the row outside

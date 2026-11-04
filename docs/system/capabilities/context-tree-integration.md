@@ -82,6 +82,11 @@ An uncertain create response is recorded even if a background config refresh cha
 is pending; other stale response state is still discarded.
 Retrying an already connected tree is idempotent.
 
+Remote verification checks its existing cancellation signal after the final SQL authority read,
+before returning a completed result that admits selection persistence. Cancellation or close during
+that read cannot start a later selection write. Once repository creation may have succeeded, the
+same cancellation retains the publication-uncertain result and never retries the remote write.
+
 ## Preparation
 
 OpenTag writes authorized selections to its own configuration at
@@ -90,6 +95,12 @@ Repository-owned `.context-tree.json` files are left alone. Those files can desc
 local directory trees used through the normal repository workflow.
 
 Managed synchronization and write commands route through a per-execution Context Tree command gateway in the trusted Local Daemon or Cloud Runner. Only its pinned CLI child receives a GitHub handle; the Agent receives a Unix socket or fixed Cloud loopback endpoint. The Server separately admits each command against the live parent, current Agent GitHub MCP authorization and exact selected tree. See [GitHub platform integration](github-platform-integration.md#context-tree-command-boundary).
+
+Gateway close returns one memoized cleanup Promise to parent-abort and owner callers,
+including failures. It joins the active command and attempts directory cleanup even
+if closing the listener fails. Local CLI stdout uses Node's UTF-8 stream decoder,
+counts incoming bytes before retaining each chunk, and stops collection permanently
+on overflow. The existing process-group TERM/KILL cleanup still joins owned descendants.
 
 Preparation uses `context-tree sync --project-path PROJECT` through this gateway. Responses are parsed
 with the package's public contracts; OpenTag never reads the package's internal registry.
@@ -115,7 +126,9 @@ Credentials come from the current execution and are never stored there.
 Server-side connection verification checks the selected directory and branch at an exact
 remote commit, using the current Agent's GitHub MCP authorization. It rechecks authorization
 and remote state before accepting the connection. Unrelated repository infrastructure does
-not affect subtree validation. Selected content cannot traverse symlinks or submodules.
+not affect subtree validation: Git entry enumeration is scoped to the literal selected path and
+its ancestors under the existing process output bound. Root selection covers the repository.
+Selected content cannot traverse symlinks or submodules.
 
 Before reconnecting, run `context-tree verify --tree-path DIRECTORY` in the selected tree.
 Remove symlink entries such as `CLAUDE.md` or `README.md` links, keeping any ordinary target files,

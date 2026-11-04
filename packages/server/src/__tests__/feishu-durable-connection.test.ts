@@ -23,6 +23,7 @@ import {
 } from "../services/im-bindings/feishu/index.js";
 import type { FeishuRegistration, FeishuRegistrationGateway } from "../services/im-bindings/feishu/registration.js";
 import { ImBindingService, type VerifiedFeishuBinding } from "../services/im-bindings/index.js";
+import { abortableMockFeishuRegistration } from "./support/abortable-feishu-registration.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 const CANDIDATE_SECRET = "candidate-secret-do-not-log";
@@ -225,11 +226,11 @@ function createService(
 function registration(
   result: Promise<{ appId: string; appSecret: string; teamBrand?: "feishu" | "lark" }>,
 ): FeishuRegistration {
-  return {
+  return abortableMockFeishuRegistration({
     qrReady: Promise.resolve({ url: "https://feishu.example/qr", expiresAt: new Date(clock.now.getTime() + 60_000) }),
     result,
     abort: vi.fn(),
-  };
+  });
 }
 
 function deferred<T>() {
@@ -614,11 +615,13 @@ describe("Feishu durable connection lifecycle", () => {
     const qrReady = deferred<{ url: string; expiresAt: Date }>();
     const abort = vi.fn();
     const gateway: FeishuRegistrationGateway = {
-      start: vi.fn(() => ({
-        qrReady: qrReady.promise,
-        result: new Promise<never>(() => undefined),
-        abort,
-      })),
+      start: vi.fn(() =>
+        abortableMockFeishuRegistration({
+          qrReady: qrReady.promise,
+          result: new Promise<never>(() => undefined),
+          abort,
+        }),
+      ),
     };
     const fake = createFakeActivation(value);
     const service = createService(value, fake.activation, { gateway });
@@ -779,16 +782,20 @@ describe("Feishu durable connection lifecycle", () => {
     expect(clock.now.getTime()).toBeGreaterThan(initialBeat);
 
     const [beforeStop] = await database.database.select().from(imBindings).where(eq(imBindings.id, bindingId));
-    await service.stop();
+    let drained = false;
+    const stopping = service.stop().then(() => {
+      drained = true;
+    });
     await check;
+    expect(drained).toBe(false);
+    gate.resolve({ status: "ready" });
+    await stopping;
     const afterStop = await rowForAgent(value.agent.id);
     expect(afterStop?.setupState).toBe("pending_activation");
     expect(afterStop?.setupOwnerInstanceId).toBeNull();
     expect(afterStop?.encryptedSetupContext).toBe(beforeStop?.encryptedSetupContext);
 
-    // The blocked probe resolving ready after the stop must not invoke activation at all.
-    gate.resolve({ status: "ready" });
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    // A late ready result during stop never activates the retained candidate.
     expect(fake.activations).toHaveLength(0);
     expect((await rowForAgent(value.agent.id))?.setupState).toBe("pending_activation");
   });
@@ -804,17 +811,19 @@ describe("Feishu durable connection lifecycle", () => {
     });
     const service = createService(value, fake.activation, {
       gateway: {
-        start: vi.fn(() => ({
-          qrReady: Promise.resolve({
-            url: "https://feishu.example/qr/stop",
-            expiresAt: new Date(clock.now.getTime() + 60_000),
+        start: vi.fn(() =>
+          abortableMockFeishuRegistration({
+            qrReady: Promise.resolve({
+              url: "https://feishu.example/qr/stop",
+              expiresAt: new Date(clock.now.getTime() + 60_000),
+            }),
+            result,
+            // The real gateway rejects the pending authorization with a cancel-shaped error on abort.
+            abort: vi.fn(() => {
+              rejectResult(Object.assign(new Error("registration aborted"), { code: "abort" }));
+            }),
           }),
-          result,
-          // The real gateway rejects the pending authorization with a cancel-shaped error on abort.
-          abort: vi.fn(() => {
-            rejectResult(Object.assign(new Error("registration aborted"), { code: "abort" }));
-          }),
-        })),
+        ),
       },
     });
     const qrAttempt = await service.createOrReuse(value.bootstrap.userId, value.agent.id, "create");
@@ -826,7 +835,9 @@ describe("Feishu durable connection lifecycle", () => {
       expect((await rowForAgent(secondAgent.id))?.setupState).toBe("validating");
     });
 
-    await service.stop();
+    const stopping = service.stop();
+    gate.resolve({ status: "ready" });
+    await stopping;
     await inFlight;
 
     // The aborted registration's late, cancel-shaped completion write must not relabel the restart.
@@ -836,8 +847,6 @@ describe("Feishu durable connection lifecycle", () => {
     expect(candidateRow).toMatchObject({ setupState: "pending_activation", setupOwnerInstanceId: null });
     expect(candidateRow?.encryptedSetupContext).toBeTruthy();
 
-    gate.resolve({ status: "ready" });
-    await new Promise((resolve) => setTimeout(resolve, 20));
     expect(fake.activations).toHaveLength(0);
   });
 
@@ -914,9 +923,8 @@ describe("Feishu durable connection lifecycle", () => {
 
   it("bounds a hung check by deadline and lets candidate expiry dominate", async () => {
     const value = await fixture();
-    const fake = createFakeActivation(value, {
-      onCheck: () => new Promise<FeishuCandidateCheckOutcome>(() => undefined),
-    });
+    const probe = deferred<FeishuCandidateCheckOutcome>();
+    const fake = createFakeActivation(value, { onCheck: () => probe.promise });
     const { attemptId } = await insertCandidate(value, { agentId: value.agent.id });
     const service = createService(value, fake.activation, {
       timing: { checkDeadlineMs: 60, sweepPageSize: 10 },
@@ -953,8 +961,9 @@ describe("Feishu durable connection lifecycle", () => {
       },
       { timeout: 5_000 },
     );
-    sweeper.stop();
-    await service.stop();
+    const stopping = Promise.all([sweeper.stop(), service.stop()]);
+    probe.resolve({ status: "ready" });
+    await stopping;
   });
 
   it("enforces the concurrency bound across concurrent manual checks on distinct attempts", async () => {

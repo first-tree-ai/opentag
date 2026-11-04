@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { computeTurnResultHash, SLACK_REQUIRED_BOT_SCOPES, type TurnReportRequest } from "@opentag/shared";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { createApp } from "../../app.js";
 import { createDatabaseClient } from "../../db/client.js";
 import {
   imFeedbackActions,
@@ -19,6 +20,8 @@ import { type FeedbackTransport, ImFeedbackMessenger } from "../../services/im/i
 import { type FeedbackTarget, ImFeedbackStore, startImFeedback } from "../../services/im/im-feedback-store.js";
 import { ImFeedbackWorker } from "../../services/im/im-feedback-worker.js";
 import { ImBindingService } from "../../services/im-bindings/im-binding-service.js";
+import { closeServerResources } from "../../shutdown.js";
+import { deferred } from "../support/deferred.js";
 import { createSlackWorkingFixture } from "../support/slack-working-fixture.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
@@ -510,5 +513,136 @@ it("releases the installation lock during provider I/O and ignores a late 429 af
     release();
     await Promise.allSettled([pending]);
     http.mockRestore();
+  }
+});
+
+it("drains workspace jobs admitted after shutdown starts before closing the SQL pool", async () => {
+  const h = await failed();
+  const [sandbox] = await client.database
+    .insert(sandboxes)
+    .values({
+      sessionId: h.target.sessionId,
+      storageUri: "gs://synthetic/workspace",
+      environmentGeneration: 3,
+      lifecycle: "ready",
+      currentResourceName: "projects/test/locations/test/instances/drain",
+      currentResourceUid: "drain-uid",
+    })
+    .returning();
+  if (!sandbox) throw new Error("Missing sandbox");
+  await client.database
+    .update(imFeedbackTargets)
+    .set({
+      state: "workspace_blocked",
+      errorCode: "workspace_failed",
+      sandboxId: sandbox.id,
+      environmentGeneration: 3,
+      resourceUid: "drain-uid",
+    })
+    .where(eq(imFeedbackTargets.id, h.target.id));
+  const owned = createDatabaseClient(fixtureDb.databaseUrl, { max: 2 });
+  const locked = deferred();
+  const unlock = deferred();
+  const stoppingWorkspace = deferred();
+  const releaseWorkspace = deferred();
+  const closingStarted = deferred();
+  const status = {
+    sandboxId: sandbox.id,
+    sessionId: h.target.sessionId,
+    lifecycle: "ready" as const,
+    environmentGeneration: 3,
+    currentResourceName: sandbox.currentResourceName,
+    currentResourceUid: "drain-uid",
+    currentOperationName: null,
+    runnerConnected: true,
+    runnerReady: false,
+    runnerReadiness: null,
+    lastErrorCode: null,
+    lastErrorAt: null,
+    updatedAt: clock.toISOString(),
+  };
+  const service = new ImFeedbackActionsService({
+    database: owned.database,
+    secret: "secret",
+    now: () => clock,
+    sandboxRunner: {
+      statusForAccount: async () => status,
+      stopForAccount: async () => {
+        stoppingWorkspace.resolve();
+        await releaseWorkspace.promise;
+        return { ...status, lifecycle: "unallocated" as const, currentResourceUid: null };
+      },
+      verifySavedForAccount: async () => true,
+    },
+  });
+  const view = await service.getForAccount(h.target.accountId, h.target.id);
+  const discard = view.actions.find((action) => action.kind === "discard");
+  if (!discard) throw new Error("Missing discard action");
+  let poolClosed = false;
+  const app = createApp({
+    beginShutdown: () => closingStarted.resolve(),
+    closeResources: () =>
+      closeServerResources([
+        ["feedback operations", () => service.close()],
+        [
+          "SQL pool",
+          async () => {
+            await owned.sql.end({ timeout: 1 });
+            poolClosed = true;
+          },
+        ],
+      ]),
+  });
+  app.get("/feedback-drain", () =>
+    service.submitForAccount(h.target.accountId, h.target.id, {
+      kind: "discard",
+      permanentLossAcknowledged: true,
+      revision: view.revision,
+      confirmation: discard.confirmation,
+    }),
+  );
+  const address = await app.listen({ host: "127.0.0.1", port: 0 });
+  const lock = client.sql.begin(async (tx) => {
+    await tx`select id from im_feedback_targets where id = ${h.target.id} for update`;
+    locked.resolve();
+    await unlock.promise;
+  });
+  await locked.promise;
+  const request = fetch(`${address}/feedback-drain`, { headers: { connection: "close" } }).then((response) =>
+    response.json(),
+  );
+  let closing: Promise<void> | undefined;
+  try {
+    await vi.waitFor(
+      async () => {
+        const [waiting] = await client.sql`select count(*)::int as count from pg_stat_activity
+        where datname = current_database() and wait_event_type = 'Lock'
+          and query like '%im_feedback_targets%'`;
+        expect(waiting?.count).toBeGreaterThan(0);
+      },
+      { timeout: 5_000 },
+    );
+    closing = app.close();
+    await closingStarted.promise;
+    expect(poolClosed).toBe(false);
+    unlock.resolve();
+    await lock;
+    await stoppingWorkspace.promise;
+    await request;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(poolClosed).toBe(false);
+    expect(await client.sql`select 1 as healthy`).toEqual([{ healthy: 1 }]);
+    releaseWorkspace.resolve();
+    await closing;
+    expect(poolClosed).toBe(true);
+    const [action] = await client.database.select().from(imFeedbackActions);
+    expect(action).toMatchObject({ state: "succeeded", resultCode: "discarded" });
+  } finally {
+    unlock.resolve();
+    releaseWorkspace.resolve();
+    await lock;
+    await request;
+    await (closing ?? app.close());
+    await owned.sql.end({ timeout: 1 });
   }
 });

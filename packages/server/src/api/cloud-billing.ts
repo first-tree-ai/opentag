@@ -13,6 +13,7 @@ import type { CloudBilling } from "../cloud-billing.js";
 import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
 import { AuthServiceError, type UserAuthService } from "../services/auth/index.js";
 import type { CloudUsageService } from "../services/cloud-usage.js";
+import { startClosingServerResources } from "../shutdown.js";
 import { parseRequest } from "./request-validation.js";
 
 /** Private provider failures must not expose credentials through public responses or logs. */
@@ -117,6 +118,10 @@ export function registerCloudBillingWebhook(app: FastifyInstance, billing: Cloud
       return { received: true };
     });
   });
-  app.addHook("preClose", async () => billing.stop());
-  app.addHook("onClose", async () => billing.close());
+  let stopping: Promise<void> | undefined;
+  app.addHook("preClose", async () => {
+    stopping ??= startClosingServerResources([["cloud billing producer", () => billing.stop()]]);
+    void stopping.catch(() => undefined);
+  });
+  app.addHook("onClose", () => stopping);
 }

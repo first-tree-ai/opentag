@@ -1,5 +1,5 @@
 import type { AgentCloudOverview, AgentCloudOverviewQuery, CloudSessionSummary } from "@opentag/shared";
-import { and, asc, eq, gt, isNotNull, sql } from "drizzle-orm";
+import { and, asc, eq, gt, isNotNull, or, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import {
   agents,
@@ -67,13 +67,19 @@ export class CloudOverviewService {
         const [agent] = await tx
           .select({ id: agents.id })
           .from(agents)
-          .innerJoin(computers, eq(computers.id, agents.computerId))
+          .leftJoin(computers, eq(computers.id, agents.computerId))
           .where(
             and(
               eq(agents.id, agentId),
               eq(agents.createdByUserId, accountId),
-              eq(computers.ownerAccountId, accountId),
-              eq(computers.kind, "cloud"),
+              or(
+                and(eq(computers.ownerAccountId, accountId), eq(computers.kind, "cloud")),
+                sql`exists (select 1 from ${sessionPlacements}
+                  inner join ${sessions} on ${sessions.id} = ${sessionPlacements.sessionId}
+                  inner join ${imBindings} on ${imBindings.id} = ${sessions.imBindingId}
+                  inner join ${computers} on ${computers.id} = ${sessionPlacements.computerId}
+                  where ${imBindings.agentId} = ${agents.id} and ${computers.ownerAccountId} = ${accountId} and ${computers.kind} = 'cloud')`,
+              ),
             ),
           )
           .limit(1);
@@ -126,7 +132,7 @@ export class CloudOverviewService {
           .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
           .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
           .innerJoin(agents, eq(agents.id, imBindings.agentId))
-          .innerJoin(computers, eq(computers.id, agents.computerId))
+          .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
           .leftJoin(sandboxes, eq(sandboxes.sessionId, sessions.id))
           .where(owned)
           .as("cloud_scope");

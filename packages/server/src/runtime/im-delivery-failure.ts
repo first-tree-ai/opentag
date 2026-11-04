@@ -152,6 +152,8 @@ export async function recordDeliveryFailure(
     .where(
       and(
         eq(imMessageDeliveries.id, attempt.deliveryId),
+        isNull(imMessageDeliveries.reportedAt),
+        eq(imMessageDeliveries.attemptCount, attempt.attemptCount),
         sql`${imMessageDeliveries.state} in ('pending', 'accepted', 'expired')`,
         ...(attempt.claimToken ? [eq(imMessageDeliveries.lastErrorCode, attempt.claimToken)] : []),
       ),

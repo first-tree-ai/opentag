@@ -25,12 +25,20 @@ export class ImDeliveryReadyWakeup {
   readonly #input: ReadyWakeupInput;
   readonly #readyWakeups = new Map<string, { requested: boolean; operation: Promise<void> }>();
   #closed = false;
+  #closing: Promise<void> | undefined;
+  readonly #rechecks = new Set<Promise<void>>();
 
   constructor(input: ReadyWakeupInput) {
     this.#input = input;
   }
-  stop(): void {
+  stop(): Promise<void> {
+    if (this.#closing) return this.#closing;
     this.#closed = true;
+    this.#closing = Promise.allSettled([
+      ...[...this.#readyWakeups.values()].map((wakeup) => wakeup.operation),
+      ...this.#rechecks,
+    ]).then(() => undefined);
+    return this.#closing;
   }
 
   /** Wake due initial inputs and readiness retries through the existing claim/lane fences. */
@@ -110,7 +118,13 @@ export class ImDeliveryReadyWakeup {
   }
 
   recheck(deliveryId: string): void {
+    if (this.#closed) return;
     const operation = this.#recheck(deliveryId);
+    this.#rechecks.add(operation);
+    void operation.then(
+      () => this.#rechecks.delete(operation),
+      () => this.#rechecks.delete(operation),
+    );
     if (this.#input.supervisor)
       this.#input.supervisor.track(operation, {
         code: "IM_DELIVERY_READY_WAKEUP_FAILED",

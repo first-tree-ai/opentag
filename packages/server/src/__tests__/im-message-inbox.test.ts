@@ -666,3 +666,102 @@ function deferred<T>() {
   });
   return { promise, resolve, reject };
 }
+
+it("close joins an admitted transaction and rejects new ingest", async () => {
+  const value = await inboxFixture();
+  const entered = deferred<void>(),
+    release = deferred<void>();
+  const inbox = new ImMessageInbox(unitDatabase.database, {
+    afterMessageAuthority: async () => {
+      entered.resolve(undefined);
+      await release.promise;
+    },
+  });
+  const ingest = inbox.ingest(value.imBindingId, 1, event("unit-close-admitted", 1));
+  try {
+    await Promise.race([
+      entered.promise,
+      ingest.then(() => {
+        throw new Error("Admission barrier was not reached");
+      }),
+    ]);
+    let drained = false;
+    const closing = inbox.close().then(() => {
+      drained = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(drained).toBe(false);
+    await expect(inbox.ingest(value.imBindingId, 1, event("unit-close-rejected", 2))).rejects.toThrow("closed");
+    release.resolve(undefined);
+    expect((await ingest).messageId).toBeDefined();
+    await closing;
+    expect(drained).toBe(true);
+  } finally {
+    release.resolve(undefined);
+    await ingest;
+    await inbox.close();
+  }
+});
+
+it("close joins overflow work and suppresses queued rechecks", async () => {
+  const value = await inboxFixture();
+  const entered = deferred<void>(),
+    release = deferred<void>();
+  const beforeOverflowExpiry = vi.fn(async () => {
+    entered.resolve(undefined);
+    await release.promise;
+  });
+  const inbox = new ImMessageInbox(unitDatabase.database, { beforeOverflowExpiry });
+  const first = await inbox.ingest(value.imBindingId, 1, event("unit-close-overflow-first", 1));
+  const [session] = await unitDatabase.database.select().from(sessions);
+  if (!session || !first.deliveryIds[0]) throw new Error("Expected first delivery and Session");
+  await seedPendingDeliveries(value.imBindingId, session.id, 99, "unit-close-overflow-filler");
+  try {
+    await inbox.ingest(value.imBindingId, 1, event("unit-close-overflow-second", 102));
+    await entered.promise;
+    await inbox.ingest(value.imBindingId, 1, event("unit-close-overflow-third", 103));
+    let drained = false;
+    const closing = inbox.close().then(() => {
+      drained = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(drained).toBe(false);
+    release.resolve(undefined);
+    await closing;
+    expect(beforeOverflowExpiry).toHaveBeenCalledTimes(1);
+    expect(await deliveryState(first.deliveryIds[0])).not.toBe("expired");
+  } finally {
+    release.resolve(undefined);
+    await inbox.close();
+  }
+});
+
+it("close aborts title work and joins its actual callback", async () => {
+  const value = await inboxFixture();
+  const entered = deferred<AbortSignal>(),
+    release = deferred<void>();
+  const inbox = new ImMessageInbox(unitDatabase.database, {
+    onTaskCreated: async (request) => {
+      if (!request.signal) throw new Error("Expected title signal");
+      entered.resolve(request.signal);
+      await release.promise;
+    },
+  });
+  try {
+    await inbox.ingest(value.imBindingId, 1, event("unit-close-title", 1));
+    const signal = await entered.promise;
+    let drained = false;
+    const closing = inbox.close().then(() => {
+      drained = true;
+    });
+    expect(signal.aborted).toBe(true);
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(drained).toBe(false);
+    release.resolve(undefined);
+    await closing;
+    expect(drained).toBe(true);
+  } finally {
+    release.resolve(undefined);
+    await inbox.close();
+  }
+});

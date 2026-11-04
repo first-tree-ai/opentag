@@ -157,7 +157,9 @@ acquires a bearer over the existing credential control tunnel, and passes the Se
 to the disposable Sandbox worker through its stdin document. The Sandbox uses its existing public
 egress to call the Server's `/api/v1/mcp` endpoint. The Server checks the live execution, Agent
 scope, Sandbox generation, current control connection and custody on every call. Closing the
-execution revokes the bearer. Cloud's current topology requires one Server process while Runner
+execution revokes the bearer. Registry close events also reclaim child execution capabilities,
+proxy tickets and MCP/Web bearers immediately on cascading close, expiry or connection loss.
+Cloud's current topology requires one Server process while Runner
 control state is process-local; this path adds no separate WebSocket proxy or multi-Server promise.
 No Account MCP schema, upstream credential flow, or management UI changes are needed.
 
@@ -647,8 +649,15 @@ the first that can complete discovery, client resolution, and authorization-URL 
 recorded on the authorization row. An issuer that fails is reported and the next one is tried; only
 when all of them fail does the attempt error, naming the issuers it tried.
 
-Once an issuer is recorded it is reused for both refresh and reauthorization. Only a terminal failure
-sends the flow back through discovery to pick another.
+Each start revalidates metadata and prefers the recorded issuer when it is still advertised.
+Advertised issuers are deduplicated, preserving order; more than four distinct candidates fails
+explicitly before any issuer request. Discovery and client resolution share a 30-second outbound
+deadline, budgeted for the normal resource metadata, authorization metadata and registration stages
+at the existing 10-second request bound. Fallbacks share the remaining budget. The same signal
+reaches metadata and registration requests; deadline/cancellation stops candidate fallback and
+prevents late SQL preparation from starting registration or publishing a flow. SQL statements retain
+the infrastructure timeouts. A timed-out registration is not automatically replayed.
+Refresh uses the credential's recorded issuer rather than running this selection again.
 
 Users never choose an issuer — it is not a user-facing concept. The detail view shows which one is
 currently selected.
@@ -833,6 +842,9 @@ so those Agents must authorize again.
   write, so the previous callback URL is immediately unusable. The callback then validates the
   browser binding, then existence, then expiry, and expiry. A state CAS admits one code exchange, and final settlement clears the flow.
   Starting a newer flow or disconnecting fences late results; no provider I/O holds a transaction.
+  Failed discovery marks only its still-unpublished, credentialless pending root as failed. A failed
+  one-time code exchange clears that attempt and records `MCP_OAUTH_FAILED`; an existing usable
+  credential stays usable. Neither failure can overwrite a newer flow, and codes are never replayed.
 - **The client is the one `start` selected.** Shared-format flows seal client ID, registration, scopes,
   initiating Account/Agent and configuration in the existing PKCE envelope; live credential metadata
   remains separate. Starting consent preserves an existing access credential and refresh claim. The
@@ -902,7 +914,8 @@ has an unknown outcome; it fails closed instead of being taken over and replayed
 | Token endpoint 2xx | Success | New envelope, `refresh_generation += 1`, claim cleared; retain snapshots for token rotation alone, invalidate all member snapshots if resource scopes change |
 | `invalid_grant` | **Terminal** | `revoked`; the user must authorize again |
 | `invalid_client` | **Terminal** | `revoked`; the user must re-register the client |
-| Transport failure, timeout, 5xx, unparseable | **Outcome unknown** | `error` with `failure_code = MCP_REFRESH_OUTCOME_UNKNOWN`, clear potentially consumed credential material, require reauthorization, **never** auto-retry |
+| Preparation SQL/transport failure before the exchange | Nothing was sent | Release only the matching claim, preserve the credential, retry on a later pass |
+| Transport failure, timeout, 5xx, unparseable after dispatch | **Outcome unknown** | `error` with `failure_code = MCP_REFRESH_OUTCOME_UNKNOWN`, clear potentially consumed credential material, require reauthorization, **never** auto-retry |
 | Recorded resource no longer matches the effective endpoint | No call made | `error` with `failure_code = MCP_AUTHORIZATION_REQUIRED`, credential kept for a deliberate reauthorization |
 | Local envelope decryption failure | Nothing was sent | Release the claim, leave the state, retry next pass |
 | MCP Server returns 401/403 | Not evidence the credential is dead | Never clear the refresh token |
@@ -911,7 +924,11 @@ A row that has no refresh token at all simply lapses to `expired` at its deadlin
 to spend and retrying forever would achieve nothing.
 
 The scan joins `agents` and excludes deleted ones, so a soft-deleted Agent's credential is not
-renewed.
+renewed. The worker keeps one current pass Promise. Stop closes scan/probe/refresh admission and
+waits for that actual pass; an already-issued token exchange still finishes and persists under
+its existing generation/claim fences. Stop checks between rows avoid draining the rest of the
+100-row batch. SQL disposal follows that drain. Repeated stop calls join the same work; manual
+passes after stop return zero and start cannot reopen a stopped worker. A new instance restarts it.
 
 ## Probing
 

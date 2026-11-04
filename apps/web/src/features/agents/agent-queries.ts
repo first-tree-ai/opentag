@@ -157,24 +157,18 @@ export function useAgentIdentityList(
   );
 }
 
-/**
- * The binding and handoff reads authorize active Agents only, so a paused Agent's reads would only
- * fail (and keep failing on every poll). Callers pass `enabled: false` for a paused Agent.
- */
-export function useImBindingQuery(agentId: string, watched = true, enabled = true) {
+export function useImBindingQuery(agentId: string, watched = true) {
   return useQuery({
     queryKey: queryKeys.agents.imBinding(agentId),
     queryFn: () => readImBinding(agentId),
-    enabled,
     ...(watched ? liveResourceQueryOptions : { staleTime: liveResourceQueryOptions.staleTime }),
   });
 }
 
-export function useImBindingHandoffQuery(agentId: string, watched = true, enabled = true) {
+export function useImBindingHandoffQuery(agentId: string, watched = true) {
   return useQuery({
     queryKey: queryKeys.agents.imBindingHandoff(agentId),
     queryFn: () => readImBindingHandoff(agentId),
-    enabled,
     ...(watched ? handoffQueryOptions : { staleTime: liveResourceQueryOptions.staleTime }),
   });
 }
@@ -201,13 +195,11 @@ export function useAgentListView(accountId: string): LoadState<{ agents: AgentLi
       ),
     true,
   );
-  // A paused Agent's messaging reads are refused by the Server; asking would only add failures.
-  const messagingRead = (agent: (typeof agents)[number]) => evidenceOffered && agent.status !== "suspended";
   const bindings = useQueries({
     queries: agents.map((agent) => ({
       queryKey: queryKeys.agents.imBinding(agent.id),
       queryFn: () => readImBinding(agent.id),
-      enabled: messagingRead(agent),
+      enabled: evidenceOffered,
       ...liveResourceQueryOptions,
     })),
   });
@@ -215,7 +207,7 @@ export function useAgentListView(accountId: string): LoadState<{ agents: AgentLi
     queries: agents.map((agent) => ({
       queryKey: queryKeys.agents.imBindingHandoff(agent.id),
       queryFn: () => readImBindingHandoff(agent.id),
-      enabled: messagingRead(agent),
+      enabled: evidenceOffered,
       ...handoffQueryOptions,
     })),
   });
@@ -229,8 +221,7 @@ export function useAgentListView(accountId: string): LoadState<{ agents: AgentLi
   if (!agentsQuery.data) return { kind: "error", error: agentsError ?? new Error("The request failed") };
   // Only the first read is waited on, and only while the evidence reads are actually offered: a
   // failed Computer read leaves them disabled and never fetched, which would hold the page forever.
-  const awaited = agents.flatMap((agent, index) => (messagingRead(agent) ? [bindings[index], handoffs[index]] : []));
-  if (awaited.some((query) => !query?.isFetched)) return { kind: "loading" };
+  if (evidenceOffered && [...bindings, ...handoffs].some((query) => !query.isFetched)) return { kind: "loading" };
 
   const computers = evidenceOffered ? (computersQuery.data?.computers ?? []) : [];
   const view = {
@@ -306,8 +297,9 @@ export function useAgentDetailView(
     ...watch,
   });
   const computersQuery = useComputersQuery(watched);
+  const bindingQuery = useImBindingQuery(agentId, watched);
+  const handoffQuery = useImBindingHandoffQuery(agentId, watched);
   const projectedAgent = listedUsable ? listed : agentQuery.data;
-  const { bindingQuery, handoffQuery, messagingSettling } = useAgentMessagingEvidence(agentId, watched, projectedAgent);
   const cloudRuntime = useCloudRuntimeEvidence(
     isConfirmedQuerySuccess(computersQuery) &&
       computersQuery.data?.computers.some(
@@ -323,7 +315,7 @@ export function useAgentDetailView(
    * the page back into loading: doing so unmounts what the page is showing, and anything below that
    * reads the same evidence would be remounted into re-reading it, which never settles.
    */
-  const evidenceSettling = !computersQuery.isFetched || messagingSettling;
+  const evidenceSettling = !computersQuery.isFetched || !bindingQuery.isFetched || !handoffQuery.isFetched;
   const bindingConfirmed = isConfirmedQuerySuccess(bindingQuery);
   const handoffConfirmed = isConfirmedQuerySuccess(handoffQuery);
   const computersConfirmed = isConfirmedQuerySuccess(computersQuery);
@@ -348,18 +340,6 @@ export function useAgentDetailView(
     listed,
     listedUsable,
   });
-}
-
-/**
- * The binding and handoff reads for one Agent. The Server refuses them for a paused Agent, so they are
- * asked only once the Agent is known to be active, and a paused Agent's are not waited on.
- */
-function useAgentMessagingEvidence(agentId: string, watched: boolean, agent: { status: string } | undefined) {
-  const readable = agent !== undefined && agent.status !== "suspended";
-  const bindingQuery = useImBindingQuery(agentId, watched, readable);
-  const handoffQuery = useImBindingHandoffQuery(agentId, watched, readable);
-  const messagingSettling = readable ? !bindingQuery.isFetched || !handoffQuery.isFetched : agent === undefined;
-  return { bindingQuery, handoffQuery, messagingSettling };
 }
 
 function detailDisplayError(

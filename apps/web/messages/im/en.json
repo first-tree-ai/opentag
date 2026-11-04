@@ -1,6 +1,5 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
-  "im_agent_paused": "This Agent is paused. Resume it to view and change its messaging settings.",
   "im_change_bot": "Change bot",
   "im_channel_messages_description": "This Agent always receives direct messages. Choose when it receives messages in channels.",
   "im_connect_feishu": "Connect {provider}",

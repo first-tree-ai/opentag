@@ -1,6 +1,5 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
-  "im_agent_paused": "Agent 已暂停，恢复后可查看和修改消息设置。",
   "im_change_bot": "更换机器人",
   "im_channel_messages_description": "此 Agent 始终接收私信。请选择它何时接收频道中的消息。",
   "im_connect_feishu": "连接{provider}",

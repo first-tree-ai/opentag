@@ -561,8 +561,6 @@ export function agentRuntimeIssue(agent: AgentDetailView): (AgentDependencyStatu
 }
 
 export function agentMessagingStatus(agent: AgentDetailView): AgentDependencyStatus {
-  // A paused Agent's messaging is not read at all; the honest state is that the Agent is paused.
-  if (agent.status === "suspended") return { label: m.agents_card_status_paused(), tone: "neutral" };
   if (agent.messaging.kind === "unconfirmed") {
     return {
       action: settingsAction(agent.id, m.agents_status_action_view_channel(), "messaging"),

@@ -16,13 +16,15 @@ Each card shows the computer's identity, a connection status badge, and a More m
 | Confirmed condition | Badge | Card body |
 | --- | --- | --- |
 | Online | Online, with no action | None |
-| Offline | Offline, with “Last online …” or “Never connected” | Inline repair task for this computer |
-| Disconnected | Disconnected, with “Last online …” or “Never connected” | Inline repair task for this computer |
+| Offline | Offline, with “Last online …” or “No last-online record” | Inline repair task for this computer |
+| Disconnected | Disconnected, with “Last online …” or “No last-online record” | Inline repair task for this computer |
 | Read unavailable | Status unavailable | Check status |
 
 “Status unavailable” expresses missing evidence, not another persisted connection condition. Every offline or
-disconnected Local card says when it was last online, or that it never connected, so two computers with the same name
-can be told apart.
+disconnected Local card says when it was last online, so two computers with the same name can be told apart. Without
+a timestamp it says “No last-online record” (暂无在线记录), not “Never connected”: earlier versions cleared the
+timestamp on every repair, so the data cannot tell a computer that never came online from one whose history was
+cleared, and the page neither guesses nor pretends.
 
 - A local computer that is not online shows its repair task inline, issued automatically with a targeted repair
   code: the shared instruction block, one copy action, optional full-text expansion, and the code's expiry. The

@@ -601,6 +601,52 @@ describe("external call performance logging", () => {
       code: "IM_PROVIDER_CALL_DEADLINE_EXCEEDED",
     });
     expect(innerSignal?.aborted).toBe(true);
+
+    // Completed outer attempt retires re-entrant context so detached async descendants acquire a new permit
+    const singlePermitPolicy = new ExternalCallPolicy({
+      maxConcurrency: 1,
+      maxAttempts: 1,
+      performanceLogger: perfLogger,
+    });
+    let releaseDescendantGate: () => void = () => undefined;
+    const descendantGate = new Promise<void>((resolve) => {
+      releaseDescendantGate = resolve;
+    });
+    let releaseHolderGate: () => void = () => undefined;
+    const holderGate = new Promise<void>((resolve) => {
+      releaseHolderGate = resolve;
+    });
+    let holderAcquired: () => void = () => undefined;
+    const holderAcquiredPromise = new Promise<void>((resolve) => {
+      holderAcquired = resolve;
+    });
+    let lateChildStarted = false;
+    let lateChildPromise: Promise<string> | undefined;
+
+    await singlePermitPolicy.run("feishu.outer", async () => {
+      void descendantGate.then(() => {
+        lateChildPromise = singlePermitPolicy.run("feishu.late-child", async () => {
+          lateChildStarted = true;
+          return "late-ok";
+        });
+      });
+    });
+
+    const holderPromise = singlePermitPolicy.run("feishu.holder", async () => {
+      holderAcquired();
+      await holderGate;
+      return "holder-ok";
+    });
+    await holderAcquiredPromise;
+
+    releaseDescendantGate();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(lateChildStarted).toBe(false);
+
+    releaseHolderGate();
+    await expect(holderPromise).resolves.toBe("holder-ok");
+    await expect(lateChildPromise).resolves.toBe("late-ok");
+    expect(lateChildStarted).toBe(true);
   });
 
   it("records attemptCount: 0 on pre-dispatch rejections and timedOut: true on owned deadlines (omitting timedOut on caller abort)", async () => {

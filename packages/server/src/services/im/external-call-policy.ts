@@ -8,7 +8,7 @@ import { traceExternalCall } from "../../observability/external-call-logger.js";
 import type { PerformanceLogger } from "../../observability/performance-logger.js";
 
 const activePolicyStorage = new AsyncLocalStorage<
-  ReadonlyMap<ExternalCallPolicy, { signal: AbortSignal; requestId: string }>
+  ReadonlyMap<ExternalCallPolicy, { signal: AbortSignal; requestId: string; active: boolean }>
 >();
 
 export type PolicyErrorCategory = "security" | "transient" | "validation" | "availability";
@@ -309,7 +309,7 @@ export class ExternalCallPolicy {
 
   async run<T>(operation: string, action: PolicyAction<T>, options: ExternalCallOptions = {}): Promise<T> {
     const active = activePolicyStorage.getStore()?.get(this);
-    if (active) {
+    if (active?.active) {
       return action(composeReentrantSignal(active.signal, options), active.requestId);
     }
     const provider = operation.startsWith("slack")
@@ -517,8 +517,9 @@ export class ExternalCallPolicy {
       abandonmentTimer = setTimeout(() => abandon?.(), abandonmentWindowMs);
       abandonmentTimer.unref?.();
     };
+    const activeEntry = { signal: controller.signal, requestId, active: true };
     const nextActive = new Map(activePolicyStorage.getStore());
-    nextActive.set(this, { signal: controller.signal, requestId });
+    nextActive.set(this, activeEntry);
     const actionPromise = Promise.resolve().then(() =>
       activePolicyStorage.run(nextActive, () => action(controller.signal, requestId)),
     );
@@ -527,6 +528,7 @@ export class ExternalCallPolicy {
       () => undefined,
     );
     actionSettled.then(() => {
+      activeEntry.active = false;
       if (abandonmentTimer) clearTimeout(abandonmentTimer);
     });
     const settled = Promise.race([actionSettled, abandonment]);
@@ -591,6 +593,7 @@ export class ExternalCallPolicy {
         }
         throw error;
       } finally {
+        activeEntry.active = false;
         if (timer) clearTimeout(timer);
         options.signal?.removeEventListener("abort", onAbort);
         if (rejectCancelledListener) options.signal?.removeEventListener("abort", rejectCancelledListener);

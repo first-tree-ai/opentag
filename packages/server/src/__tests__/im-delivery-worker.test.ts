@@ -1931,6 +1931,7 @@ describe("ImDeliveryWorker database workflow", () => {
 
     for (const [code, abnormal] of [
       ["IM_DELIVERY_CUSTODY_DEFERRED", false],
+      ["IM_DELIVERY_INBOUND_PENDING", false],
       ["IM_DELIVERY_STEER_UNKNOWN", true],
     ] as const) {
       await unit.reset();

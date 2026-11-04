@@ -112,3 +112,8 @@ not a green gate for a newer head.
 After integrating `main@c48435a73` (product-regression documentation and messaging/notice UI
 changes), the affected eight-file Web subset passed all 163 cases. There were no package-manifest
 or lockfile changes. The next pushed head requires fresh CI and exact-head owner review.
+
+The final follow-up also incorporates `main@1bca6c9a8`, which classifies inbound-receipt barriers as
+expected deferrals. The same four-file coverage validation passed all 171 cases with that base and
+the repository-compatible deferred-promise fixture. Root type checks passed; the edited Web
+combination also built successfully.

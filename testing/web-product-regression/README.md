@@ -24,8 +24,10 @@ so the cases stay readable without them.
 
 Known issues that a run may see and should not report again:
 
-- Each load of the Agent list logs "Failed to load resource" for Agents without a messaging binding, because the
-  optional binding read answers 404. It is console noise only (low severity) and has no visible effect.
+- For a **paused** Agent, `GET /api/v1/agents/:id/im-binding` and `.../im-binding/handoff` answer 404 ("The Agent
+  was not found") on every refresh of the Agent list, the Agent page, and its settings. The console logs "Failed to
+  load resource", and the Agent's messaging status reads as unavailable. Tracked in #1233. An Agent with no binding
+  gets 204, not 404, so report any other 404 from these reads.
 
 When a change fixes a product issue, add or update at least one row here, and its automated check, in the same pull
 request. Keep one row per behaviour, not one per screenshot or width.
@@ -41,6 +43,7 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | AL-05 | Status stays steady while refreshing | Load the list right after the Server or a Computer restarts, then leave it open through background refreshes | A row with no answer yet reads "Checking" (never Ready) until its first answer; after that, statuses do not flicker or reorder between refreshes | Edge | unit: `features/agents/agents-page.test.tsx`, `features/agents/agent-list-status.test.ts` |
 | AL-06 | Uppercase and Chinese names | Agents named, for example, "Atlas研发" | Names show as typed in the list and on the Agent page | Core | manual |
 | AL-07 | Long names | An Agent with a long name | Name wraps or truncates inside its row and in the Agent switcher; no overflow | Edge | smoke: `navigation-polish.spec.ts` |
+| AL-08 | Known messaging problem while a runtime check runs | Agent whose binding needs new permissions (or failed, or was turned off) while its runtime check is still running | The status shows the messaging problem and its action (Update permissions), not Checking; a confirmed runtime problem still comes first; an unreadable binding still reads Checking | Core | unit: `features/agents/agent-model.test.ts` |
 
 ## Agent setup
 
@@ -57,7 +60,7 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | AS-09 | Name taken, any case | Create "Atlas" when "atlas" exists | Refused with "An Agent with this name already exists. Names aren't case-sensitive."; offers to open the existing Agent | Core | unit: `__tests__/agent-setup-boundary.test.tsx`, `onboarding-v2/creation-error-message.test.ts` |
 | AS-10 | Runtime choice is called an Agent | Creation step with Local | Choice is labelled "Agent to use"; no "Runtime" in the creation copy | Core | unit: `onboarding-v2/steps.test.tsx` |
 | AS-11 | Cloud availability | Deployment with Cloud off, still checking, or failed to answer | Cloud card says why it is unavailable or checking; a failed read offers Try again; Local stays selectable | Edge | unit: `onboarding-v2/steps.test.tsx` (checking and failed states are unit-only; a manual run can check Cloud off) |
-| AS-12 | Connect this computer | Prepare this computer with no Computer bound | Copyable connect task; the page waits and continues once the Computer connects | Core | smoke: `computer-connection.spec.ts`; connect C21 |
+| AS-12 | Connect this computer | Prepare this computer with no Computer bound | The window shows exactly what Copy copies: one leading line for an Agent, then the connect command, which also runs as-is in a terminal (including macOS zsh); the page waits and continues once the Computer connects | Core | smoke: `computer-connection.spec.ts`; unit: `features/computer-connect/computer-connect.test.tsx`; connect C21 |
 | AS-13 | Choose among existing Computers | Account with several Computers, none bound | Lists them without creating a new connection; binding happens only after the user chooses | Edge | smoke: `computer-connection.spec.ts` |
 | AS-14 | Runtime sign-in steps | Runtime row reports signed out | Sign in expands terminal steps for that computer (`claude` then `/login`, or `codex login`) with copyable commands; Check again follows; the row number stays aligned with its title | Core | unit: `onboarding-v2/runtime-sign-in.test.tsx`, `onboarding-v2/agent-setup-page.test.tsx` |
 | AS-15 | Runtime install and unavailable | Runtime row reports not installed or unavailable | Row names the state and the next step; Check again re-reads it | Edge | unit: `onboarding-v2/agent-setup-page.test.tsx` |
@@ -71,7 +74,7 @@ request. Keep one row per behaviour, not one per screenshot or width.
 
 | ID | Scenario | Steps | Expected result | Run | Verified today |
 | --- | --- | --- | --- | --- | --- |
-| AH-01 | Home sections in order | Open an Agent | Usage, status (Computer, messaging), Schedules, Tasks, in that order | Core | smoke: `app.spec.ts`; sweep |
+| AH-01 | Home sections in order | Open an Agent | Usage, status, Schedules, Tasks, in that order | Core | smoke: `app.spec.ts`; sweep |
 | AH-02 | Task table alignment | Agent home with Tasks | Section title, column headers, and cell text share one left edge; View all aligns right | Edge | manual |
 | AH-03 | Schedule row | Agent with enabled schedules | Each row: name as a heading, Pause, and one line with the rule in words, the next time, and the last time; no label for the default state | Core | unit: `features/agents/agent-schedules-section.test.tsx` |
 | AH-04 | Rules in words | Schedules for weekdays, specific days, a day of the month, a day range, hourly windows, fixed intervals | Rules read in words in both languages (for example "Every weekday at 9:00", "Monthly on days 28–31 at 18:00"); unphraseable cron, including minute steps that don't divide an hour, show as written | Core | unit: `features/agents/schedule-rule.test.ts` |
@@ -81,6 +84,7 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | AH-08 | Pause, resume, delete a schedule | Pause, then Resume; open details and Delete | State updates with the observed revision; Paused label appears only while paused; delete asks for confirmation | Core | unit: `features/agents/agent-schedules-section.test.tsx` |
 | AH-09 | Schedules on phones | Schedules at 390 and 320px | Pause or Resume stays on each title row; long names wrap in the title | Edge | manual |
 | AH-10 | Deep-linked schedule | An Agent with more schedules than one page; open a link from IM to a schedule beyond the first page, and one to a schedule that no longer exists | That schedule opens with its details, even outside the first page; an inaccessible link says so without task content | Edge | unit: `features/agents/agent-schedules-section.test.tsx` |
+| AH-11 | Running work on the status card | Agent with two running Tasks; then an idle Agent that isn't ready | The status card's first row, Work, reads the same line as the list row ("2 tasks running"); the idle Agent gets no Work row | Core | unit: `features/agents/agent-detail-page.test.tsx` |
 
 ## Agent settings
 
@@ -102,16 +106,18 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | ST-14 | Delete failures | Pause fails; delete fails after the pause; no permission | Says nothing was deleted; says the Agent is paused and retries only the delete; names the missing permission | Edge | unit: `features/agents/agent-settings/agent-manage-settings.test.tsx` |
 | ST-15 | Messaging permissions use one label | Agent whose messaging binding needs new permissions; open the list, Agent page, settings index, and messaging page | Every place reads "Messaging permissions need updating" / "需要更新消息权限"; the action is Update permissions | Core | unit: `features/agent-list-order.test.ts`, `__tests__/agent-messaging.test.tsx` |
 | ST-16 | Model list can't be read | Model page while the computer is offline or its model list fails to load | One line by the model field ("Couldn't load the model list. You can type a model name."); no other notes; the model can still be typed | Edge | unit: `features/agents/agent-settings/runtime-configuration.test.tsx` |
-| ST-17 | Self-configuration switch | Open Name settings; toggle Self-configuration | The switch on Name saves on its own and confirms the save (planned: moves to Model beside Ask for approval; update this row when that lands) | Core | unit: `features/agents/agent-settings/general-config-form.test.tsx` |
+| ST-17 | Self-configuration switch | Open Model settings for a Local Agent; toggle Self-configuration | The switch sits beside Ask for approval, saves on its own, and confirms the save; Name settings hold only the name | Core | unit: `features/agents/agent-settings/runtime-configuration.test.tsx`, `features/agents/agent-settings/general-config-form.test.tsx` |
 | ST-18 | No copy that restates the page | Open Tasks, messaging, Computer, and Usage; edit Soul | No subtitle restates the title; while editing Soul, only the formatting hint is announced | Edge | unit: `__tests__/agent-messaging.test.tsx`, `__tests__/agent-usage.test.tsx`; manual |
 | ST-19 | Unreported usage | Usage for an Agent where some Tasks reported no usage | A muted line under the totals ("1 个任务未上报用量"), not a warning banner | Edge | unit: `__tests__/agent-usage.test.tsx`, `features/agent-usage.test.tsx` |
+| ST-20 | Connector failure names the next step | Connector with an unreachable or blocked address, a service without account sign-in, a rejected key, an unfinished authorization, an unreachable service | One short line per cause with its next step; the row offers Edit address, Update key, or Retry to match; upstream details stay private | Core | unit: `features/mcp/mcp-feedback.test.ts`, `features/mcp/mcp-list-recovery.test.tsx`; smoke: `mcp-recovery-smoke.spec.ts` |
+| ST-21 | Shipped Skills read for people | Skills list, reader, and catalog for a Skill openTag ships | A short localized summary, not the SKILL.md description written for the Agent | Edge | unit: `features/skills/skill-summary.test.ts` |
 
 ## Computers and the connect command
 
 | ID | Scenario | Steps | Expected result | Run | Verified today |
 | --- | --- | --- | --- | --- | --- |
 | CM-01 | Computer list | Open Computers with online, offline, and Cloud Computers | Each card shows its state; offline offers recovery; delete asks for confirmation | Core | unit: `__tests__/computer-management.test.tsx`, `__tests__/computers-delete.test.tsx` |
-| CM-02 | Connect a new computer from the web | Computers or Agent settings: connect a new computer and copy the task | Task copies; the page waits for that computer and shows it once connected | Core | smoke: `computer-connection.spec.ts` |
+| CM-02 | Connect a new computer from the web | Computers or Agent settings: connect a new computer and copy the command | The copied text matches what the window shows; the page waits for that computer and shows it once connected | Core | smoke: `computer-connection.spec.ts`; unit: `features/computer-connect/computer-connect.test.tsx` |
 | CM-03 | Repair a disconnected computer | Sole computer disconnected | Recovery repairs it in place without creating another | Core | smoke: `computer-connection.spec.ts`; connect C03r, C04r |
 | C00 | Command exactly as the web shows it | Run the command the web emits on a fresh machine | Finishes without hanging; any failure is plain | Edge | connect C00 |
 | C01 | Fresh machine | Run the connect command on a machine that never had openTag | One new Computer, online | Core | connect C01 |
@@ -171,3 +177,5 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | LW-05 | 768px | Primary pages at 768px | Layout transitions cleanly beside the navigation | Core | smoke: `responsive-smoke.spec.ts`; sweep |
 | LW-06 | 1440px | Primary pages at 1440px | Content frame is centred and bounded | Core | smoke: `responsive-smoke.spec.ts`; sweep |
 | LW-07 | Keyboard and accessibility | Tab through each page; run accessibility checks | Every action reachable; dialogs trap and restore focus; no serious accessibility violations | Core | smoke: `browser-smoke.spec.ts`; sweep |
+| LW-08 | Focus survives in-place changes | With the keyboard: toggle a Skill switch; Pause, then Resume a schedule; continue from the Agent type step | Focus stays on the switch or button while its write is pending, which reports busy and ignores a second press; the next setup step focuses its heading | Edge | unit: `features/skills/skills-page.test.tsx`, `features/agents/agent-schedules-section.test.tsx`, `onboarding-v2/agent-create-cloud.test.tsx` |
+| LW-09 | Agent list tab order and plain healthy rows | Tab through an Agent list row that has an action; read a healthy status row | The row's open link comes before its action; a healthy row with nothing to act on is text, not a button | Edge | unit: `__tests__/agent-computers.test.tsx`, `__tests__/app-shell.test.tsx` |

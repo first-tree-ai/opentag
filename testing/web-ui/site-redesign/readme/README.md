@@ -8,11 +8,11 @@ an animation captured from its actual **How it works** section.
 - Source repository: `first-tree-ai/opentag-site`, branch
   `codex/design-token-refresh`, revision
   `4f63d20383045861ca5cd93be8196829f0974e5f`.
-- Both `docs/.assets/opentag-logo.png` and
-  `docs/.assets/opentag-logo-on-dark.png` are byte-for-byte copies of
+- Both `.github/assets/opentag-logo.png` and
+  `.github/assets/opentag-logo-on-dark.png` are byte-for-byte copies of
   `public/assets/icon/brand-mark.png`. The transparent mark works on both
-  backgrounds; existing README asset paths remain available.
-- `docs/.assets/opentag-walkthrough.gif` is a browser capture of
+  backgrounds. They live in `.github/assets/` so the `docs/` Context Tree holds only project context.
+- `.github/assets/opentag-walkthrough.gif` is a browser capture of
   `src/Walkthrough.tsx`, its four English scene imports and `src/walkthrough.css`.
   It is illustrative website content, not a recording of a live customer account.
 - Mounted the unchanged website `Walkthrough` component, English `siteContent`,

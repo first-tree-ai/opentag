@@ -31,4 +31,4 @@ Browser icons are derived from `site-brand-mark.png`: transparent 16px and 32px 
 (16px, 32px, and 48px) at `public/favicon.ico` and `public/icons/favicon.ico`, and a 180px Apple touch icon with
 the 156px mark centred on white. These local assets replace the deprecated cat logos and SVG favicon.
 The icon links include a version query so browsers refresh previously cached cat artwork. No runtime artwork
-request goes to the website. The README marks in `docs/.assets/` also use the current teal artwork.
+request goes to the website. The README marks in `.github/assets/` (kept outside the `docs/` Context Tree) also use the current teal artwork.

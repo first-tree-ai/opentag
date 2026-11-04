@@ -377,6 +377,9 @@ function createContextTreeServices(
     githubContextTreeOperations,
     contextTreeOperationService: new ContextTreeOperationService(agents, registry, {
       computerKind,
+      availability: (accountId, agentId) =>
+        githubContextTreeOperations?.availability(accountId, agentId) ??
+        Promise.resolve({ status: "failed", code: "github_not_configured" }),
       run: (input) =>
         githubContextTreeOperations?.run(input) ??
         Promise.resolve({ result: { status: "failed", code: "github_not_configured" } }),

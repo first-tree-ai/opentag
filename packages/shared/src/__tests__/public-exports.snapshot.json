@@ -242,6 +242,7 @@
   "ConnectCodeIssueRequestSchema",
   "ConnectCodeIssueResponseSchema",
   "ConnectMCPOAuthResponseSchema",
+  "ContextTreeAvailabilityResponseSchema",
   "ContextTreeBranchSchema",
   "ContextTreeConnectionSchema",
   "ContextTreeOperationRequestSchema",

@@ -1,4 +1,5 @@
 import {
+  type ContextTreeAvailabilityResponse,
   ContextTreeBranchSchema,
   type ContextTreeOperationResponse,
   ContextTreePathSchema,
@@ -35,6 +36,7 @@ export interface PreparedContextTreeOperation {
 }
 
 export interface GitHubContextTreeOperationRunner {
+  availability(accountId: string, agentId: string): Promise<ContextTreeAvailabilityResponse>;
   computerKind(computerId: string): Promise<"local" | "cloud" | undefined>;
   run(input: GitHubContextTreeOperationInput): Promise<PreparedContextTreeOperation>;
 }
@@ -137,6 +139,18 @@ export class GitHubContextTreeOperations implements GitHubContextTreeOperationRu
 
   computerKind(computerId: string): Promise<"local" | "cloud" | undefined> {
     return this.#computerKind(computerId);
+  }
+
+  async availability(accountId: string, agentId: string): Promise<ContextTreeAvailabilityResponse> {
+    try {
+      const { connection } = await this.#management.getOverview(accountId, agentId);
+      return connection
+        ? { status: "ready", readOnly: connection.readOnly === true }
+        : { status: "failed", code: "authentication_required" };
+    } catch (error) {
+      if (error instanceof AgentGitHubAuthorizationError) return { status: "failed", code: error.code };
+      throw error;
+    }
   }
 
   /**

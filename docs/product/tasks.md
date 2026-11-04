@@ -123,26 +123,20 @@ The Web reads these in four groups (Queued, Running, Completed, Failed) for filt
 neutral **Cancelled** label rather than Completed. Why: the Account withdrew it before it ran, and
 "Completed" would claim work that never happened.
 
-### Task status from deliveries and message handling
+### Message handling and failure recovery
 
-> **Planned — not yet implemented.** Tracking: #1215
+Task status remains a projection over existing message and delivery records. The precedence and
+terminal distinctions above, topic ordering, placement fences, immutable reports and delivery
+idempotency remain authoritative; there is no new Task-status table or independent execution state.
+New input follows the existing Session path: a runtime that supports steer may accept it into the
+running Turn; an unsupported runtime leaves it queued until the current Turn settles. The Server
+does not force interruption or replay an accepted Turn.
 
-- **Task status:** it stays a projection over the message delivery table and is never stored separately:
-  - a queued delivery reads as queued;
-  - a delivered or accepted one reads as running;
-  - a completed or failed one reads as completed or failed.
-- **Delivery reporting:** the daemon reports each message's delivery status as it changes. Retry belongs to the
-  Server's queue, and the daemon dedups by message ID.
-- **New messages:** a new message for a topic is always steered into the Agent Session that is already running, right
-  away, and the model decides what to do with it. There is no classifier deciding steer versus append and no re-check
-  before replying. Where a runtime cannot take injected input, the current Turn is interrupted and the message
-  redelivered.
-- **Failures:** every IM failure is a plain message; the person retries by sending a new message (see
-  [IM task feedback](../system/messaging/im-feedback.md)).
-- **Indexing:** the delivery table is queryable by Agent and by Task through an index.
-
-Why: a status derived from the delivery records cannot drift from what happened, and retrying by sending a new message
-reuses the path every message takes. This replaces the precedence rules above once it ships.
+New failure targets can use plain messages through the feedback rollout described in
+[IM task feedback](../system/messaging/im-feedback.md). New Task Retry admissions are disabled;
+the person sends a new message through the ordinary admission path. Previously admitted Retry
+attempts and authenticated workspace save/discard recovery retain their original identities,
+reports and confirmation requirements.
 
 Each detail Turn exposes `delivery.isRunning` from the same effective predicate as the list. The Web
 shows progress only when that value is true; persisted `accepted` alone does not prove liveness.

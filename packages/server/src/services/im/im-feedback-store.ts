@@ -14,6 +14,7 @@ import {
   slackInstallations,
   users,
 } from "../../db/schema/index.js";
+import { feedbackMessageFormat } from "./im-feedback-format.js";
 
 export type FeedbackTarget = typeof imFeedbackTargets.$inferSelect & { batchRetryBlocked?: boolean };
 export type SlackFeedbackScope = Pick<FeedbackTarget, "provider" | "installationId" | "bindingGeneration">;
@@ -82,6 +83,7 @@ export async function createImFeedbackTarget(tx: DatabaseTransaction, deliveryId
       threadKey: row.message.threadKey,
       senderExternalId: row.message.authorExternalId,
       cardOwnerDeliveryId: row.delivery.steerTargetDeliveryId ?? deliveryId,
+      messageFormat: feedbackMessageFormat(),
       sandboxId: row.sandbox?.id,
       environmentGeneration: row.sandbox?.environmentGeneration,
       resourceUid: row.sandbox?.currentResourceUid,

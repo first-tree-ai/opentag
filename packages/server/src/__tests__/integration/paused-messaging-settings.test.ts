@@ -148,9 +148,15 @@ describe("paused messaging settings", () => {
 
   it("keeps a stopped Feishu binding and its public refusal reason readable while paused", async () => {
     const value = await fixture();
-    await value.bindings.disable(value.userId, value.bindingId);
+    if (!value.agent.computerId) throw new Error("Missing fixture Computer");
+    const agent = await new AgentService(value.database).createForAccount(value.userId, {
+      name: "feishu-reader",
+      displayName: "Feishu Reader",
+      runtimeProvider: "codex",
+      computerId: value.agent.computerId,
+    });
     const bindingId = await value.bindings.activateFeishu({
-      agentId: value.agent.id,
+      agentId: agent.id,
       appId: "cli_refused",
       appSecret: "refused-secret",
       teamId: "tenant_refused",
@@ -161,9 +167,9 @@ describe("paused messaging settings", () => {
       .update(imBindings)
       .set({ status: "error", lastErrorCode: "FEISHU_CREDENTIAL_INVALID" })
       .where(eq(imBindings.id, bindingId));
-    await value.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, value.agent.id));
+    await value.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, agent.id));
     const before = await value.database.select().from(imBindings);
-    const summary = await value.bindings.getForAgent(value.userId, value.agent.id);
+    const summary = await value.bindings.getForAgent(value.userId, agent.id);
     expect(summary).toMatchObject({
       id: bindingId,
       provider: "feishu",
@@ -171,10 +177,10 @@ describe("paused messaging settings", () => {
       connectionFailure: "credentials_rejected",
     });
     expect(JSON.stringify(summary)).not.toMatch(/refused-secret|encryptedCredential|FEISHU_CREDENTIAL_INVALID/);
-    expect(await value.bindings.getHandoffForAgent(value.userId, value.agent.id)).toMatchObject({
+    expect(await value.bindings.getHandoffForAgent(value.userId, agent.id)).toMatchObject({
       bindingState: "error",
     });
-    await expect(value.bindings.assertCanManage(value.userId, value.agent.id)).rejects.toMatchObject({
+    await expect(value.bindings.assertCanManage(value.userId, agent.id)).rejects.toMatchObject({
       code: "IM_BINDING_NOT_FOUND",
     });
     expect(await value.database.select().from(imBindings)).toEqual(before);

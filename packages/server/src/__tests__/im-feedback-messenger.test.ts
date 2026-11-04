@@ -16,7 +16,7 @@ const mocks = vi.hoisted(() => ({
     im: {
       v1: {
         messageReaction: { list: vi.fn(), create: vi.fn(), delete: vi.fn() },
-        message: { reply: vi.fn(), patch: vi.fn(), list: vi.fn() },
+        message: { reply: vi.fn(), patch: vi.fn(), update: vi.fn(), list: vi.fn() },
       },
     },
   },
@@ -74,6 +74,7 @@ function target(provider: "slack" | "feishu" = "slack"): FeedbackTarget {
     revision: 3,
     appliedRevision: 2,
     cardRevision: 0,
+    messageFormat: "interactive_v1",
     cardState: "pending",
     cardMessageId: null,
     providerRequestId: randomUUID(),
@@ -135,6 +136,7 @@ beforeEach(() => {
     mocks.feishu.im.v1.messageReaction.delete,
     mocks.feishu.im.v1.message.reply,
     mocks.feishu.im.v1.message.patch,
+    mocks.feishu.im.v1.message.update,
     mocks.feishu.im.v1.message.list,
   ])
     mock.mockReset();
@@ -145,6 +147,61 @@ beforeEach(() => {
   mocks.feishu.im.v1.messageReaction.delete.mockResolvedValue({ code: 0 });
 });
 describe("native feedback transport", () => {
+  it.each(["slack", "feishu"] as const)(
+    "sends, edits and finds %s text without an interactive card",
+    async (provider) => {
+      const t: FeedbackTarget = { ...target(provider), messageFormat: "text_v1" };
+      const { messenger } = harness();
+      const details = `https://app.example.test/im-feedback/${t.id}`;
+      mocks.slack.chat.postMessage.mockResolvedValue({ ok: true, channel: t.channelId, ts: "text-message" });
+      mocks.slack.chat.update.mockResolvedValue({ ok: true });
+      mocks.feishu.im.v1.message.reply.mockResolvedValue({
+        code: 0,
+        data: { message_id: "text-message", chat_id: t.channelId },
+      });
+      mocks.feishu.im.v1.message.update.mockResolvedValue({ code: 0 });
+      expect(await messenger.post(t)).toBe("text-message");
+      await messenger.update({ ...t, cardMessageId: "text-message" });
+      if (provider === "slack") {
+        expect(mocks.slack.chat.postMessage).toHaveBeenCalledWith(
+          expect.objectContaining({ text: expect.stringContaining(details) }),
+        );
+        expect(mocks.slack.chat.postMessage.mock.calls[0]?.[0]).not.toHaveProperty("blocks");
+        expect(mocks.slack.chat.update.mock.calls[0]?.[0]).not.toHaveProperty("blocks");
+        mocks.slack.conversations.replies.mockResolvedValue({
+          ok: true,
+          messages: [
+            { user: "human", ts: "other", text: details },
+            { user: "bot", ts: "text-message", text: details },
+          ],
+        });
+      } else {
+        expect(mocks.feishu.im.v1.message.reply).toHaveBeenCalledWith(
+          expect.objectContaining({ data: expect.objectContaining({ msg_type: "text" }) }),
+        );
+        expect(mocks.feishu.im.v1.message.update).toHaveBeenCalledWith(
+          expect.objectContaining({
+            path: { message_id: "text-message" },
+            data: expect.objectContaining({ msg_type: "text" }),
+          }),
+        );
+        expect(mocks.feishu.im.v1.message.patch).not.toHaveBeenCalled();
+        mocks.feishu.im.v1.message.list.mockResolvedValue({
+          code: 0,
+          data: {
+            items: [
+              {
+                sender: { sender_type: "app", id: "app" },
+                message_id: "text-message",
+                body: { content: JSON.stringify({ text: details }) },
+              },
+            ],
+          },
+        });
+      }
+      expect(await messenger.find(t)).toEqual({ ids: ["text-message"] });
+    },
+  );
   it("reconciles designated Slack reactions idempotently with SDK retries disabled", async () => {
     const { messenger } = harness();
     const t = target();

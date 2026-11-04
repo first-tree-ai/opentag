@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { computeTurnResultHash, type TurnReportRequest } from "@opentag/shared";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agents,
   imBindings,
@@ -22,7 +22,7 @@ import {
   FeedbackProviderError,
   type FeedbackTransport,
 } from "../services/im/im-feedback-messenger.js";
-import { ImFeedbackStore, startImFeedback } from "../services/im/im-feedback-store.js";
+import { createImFeedbackTarget, ImFeedbackStore, startImFeedback } from "../services/im/im-feedback-store.js";
 import { ImFeedbackWorker } from "../services/im/im-feedback-worker.js";
 import { WorkspaceSaveFailedError } from "../services/sandboxes/errors.js";
 import { createSlackWorkingFixture } from "./support/slack-working-fixture.js";
@@ -40,6 +40,7 @@ beforeEach(async () => {
   await db.reset();
   clock = new Date();
 });
+afterEach(() => vi.unstubAllEnvs());
 async function fixture(provider: "slack" | "feishu" = "slack") {
   const h = await createSlackWorkingFixture(db.database, new ApplicationCipher(Buffer.alloc(32, 11)), () => clock);
   const entry = await h.delivery();
@@ -168,6 +169,22 @@ async function workspaceFixture() {
 }
 
 describe("durable IM feedback", () => {
+  it("freezes the message format at target creation across rollout flag changes", async () => {
+    vi.stubEnv("OPENTAG_IM_FEEDBACK_TEXT_ENABLED", "true");
+    const h = await fixture();
+    expect((await h.target()).messageFormat).toBe("text_v1");
+    vi.stubEnv("OPENTAG_IM_FEEDBACK_TEXT_ENABLED", "false");
+    await db.database.transaction((tx) => createImFeedbackTarget(tx, h.frame.deliveryId, clock));
+    expect((await h.target()).messageFormat).toBe("text_v1");
+    const old = await h.delivery();
+    await db.database.transaction((tx) => startImFeedback(tx, old.frame.deliveryId, clock));
+    const [legacy] = await db.database
+      .select()
+      .from(imFeedbackTargets)
+      .where(eq(imFeedbackTargets.deliveryId, old.frame.deliveryId));
+    expect(legacy?.messageFormat).toBe("interactive_v1");
+  });
+
   it("retires an ingress projection when dispatch establishes an observer-only copy", async () => {
     const h = await fixture();
     await db.database
@@ -437,49 +454,50 @@ describe("durable IM feedback", () => {
 });
 
 describe("safe feedback actions", () => {
-  it("creates one retry attempt while preserving the original immutable report", async () => {
+  it("refuses new task retries without changing the original immutable report", async () => {
     const h = await fixture();
     const report = await h.finish("failed", "not_started");
     const service = new ImFeedbackActionsService({ database: db.database, secret: "test-secret", now: () => clock });
     const before = await h.target();
-    const view = await service.getForAccount(h.accountId, before.id);
-    const action = view.actions.find((a) => a.kind === "retry_task");
-    expect(action).toBeDefined();
-    if (!action) return;
-    const input = { kind: "retry_task" as const, revision: view.revision, confirmation: action.confirmation };
-    await service.submitForAccount(h.accountId, before.id, input);
-    await service.submitForAccount(h.accountId, before.id, input);
+    expect((await service.getForAccount(h.accountId, before.id)).actions).toEqual([]);
+    await expect(
+      service.submitForAccount(h.accountId, before.id, {
+        kind: "retry_task",
+        revision: before.revision,
+        confirmation: "retired-confirmation",
+      }),
+    ).rejects.toMatchObject({ statusCode: 409 });
     const rows = await db.database
       .select()
       .from(imMessageDeliveries)
       .where(eq(imMessageDeliveries.messageId, before.messageId));
-    expect(rows).toHaveLength(2);
-    expect(rows.find((r) => r.attemptOrdinal === 0)?.turnReport).toEqual(report);
-    expect(rows.find((r) => r.attemptOrdinal === 1)).toMatchObject({
-      state: "pending",
-      retryOfDeliveryId: h.frame.deliveryId,
-    });
-    expect(await db.database.select().from(imFeedbackActions)).toHaveLength(1);
-    await h.worker.runOnce();
-    expect(h.transport.post.mock.calls[0]?.[1]).toMatchObject({
-      kind: "retry_task",
-      state: "succeeded",
-      resultCode: "retry_queued",
-    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.turnReport).toEqual(report);
+    expect(await db.database.select().from(imFeedbackActions)).toEqual([]);
   });
   it("projects the highest retry ordinal even when creation clocks coincide", async () => {
     const h = await fixture();
     await h.finish("failed", "not_started");
     const t = await h.target();
-    const service = new ImFeedbackActionsService({ database: db.database, secret: "secret", now: () => clock });
-    const view = await service.getForAccount(h.accountId, t.id);
-    const a = view.actions[0];
-    if (!a) throw new Error("Missing retry");
-    await service.submitForAccount(h.accountId, t.id, {
-      kind: "retry_task",
-      revision: t.revision,
-      confirmation: a.confirmation,
-    });
+    const [original] = await db.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, h.frame.deliveryId));
+    if (!original) throw new Error("Missing original delivery");
+    const [admitted] = await db.database
+      .insert(imMessageDeliveries)
+      .values({
+        messageId: t.messageId,
+        sessionId: t.sessionId,
+        attention: "direct",
+        placementGeneration: t.placementGeneration,
+        attemptOrdinal: 1,
+        retryOfDeliveryId: original.id,
+        expiresAt: original.expiresAt,
+      })
+      .returning({ id: imMessageDeliveries.id });
+    if (!admitted) throw new Error("Missing previously admitted retry");
+    await db.database.transaction((tx) => createImFeedbackTarget(tx, admitted.id, clock));
     const [retry] = await db.database.select().from(imFeedbackTargets).where(eq(imFeedbackTargets.state, "queued"));
     if (!retry) throw new Error("Missing retry target");
     await db.database
@@ -515,31 +533,33 @@ describe("safe feedback actions", () => {
     },
   );
   it("rejects a forged confirmation, foreign Account, expired action and stale revision", async () => {
-    const h = await fixture();
-    await h.finish("failed", "not_started");
+    const h = await workspaceFixture();
     const t = await h.target();
-    const service = new ImFeedbackActionsService({ database: db.database, secret: "secret", now: () => clock });
+    const service = h.service;
     await expect(service.getForAccount(randomUUID(), t.id)).rejects.toMatchObject({ statusCode: 404 });
     const view = await service.getForAccount(h.accountId, t.id);
     const action = view.actions[0];
     if (!action) throw new Error("Missing action");
     await expect(
-      service.submitForAccount(h.accountId, t.id, { kind: "retry_task", revision: t.revision, confirmation: "forged" }),
+      service.submitForAccount(h.accountId, t.id, {
+        kind: "save_release",
+        revision: t.revision,
+        confirmation: "forged",
+      }),
     ).rejects.toMatchObject({ statusCode: 409 });
     clock = new Date(clock.getTime() + 6 * 60_000);
     await expect(
       service.submitForAccount(h.accountId, t.id, {
-        kind: "retry_task",
+        kind: "save_release",
         revision: t.revision,
         confirmation: action.confirmation,
       }),
     ).rejects.toMatchObject({ statusCode: 409 });
   });
   it("refuses an edited source message even with a previously valid confirmation", async () => {
-    const h = await fixture();
-    await h.finish("failed", "not_started");
+    const h = await workspaceFixture();
     const t = await h.target();
-    const service = new ImFeedbackActionsService({ database: db.database, secret: "secret", now: () => clock });
+    const service = h.service;
     const view = await service.getForAccount(h.accountId, t.id);
     const a = view.actions[0];
     if (!a) throw new Error("Missing action");
@@ -554,13 +574,13 @@ describe("safe feedback actions", () => {
     });
     await expect(
       service.submitForAccount(h.accountId, t.id, {
-        kind: "retry_task",
+        kind: "save_release",
         revision: t.revision,
         confirmation: a.confirmation,
       }),
     ).rejects.toMatchObject({ statusCode: 409 });
   });
-  it("lets only the original native sender retry the exact card", async () => {
+  it("rejects retired native Retry buttons even for the original sender", async () => {
     const h = await fixture();
     await h.finish("failed", "not_started");
     await h.worker.runOnce();
@@ -578,7 +598,7 @@ describe("safe feedback actions", () => {
     };
     expect(await service.submitNativeRetry({ ...input, userId: "someone-else" })).toBe("unavailable");
     expect(await service.submitNativeRetry({ ...input, messageId: "another-card" })).toBe("unavailable");
-    expect(await service.submitNativeRetry(input)).toBe("recorded");
+    expect(await service.submitNativeRetry(input)).toBe("unavailable");
   });
   it.each(["save_release", "discard"] as const)("updates the original card from a verified %s result", async (kind) => {
     const h = await workspaceFixture();

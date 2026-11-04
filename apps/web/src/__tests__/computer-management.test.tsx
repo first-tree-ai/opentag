@@ -80,7 +80,7 @@ describe("Account Computer management", () => {
   });
 
   it("starts the connection requested from Agent settings once, then drops the request from the URL", async () => {
-    installApi({ bound: true, computers: [{ ...twoReadyComputers[0] }] });
+    installApi({ bound: true, agentUnbound: true, computers: [{ ...twoReadyComputers[0] }] });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
     render(<App />);
     fireEvent.click(await screen.findByRole("link", { name: "Connect a new computer" }));

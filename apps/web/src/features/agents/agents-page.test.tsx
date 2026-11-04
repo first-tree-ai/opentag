@@ -114,49 +114,17 @@ describe("Agent list status through background refreshes", () => {
     vi.useRealTimers();
   });
 
-  it("says a held status is refreshing on that row only, after reads keep failing", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(0);
-    const helper: AgentListItem = { ...readyAgent, ...secondAgentListItem };
-    const { rerender } = await renderInRouter(<AgentList agents={[readyAgent, helper]} />);
-    rerender(<AgentList agents={[unreadable, helper]} />);
-    expect(screen.queryByText("Refreshing status")).toBeNull();
-
-    vi.setSystemTime(30_000);
-    rerender(<AgentList agents={[{ ...unreadable }, helper]} />);
-    expect(rowStatus()).toContain("Ready");
-    expect(rowStatus()).toContain("Refreshing status");
-    expect(screen.getAllByText("Refreshing status")).toHaveLength(1);
-    expect(screen.queryByRole("alert")).toBeNull();
-
-    rerender(<AgentList agents={[readyAgent, helper]} />);
-    expect(screen.queryByText("Refreshing status")).toBeNull();
-  });
-
-  it("keeps a ready row ready while its messaging is re-verified or a refresh fails", async () => {
+  it("shows current checks and failed reads immediately without retaining Ready", async () => {
     const { rerender } = await renderInRouter(<AgentList agents={[readyAgent]} />);
     expect(rowStatus()).toContain("Ready");
-
     rerender(<AgentList agents={[reverifying]} />);
-    expect(rowStatus()).toContain("Ready");
-    expect(screen.queryByText("Checking messaging")).toBeNull();
-
-    rerender(<AgentList agents={[unreadable]} />);
-    expect(rowStatus()).toContain("Ready");
-    expect(screen.queryByText("Status unavailable")).toBeNull();
-    expect(screen.queryByRole("link", { name: "Continue setup" })).toBeNull();
-  });
-
-  it("shows a confirmed problem at once and keeps showing it through a failed refresh", async () => {
-    const { rerender } = await renderInRouter(<AgentList agents={[readyAgent]} />);
+    expect(rowStatus()).toContain("Checking messaging");
+    expect(rowStatus()).not.toContain("Ready");
     rerender(<AgentList agents={[deliveryFailed]} />);
     expect(rowStatus()).toContain("Cannot receive messages");
-
     rerender(<AgentList agents={[unreadable]} />);
-    expect(rowStatus()).toContain("Cannot receive messages");
-
-    rerender(<AgentList agents={[readyAgent]} />);
-    expect(rowStatus()).toContain("Ready");
+    expect(rowStatus()).toContain("Status unavailable");
+    expect(screen.queryByText("Refreshing status")).toBeNull();
   });
 
   it("says Checking for a first-seen check, and unreadable evidence with nothing settled as unknown", async () => {
@@ -168,7 +136,6 @@ describe("Agent list status through background refreshes", () => {
     const { rerender } = await renderInRouter(<AgentList agents={[runtimeChecking]} />);
     expect(rowStatus()).toContain("Checking");
     expect(rowStatus()).not.toContain("Ready");
-    expect(screen.queryByRole("link", { name: "Continue setup" })).toBeNull();
 
     rerender(<AgentList agents={[reverifying]} key="remounted" />);
     expect(rowStatus()).toContain("Checking");
@@ -189,9 +156,9 @@ describe("Agent list status through background refreshes", () => {
     rerender(<AgentList agents={[needsPermissions]} />);
     expect(rowStatus()).toContain("Messaging permissions need updating");
 
-    // Once an answer has settled, a later check holds it rather than going back to Checking.
+    // Each read replaces the current status.
     rerender(<AgentList agents={[reverifying]} />);
-    expect(rowStatus()).toContain("Messaging permissions need updating");
+    expect(rowStatus()).toContain("Checking messaging");
   });
 });
 

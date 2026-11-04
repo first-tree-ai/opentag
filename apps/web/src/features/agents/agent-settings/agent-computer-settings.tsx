@@ -62,7 +62,6 @@ export function AgentComputerSettings({
             >
               {actionLabel}
             </Link>
-            <ConnectAnotherComputerLink agentId={agent.id} />
           </div>
         </section>
       ) : (

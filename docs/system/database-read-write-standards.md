@@ -18,10 +18,15 @@ identity comes from the database. They are review requirements, not a claim
 that every existing path already complies. Keep the rule IDs when recording
 a finding or explaining an exception.
 
-Present a concrete database or read/write design for human confirmation before
-implementing or approving it. Include the affected paths, invariants, access
+Present a concrete proposal for human confirmation before implementing or
+approving database schema changes or migrations, including tables, columns,
+indexes, and constraints. Include the affected paths, invariants, access
 patterns, transaction and lock boundaries, failure behavior, validation, cost,
-and benefit. Investigation and local experiments may proceed first.
+and benefit. Investigation and local experiments may proceed first. Query,
+read/write-path, and lock changes without schema changes or migrations may
+proceed under existing task authorization without separate database-design
+confirmation. These standards and existing authorization boundaries for
+production operations, data cleanup, and deployment still apply.
 
 Preserve existing ownership, authorization, state transitions, revisions,
 generations, quotas, ordering, deduplication, retention, and custody semantics.

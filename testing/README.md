@@ -16,6 +16,7 @@ contents, and machine-specific operational logs outside the repository.
 - [Agent usage and internal Session page benchmark](performance/agent-session/REPORT.md)
 - [Cloud response-time evaluation and offline baseline](performance/cloud-latency/README.md)
 - [Cloud startup performance](performance/cloud-startup/README.md)
+- [Retained-report claim cost and proposed repair](performance/retained-reports/README.md)
 - [Context-token composition and cache audit](performance/context-tokens/README.md)
 
 ## Verification by feature

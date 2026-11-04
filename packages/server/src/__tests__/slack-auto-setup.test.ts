@@ -71,6 +71,7 @@ function fixture(officialBinding = false) {
     ),
   };
   const slack = {
+    assertAutoSetupTarget: vi.fn(async () => undefined),
     view: vi.fn(async (_accountId: string, _agentId: string, _publicOrigin: string, signingSecret?: string) => {
       if (!officialBinding) return unbound();
       return { ...bound(), preferredRecovery: signingSecret === "official-secret" ? "oauth" : "credentials" } as const;
@@ -126,6 +127,7 @@ it("binds through the existing encrypted service and exposes only the public res
       signingSecret: credentials.signingSecret,
     },
     credentials,
+    computerId,
   );
   expect(f.owner.start.mock.calls.map(([value]) => value.input.action)).toEqual(["install", "callbacks"]);
   expect(f.owner.start.mock.calls[0]?.[0].input).toEqual({
@@ -181,13 +183,11 @@ it("returns a definite creation rejection without attempting to bind or configur
   expect(f.slack.configureToken).not.toHaveBeenCalled();
   expect(f.owner.start).toHaveBeenCalledTimes(1);
 });
-it("does not bind if the Agent moved Computers during installation", async () => {
+it("passes the original Computer to final binding admission and skips callbacks on rejection", async () => {
   const f = fixture();
-  f.agents.getConfigById
-    .mockResolvedValueOnce({ computerId } as AgentAdminConfig)
-    .mockResolvedValue({ computerId: randomUUID() } as AgentAdminConfig);
+  f.slack.configureToken.mockRejectedValueOnce(new Error("moved"));
   await expect(f.service.run("account", agentId, { action: "connect", challenge: "code" })).rejects.toThrow("moved");
-  expect(f.slack.configureToken).not.toHaveBeenCalled();
+  expect(f.slack.configureToken).toHaveBeenCalledWith("account", agentId, expect.anything(), credentials, computerId);
   expect(f.owner.start).toHaveBeenCalledTimes(1);
 });
 it("dispatches Cloud Agents to the Cloud auto-setup owner and fails closed when absent", async () => {

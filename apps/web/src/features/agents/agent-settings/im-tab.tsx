@@ -84,7 +84,6 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
         <Text as="h1" ref={messagingHeadingRef} size="lg" tabIndex={-1} variant="heading">
           {m.im_messaging_page_title()}
         </Text>
-        <p className="text-sm text-kumo-subtle">{m.im_messaging_page_description()}</p>
       </header>
       <FeishuSetup
         agentId={agent.id}

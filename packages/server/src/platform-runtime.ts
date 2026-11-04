@@ -54,9 +54,6 @@ function buildPlatformCredentialTransportOptions(options: {
         ...(options.performanceLogger ? { performanceLogger: options.performanceLogger } : {}),
       })
     : undefined;
-  const proxyFetch = options.performanceLogger
-    ? createInstrumentedFetch(options.performanceLogger, { provider: "runtime-provider-proxy" })
-    : undefined;
   const webRouterFetch = options.performanceLogger
     ? createInstrumentedFetch(options.performanceLogger, { provider: "web-router" })
     : undefined;
@@ -71,7 +68,7 @@ function buildPlatformCredentialTransportOptions(options: {
       }
     : undefined;
   return {
-    ...(proxyFetch ? { fetchImpl: proxyFetch } : {}),
+    ...(options.performanceLogger ? { performanceLogger: options.performanceLogger } : {}),
     ...(policy ? { taskPolicy: policy, gitHubAdmission: policy } : {}),
     ...(github ? { adapters: new Map([["github" as const, github]]) } : {}),
     ...(web ? { web } : {}),
@@ -155,7 +152,7 @@ export async function createPlatformRuntime(options: {
         throw new AuthServiceError("AUTH_INVALID_TOKEN", "credential", "The Cloud control credential is invalid", 401);
     },
     close: async () => {
-      credentials.close();
+      await credentials.close();
     },
   };
 }

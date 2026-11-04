@@ -85,16 +85,28 @@ export function AgentList({ agents }: { agents: AgentListItem[] }) {
       >
         {order.map((id) => {
           const row = byId.get(id);
-          return row ? <AgentRow agent={row.shown} key={id} refreshing={row.refreshing} /> : null;
+          return row ? (
+            <AgentRow agent={row.shown} checking={row.checking} key={id} refreshing={row.refreshing} />
+          ) : null;
         })}
       </div>
     </section>
   );
 }
 
-export function AgentRow({ agent, refreshing = false }: { agent: AgentListItem; refreshing?: boolean }) {
-  const status = agentCardStatus(agent);
-  const action = agentRowAction(agent);
+export function AgentRow({
+  agent,
+  checking = false,
+  refreshing = false,
+}: {
+  agent: AgentListItem;
+  /** The Agent's first check is still running, so there is no answer to show yet. */
+  checking?: boolean;
+  refreshing?: boolean;
+}) {
+  const card = agentCardStatus(agent);
+  const status = checking ? { ...card, label: m.agents_card_status_checking(), tone: "neutral" as const } : card;
+  const action = checking ? undefined : agentRowAction(agent);
   const channel = agent.availability.dependencies.channel.provider;
   return (
     <article
@@ -102,6 +114,14 @@ export function AgentRow({ agent, refreshing = false }: { agent: AgentListItem; 
       data-tone={status.tone}
       data-ui="agent-row"
     >
+      {/* First in DOM order so keyboard focus reaches the Agent before its action, as the row reads.
+          It is positioned, so it still paints over the row's content; the action is lifted above it. */}
+      <Link
+        aria-label={m.agents_open_agent({ name: agent.displayName })}
+        className="absolute inset-0 focus:outline-none"
+        data-ui="agent-row-open"
+        {...agentDetailLink(agent.id)}
+      />
       <div className="flex min-w-0 items-center gap-3" data-ui="agent-row-identity">
         <AgentAvatar
           displayName={agent.displayName}
@@ -137,7 +157,7 @@ export function AgentRow({ agent, refreshing = false }: { agent: AgentListItem; 
           </p>
         ) : null}
         {/*
-          Lifted above the card's own overlay link, which covers everything and is painted last.
+          Lifted above the card's own overlay link, which covers everything as a positioned layer.
           Without it this would be a link the pointer can see and never reach.
         */}
         {action ? (
@@ -151,12 +171,6 @@ export function AgentRow({ agent, refreshing = false }: { agent: AgentListItem; 
           </Link>
         ) : null}
       </div>
-      <Link
-        aria-label={m.agents_open_agent({ name: agent.displayName })}
-        className="absolute inset-0 focus:outline-none"
-        data-ui="agent-row-open"
-        {...agentDetailLink(agent.id)}
-      />
     </article>
   );
 }

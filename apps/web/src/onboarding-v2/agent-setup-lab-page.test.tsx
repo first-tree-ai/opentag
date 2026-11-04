@@ -251,7 +251,8 @@ describe("agent setup lab page", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Take computer offline" }));
     expect(screen.getByText("1 changed")).toBeTruthy();
-    expect(await screen.findByText("Offline")).toBeTruthy();
+    // The repair command window owns the status while the computer is offline.
+    expect(await screen.findByText(/to reconnect…$/)).toBeTruthy();
 
     fireEvent.click(await screen.findByRole("button", { name: "Connect computer" }));
     await waitFor(() => expect(screen.queryByText("1 changed")).toBeNull(), { timeout: 3_000 });

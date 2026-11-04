@@ -97,17 +97,50 @@ locks when the send is marked, without waiting for the Runtime receipt. The tran
 also checks the current connection and cancellation signal, so delayed preparation cannot bypass
 a committed management change or send after the dispatch deadline.
 
+Schedule management follows the same Agent-first admission. Account writes recheck ownership
+under that guard. Runtime Skill and Schedule writes retain their complete authenticated Session
+source and lock binding → Session → placement → Computer → proof before their own mutation rows.
+Final proof validation uses the transaction executor and the existing Local connection or Cloud
+execution liveness rules. Their multi-query reads share a read-only snapshot; neither capability
+inherits the Agent configuration self-edit opt-in switch.
+
+Retained-report claims skip empty manifests. Nonempty claims lock the live Session with
+`FOR NO KEY UPDATE` before its placement with `FOR UPDATE`, matching failed-report recovery.
+Claims for a different Session are excluded before locking that Session's placement.
+
 The staging/development reset uses the same weaker guard during Computer access
 revocation. Its separate final cleanup verification keeps its existing lock.
 Agent creation, placement changes, and credential exchange retain their small
 transactions so related durable facts commit together. Connection cleanup and
 Runtime notifications run after commit.
 
+Lifecycle stop targets carry the Agent revision produced by suspend, delete or transfer.
+Immediately before Local stop or Cloud cancellation enqueue, the caller locks Agent → Session →
+placement and requires that exact revision, an inactive Agent and the captured Session placement.
+A superseded decision is skipped. Local proof preparation finishes before this admission; its
+enqueue is synchronous, so admission releases SQL without awaiting a socket callback or Runner
+result. Cloud selects specific delivery/message/execution identities on the guarded executor and
+retains durable work until terminal evidence. Proof retirement compares the selected proof ID and
+update version; only a successful delete drops that proof's execution correlation. A later reused
+or replaced proof survives an older result.
+
+Local lifecycle stop runs at most 16 complete requests concurrently within one
+30-second dispatch window. Deadline expiry or shared-domain capacity stops new
+targets; admitted requests retain their result timers. Confirmed stop proof cleanup
+remains owned by the Runtime domain through actual settlement even if notification
+times out; shutdown joins it before disposing SQL. Late preparation checks the signal before final authority SQL, and
+final enqueue checks it again. Unconfirmed targets retain the existing best-effort
+failure diagnostic without being marked stopped or automatically retried. This
+window starts after existing Cloud cancellation and is not the lifecycle HTTP
+response deadline.
+
 AgentService mutation queries select the caller's ownership in the locking
 predicate, then validate lifecycle and revision while holding the row lock. A foreign or
 missing Agent returns the same not-found result without waiting for a foreign
 Agent row lock. Detail and configuration reads apply the same ownership
-predicate in their first query.
+predicate in their first query. Agent detail and IM binding metadata/activity reads keep
+authorization and enrichment in the same read-only snapshot. A concurrent transfer cannot combine
+the previous Account's authorization with the new Account's binding or activity facts.
 
 ## Rationale
 

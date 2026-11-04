@@ -26,7 +26,6 @@ import {
   DevBrowserAuthService,
   hashSecret,
   issueConnectCodeInTransaction,
-  PostAuthenticationService,
 } from "../services/auth/index.js";
 import { ComputerService, MachineAuthService } from "../services/computers/index.js";
 import {
@@ -61,7 +60,6 @@ async function account(input: { email?: string; displayName?: string } = {}) {
 function authTokens(database = unit.database, now = NOW) {
   return new BetterAuthSessionTokens(
     createBetterAuth(database, {
-      onSessionCreating: async () => {},
       publicUrl: "http://localhost:8000",
       secret: SECRET,
       secureCookies: false,
@@ -1319,13 +1317,21 @@ describe("small authentication service boundaries", () => {
     );
   });
 
-  it("locks active Accounts in post-authentication hooks", async () => {
-    const service = new PostAuthenticationService(unit.database);
+  it("requires an active Account for internal session issuance", async () => {
     const bootstrap = await account();
-    await expect(service.complete(bootstrap.userId, false)).resolves.toEqual({ userId: bootstrap.userId });
-    await expect(service.ensureAccountReady(randomUUID())).rejects.toMatchObject({ code: "AUTH_USER_SUSPENDED" });
+    const auth = createBetterAuth(unit.database, {
+      publicUrl: "http://localhost:8000",
+      secret: SECRET,
+      secureCookies: false,
+      sessionTtlSeconds: 120,
+    });
+    const context = await auth.$context;
+    expect((await context.internalAdapter.createSession(bootstrap.userId)).userId).toBe(bootstrap.userId);
+    await expect(context.internalAdapter.createSession(randomUUID())).rejects.toMatchObject({
+      code: "AUTH_USER_SUSPENDED",
+    });
     await unit.database.update(users).set({ suspendedAt: NOW }).where(eq(users.id, bootstrap.userId));
-    await expect(service.completeInTransaction(unit.database as never, bootstrap.userId, true)).rejects.toMatchObject({
+    await expect(context.internalAdapter.createSession(bootstrap.userId)).rejects.toMatchObject({
       code: "AUTH_USER_SUSPENDED",
     });
   });
@@ -1333,7 +1339,6 @@ describe("small authentication service boundaries", () => {
   it("runs the internal development sign-in plugin through Better Auth", async () => {
     const bootstrap = await account();
     const auth = createBetterAuth(unit.database, {
-      onSessionCreating: async () => {},
       publicUrl: "http://localhost:8000",
       secret: SECRET,
       secureCookies: false,
@@ -1351,7 +1356,6 @@ describe("small authentication service boundaries", () => {
     expect(await response.json()).toEqual({ userId: bootstrap.userId });
     expect(await unit.database.select().from(authSessions)).toHaveLength(1);
     const missing = createBetterAuth(unit.database, {
-      onSessionCreating: async () => {},
       publicUrl: "http://localhost:8000",
       secret: SECRET,
       secureCookies: false,
@@ -1363,7 +1367,6 @@ describe("small authentication service boundaries", () => {
     );
     expect(missingResponse.status).toBe(401);
     const suspended = createBetterAuth(unit.database, {
-      onSessionCreating: async () => {},
       publicUrl: "http://localhost:8000",
       secret: SECRET,
       secureCookies: false,
@@ -1439,13 +1442,9 @@ describe("small authentication service boundaries", () => {
 });
 
 describe("Better Auth configuration helpers", () => {
-  it("runs the configured session hook and strips provider credentials", async () => {
-    const called: string[] = [];
+  it("uses the active Account gate and strips provider credentials", async () => {
     const bootstrap = await account();
     const auth = createBetterAuth(unit.database, {
-      onSessionCreating: async (id) => {
-        called.push(id);
-      },
       publicUrl: "http://localhost:8000",
       secret: SECRET,
       secureCookies: false,
@@ -1456,7 +1455,6 @@ describe("Better Auth configuration helpers", () => {
     const context = await auth.$context;
     const session = await context.internalAdapter.createSession(bootstrap.userId);
     expect(session.userId).toBe(bootstrap.userId);
-    expect(called).toEqual([bootstrap.userId]);
     expect(context.authCookies.sessionToken.name).toBeTruthy();
     await expect(context.internalAdapter.findUserById(randomUUID())).resolves.toBeNull();
     await expect(context.internalAdapter.updateUser(bootstrap.userId, { name: "Changed" })).resolves.toBeTruthy();

@@ -77,40 +77,22 @@ test("Agent Setup Lab exposes recoverable core states through its real controls"
   await page.getByRole("option", { name: "Connect computer" }).click();
   await closeLab.click();
   await expect(page.getByRole("heading", { name: "Connect your computer" })).toBeVisible();
-  const step2Navigation = page.locator('[data-ui="onboarding-v2-step-2-nav"]');
-  const step2Continue = step2Navigation.getByRole("button", { name: "Continue" });
-  await expect(step2Navigation).toContainText("You can continue when this computer is ready.");
-  await expect(step2Continue).toBeDisabled();
+  // While a computer is being connected the command window is the only status: no summary row, no
+  // footer hint and no disabled Continue (the step advances on its own).
+  await expect(page.locator('[data-ui="onboarding-v2-step-2-nav"]')).toHaveCount(0);
   const computerStep = page.locator('[data-ui="agent-setup-computer"]');
   const computerHeader = computerStep.locator(":scope > header");
   const computerBody = computerStep.locator(":scope > .otv2-computer-step__body");
-  const connectComputerSummary = computerBody.locator(':scope > [data-ui="agent-setup-computer-summary"]');
-  const connectAction = computerBody.locator(":scope > :nth-child(2)");
-  await expect(connectComputerSummary).toHaveCSS("height", "48px");
-  await expect(connectComputerSummary).toHaveCSS("border-top-width", "0px");
-  await expect(connectComputerSummary).toHaveCSS("border-bottom-width", "0px");
-  const [computerHeaderBox, connectSummaryBox, connectActionBox] = await Promise.all([
+  await expect(computerBody.locator('[data-ui="agent-setup-computer-summary"]')).toHaveCount(0);
+  const commandWindow = computerBody.locator('[data-ui="computer-connect"]');
+  await expect(commandWindow).toBeVisible();
+  const [computerHeaderBox, commandWindowBox] = await Promise.all([
     computerHeader.boundingBox(),
-    connectComputerSummary.boundingBox(),
-    connectAction.boundingBox(),
+    commandWindow.boundingBox(),
   ]);
-  expect(computerHeaderBox).not.toBeNull();
-  expect(connectSummaryBox).not.toBeNull();
-  expect(connectActionBox).not.toBeNull();
-  if (!computerHeaderBox || !connectSummaryBox || !connectActionBox) {
-    throw new Error("Connect computer layout did not produce boxes");
-  }
-  expect(Math.round(connectSummaryBox.y - (computerHeaderBox.y + computerHeaderBox.height))).toBe(16);
-  expect(Math.round(connectActionBox.y - (connectSummaryBox.y + connectSummaryBox.height))).toBe(16);
-  const [step2NavigationBox, step2ContinueBox] = await Promise.all([
-    step2Navigation.boundingBox(),
-    step2Continue.boundingBox(),
-  ]);
-  expect(step2NavigationBox).not.toBeNull();
-  expect(step2ContinueBox).not.toBeNull();
-  if (!step2NavigationBox || !step2ContinueBox) throw new Error("Step 2 navigation did not produce layout boxes");
-  expect(Math.round(step2ContinueBox.width)).toBe(Math.round(step2NavigationBox.width));
-  await expectWithinViewport(connectComputerSummary);
+  if (!computerHeaderBox || !commandWindowBox) throw new Error("Connect computer layout did not produce boxes");
+  expect(Math.round(commandWindowBox.y - (computerHeaderBox.y + computerHeaderBox.height))).toBe(16);
+  await expectWithinViewport(commandWindow);
   await expectNoPageOverflow(page);
 
   await openLab.click();
@@ -122,6 +104,8 @@ test("Agent Setup Lab exposes recoverable core states through its real controls"
   await page.getByRole("option", { name: "Runtime report missing" }).click();
   await closeLab.click();
   await expect(page.getByRole("heading", { name: "Prepare this computer" })).toBeVisible();
+  const step2Navigation = page.locator('[data-ui="onboarding-v2-step-2-nav"]');
+  const step2Continue = step2Navigation.getByRole("button", { name: "Continue" });
   const preparation = page.locator('[data-ui="agent-setup-preparation"]');
   const preparationHeader = preparation.locator(":scope > header");
   const computerSummary = preparation.locator('[data-ui="agent-setup-computer-summary"]');

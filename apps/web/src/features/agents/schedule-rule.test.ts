@@ -1,7 +1,7 @@
 import type { AgentScheduleRule } from "@opentag/shared/browser";
 import { describe, expect, it } from "vitest";
 import { withLocale } from "../../__tests__/support/with-locale.js";
-import { scheduleRuleText, shortScheduleTime } from "./schedule-rule.js";
+import { sameClockAt, scheduleRuleText, shortScheduleTime } from "./schedule-rule.js";
 
 const cron = (expression: string): AgentScheduleRule => ({ kind: "cron", expression });
 const every = (intervalSeconds: number): AgentScheduleRule => ({
@@ -57,5 +57,34 @@ describe("shortScheduleTime", () => {
       expect(shortScheduleTime("2026-11-04T01:00:00.000Z", "Asia/Shanghai")).toMatch(/ 9:00(?!\d)/),
     );
     withLocale("en", () => expect(shortScheduleTime("2026-11-04T01:00:00.000Z", "Asia/Shanghai")).toMatch(/ 9:00/));
+  });
+});
+
+describe("naming the schedule's zone", () => {
+  const nov = "2026-11-09T01:30:00.000Z";
+
+  it("treats zones with the same offset at the run as the reader's", () => {
+    expect(sameClockAt("Asia/Shanghai", nov, "Asia/Singapore")).toBe(true);
+    withLocale("zh", () => expect(shortScheduleTime(nov, "Asia/Shanghai", "Asia/Singapore")).not.toMatch(/GMT/));
+  });
+
+  it("names a zone with a different offset after the time", () => {
+    expect(sameClockAt("Asia/Shanghai", nov, "Asia/Tokyo")).toBe(false);
+    withLocale("zh", () => expect(shortScheduleTime(nov, "Asia/Shanghai", "Asia/Tokyo")).toMatch(/9:30（GMT\+8）$/));
+    withLocale("en", () => expect(shortScheduleTime(nov, "Asia/Shanghai", "Asia/Tokyo")).toMatch(/9:30 \(GMT\+8\)$/));
+  });
+
+  it("compares daylight-saving zones at the run itself, not by a fixed offset", () => {
+    // London and Lisbon share UTC+0 in winter and UTC+1 in summer: same clock on both dates.
+    expect(sameClockAt("Europe/London", "2026-01-15T09:00:00.000Z", "Europe/Lisbon")).toBe(true);
+    expect(sameClockAt("Europe/London", "2026-07-15T09:00:00.000Z", "Europe/Lisbon")).toBe(true);
+    // London matches Reykjavik (UTC+0 all year) in winter but not in summer.
+    expect(sameClockAt("Europe/London", "2026-01-15T09:00:00.000Z", "Atlantic/Reykjavik")).toBe(true);
+    expect(sameClockAt("Europe/London", "2026-07-15T09:00:00.000Z", "Atlantic/Reykjavik")).toBe(false);
+    withLocale("en", () =>
+      expect(shortScheduleTime("2026-07-15T09:00:00.000Z", "Europe/London", "Atlantic/Reykjavik")).toMatch(
+        /10:00 \(GMT\+1\)$/,
+      ),
+    );
   });
 });

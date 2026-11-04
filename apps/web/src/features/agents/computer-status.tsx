@@ -20,10 +20,13 @@ export function ComputerIdentity({
   lastSeenAt,
   reserveStatusSpace = false,
   compact = false,
+  hideStatus = false,
   actions,
 }: {
   computer: Pick<AccountComputerSummary, "displayName" | "platform" | "kind">;
   connection: ComputerConnection;
+  /** A command window on the card owns the connection status: show only one. */
+  hideStatus?: boolean;
   lastSeenAt?: string | null;
   reserveStatusSpace?: boolean;
   compact?: boolean;
@@ -54,7 +57,7 @@ export function ComputerIdentity({
           className="col-start-2 row-start-2 flex items-center pt-1 sm:col-start-3 sm:row-start-1 sm:self-center sm:pt-0"
           aria-live="polite"
         >
-          <StatusIndicator {...status} />
+          {hideStatus ? null : <StatusIndicator {...status} />}
         </div>
         <div className="col-start-3 row-start-1 flex items-center sm:col-start-4 sm:self-center">{actions}</div>
       </div>
@@ -79,7 +82,7 @@ export function ComputerIdentity({
         <div
           className={`flex flex-wrap content-start items-center gap-x-3 gap-y-2 ${reserveStatusSpace ? "min-h-12 sm:min-h-6" : ""}`}
         >
-          <StatusIndicator {...status} />
+          {hideStatus ? null : <StatusIndicator {...status} />}
           {lastOnline}
         </div>
       </div>

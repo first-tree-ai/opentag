@@ -6,6 +6,7 @@ export type OwnedSandboxRow = {
   sandbox: typeof sandboxes.$inferSelect;
   sessionId: string;
   computerId: string;
+  agentRevision: number;
   conversationKind: string;
 };
 
@@ -17,24 +18,20 @@ export type OwnedSandboxRow = {
  */
 export type SandboxAuthority = "read" | "manage";
 
-/**
- * The single ownership authority for Sandbox-scoped operations: the Sandbox's Session must sit on
- * a Cloud Computer the Account owns, reached through the binding chain. Never trust a
- * caller-supplied Account; ownership is derived from the authenticated Account id only.
- *
- * With `lock`, only the Sandbox row itself is locked. The ownership joins are read in the same
- * transaction but never `FOR UPDATE`, so no lock is ever taken on Agent -> binding -> Computer in
- * a different order than the ensure/placement paths; concurrent writes to those rows are still
- * observed as a consistent snapshot at statement time.
- */
+/** Physical ownership follows retained placement; new execution also requires current authority. */
 export async function loadOwnedSandbox(
   executor: DatabaseTransaction | DatabaseClient,
   accountId: string,
   sandboxId: string,
-  options: { lock?: boolean; authority?: SandboxAuthority } = {},
+  options: { lock?: boolean; authority?: SandboxAuthority; expectedAgentRevision?: number } = {},
 ): Promise<OwnedSandboxRow | undefined> {
   const authority = options.authority ?? "read";
   if (!options.lock) return ownedByAccount(executor, accountId, sandboxId, authority);
+  if (
+    authority === "manage" &&
+    !(await lockManagedAuthority(executor, accountId, sandboxId, options.expectedAgentRevision))
+  )
+    return undefined;
   const [locked] = await executor.select().from(sandboxes).where(eq(sandboxes.id, sandboxId)).limit(1).for("update");
   if (!locked) return undefined;
   const owned = await ownedByAccount(executor, accountId, sandboxId, authority);
@@ -53,6 +50,7 @@ async function ownedByAccount(
       sandbox: sandboxes,
       sessionId: sessions.id,
       computerId: computers.id,
+      agentRevision: agents.revision,
       conversationKind: sessions.conversationKind,
     })
     .from(sandboxes)
@@ -60,9 +58,9 @@ async function ownedByAccount(
     .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
     .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
     .innerJoin(agents, eq(agents.id, imBindings.agentId))
-    .innerJoin(computers, eq(computers.id, agents.computerId))
+    .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
     .innerJoin(users, eq(users.id, agents.createdByUserId))
-    .where(and(eq(sandboxes.id, sandboxId), eq(agents.createdByUserId, accountId), ...authorityGuards(authority)))
+    .where(and(eq(sandboxes.id, sandboxId), eq(computers.ownerAccountId, accountId), ...authorityGuards(authority)))
     .limit(1);
   return row;
 }
@@ -81,6 +79,7 @@ export async function loadManagedSandboxById(
       sandbox: sandboxes,
       sessionId: sessions.id,
       computerId: computers.id,
+      agentRevision: agents.revision,
       conversationKind: sessions.conversationKind,
     })
     .from(sandboxes)
@@ -88,7 +87,7 @@ export async function loadManagedSandboxById(
     .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
     .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
     .innerJoin(agents, eq(agents.id, imBindings.agentId))
-    .innerJoin(computers, eq(computers.id, agents.computerId))
+    .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
     .innerJoin(users, eq(users.id, agents.createdByUserId))
     .where(and(eq(sandboxes.id, sandboxId), ...authorityGuards("manage")))
     .limit(1);
@@ -137,10 +136,7 @@ export async function loadSandboxOwnerById(
     .from(sandboxes)
     .innerJoin(sessions, eq(sessions.id, sandboxes.sessionId))
     .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
-    .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
-    .innerJoin(agents, eq(agents.id, imBindings.agentId))
-    .innerJoin(computers, eq(computers.id, agents.computerId))
-    .innerJoin(users, eq(users.id, agents.createdByUserId))
+    .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
     .where(eq(sandboxes.id, sandboxId))
     .limit(1);
   return row;
@@ -156,6 +152,7 @@ export async function loadManagedSandboxBySessionId(
       sandbox: sandboxes,
       sessionId: sessions.id,
       computerId: computers.id,
+      agentRevision: agents.revision,
       conversationKind: sessions.conversationKind,
     })
     .from(sandboxes)
@@ -163,7 +160,7 @@ export async function loadManagedSandboxBySessionId(
     .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
     .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
     .innerJoin(agents, eq(agents.id, imBindings.agentId))
-    .innerJoin(computers, eq(computers.id, agents.computerId))
+    .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
     .innerJoin(users, eq(users.id, agents.createdByUserId))
     .where(and(eq(sandboxes.sessionId, sessionId), ...authorityGuards("manage")))
     .limit(1);
@@ -171,18 +168,87 @@ export async function loadManagedSandboxBySessionId(
 }
 
 function authorityGuards(authority: SandboxAuthority) {
-  const guards = [
-    eq(computers.ownerAccountId, agents.createdByUserId),
-    eq(computers.kind, "cloud"),
-    eq(sessionPlacements.computerId, computers.id),
-  ];
+  const guards = [eq(computers.kind, "cloud")];
   if (authority === "read") return guards;
   return [
     ...guards,
+    eq(computers.id, agents.computerId),
+    eq(computers.ownerAccountId, agents.createdByUserId),
     eq(agents.status, "active"),
     eq(agents.runtimeProvider, "pi"),
     eq(imBindings.status, "active"),
     isNull(sessions.endedAt),
     isNull(users.suspendedAt),
   ];
+}
+
+// Reservation callers take capacity admission before these guards and lock Sandbox afterward.
+async function lockManagedAuthority(
+  executor: DatabaseClient | DatabaseTransaction,
+  accountId: string,
+  sandboxId: string,
+  expectedAgentRevision: number | undefined,
+): Promise<boolean> {
+  const [account] = await executor
+    .select({ id: users.id })
+    .from(users)
+    .where(and(eq(users.id, accountId), isNull(users.suspendedAt)))
+    .limit(1)
+    .for("no key update");
+  if (!account) return false;
+  const [route] = await executor
+    .select({ sessionId: sessions.id, bindingId: imBindings.id, agentId: imBindings.agentId })
+    .from(sandboxes)
+    .innerJoin(sessions, eq(sessions.id, sandboxes.sessionId))
+    .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+    .where(eq(sandboxes.id, sandboxId))
+    .limit(1);
+  if (!route) return false;
+  const [agent] = await executor
+    .select({ computerId: agents.computerId })
+    .from(agents)
+    .where(
+      and(
+        eq(agents.id, route.agentId),
+        eq(agents.createdByUserId, accountId),
+        eq(agents.status, "active"),
+        eq(agents.runtimeProvider, "pi"),
+        expectedAgentRevision === undefined ? undefined : eq(agents.revision, expectedAgentRevision),
+      ),
+    )
+    .limit(1)
+    .for("update");
+  if (!agent?.computerId) return false;
+  const [binding] = await executor
+    .select({ id: imBindings.id })
+    .from(imBindings)
+    .where(
+      and(eq(imBindings.id, route.bindingId), eq(imBindings.agentId, route.agentId), eq(imBindings.status, "active")),
+    )
+    .limit(1)
+    .for("update");
+  if (!binding) return false;
+  const [session] = await executor
+    .select({ id: sessions.id })
+    .from(sessions)
+    .where(and(eq(sessions.id, route.sessionId), eq(sessions.imBindingId, route.bindingId), isNull(sessions.endedAt)))
+    .limit(1)
+    .for("no key update");
+  if (!session) return false;
+  const [placement] = await executor
+    .select({ computerId: sessionPlacements.computerId })
+    .from(sessionPlacements)
+    .where(and(eq(sessionPlacements.sessionId, route.sessionId), eq(sessionPlacements.computerId, agent.computerId)))
+    .limit(1)
+    .for("update");
+  if (!placement) return false;
+  const [computer] = await executor
+    .select({ id: computers.id })
+    .from(computers)
+    .where(
+      and(eq(computers.id, placement.computerId), eq(computers.ownerAccountId, accountId), eq(computers.kind, "cloud")),
+    )
+    .limit(1)
+    .for("update");
+  return computer !== undefined;
 }

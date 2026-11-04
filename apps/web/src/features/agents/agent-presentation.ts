@@ -10,6 +10,7 @@ import {
   accountComputerLink,
   agentSettingsSectionLink,
   agentSetupLink,
+  agentSetupSignInLink,
 } from "./agent-routes.js";
 import type { AgentSettingsSection } from "./agent-settings/sections.js";
 
@@ -57,7 +58,7 @@ function agentAvailabilityCardStatus(agent: AgentListItem): AgentCardStatus {
  * shows on every row; "waiting" only shows beside Ready, where it is the useful thing to know rather
  * than a contradiction of a blocked or paused status. An unknown activity says nothing.
  */
-function agentActivityDetail(agent: AgentListItem, ready: boolean): string | undefined {
+export function agentActivityDetail(agent: Pick<AgentListItem, "activity">, ready: boolean): string | undefined {
   const { activity } = agent;
   if (activity.state === "working") {
     const count = activity.runningTaskCount;
@@ -146,7 +147,8 @@ export function imBindingStateLabel(binding: ImBindingSummary): string {
   return {
     active: m.im_connected(),
     provisioning: m.im_connecting(),
-    reauthorization_required: m.im_permissions_required(),
+    // One wording for this state everywhere it is shown.
+    reauthorization_required: m.agents_card_status_messaging_permissions_required(),
     error: m.im_connection_error(),
     disabled: m.im_disconnected(),
   }[binding.bindingState];
@@ -373,8 +375,19 @@ export type AgentDependencyStatus = {
   tone: StatusTone;
 };
 
-function continueSetupAction(agentId: string): NonNullable<AgentDependencyStatus["action"]> {
-  return { label: m.agents_continue_setup(), link: agentSetupLink(agentId) };
+/**
+ * The one setup link for an Agent. A runtime that only needs signing in gets "Sign in", which opens
+ * the same setup step with its sign-in steps shown; every other setup reason continues setup.
+ */
+function continueSetupAction(agent: {
+  availability: AgentAvailability;
+  id: string;
+}): NonNullable<AgentDependencyStatus["action"]> {
+  const runtime = agent.availability.dependencies.runtime;
+  if (agent.availability.reason === "runtime_unavailable" && runtime.status === "sign-in") {
+    return { label: m.agents_runtime_sign_in_action(), link: agentSetupSignInLink(agent.id) };
+  }
+  return { label: m.agents_continue_setup(), link: agentSetupLink(agent.id) };
 }
 
 /**
@@ -408,7 +421,7 @@ export function agentSetupContinuation(agent: {
   availability: AgentAvailability;
   id: string;
 }): AgentDependencyStatus["action"] {
-  return SETUP_REASONS.has(agent.availability.reason) ? continueSetupAction(agent.id) : undefined;
+  return SETUP_REASONS.has(agent.availability.reason) ? continueSetupAction(agent) : undefined;
 }
 
 /**
@@ -458,7 +471,7 @@ function setupOrMaintenanceAction(
   setupReason: NonNullable<AgentAvailability["reason"]>,
   maintenance?: NonNullable<AgentDependencyStatus["action"]>,
 ): AgentDependencyStatus["action"] {
-  return agent.availability.reason === setupReason ? continueSetupAction(agent.id) : maintenance;
+  return agent.availability.reason === setupReason ? continueSetupAction(agent) : maintenance;
 }
 
 export function agentComputerStatus(agent: AgentDetailView): AgentDependencyStatus {
@@ -622,7 +635,7 @@ function agentMessagingConnectionLabel(binding: ImBindingSummary): string {
   const labels: Record<ImBindingSummary["bindingState"], string> = {
     active: m.agents_status_channel_connected(),
     provisioning: m.agents_status_channel_setting_up(),
-    reauthorization_required: m.agents_status_channel_permissions_update_required(),
+    reauthorization_required: m.agents_card_status_messaging_permissions_required(),
     error: m.agents_status_channel_connection_error(),
     disabled: m.agents_status_channel_disabled(),
   };

@@ -5,6 +5,7 @@ import { createApp } from "../app.js";
 import { SessionCliProofError } from "../services/sessions/index.js";
 
 const source = {
+  proofId: crypto.randomUUID(),
   agentId: randomUUID(),
   computerId: randomUUID(),
   connectionInstanceId: randomUUID(),

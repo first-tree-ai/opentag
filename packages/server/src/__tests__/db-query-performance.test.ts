@@ -128,6 +128,7 @@ describe("database query performance logging", () => {
       "select 'C:\\' as p, 'x from REVIEW_PRIVATE_LITERAL_BODY'",
       "select $$from REVIEW_PRIVATE_LITERAL_BODY$$::integer",
       "select $tag$from REVIEW_PRIVATE_LITERAL_BODY$tag$::integer",
+      "select $中$x from REVIEW_LITERAL_AFTER_UNICODE$中$::integer",
       "select '/* open' as a, 'close */ from REVIEW_PRIVATE_LITERAL_BODY' as b",
       "select 'from REVIEW_PRIVATE_LITERAL_BODY",
       "select $$from REVIEW_PRIVATE_LITERAL_BODY",
@@ -146,6 +147,76 @@ describe("database query performance logging", () => {
       dbTarget: "accounts",
       paramCount: 0,
     });
+
+    expect(
+      summarizeSqlQuery(["SELECT * FROM im_message_deliveries WHERE state = $1 FOR UPDATE SKIP LOCKED"], ["pending"]),
+    ).toEqual({
+      sqlCommand: "SELECT",
+      dbTarget: "im_message_deliveries",
+      paramCount: 1,
+    });
+
+    expect(
+      summarizeSqlQuery(
+        ["SELECT w.id FROM slack_working_messages w WHERE w.due_at <= now() FOR UPDATE OF w SKIP LOCKED"],
+        [],
+      ),
+    ).toEqual({
+      sqlCommand: "SELECT",
+      dbTarget: "slack_working_messages",
+      paramCount: 0,
+    });
+
+    expect(summarizeSqlQuery(["SELECT * FROM runtime_approvals WHERE id = $1 FOR UPDATE NOWAIT"], ["app-1"])).toEqual({
+      sqlCommand: "SELECT",
+      dbTarget: "runtime_approvals",
+      paramCount: 1,
+    });
+
+    expect(
+      summarizeSqlQuery(["SELECT * FROM sandboxes WHERE status = $1 FOR NO KEY UPDATE SKIP LOCKED"], ["idle"]),
+    ).toEqual({
+      sqlCommand: "SELECT",
+      dbTarget: "sandboxes",
+      paramCount: 1,
+    });
+
+    expect(
+      summarizeSqlQuery(
+        [
+          "WITH claimed AS (SELECT id FROM im_message_deliveries WHERE state = 'pending' FOR UPDATE SKIP LOCKED) UPDATE im_message_deliveries SET state = 'claimed' FROM claimed WHERE im_message_deliveries.id = claimed.id",
+        ],
+        [],
+      ),
+    ).toEqual({
+      sqlCommand: "WITH",
+      dbTarget: "im_message_deliveries",
+      paramCount: 0,
+    });
+
+    expect(
+      summarizeSqlQuery(
+        [
+          "WITH due AS (SELECT id FROM agent_schedules WHERE next_run_at <= now() FOR UPDATE SKIP LOCKED) SELECT * FROM due",
+        ],
+        [],
+      ),
+    ).toEqual({
+      sqlCommand: "WITH",
+      dbTarget: "agent_schedules",
+      paramCount: 0,
+    });
+
+    expect(
+      summarizeSqlQuery(
+        ["INSERT INTO agents (id) VALUES ($1) ON CONFLICT (id) DO UPDATE SET updated_at = now()"],
+        ["agent-1"],
+      ),
+    ).toEqual({
+      sqlCommand: "INSERT",
+      dbTarget: "agents",
+      paramCount: 1,
+    });
   });
 
   it("never leaks single-quoted or dollar-quoted SQL literal bodies into dbTarget on success or 22P02 warn failure", async () => {
@@ -153,6 +224,7 @@ describe("database query performance logging", () => {
       "select 'from REVIEW_PRIVATE_LITERAL_BODY'::integer",
       "select $$from REVIEW_PRIVATE_LITERAL_BODY$$::integer",
       "select $tag$from REVIEW_PRIVATE_LITERAL_BODY$tag$::integer",
+      "select $中$x from REVIEW_LITERAL_AFTER_UNICODE$中$::integer",
       "select E'it\\'s from REVIEW_PRIVATE_LITERAL_BODY'::integer",
       "select E'a\\', from REVIEW_PRIVATE_LITERAL_BODY'::integer",
       "select 'a\\', 'from REVIEW_PRIVATE_LITERAL_BODY'",
@@ -188,6 +260,7 @@ describe("database query performance logging", () => {
       expect("dbTarget" in record.payload).toBe(false);
     }
     expect(JSON.stringify(debugRecords)).not.toContain("REVIEW_PRIVATE_LITERAL_BODY");
+    expect(JSON.stringify(debugRecords)).not.toContain("REVIEW_LITERAL_AFTER_UNICODE");
 
     const chunks: string[] = [];
     const app = createApp({
@@ -238,6 +311,7 @@ describe("database query performance logging", () => {
       expect("dbTarget" in record).toBe(false);
     }
     expect(chunks.join("")).not.toContain("REVIEW_PRIVATE_LITERAL_BODY");
+    expect(chunks.join("")).not.toContain("REVIEW_LITERAL_AFTER_UNICODE");
   });
 
   it("emits started and completed logs for tagged-template, unsafe, and transactional queries", async () => {

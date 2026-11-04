@@ -15,6 +15,7 @@ import { type PerformanceLogger, updateCurrentPerformanceContext } from "../obse
 import type { CloudModelService } from "../services/cloud-model-service.js";
 import { readBoundedResponseText } from "../services/sandboxes/cloud-model-catalog.js";
 import type { CloudModelGrantService } from "../services/sandboxes/cloud-model-grants.js";
+import { startClosingServerResources } from "../shutdown.js";
 
 /**
  * E4 controlled model path. Sandboxes call exactly one OpenAI-compatible operation with an
@@ -133,6 +134,14 @@ async function callUpstream(
 ): Promise<Response | undefined> {
   const context = await options.contextForExecution(claims);
   if (!context) throw new Error("Cloud execution has no owner");
+  updateCurrentPerformanceContext({
+    accountId: context.accountId,
+    agentId: context.agentId,
+    sessionId: claims.sessionId,
+    sandboxId: claims.sandboxId,
+    ...(claims.executionId ? { turnId: claims.executionId } : {}),
+    ...(claims.deliveryId ? { deliveryId: claims.deliveryId } : {}),
+  });
   return options.modelService.request({ ...body, model }, signal, options.config, context);
 }
 
@@ -642,11 +651,25 @@ export function registerCloudModelProxyRoutes(app: FastifyInstance, options: Clo
    * upstream streams (and the grant service) so a long model answer cannot keep server close
    * pending; `onClose` alone would run after that wait.
    */
+  let closing: Promise<void> | undefined;
+  const beginClose = () => {
+    closing ??= startClosingServerResources([
+      [
+        "Cloud model streams",
+        () => {
+          for (const controller of [...active]) controller.abort(new Error("cloud_model_server_shutdown"));
+          options.grants.close();
+        },
+      ],
+      ["Cloud model work", () => options.modelService.close()],
+    ]);
+    void closing.catch(() => undefined);
+    return closing;
+  };
   app.addHook("preClose", async () => {
-    for (const controller of [...active]) controller.abort(new Error("cloud_model_server_shutdown"));
-    options.grants.close();
-    await options.modelService.close();
+    void beginClose();
   });
+  app.addHook("onClose", () => beginClose());
 
   app.post(CLOUD_MODEL_CHAT_COMPLETIONS_PATH, { bodyLimit: options.config.maxRequestBytes }, async (request, reply) => {
     const authorized = await authorize(request, reply, options);

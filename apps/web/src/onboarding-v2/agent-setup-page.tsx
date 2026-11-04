@@ -1100,8 +1100,16 @@ function SetupStageNavigation({
   readonly showingPreparation: boolean;
   readonly snapshot: AgentSetupSnapshot;
 }) {
+  // The repair command window polls the computer every few seconds and advances on its own, so a
+  // manual "Check again" next to it would only duplicate that.
+  const connectWindowShown =
+    snapshot.stage === "needs-computer" &&
+    snapshot.computer.kind === "bound" &&
+    snapshot.computer.connectionStatus === "offline";
   if (!showingPreparation) {
-    return computerObservationFailed || snapshot.messaging.kind === "waiting-handoff" ? null : refreshAction;
+    return computerObservationFailed || connectWindowShown || snapshot.messaging.kind === "waiting-handoff"
+      ? null
+      : refreshAction;
   }
   const pollClass = snapshotPollClass(snapshot);
   const observingAutomatically = pollClass === "bounded" && !controller.pollExhausted;
@@ -1109,7 +1117,9 @@ function SetupStageNavigation({
   // Hide Check again only while a real waiting/checking observation is in flight. Settled
   // install/sign-in/unavailable rows keep the immediate retry while background GETs continue.
   const preparationRefreshAction =
-    !computerObservationFailed && !(observingAutomatically && genuineChecking) ? refreshAction : undefined;
+    !computerObservationFailed && !connectWindowShown && !(observingAutomatically && genuineChecking)
+      ? refreshAction
+      : undefined;
   return (
     <PreparationNavigation
       checking={observingAutomatically && genuineChecking}
@@ -1164,6 +1174,11 @@ function PreparationNavigation({
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const hintId = useId();
+  // While a computer is being connected or repaired, the command window is the page's only status
+  // and the step advances on its own once the computer is online: no hint and no disabled Continue.
+  if (snapshot.stage === "needs-computer" && !ready) {
+    return refreshAction ? <div className="otv2-step-footer__actions">{refreshAction}</div> : null;
+  }
   const rows = snapshot.computer.kind === "cloud" ? undefined : preparationSummaryRows(snapshot);
   const checkingItem = rows ? preparationCheckingItem(rows) : "";
   const hint = preparationHint({
@@ -1423,7 +1438,8 @@ function ComputerSummary({
   tone,
 }: {
   readonly metadata?: string;
-  readonly status: string;
+  /** Omitted while a command window below owns the status. */
+  readonly status?: string;
   readonly title: string;
   readonly tone: StatusTone;
 }) {
@@ -1438,13 +1454,14 @@ function ComputerSummary({
       >
         <Icon name="laptop" />
       </span>
-      <span className="flex min-w-0 items-baseline gap-x-1.5 overflow-hidden">
-        <strong className="truncate text-sm font-medium text-kumo-strong" title={title}>
+      {/* At phone width the platform moves to its own line, so the computer name is not cut short. */}
+      <span className="flex min-w-0 flex-col gap-x-1.5 overflow-hidden sm:flex-row sm:items-baseline">
+        <strong className="wrap-anywhere text-sm font-medium text-kumo-strong sm:truncate" title={title}>
           {title}
         </strong>
         {metadata ? <span className="shrink-0 text-sm text-kumo-subtle">{metadata}</span> : null}
       </span>
-      <StatusIndicator className="justify-self-end" label={status} tone={tone} />
+      {status ? <StatusIndicator className="justify-self-end" label={status} tone={tone} /> : null}
     </div>
   );
 }
@@ -1463,19 +1480,12 @@ function NotBoundComputerSection({
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const canBind = snapshot.actions.some((action) => action.kind === "bind-computer");
+  // The heading names the step and the choice or command window below reports status; a "no
+  // computer / not connected" summary row on top would only repeat both.
   const renderChoice = (choice: ReactNode, multiple = false) => (
     <>
       <ComputerStepHeader title={multiple ? m.agents_computer_choice_existing_heading() : undefined} />
-      <div className="otv2-computer-step__body">
-        <ComputerSummary
-          status={
-            multiple ? m.onboarding_v2_connect_not_selected_status() : m.onboarding_v2_connect_no_computer_status()
-          }
-          title={multiple ? m.onboarding_v2_connect_not_selected_title() : m.onboarding_v2_connect_no_computer_title()}
-          tone="neutral"
-        />
-        {choice}
-      </div>
+      <div className="otv2-computer-step__body">{choice}</div>
     </>
   );
   return (
@@ -1518,7 +1528,14 @@ function BoundComputerSection({
       <div className="otv2-computer-step__body">
         <ComputerSummary
           metadata={platformLabel(computer.platform)}
-          status={offline ? m.onboarding_v2_connect_offline() : m.onboarding_v2_connect_online()}
+          // While the repair command window is shown it owns the status.
+          status={
+            offline && repair
+              ? undefined
+              : offline
+                ? m.onboarding_v2_connect_offline()
+                : m.onboarding_v2_connect_online()
+          }
           title={computer.displayName}
           tone={offline ? "warning" : "success"}
         />
@@ -1680,53 +1697,51 @@ function MessagingConnections({
   const feishu = startActions.find((action) => action.provider === "feishu");
   if (!choosing && "provider" in snapshot.messaging && snapshot.messaging.provider !== "slack") return null;
   return (
-    <>
-      <ul
-        className={choosing && startActions.length ? CHOICE_GRID : "m-0 flex list-none flex-wrap gap-3 p-0"}
-        data-ui={
-          choosing && startActions.length ? "agent-setup-messaging-choices" : "agent-setup-messaging-configuration"
-        }
-      >
-        <li key="slack">
-          <SlackSetupConfiguration
-            onSetupOpenChange={onSetupOpenChange}
-            controller={controller}
-            snapshot={snapshot}
-            slackApi={slackApi}
-            renderTrigger={
-              choosing && slack
-                ? ({ onClick, disabled, ref }) => (
-                    <Button
-                      ref={ref}
-                      className={CARD}
-                      disabled={disabled || controller.busyKey !== undefined}
-                      onClick={() => {
-                        if (!starting.current) onClick();
-                      }}
-                      variant="ghost"
-                    >
-                      <MessagingChoiceCopy provider="slack" />
-                    </Button>
-                  )
-                : undefined
-            }
-          />
+    <ul
+      className={choosing && startActions.length ? CHOICE_GRID : "m-0 flex list-none flex-wrap gap-3 p-0"}
+      data-ui={
+        choosing && startActions.length ? "agent-setup-messaging-choices" : "agent-setup-messaging-configuration"
+      }
+    >
+      <li key="slack">
+        <SlackSetupConfiguration
+          onSetupOpenChange={onSetupOpenChange}
+          controller={controller}
+          snapshot={snapshot}
+          slackApi={slackApi}
+          renderTrigger={
+            choosing && slack
+              ? ({ onClick, disabled, ref }) => (
+                  <Button
+                    ref={ref}
+                    className={CARD}
+                    disabled={disabled || controller.busyKey !== undefined}
+                    onClick={() => {
+                      if (!starting.current) onClick();
+                    }}
+                    variant="ghost"
+                  >
+                    <MessagingChoiceCopy provider="slack" />
+                  </Button>
+                )
+              : undefined
+          }
+        />
+      </li>
+      {choosing && feishu ? (
+        <li key="feishu">
+          <Button
+            className={CARD}
+            disabled={controller.busyKey !== undefined}
+            loading={controller.busyKey?.kind === "start-messaging" && controller.busyKey.provider === "feishu"}
+            onClick={() => void start(feishu)}
+            variant="ghost"
+          >
+            <MessagingChoiceCopy provider="feishu" />
+          </Button>
         </li>
-        {choosing && feishu ? (
-          <li key="feishu">
-            <Button
-              className={CARD}
-              disabled={controller.busyKey !== undefined}
-              loading={controller.busyKey?.kind === "start-messaging" && controller.busyKey.provider === "feishu"}
-              onClick={() => void start(feishu)}
-              variant="ghost"
-            >
-              <MessagingChoiceCopy provider="feishu" />
-            </Button>
-          </li>
-        ) : null}
-      </ul>
-    </>
+      ) : null}
+    </ul>
   );
 }
 

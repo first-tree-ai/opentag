@@ -81,6 +81,90 @@ describe("web diagnostics", () => {
     expect(JSON.stringify(sink.mock.calls)).not.toContain("opaque");
   });
 
+  it("includes routeTemplate and up to 3 formatted issues when relaying invalid_response_schema to /api/v1/error-reports", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 202 }));
+    setErrorReportSink(
+      createErrorReportSink({
+        fetchImpl,
+        target: () => ({ location: { href: "https://opentag.example/" } as Location, navigator: window.navigator }),
+      }),
+    );
+    const reporter = new DiagnosticReporter({ error: () => undefined });
+
+    reporter.report(
+      {
+        source: "api",
+        code: "invalid_response_schema",
+        routeTemplate: "/api/v1/sessions",
+        issues: [{ path: ["tasks", 0, "status"], code: "invalid_enum_value" }],
+      },
+      "error",
+    );
+    // Repeated failure on the same route inside cooldown is deduplicated by invalid_response_schema:/api/v1/sessions.
+    reporter.report(
+      {
+        source: "api",
+        code: "invalid_response_schema",
+        routeTemplate: "/api/v1/sessions",
+        issues: [{ path: ["tasks", 1, "status"], code: "invalid_enum_value" }],
+      },
+      "error",
+    );
+    // Different route with >3 issues and a root-level issue is relayed separately and capped at 3 issues.
+    reporter.report(
+      {
+        source: "api",
+        code: "invalid_response_schema",
+        routeTemplate: "/api/v1/agents",
+        issues: [
+          { path: [], code: "unrecognized_keys" },
+          { path: ["agents", 0, "status"], code: "invalid_enum_value" },
+          { path: ["agents", 0, "activity", "state"], code: "invalid_literal" },
+          { path: ["agents", 0, "extra"], code: "invalid_type" },
+        ],
+      },
+      "error",
+    );
+    // Empty issues array on a route omits parenthesized issue list; string path, missing code, non-object entry, and empty routeTemplate fall back cleanly.
+    reporter.report(
+      {
+        source: "api",
+        code: "invalid_response_schema",
+        routeTemplate: "/api/v1/me",
+        issues: [],
+      },
+      "error",
+    );
+    reporter.report(
+      {
+        source: "api",
+        code: "invalid_response_schema",
+        routeTemplate: "/api/v1/computers",
+        issues: [null, { path: "computers.0.status" }, { code: "custom_error" }],
+      },
+      "error",
+    );
+    reporter.report(
+      {
+        source: "api",
+        code: "invalid_response_schema",
+        routeTemplate: "",
+      },
+      "error",
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(fetchImpl).toHaveBeenCalledTimes(5);
+    const bodies = fetchImpl.mock.calls.map((call) => JSON.parse(String(call[1]?.body)) as { message: string });
+    expect(bodies.map((body) => body.message)).toEqual([
+      "invalid_response_schema: /api/v1/sessions (tasks.0.status:invalid_enum_value)",
+      "invalid_response_schema: /api/v1/agents (<root>:unrecognized_keys, agents.0.status:invalid_enum_value, agents.0.activity.state:invalid_literal)",
+      "invalid_response_schema: /api/v1/me",
+      "invalid_response_schema: /api/v1/computers (computers.0.status:invalid, <root>:custom_error)",
+      "invalid_response_schema",
+    ]);
+  });
+
   it("uses route templates and cools down duplicate error codes", () => {
     let now = 100;
     const warn = vi.fn();
@@ -171,8 +255,9 @@ describe("web diagnostics", () => {
   });
 
   it("records unhandled rejections and capture-phase resource failures", () => {
+    let now = 1_000;
     const error = vi.fn();
-    const reporter = new DiagnosticReporter({ error });
+    const reporter = new DiagnosticReporter({ now: () => now, error });
     const remove = installWindowDiagnosticHandlers(window, reporter);
 
     const rejection = new Event("unhandledrejection") as PromiseRejectionEvent;
@@ -186,7 +271,8 @@ describe("web diagnostics", () => {
     expect(reload).toHaveBeenCalledOnce();
     expect(error).toHaveBeenCalledTimes(1);
 
-    // A second failure inside the 60s reload guard window skips reload and reports the failure.
+    // A second failure after the unload grace window inside the 60s reload guard window skips reload and reports the failure.
+    now += 1_000;
     script.dispatchEvent(new ErrorEvent("error"));
 
     expect(reload).toHaveBeenCalledOnce();
@@ -402,6 +488,71 @@ describe("web diagnostics", () => {
     expect(reload).toHaveBeenCalledOnce();
     expect(error).not.toHaveBeenCalled();
     expect(sink).not.toHaveBeenCalled();
+    remove();
+  });
+
+  it("suppresses multiple same-source stale-asset failures within the 500ms unload grace window and reports after it elapses", () => {
+    let now = 50_000;
+    const sink = vi.fn();
+    setErrorReportSink(sink);
+    const error = vi.fn();
+    const reporter = new DiagnosticReporter({ now: () => now, error });
+    const remove = installWindowDiagnosticHandlers(window, reporter);
+
+    const firstLink = document.createElement("link");
+    firstLink.rel = "modulepreload";
+    firstLink.href = "/assets/route-parent-AaBbCc11.js";
+    document.head.append(firstLink);
+    firstLink.dispatchEvent(new ErrorEvent("error"));
+    expect(reload).toHaveBeenCalledOnce();
+
+    now += 10;
+    const secondLink = document.createElement("link");
+    secondLink.rel = "modulepreload";
+    secondLink.href = "/assets/route-child-DdEeFf22.js";
+    document.head.append(secondLink);
+    secondLink.dispatchEvent(new ErrorEvent("error"));
+
+    now += 10;
+    const firstPreload = new Event("vite:preloadError", { cancelable: true });
+    Object.defineProperty(firstPreload, "payload", {
+      value: new TypeError(
+        `Failed to fetch dynamically imported module: ${window.location.origin}/assets/route-parent-AaBbCc11.js`,
+      ),
+    });
+    window.dispatchEvent(firstPreload);
+    expect(firstPreload.defaultPrevented).toBe(true);
+
+    now += 10;
+    const secondPreload = new Event("vite:preloadError", { cancelable: true });
+    Object.defineProperty(secondPreload, "payload", {
+      value: new TypeError(
+        `Failed to fetch dynamically imported module: ${window.location.origin}/assets/route-child-DdEeFf22.js`,
+      ),
+    });
+    window.dispatchEvent(secondPreload);
+    expect(secondPreload.defaultPrevented).toBe(true);
+
+    expect(reload).toHaveBeenCalledOnce();
+    expect(error).not.toHaveBeenCalled();
+    expect(sink).not.toHaveBeenCalled();
+
+    // After the 500ms unload grace window elapses, a subsequent failure within the 60s reload cooldown is reported.
+    now += 10_000;
+    secondLink.dispatchEvent(new ErrorEvent("error"));
+
+    expect(reload).toHaveBeenCalledOnce();
+    expect(error).toHaveBeenCalledOnce();
+    expect(error.mock.calls[0]?.[1]).toMatchObject({
+      code: "resource_load_failed",
+      resourceType: "link",
+      resourcePath: "/assets/route-child-DdEeFf22.js",
+    });
+    expect(sink).toHaveBeenCalledExactlyOnceWith({
+      code: "resource_load_failed",
+      message: "resource_load_failed: /assets/route-child-DdEeFf22.js",
+      dedupeKey: "resource_load_failed",
+    });
     remove();
   });
 

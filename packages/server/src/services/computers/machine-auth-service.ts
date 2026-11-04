@@ -908,10 +908,17 @@ export function buildComputerConnectCommand(options: {
   downloadBaseUrl: string;
   environment: ChannelName;
   publicUrl: string;
+  /**
+   * The Computer a repair code restores. The CLI checks it against this machine's local identity and
+   * stops with a plain message on the wrong machine, so the copied text needs no "make sure you are on
+   * the right computer" instructions around the command.
+   */
+  targetComputerId?: string | null;
 }): string {
   const channel = getChannelConfig(options.environment);
   if (!SAFE_SHELL_ARG_PATTERN.test(channel.binName)) throw new TypeError("Invalid channel binary name");
-  const connectArgs = `connect --server ${shellArg(options.publicUrl)} -- ${shellArg(options.code)}`;
+  const target = options.targetComputerId ? ` --computer ${shellArg(options.targetComputerId)}` : "";
+  const connectArgs = `connect --server ${shellArg(options.publicUrl)}${target} -- ${shellArg(options.code)}`;
   const connect = `PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/${channel.binName}" ${connectArgs}`;
   if (options.environment === "dev") return `./scripts/dev-install.sh && ${connect}`;
   const downloadBaseUrl = options.downloadBaseUrl.replace(/\/+$/, "");

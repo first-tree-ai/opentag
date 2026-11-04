@@ -295,6 +295,7 @@ export class ProviderCliValidationRunner {
       );
     }
     if (provider === "feishu" && request.expectedIdentity.provider === "feishu") {
+      env.LARKSUITE_CLI_REMOTE_META = "off";
       return this.#runProcess(
         request.targetPath,
         ["api", "GET", "/open-apis/bot/v3/info", "--as", "bot", "--format", "ndjson", ...extraArguments],
@@ -359,6 +360,7 @@ export class ProviderCliValidationRunner {
     env.LARKSUITE_CLI_CONFIG_DIR = join(workDir, "config");
     env.LARKSUITE_CLI_BRAND = request.grant.teamBrand;
     env.LARKSUITE_CLI_TENANT_ACCESS_TOKEN = tenantAccessToken;
+    env.LARKSUITE_CLI_REMOTE_META = "off";
     delete env.LARKSUITE_CLI_APP_SECRET;
     delete env.LARKSUITE_CLI_USER_ACCESS_TOKEN;
     return this.#runProcess(

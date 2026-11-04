@@ -1,3 +1,4 @@
+import { abortableMockFeishuRegistration } from "../../../__tests__/support/abortable-feishu-registration.js";
 /**
  * The exact-Agent setup read projection, exercised against the embedded engine.
  *
@@ -203,12 +204,12 @@ async function settleQrReadFixture(input: {
 function registrationGateway(qrExpiresAt: Date): FeishuRegistrationGateway {
   return {
     start: vi.fn((): FeishuRegistration => {
-      return {
+      return abortableMockFeishuRegistration({
         qrReady: Promise.resolve({ url: "https://accounts.feishu.cn/device", expiresAt: qrExpiresAt }),
         // The Account never finishes authorizing inside a projection test.
         result: new Promise(() => undefined),
         abort: vi.fn(),
-      };
+      });
     }),
   };
 }
@@ -594,17 +595,25 @@ describe("Agent setup projection Messaging states", () => {
     async (credentialStatus) => {
       const bootstrap = await account();
       const { agentId } = await messagingReadyAgent(bootstrap.userId);
-      const pause = pausedBindingRead(unitDatabase.database);
+      const captured = deferred<void>(),
+        released = deferred<void>();
+      const pause = { captured: captured.promise, release: () => released.resolve() };
       const { imBindingService, feishuSetup, service } = harness({
-        database: pause.database,
         runtimeReadiness: runtimeReadiness("ready"),
         imCliReadiness: "ready",
         credentialExecutionReadiness: { status: credentialStatus },
         registrations: registrationGateway(new Date(Date.now() + 60_000)),
       });
+      const read = imBindingService.readSetupForAgent.bind(imBindingService);
+      const readSpy = vi.spyOn(imBindingService, "readSetupForAgent");
       try {
         await feishuSetup.createOrReuse(bootstrap.userId, agentId, "create");
-        pause.arm();
+        readSpy.mockImplementationOnce(async (...args) => {
+          const snapshot = await read(...args);
+          captured.resolve();
+          await released.promise;
+          return snapshot;
+        });
         const pending = service.getSetupById(bootstrap.userId, agentId);
         await pause.captured;
         await unitDatabase.database.transaction(async (transaction) => {
@@ -650,6 +659,7 @@ describe("Agent setup projection Messaging states", () => {
         });
       } finally {
         pause.release();
+        readSpy.mockRestore();
         await feishuSetup.stop();
       }
     },
@@ -680,14 +690,15 @@ describe("Agent setup projection Messaging states", () => {
         instanceId: FEISHU_INSTANCE_ID,
         imBindings: imBindingService,
         registrations: {
-          start: () => ({
-            qrReady: Promise.resolve({
-              url: "https://accounts.feishu.cn/device",
-              expiresAt: new Date(Date.now() + 60_000),
+          start: () =>
+            abortableMockFeishuRegistration({
+              qrReady: Promise.resolve({
+                url: "https://accounts.feishu.cn/device",
+                expiresAt: new Date(Date.now() + 60_000),
+              }),
+              result: result.promise,
+              abort: vi.fn(),
             }),
-            result: result.promise,
-            abort: vi.fn(),
-          }),
         },
         activation: {
           checkCandidate: async () => {
@@ -732,9 +743,9 @@ describe("Agent setup projection Messaging states", () => {
         expect(persisted?.setupState).toBe(outcome === "validating" ? "validating" : "canceled");
       } finally {
         pause.release();
-        await replacement?.stop();
-        await feishuSetup.stop();
+        const stopping = Promise.all([replacement?.stop(), feishuSetup.stop()]);
         probeResult.resolve({ status: "waiting", reason: "temporary_failure", missingScopes: [] });
+        await stopping;
       }
     },
   );
@@ -1062,14 +1073,15 @@ describe("Agent setup projection Messaging states", () => {
       credentialExecutionReadiness: { status: healthy ? "ready" : "unconfirmed" },
       registrations: {
         start: vi.fn(
-          (): FeishuRegistration => ({
-            qrReady: Promise.resolve({
-              url: "https://accounts.feishu.cn/device",
-              expiresAt: new Date(Date.now() + 60_000),
+          (): FeishuRegistration =>
+            abortableMockFeishuRegistration({
+              qrReady: Promise.resolve({
+                url: "https://accounts.feishu.cn/device",
+                expiresAt: new Date(Date.now() + 60_000),
+              }),
+              result,
+              abort: vi.fn(),
             }),
-            result,
-            abort: vi.fn(),
-          }),
         ),
       },
       activation,

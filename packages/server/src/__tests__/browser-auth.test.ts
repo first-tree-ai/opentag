@@ -114,6 +114,44 @@ describe("browser authentication routes", () => {
     expect(String(response.headers["set-cookie"])).toContain("opentag.state=pkce");
   });
 
+  it.each([
+    { status: 429, expected: 429, code: "RATE_LIMITED" },
+    { status: 500, expected: 503, code: "SERVICE_UNAVAILABLE" },
+    { status: 503, expected: 503, code: "SERVICE_UNAVAILABLE" },
+  ])("preserves configured Google failure category $status", async ({ status, expected, code }) => {
+    const betterAuth = betterAuthStub(() => new Response("not-json", { status }));
+    const { app } = createBrowserApp({ betterAuth: betterAuth.instance, googleSignIn: true });
+    const response = await app.inject({ method: "GET", url: HTTP_PATHS.authGoogleStart });
+    expect(response.statusCode).toBe(expected);
+    expect(response.json()).toMatchObject({ error: { code } });
+    expect(response.headers["set-cookie"]).toBeUndefined();
+  });
+
+  it.each([
+    {
+      body: JSON.stringify({ code: "FAILED_TO_CREATE_USER", message: "internal details" }),
+      expected: 503,
+      code: "SERVICE_UNAVAILABLE",
+    },
+    { body: "not-json", expected: 400, code: "VALIDATION_ERROR" },
+  ])(
+    "classifies the pinned signup error without treating every 422 as transient ($code)",
+    async ({ body, expected, code }) => {
+      const betterAuth = betterAuthStub(() => new Response(body, { status: 422 }));
+      const { app } = createBrowserApp({ betterAuth: betterAuth.instance, passwordSignIn: true });
+      const response = await app.inject({
+        method: "POST",
+        url: HTTP_PATHS.authEmailSignUp,
+        headers: SAME_ORIGIN,
+        payload: { email: "fixture@example.test", password: VALID_PASSWORD, displayName: "Fixture" },
+      });
+      expect(response.statusCode).toBe(expected);
+      expect(response.json()).toMatchObject({ error: { code } });
+      expect(response.body).not.toContain("internal details");
+      expect(response.headers["set-cookie"]).toBeUndefined();
+    },
+  );
+
   it("refuses Google sign-in when it is not configured", async () => {
     const betterAuth = betterAuthStub(googleRedirect);
     const { app } = createBrowserApp({ betterAuth: betterAuth.instance });

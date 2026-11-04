@@ -2,6 +2,7 @@ import type { RuntimeCredentialProvider, RuntimeExecutionSource } from "@opentag
 import type { RuntimeExecutionPurpose } from "./types.js";
 
 export interface RuntimeTaskPolicyInput {
+  signal?: AbortSignal;
   accountId: string;
   agentId: string;
   sessionId: string;

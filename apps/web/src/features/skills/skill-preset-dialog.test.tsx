@@ -92,7 +92,8 @@ describe("SkillPresetDialog", () => {
     renderDialog();
 
     expect(await screen.findByText("mcp-onboarding")).toBeTruthy();
-    expect(screen.getByText("Add MCP tools to this Agent")).toBeTruthy();
+    // A bundled preset shows its localized summary, not its Agent-facing SKILL.md description.
+    expect(screen.getByText("Connect and authorize connectors from the chat.")).toBeTruthy();
     expect(screen.queryByText("Not installed")).toBeNull();
     // The engineering entry belongs to the other tab.
     expect(screen.queryByText("mcp-catalog-entry")).toBeNull();

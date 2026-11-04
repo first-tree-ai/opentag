@@ -198,4 +198,28 @@ describe("AgentSchedulesSection", () => {
     fireEvent.click(within(screen.getByRole("alertdialog")).getByRole("button", { name: "Delete" }));
     await waitFor(() => expect(remove).toHaveBeenCalledWith(AGENT_ID, SCHEDULE_ID, 4));
   });
+
+  it("keeps keyboard focus on the control when Pause turns into Resume", async () => {
+    const current = schedule();
+    const paused = schedule({ enabled: false, nextTriggerAt: null, revision: 4 });
+    vi.spyOn(browserApi, "agentSchedules")
+      .mockResolvedValueOnce({ items: [summaryOf(current)], nextCursor: null })
+      .mockResolvedValue({ items: [summaryOf(paused)], nextCursor: null });
+    vi.spyOn(browserApi, "agentSchedule").mockResolvedValue(paused);
+    let settle: (value: typeof paused) => void = () => undefined;
+    vi.spyOn(browserApi, "pauseAgentSchedule").mockImplementation(
+      () => new Promise((resolve) => (settle = resolve)) as never,
+    );
+
+    mount();
+    const button = await screen.findByRole("button", { name: "Pause" });
+    button.focus();
+    fireEvent.click(button);
+    // Still enabled and focused while the change is pending, so focus never falls to the page.
+    expect(button.hasAttribute("disabled")).toBe(false);
+    expect(button.getAttribute("aria-busy")).toBe("true");
+    fireEvent.click(button);
+    settle(paused);
+    expect(await screen.findByRole("button", { name: "Resume" })).toBe(document.activeElement);
+  });
 });

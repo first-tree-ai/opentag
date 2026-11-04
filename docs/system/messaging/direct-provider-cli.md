@@ -45,6 +45,10 @@ restart rules. Previously recorded Turn text is left in the conversation history
 
 ## Provider CLI lifecycle
 
+Retiring a requirement removes its local authority and enqueues its exact cancel notification
+without awaiting the socket callback. A delayed best-effort notification cannot block the later
+Session stop. Active replacement/retry sends retain their request gates and ordering checks.
+
 The targeted first-setup `opentag connect` command is the only installer for both official Provider CLIs during
 onboarding. It is non-interactive, returns bounded next actions, and can be run by a person or an Agent. The daemon
 independently inspects and reports both CLIs while setup is incomplete; it does not race the foreground installer.
@@ -66,8 +70,22 @@ new episode; a repeated identical placement notification must not. Public reason
 reconcile capability v2; older peers keep exact v1 frames and a generic stable diagnostic after a bounded unknown
 episode. HTTP responses keep the pre-#490 shape unless the caller opts in with `x-opentag-provider-cli-reason: 2`.
 
+Preparation uses one existing five-minute operation budget from admission, covering eligibility/requirement
+SQL and socket dispatch waiting as well as the readiness fallback. Close or deadline rejects the admitted
+refresh wait and clears its exact single-flight entry; it never reports an unknown dispatch as successful.
+A ready result completes its readiness fence but does not disarm the budget for a remaining dispatch wait.
+Different Agents on one Computer may prepare concurrently; duplicate requests for one Agent coalesce.
+A replaced Computer cancels only its own old preparation work. Already-issued SQL or socket writes retain
+their existing owners and bounds; late continuations recheck cancellation before starting another stage.
+The five-minute preparation limit does not change the short Server startup migration budget.
+
 `opentag doctor` and the portable installer only report static account-global installation state. They do not install,
 repair, validate credentials, or infer login/subscription state.
+
+Feishu credential validation runs only the native bot-info identity probe and sets
+`LARKSUITE_CLI_REMOTE_META=off` for that process. The CLI's optional background API-definition
+refresh is unnecessary for identity validation. Validation-purpose proxy capabilities permit bot
+info only; API-definition metadata remains available to normal execution-purpose capabilities.
 
 For every valid visible Session Turn that may write to IM, including an IM delivery or an internal-collaboration callback,
 the Client creates a private `0600` environment file and passes only its path as `OPENTAG_PROVIDER_ENV_FILE`. The Agent

@@ -75,13 +75,31 @@ and classifies it:
 
 The connect command is one command that users and Agents can run again safely: it upgrades openTag first, then
 connects, and on an already-connected computer it repairs or confirms instead of adding a duplicate. Rerunning is the
-expected fix for a half-finished or broken connection, so it must never make things worse.
+expected fix for a half-finished or broken connection, so it must never make things worse. The upgrade finishes
+before connecting starts: overlapping them would save little time and add failures from a connection made by one
+version while another is being installed.
 
 - An account conflict stops without taking the computer over and offers no web action to do so. The browser that
   issued the command may be signed in to a different account than the one that owns the computer, and only the
   current owner can release it (by removing it in openTag).
 - An already-connected computer still consumes the code, and both the web page and the CLI show the same plain
   “connected” result as a fresh connection. Whether anything changed is an internal detail the reader cannot act on.
+
+The connect logic lives in the command, not in prose around it. The command checks the existing installation,
+upgrades it, repairs or confirms an existing connection, and stops on conflicts, so the text the web hands out is the
+command itself, led by one inert line for an Agent:
+
+```sh
+: 'openTag: connect this computer to my account. Run the next line as-is in a terminal on this computer and report its output.'
+<connect command>
+```
+
+The same two lines work pasted into a terminal and pasted to an Agent, so there is one artifact to explain and test,
+and a person and an Agent get the same behavior. The first line is the POSIX null command `:` rather than a `#`
+comment, because macOS zsh leaves `interactive_comments` off and a pasted `#` line fails with `command not found`.
+A repair command adds `--computer <id>`: the CLI stops with a plain message, before using the code, when this home is
+connected to a different Computer on that Server, so no "make sure you are on the right computer" prose is needed. A
+home with no connection (lost identity) may be that Computer and continues.
 
 The request fields `machineToken` and `reportOutcome` are optional. The Server
 answers `outcome` (and may omit the token) only to Clients that sent
@@ -150,19 +168,23 @@ Computer; it is not an authentication or readiness claim.
 
 ## Response compatibility
 
-The Server and the CLI ship separately. A Server release applies to everyone at
-once, while a CLI upgrades only on its next connect, so released CLIs keep
-reading responses from newer Servers for a long time. The HTTP contract
-therefore follows one convention:
+The Server, the CLI, and already-open Web SPA tabs can run at different
+versions. A Server release applies to everyone at once, while a CLI upgrades
+only on its next connect and an open Web browser tab keeps running its loaded
+bundle (polling every 30 seconds) until the user navigates or reloads. The HTTP
+contract therefore follows one convention:
 
 - The Server changes responses additively: it may add fields, but it does not
   remove, rename, or retype an existing field.
-- The client (`packages/client`, which the CLI uses) ignores response fields it
-  does not know. It parses each response with the strict shared schema and, when
-  the only problems are unrecognized keys, drops exactly those keys at the paths
-  the schema reports and parses again. Every known field stays fully validated,
-  and the dropped key paths (never values) go to the client's debug log so
-  version skew is visible when diagnosing.
+- Both the CLI client (`packages/client`) and the Web SPA (`apps/web`) ignore
+  response fields they do not know through `parseResponseIgnoringUnknownKeys` in
+  `@opentag/shared` (`@opentag/shared/browser`). Each response is parsed with
+  the strict shared schema and, when the only problems are unrecognized keys,
+  drops exactly those keys at the paths the schema reports and parses again.
+  Every known field stays fully validated, so additive Server response fields do
+  not break released CLIs or open browser tabs before their next navigation or
+  reload. In `packages/client`, the dropped key paths (never values) go to the
+  client's debug log so version skew is visible when diagnosing.
 - Removing, renaming, or retyping a field, adding an enum value, or any other
   change an older client cannot read still needs version negotiation or a client
   capability header (an `x-opentag-*` request header that opts a newer client

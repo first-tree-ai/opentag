@@ -104,7 +104,12 @@ export class CloudCallStore {
   }
   async expire(before: Date): Promise<void> {
     await this.db.query(
-      "UPDATE billing.attempts SET state='pending_usage',finished_at=coalesce(finished_at,now()) WHERE state='in_flight' AND created_at<$1",
+      `WITH expired AS (
+        SELECT id FROM billing.attempts WHERE state='in_flight' AND created_at<$1
+        ORDER BY created_at,id LIMIT 100 FOR UPDATE SKIP LOCKED
+      ) UPDATE billing.attempts AS attempts
+        SET state='pending_usage',finished_at=coalesce(attempts.finished_at,now())
+        FROM expired WHERE attempts.id=expired.id AND attempts.state='in_flight' AND attempts.created_at<$1`,
       [before.toISOString()],
     );
   }

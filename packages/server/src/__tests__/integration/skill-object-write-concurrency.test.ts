@@ -116,10 +116,12 @@ it("keeps a newer same-content archive when a stale writer's cleanup delete fini
       }
       return remove(key);
     };
-    await f.h.upload(f.service, f.accountId, f.agentId, "cleanup-race", {
-      replace: true,
-      files: { "script.txt": "C" },
-    });
+    // A rolling older writer can change this row without the new Agent guard.
+    // Current service writers serialize there; use a separate connection for the legacy CAS race.
+    await f.client.database
+      .update(agentSkills)
+      .set({ revision: first.revision + 2 })
+      .where(eq(agentSkills.id, first.id));
     resumeUpdate.resolve();
     await vi.waitFor(() => expect(atDelete).toHaveBeenCalledOnce());
     const replacement = await f.h.upload(f.service, f.accountId, f.agentId, "cleanup-race", {

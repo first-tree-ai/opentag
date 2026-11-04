@@ -85,12 +85,22 @@ export class RuntimeCredentialOwner {
   readonly #logger?: ServiceLogger;
   readonly #authority: RuntimeControlAuthority;
   readonly #sweep: ReturnType<typeof setInterval>;
+  readonly #unsubscribeExecutionClose: () => void;
   #closed = false;
+  #closing: Promise<void> | undefined;
+  readonly #abort = new AbortController();
+  readonly #work = new Set<Promise<unknown>>();
 
   constructor(options: RuntimeCredentialOwnerOptions) {
     this.#options = options;
     this.#logger = options.logger;
     this.#authority = options.controlAuthority ?? registryControlAuthority(options.registry);
+    this.#unsubscribeExecutionClose = options.executions.onClose(({ executionId }) => {
+      options.capabilities.revokeExecution(executionId);
+      options.tickets.revokeExecution(executionId);
+      options.mcpGatewayTokens?.revokeExecution(executionId);
+      options.webGatewayTokens?.revokeExecution(executionId);
+    });
     this.#sweep = setInterval(() => this.#sweepStale(), options.sweepIntervalMs ?? 5_000);
     this.#sweep.unref?.();
   }
@@ -104,7 +114,11 @@ export class RuntimeCredentialOwner {
   }
 
   /** Used by Session CLI to snapshot user provenance only from a currently fenced execution. */
-  async isExecutionLive(executionId: string): Promise<boolean> {
+  isExecutionLive(executionId: string): Promise<boolean> {
+    return this.#track(this.#isExecutionLive(executionId));
+  }
+
+  async #isExecutionLive(executionId: string): Promise<boolean> {
     const record = this.#options.executions.get(executionId);
     if (
       this.#closed ||
@@ -114,21 +128,40 @@ export class RuntimeCredentialOwner {
     )
       return false;
     const snapshot = await this.#options.scopeResolver.load(record.sessionId);
-    if (!snapshot || this.#options.scopeResolver.assertExecutionFence(record, snapshot)) return false;
+    if (this.#closed || !snapshot || this.#options.scopeResolver.assertExecutionFence(record, snapshot)) return false;
     return (
       (await this.#options.authority.revalidate(record.source, record)) === "valid" &&
       this.#options.executions.get(executionId) === record
     );
   }
 
-  close(): void {
-    if (this.#closed) return;
+  close(): Promise<void> {
+    if (this.#closing) return this.#closing;
     this.#closed = true;
     clearInterval(this.#sweep);
-    // Destroying the owner revokes every grant and aborts every stream via close events.
+    this.#abort.abort();
+    this.#revokeAll();
+    this.#closing = (async () => {
+      while (this.#work.size) await Promise.allSettled([...this.#work]);
+      this.#revokeAll();
+      this.#unsubscribeExecutionClose();
+    })();
+    return this.#closing;
+  }
+
+  #revokeAll(): void {
     for (const record of this.#options.executions.executions()) {
       this.#revokeExecution(record.executionId, "owner_lost", false);
     }
+  }
+
+  #track<T>(operation: Promise<T>): Promise<T> {
+    this.#work.add(operation);
+    void operation.then(
+      () => this.#work.delete(operation),
+      () => this.#work.delete(operation),
+    );
+    return operation;
   }
 
   /**
@@ -147,13 +180,18 @@ export class RuntimeCredentialOwner {
 
   /** Close every execution opened for one Session; used by an explicit Cloud stop. */
   closeSessionExecutions(sessionId: string, code: RuntimeCredentialRevokedCode): string[] {
-    const closed: string[] = [];
-    for (const record of this.#options.executions.executions()) {
-      if (record.sessionId !== sessionId) continue;
-      this.#revokeExecution(record.executionId, code, false);
-      closed.push(record.executionId);
-    }
-    return closed;
+    return this.prepareSessionExecutionClose(sessionId, code)();
+  }
+
+  prepareSessionExecutionClose(sessionId: string, code: RuntimeCredentialRevokedCode): () => string[] {
+    const ids = this.#options.executions
+      .executions()
+      .filter((record) => record.sessionId === sessionId)
+      .map((record) => record.executionId);
+    return () => {
+      for (const id of ids) this.#revokeExecution(id, code, false);
+      return ids;
+    };
   }
 
   businessOptions(): RuntimeBusinessOptions {
@@ -175,11 +213,26 @@ export class RuntimeCredentialOwner {
     };
   }
 
-  async handle(
+  handle(
     frame: RuntimeCredentialClientFrame,
     context: RuntimeBusinessContext,
   ): Promise<RuntimeCredentialServerFrame | undefined> {
-    if (this.#closed) return this.#failureResult(frame);
+    if (this.#closed) return Promise.resolve(this.#failureResult(frame));
+    const signal = AbortSignal.any([context.signal, this.#abort.signal]);
+    return this.#track(
+      this.#handle(frame, { ...context, signal })
+        .then((result) => (signal.aborted ? this.#failureResult(frame) : result))
+        .catch((error) => {
+          if (this.#closed || signal.aborted) return this.#failureResult(frame);
+          throw error;
+        }),
+    );
+  }
+
+  async #handle(
+    frame: RuntimeCredentialClientFrame,
+    context: RuntimeBusinessContext,
+  ): Promise<RuntimeCredentialServerFrame | undefined> {
     if (frame.type === "runtime:execution:open") return this.#open(frame, context);
     if (frame.type === "runtime:credential:acquire") return this.#acquire(frame, context);
     if (frame.type === "runtime:credential:renew") return this.#renew(frame, context);
@@ -208,19 +261,21 @@ export class RuntimeCredentialOwner {
       return rejected("placement_stale");
     }
     if (frame.source.kind === "validation") return this.#openValidation(frame, context);
-    return openRuntimeSessionExecution(this.#sessionDeps(), frame, context);
+    return openRuntimeSessionExecution(this.#sessionDeps(context.signal), frame, context);
   }
 
   /** Open functions consume the composed authority, never the raw Local registry. */
-  #sessionDeps(): Omit<RuntimeCredentialOwnerOptions, "registry"> & { registry: RuntimeControlAuthority } {
-    return { ...this.#options, registry: this.#authority };
+  #sessionDeps(
+    signal = this.#abort.signal,
+  ): Omit<RuntimeCredentialOwnerOptions, "registry"> & { registry: RuntimeControlAuthority; signal: AbortSignal } {
+    return { ...this.#options, registry: this.#authority, signal };
   }
 
   async #openValidation(
     frame: Extract<RuntimeCredentialClientFrame, { type: "runtime:execution:open" }>,
     context: RuntimeBusinessContext,
   ): Promise<RuntimeExecutionOpenResult> {
-    return openRuntimeValidationExecution(this.#sessionDeps(), frame, context);
+    return openRuntimeValidationExecution(this.#sessionDeps(context.signal), frame, context);
   }
 
   /**
@@ -228,7 +283,7 @@ export class RuntimeCredentialOwner {
    * execution. Only an authoritative binding/agent/computer fence produces a run; unknown or
    * inactive facts return `undefined` and no run exists.
    */
-  async issueValidationRun(input: {
+  issueValidationRun(input: {
     provider: RuntimeCredentialProvider;
     bindingId: string;
     agentId: string;
@@ -236,7 +291,8 @@ export class RuntimeCredentialOwner {
     instanceId: string;
     connectionId?: string;
   }): Promise<{ validationRunId: string; expiresAt: number } | undefined> {
-    return issueRuntimeValidationRun(this.#sessionDeps(), input);
+    if (this.#closed) return Promise.resolve(undefined);
+    return this.#track(issueRuntimeValidationRun(this.#sessionDeps(), input));
   }
 
   async #acquire(
@@ -454,15 +510,6 @@ export class RuntimeCredentialOwner {
   #revokeExecution(executionId: string, code: RuntimeCredentialRevokedCode, notify: boolean): void {
     const record = this.#options.executions.close(executionId, code);
     if (!record) return;
-    this.#options.capabilities.revokeExecution(executionId);
-    this.#options.tickets.revokeExecution(executionId);
-    /*
-     * The one place every execution ends — explicit close, connection replacement, owner loss, and
-     * the stale sweep all land here. Revoking the gateway bearer at this single point is what makes
-     * "the token dies with the turn" true for every path rather than only the polite one.
-     */
-    this.#options.mcpGatewayTokens?.revokeExecution(executionId);
-    this.#options.webGatewayTokens?.revokeExecution(executionId);
     if (!notify) return;
     const frame: RuntimeCredentialServerFrame = { type: "runtime:credential:revoked", executionId, code };
     try {

@@ -66,6 +66,12 @@ check the native CLI debug log under `<openTag home>/slack-management/config/log
 can leave deploy stdout empty. Continuing re-links the same private project with `--force` before retrying installation,
 so an existing local link does not block recovery with `app_found`. No raw CLI error text or credentials are sent to Web.
 
+Callback configuration is bound to the selected active Agent, owned Computer, binding ID and
+credential generation. The Server rechecks that target before starting callbacks and before
+reporting connected. Unbind, replacement, transfer, suspend or a Computer change requires
+reloading the current configuration; the old operation does not rebind or undo completed Slack work.
+These checks do not hold a database transaction across CLI execution.
+
 Failed callback configuration also resumes through **Continue**, without another installation or credential
 rotation. An
 uncertain creation is stopped: inspect Slack's existing Apps and use manual binding rather than create another copy.
@@ -125,6 +131,10 @@ The native cleanup worker keeps its existing three-second provider deadline and 
 Rate-limit deferrals and shared-circuit waits do not spend that transient failure budget. Native cleanup failure
 never changes a Turn result. If explicit clearing cannot reach Slack, native inactivity expiry remains the final
 fallback. The feedback worker has its own target retry state and conservative unknown-send reconciliation.
+
+Credential/desired-state/claim reads and SQL settlement failures reach the native cleanup pump's error boundary;
+they do not consume the Slack failure budget or disable a healthy target. Only the status API call
+uses provider failure handling. Existing claim expiry and the next scan recover uncertain SQL work.
 
 Local automated coverage includes real PostgreSQL state, concurrent connections and mocked Slack HTTP.
 It does not establish deployment or native visual acceptance. Follow the

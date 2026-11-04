@@ -1,6 +1,6 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
-  "format_daily_tokens": "{date}：{tokens} Tokens",
+  "format_daily_tokens": "{date}：{tokens} Token",
   "format_days_ago": "{count}天前",
   "format_elapsed_days": "{count}天",
   "format_elapsed_hours": "{count}小时",

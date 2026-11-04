@@ -61,6 +61,7 @@
   "tasks_filter_by_status": "Filter by status",
   "tasks_filter_tasks": "Filter Tasks",
   "tasks_included_in_active_work": "This message was included in the Agent's active work.",
+  "tasks_jump_to_latest": "Jump to latest",
   "tasks_last_activity_label": "Last activity",
   "tasks_load_earlier_activity": "Load earlier activity",
   "tasks_load_earlier_replies": "Load earlier replies",
@@ -86,7 +87,6 @@
   "tasks_no_tasks_yet_heading": "No Tasks yet",
   "tasks_not_found": "Task not found",
   "tasks_not_found_detail": "This Task does not exist or is outside your Account.",
-  "tasks_page_description": "Review Agent work, progress, and results.",
   "tasks_replies_loading": "Loading sent replies…",
   "tasks_replies_unavailable": "Sent replies could not be loaded.",
   "tasks_reply_content_truncated": "This reply was truncated.",
@@ -116,6 +116,7 @@
   "tasks_source_label": "Source",
   "tasks_source_thread": "Thread",
   "tasks_started_label": "Started",
+  "tasks_status_cancelled": "Cancelled",
   "tasks_status_completed": "Completed",
   "tasks_status_failed": "Failed",
   "tasks_status_filter_value": "Status: {status}",
@@ -129,6 +130,5 @@
   "tasks_title": "Tasks",
   "tasks_try_again": "Try again",
   "tasks_unavailable": "Task unavailable",
-  "tasks_view_all": "View all",
-  "tasks_work_in_progress": "Work is in progress."
+  "tasks_view_all": "View all"
 }

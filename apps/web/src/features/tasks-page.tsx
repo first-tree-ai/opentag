@@ -39,7 +39,8 @@ import {
   type TaskStatusGroup,
   taskStatusGroup,
   taskStatusGroupLabel,
-  taskStatusGroupTone,
+  taskStatusLabel,
+  taskStatusTone,
 } from "./task-status.js";
 
 type TaskFilter = "all" | TaskStatusGroup;
@@ -118,7 +119,7 @@ export function TasksPage({ agentId, showExamples = false }: { agentId?: string;
 
   return (
     <section className="grid gap-6" aria-labelledby="tasks-page-title" data-ui="tasks-page">
-      <PageHeader description={m.tasks_page_description()} title={m.tasks_title()} titleId="tasks-page-title" />
+      <PageHeader title={m.tasks_title()} titleId="tasks-page-title" />
 
       {/*
        * The toolbar is built out of the rows themselves — the Agent options are the Agents named by
@@ -414,7 +415,6 @@ export function TaskDetailPage({
   }
 
   const task = first.task;
-  const status = taskStatusGroup(task.status);
   const repliesStatus = <TaskRepliesStatus query={repliesQuery} />;
   const pagination = (
     <TaskActivityPagination loadMoreError={loadMoreError} repliesQuery={repliesQuery} taskQuery={taskQuery} />
@@ -437,42 +437,7 @@ export function TaskDetailPage({
             {task.title}
           </Text>
         </div>
-        <dl
-          className="grid grid-cols-2 gap-x-8 gap-y-4 border-y border-kumo-line py-4 @min-[36rem]/content:grid-cols-3 @min-[60rem]/content:grid-cols-5"
-          aria-label={m.tasks_details()}
-        >
-          <TaskDetailFact label={m.tasks_agent_label()}>
-            <span className="flex min-w-0 items-center gap-2">
-              <AgentAvatar
-                displayName={task.agent.displayName}
-                avatarPath={task.agent.avatarPath}
-                className="size-7 text-xs font-medium text-kumo-strong"
-              />
-              <span className="min-w-0 wrap-anywhere">{task.agent.displayName}</span>
-            </span>
-          </TaskDetailFact>
-          <TaskDetailFact label={m.tasks_source_label()}>
-            <span
-              className="inline-flex items-center gap-1.5"
-              data-chat-mode={task.source.chatMode ?? undefined}
-              data-group-message-type={task.source.groupMessageType ?? undefined}
-            >
-              <ProviderIcon className="size-5" provider={task.source.provider} />
-              {sourceLabel(task)}
-            </span>
-          </TaskDetailFact>
-          <TaskDetailFact className="col-span-2 @min-[36rem]/content:col-span-1" label={m.tasks_started_label()}>
-            <time dateTime={task.createdAt}>{formatDateTime(task.createdAt)}</time>
-          </TaskDetailFact>
-          <TaskDetailFact label={m.tasks_last_activity_label()}>
-            <time dateTime={task.lastActivityAt} title={formatDateTime(task.lastActivityAt)}>
-              {formatRelativeTime(task.lastActivityAt)}
-            </time>
-          </TaskDetailFact>
-          <TaskDetailFact label={m.tasks_status_label()}>
-            <StatusIndicator label={taskStatusGroupLabel(status)} tone={taskStatusGroupTone(status)} />
-          </TaskDetailFact>
-        </dl>
+        <TaskDetailFacts agentScoped={agentId === task.agent.id} task={task} />
         <TaskCancelControl detailKey={detailKey} enabled={!showExamples} task={task} />
       </header>
 
@@ -776,7 +741,6 @@ function TaskRow({
   task: TaskSummary;
 }) {
   const linkRef = useRef<HTMLAnchorElement>(null);
-  const status = taskStatusGroup(task.status);
   return (
     <Table.Row
       className="cursor-pointer transition-colors hover:bg-kumo-tint/50 grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 border-b border-kumo-line last:border-b-0 @min-[40rem]/content:table-row @min-[40rem]/content:border-b-0"
@@ -820,7 +784,7 @@ function TaskRow({
         </span>
       </Table.Cell>
       <Table.Cell className="col-start-2 row-start-1 justify-self-end" data-label={m.tasks_status_label()}>
-        <StatusIndicator label={taskStatusGroupLabel(status)} tone={taskStatusGroupTone(status)} />
+        <StatusIndicator label={taskStatusLabel(task.status)} tone={taskStatusTone(task.status)} />
       </Table.Cell>
       <Table.Cell
         className="col-start-2 row-start-2 justify-self-end self-center"
@@ -867,6 +831,59 @@ function TaskTitleLink({
     <Link className={className} {...agentTaskDetailLink(task.agent.id, task.id)} ref={linkRef} title={task.title}>
       {task.title}
     </Link>
+  );
+}
+
+/**
+ * On an Agent's own Task page the Agent is already named by the page around it, so the facts start
+ * with the source. The Agent fact stays where Tasks from several Agents mix, and on an Agent's page
+ * that shows another Agent's Task (a stale or mistyped link), where it is the only thing naming it.
+ */
+function TaskDetailFacts({ agentScoped, task }: { agentScoped: boolean; task: TaskSummary }) {
+  return (
+    <dl
+      className={`grid grid-cols-2 gap-x-8 gap-y-4 border-y border-kumo-line py-4 @min-[36rem]/content:grid-cols-3 ${
+        agentScoped ? "@min-[48rem]/content:grid-cols-4" : "@min-[60rem]/content:grid-cols-5"
+      }`}
+      aria-label={m.tasks_details()}
+    >
+      {agentScoped ? null : (
+        <TaskDetailFact label={m.tasks_agent_label()}>
+          <span className="flex min-w-0 items-center gap-2">
+            <AgentAvatar
+              displayName={task.agent.displayName}
+              avatarPath={task.agent.avatarPath}
+              className="size-7 text-xs font-medium text-kumo-strong"
+            />
+            <span className="min-w-0 wrap-anywhere">{task.agent.displayName}</span>
+          </span>
+        </TaskDetailFact>
+      )}
+      <TaskDetailFact label={m.tasks_source_label()}>
+        <span
+          className="inline-flex items-center gap-1.5"
+          data-chat-mode={task.source.chatMode ?? undefined}
+          data-group-message-type={task.source.groupMessageType ?? undefined}
+        >
+          <ProviderIcon className="size-5" provider={task.source.provider} />
+          {sourceLabel(task)}
+        </span>
+      </TaskDetailFact>
+      <TaskDetailFact
+        className={agentScoped ? undefined : "col-span-2 @min-[36rem]/content:col-span-1"}
+        label={m.tasks_started_label()}
+      >
+        <time dateTime={task.createdAt}>{formatDateTime(task.createdAt)}</time>
+      </TaskDetailFact>
+      <TaskDetailFact label={m.tasks_last_activity_label()}>
+        <time dateTime={task.lastActivityAt} title={formatDateTime(task.lastActivityAt)}>
+          {formatRelativeTime(task.lastActivityAt)}
+        </time>
+      </TaskDetailFact>
+      <TaskDetailFact label={m.tasks_status_label()}>
+        <StatusIndicator label={taskStatusLabel(task.status)} tone={taskStatusTone(task.status)} />
+      </TaskDetailFact>
+    </dl>
   );
 }
 

@@ -7,6 +7,7 @@ import { RuntimeWebError } from "../runtime-credentials/web-execution.js";
 import { RuntimeWebGatewayTokenStore } from "../runtime-credentials/web-gateway-token-store.js";
 import type { RuntimeWebService } from "../runtime-credentials/web-service.js";
 import type { ComputerAuthContext } from "../services/computers/index.js";
+import { deferred } from "./support/deferred.js";
 
 const COMPUTER = randomUUID();
 const CLOUD_COMPUTER = randomUUID();
@@ -396,4 +397,39 @@ describe("runtime web routes over real TCP", () => {
       await app.close();
     }
   });
+});
+
+it("keeps the original verifier owned after the response deadline", async () => {
+  const entered = deferred();
+  const release = deferred();
+  const { app, search } = createTestApp({
+    verify: async () => {
+      entered.resolve();
+      await release.promise;
+      return { credentialId: "cred", computerId: COMPUTER, installationId: randomUUID() };
+    },
+  });
+  const origin = await app.listen({ host: "127.0.0.1", port: 0 });
+  let closing: Promise<void> | undefined;
+  let closed = false;
+  try {
+    const response = fetch(`${origin}${RUNTIME_WEB_SEARCH_PATH}`, {
+      method: "POST",
+      headers: { authorization: "Bearer otmc_test", "content-type": "application/json", "x-web-timeout-ms": "100" },
+      body: searchBody(),
+    });
+    await entered.promise;
+    expect((await response).status).toBe(504);
+    closing = app.close().then(() => {
+      closed = true;
+    });
+    await sleep(25);
+    expect(closed).toBe(false);
+    release.resolve();
+    await closing;
+    expect(search).not.toHaveBeenCalled();
+  } finally {
+    release.resolve();
+    await (closing ?? app.close());
+  }
 });

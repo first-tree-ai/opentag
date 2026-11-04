@@ -71,7 +71,7 @@ function boundAgent(): AgentDetail {
   return { ...agentWithoutComputer(), computer: { computerId, displayName: "Studio", platform: "darwin" } };
 }
 
-function onlineComputer(runtimeStatus: "ready" | "install"): AccountComputerSummary {
+function onlineComputer(runtimeStatus: "ready" | "install" | "sign-in"): AccountComputerSummary {
   return {
     computerId,
     displayName: "Studio",
@@ -100,7 +100,10 @@ function messagingBinding(bindingState: ImBindingSummary["bindingState"]): ImBin
   };
 }
 
-function bound(connectionStatus: "online" | "offline", runtimeStatus: "ready" | "install"): AgentAvailability {
+function bound(
+  connectionStatus: "online" | "offline",
+  runtimeStatus: "ready" | "install" | "sign-in",
+): AgentAvailability {
   const computer: AccountComputerSummary = { ...onlineComputer(runtimeStatus), connectionStatus };
   return projectAgentAvailability(boundAgent(), computer, undefined, undefined, true, true);
 }
@@ -173,6 +176,10 @@ describe("The single action a list row offers", () => {
 
   it("names where each fixable blocked state gets fixed", () => {
     expect(agentRowAction(row(bound("online", "install")))).toMatchObject({ label: "Continue setup" });
+    expect(agentRowAction(row(bound("online", "sign-in")))).toMatchObject({
+      label: "Sign in",
+      link: { hash: "sign-in", to: "/agents/setup" },
+    });
     expect(agentRowAction(row(messaging("reauthorization_required")))).toMatchObject(settings("Update permissions"));
     expect(agentRowAction(row(messaging("error")))).toMatchObject(settings("Reconnect channel"));
     expect(agentRowAction(row(messaging("disabled")))).toMatchObject(settings("Reconnect channel"));

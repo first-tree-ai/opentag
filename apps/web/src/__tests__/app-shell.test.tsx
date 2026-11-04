@@ -89,7 +89,7 @@ describe("OpenTag Web App Shell", () => {
       within(agentRow as HTMLElement)
         .getAllByRole("link")
         .map((item) => item.getAttribute("href")),
-    ).toEqual([`/agents/setup?agentId=${agentId}`, `/agents/${agentId}`]);
+    ).toEqual([`/agents/${agentId}`, `/agents/setup?agentId=${agentId}`]);
     expect((agentRow as HTMLElement).querySelector('[data-ui="agent-row-status"] [data-state]')).toBeTruthy();
     expect(screen.queryByText("Ada's Mac · macOS")).toBeNull();
     expect(screen.queryByText("Mentions only")).toBeNull();
@@ -222,7 +222,8 @@ describe("OpenTag Web App Shell", () => {
     expect(within(status as HTMLElement).queryByRole("link")).toBeNull();
     const restore = within(agentRow as HTMLElement).getByRole("link", { name: /Restore connection/ });
     expect(restore.getAttribute("href")).toMatch(/^\/agents\/computers\?computerId=/);
-    expect(within(agentRow as HTMLElement).getAllByRole("link")).toEqual([restore, open]);
+    // The row's own link comes first, so keyboard focus reaches the Agent before its action.
+    expect(within(agentRow as HTMLElement).getAllByRole("link")).toEqual([open, restore]);
   });
 
   it("opens the Agent from the row itself rather than from a trailing affordance", async () => {

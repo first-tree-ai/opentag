@@ -892,6 +892,7 @@ export class ImDeliveryWorker {
           turnId: imMessageDeliveries.turnId,
           reportedAt: imMessageDeliveries.reportedAt,
           reportOwnerInstanceId: imMessageDeliveries.reportOwnerInstanceId,
+          turnReport: imMessageDeliveries.turnReport,
         })
         .from(imMessageDeliveries)
         .where(eq(imMessageDeliveries.id, claim.rootDeliveryId))
@@ -903,7 +904,16 @@ export class ImDeliveryWorker {
         target.reportedAt !== null ||
         target.reportOwnerInstanceId !== instanceId
       ) {
-        await this.#recordFailure(attempt, "IM_DELIVERY_STEER_TARGET_ENDED");
+        await this.#recordFailure(attempt, "IM_DELIVERY_STEER_TARGET_ENDED", {
+          expectedDeferral:
+            row.delivery.dispatchRequestId === null &&
+            target?.state === "accepted" &&
+            target.sessionId === row.session.id &&
+            target.turnId === claim.expectedTurnId &&
+            target.reportOwnerInstanceId === instanceId &&
+            target.reportedAt !== null &&
+            target.turnReport?.outcome === "completed",
+        });
         return;
       }
       const request = await this.#buildSteerRequest(row, claim, replyRole, instanceId);

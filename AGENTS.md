@@ -87,6 +87,8 @@ The scheduled `Unit Coverage` workflow owns the recurring full coverage baseline
 - Every directory has a `NODE.md` index and every page has `title` and `description` frontmatter. Place a page in the
   narrowest existing domain, list it in that domain's `NODE.md`, and prefer editing an existing page over adding one.
 - Write current truth in English only. Leave delivery history, PR references, and dated status to Git and pull requests.
+- A settled decision that the code does not yet implement goes on the tree promptly, under the fixed marker line
+  `> **Planned — not yet implemented.** Tracking: #<issue>`; see `docs/NODE.md` for the rule. Open proposals stay out.
 - `pnpm check` runs `context-tree verify` on `docs/`.
 
 Test plans, acceptance runs, UI screenshots, and validation evidence belong in `testing/`, never in `docs/`.

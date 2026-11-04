@@ -161,18 +161,17 @@ export interface RowCount {
 /**
  * Resolves where a run writes its result.
  *
- * `--out <dir>` wins over `OPENTAG_BENCHMARK_OUT`, which wins over the tracked results directory, so a
- * reviewer can keep the checkout clean with the same script CI records evidence with.
+ * `--out <dir>` wins over `OPENTAG_BENCHMARK_OUT`, which wins over the external default directory.
  */
 export function resolveOutputDirectory(input: {
   argv: readonly string[];
   env: Record<string, string | undefined>;
-  trackedDirectory: string;
+  defaultDirectory: string;
 }): string {
   const argumentIndex = input.argv.indexOf("--out");
   const fromArgument = argumentIndex === -1 ? undefined : input.argv[argumentIndex + 1];
   if (argumentIndex !== -1 && !fromArgument) throw new Error("--out requires a directory");
-  return fromArgument ?? input.env.OPENTAG_BENCHMARK_OUT ?? input.trackedDirectory;
+  return fromArgument ?? input.env.OPENTAG_BENCHMARK_OUT ?? input.defaultDirectory;
 }
 
 /** The median of a sample set, as the report quotes it. An empty set has no median and is a wiring bug. */

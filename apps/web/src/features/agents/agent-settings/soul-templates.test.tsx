@@ -14,10 +14,7 @@ afterEach(() => overwriteGetLocale(() => "en"));
 describe("Soul template catalog", () => {
   const approved = JSON.parse(
     readFileSync(
-      resolve(
-        dirname(fileURLToPath(import.meta.url)),
-        "../../../../../../testing/design/soul-template-catalog-v2/catalog.json",
-      ),
+      resolve(dirname(fileURLToPath(import.meta.url)), "../../../__tests__/fixtures/soul-template-catalog.json"),
       "utf8",
     ),
   );

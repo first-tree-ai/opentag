@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import { serializeDataset } from "../e2e/cloud-latency/benchmark.mjs";
 import { failureScenarios, runSample, scenarios } from "../e2e/cloud-latency/fixture.mjs";
@@ -182,9 +184,22 @@ test("CLI rejects invalid sample counts without starting fixtures", () => {
   assert.match(result.stderr, /Samples must be an integer/);
 });
 
-test("retained baseline is complete and report is reproducible", async () => {
-  const root = new URL("../../testing/performance/cloud-latency/", import.meta.url);
-  const data = JSON.parse(await readFile(new URL("results-linux-arm64.json", root), "utf8"));
-  assert.equal(validateDataset(data).samples.length, 402);
-  assert.equal(await readFile(new URL("BASELINE.md", root), "utf8"), markdownReport(data));
+test("CLI reports task-owned serialized datasets without a committed run baseline", async () => {
+  const data = dataset();
+  data.samples[0].outcome = "failed";
+  data.samples[1].outcome = "timeout";
+  data.samples[2].outcome = "incomplete";
+  data.samples[2].spans = [];
+  const directory = await mkdtemp(join(tmpdir(), "opentag-latency-report-"));
+  try {
+    const path = join(directory, "results.json");
+    await writeFile(path, serializeDataset(data));
+    const entry = new URL("../e2e/cloud-latency/benchmark.mjs", import.meta.url);
+    const result = spawnSync(process.execPath, [entry.pathname, "report", path], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, markdownReport(data));
+    assert.match(result.stdout, /\| unit \| 100 \| 97 \| 1 \| 1 \| 1 \|/);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 });

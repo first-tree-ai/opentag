@@ -318,7 +318,8 @@ successful child-process cleanup. Length-limited or terminal tool-call output is
 failed with partial output retained. Cleanup failure closes the affected runtime;
 an earlier protocol or model failure remains the primary error. Server per-Session
 stop/status and Cloud lifecycle acceptance remain outside Local E1; see the
-[maintained acceptance harness](https://github.com/first-tree-ai/opentag/blob/main/testing/cloud-computer.md).
+[Local Pi harness](https://github.com/first-tree-ai/opentag/blob/main/scripts/e2e/cloud-computer.mjs)
+(`node scripts/e2e/cloud-computer.mjs --help`).
 
 ### Pi prompt acceptance and compaction
 

@@ -58,12 +58,34 @@ export function privateConversation(alias: string): SQL {
  * own captured native root, which is what lets a first outbound reply land in the topic before any
  * inbound thread mapping exists; then the thread key and the message itself. A message with no
  * thread context is a root of its own, so its root field never re-classifies it.
+ *
+ * A Feishu `rootId` names the topic only inside a real thread. A message that records `threadId` is
+ * in one. A message without `threadId` whose thread key is the id of a stored message in the same
+ * channel is a captured reply in a quote topic: the current capture keys an unthreaded reply by the
+ * message it answers, so its `rootId` (the top of the quote chain) must not move it. Any other
+ * message without `threadId` keeps its root: earlier capture stored a native-thread reply resolved
+ * from its stored parent with the thread's `thread_id` as thread key and the root, but no
+ * `threadId`, and a thread id never names a stored message. Earlier quote-chain rows were keyed by
+ * their `rootId` itself, so either branch gives them the same topic.
  */
 export function topicKeyExpression(messageAlias: string, rootAlias: string): SQL {
   return sql`coalesce(
     ${sql.raw(rootAlias)}.root_external_id,
-    case when ${sql.raw(messageAlias)}.thread_key is not null
-      then ${sql.raw(messageAlias)}.provider_context ->> 'rootId' end,
+    case
+      when ${sql.raw(messageAlias)}.thread_key is null then null
+      when ${sql.raw(messageAlias)}.provider_context ->> 'threadId' is not null
+        then ${sql.raw(messageAlias)}.provider_context ->> 'rootId'
+      when ${sql.raw(messageAlias)}.provider_context ->> 'rootId' is null
+        or ${sql.raw(messageAlias)}.provider_context ->> 'rootId' = ${sql.raw(messageAlias)}.thread_key
+        then null
+      when exists (
+        select 1 from im_messages quoted
+        where quoted.im_binding_id = ${sql.raw(messageAlias)}.im_binding_id
+          and quoted.channel_id = ${sql.raw(messageAlias)}.channel_id
+          and quoted.external_message_id = ${sql.raw(messageAlias)}.thread_key
+      ) then null
+      else ${sql.raw(messageAlias)}.provider_context ->> 'rootId'
+    end,
     ${sql.raw(messageAlias)}.thread_key,
     ${sql.raw(messageAlias)}.external_message_id
   )`;

@@ -53,6 +53,7 @@ import {
   type FeishuRegistration,
   type FeishuRegistrationGateway,
   FeishuSetupService,
+  normalizeFeishuMessage,
 } from "../../services/im-bindings/feishu/index.js";
 import { createImProviderAdapterResolver, ImBindingService } from "../../services/im-bindings/index.js";
 import { SlackConfigurationService } from "../../services/im-bindings/slack/index.js";
@@ -2649,6 +2650,99 @@ describe("IM binding persistence", () => {
       );
       const pendingThread = pendingScopes.find((scope) => scope.kind === "thread");
       expect((pendingThread?.expiresAt.getTime() ?? 0) - Date.now()).toBeGreaterThan(2 * 24 * 60 * 60 * 1000);
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("keeps a normalized Feishu quote reply in the Channel Session and routes only a real thread to a Thread Session", async () => {
+    const value = await unboundFixture();
+    try {
+      const imBindingId = await value.imBindingService.activateFeishu({
+        agentId: value.agent.id,
+        appId: "cli_quote",
+        teamId: "workspace_quote",
+        botOpenId: "ou_bot",
+        teamBrand: "feishu",
+        appSecret: "secret",
+        grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
+      });
+      const inbox = new ImMessageInbox(value.database);
+      const feishuMessage = (
+        messageId: string,
+        createTime: number,
+        thread: { rootId?: string; threadId?: string; replyToMessageId?: string },
+      ) => {
+        const [event] = normalizeFeishuMessage({
+          appId: "cli_quote",
+          teamId: "workspace_quote",
+          message: {
+            messageId,
+            chatId: "oc_quote_group",
+            chatType: "group",
+            senderId: "ou_human",
+            content: "@_user_1 please check",
+            rawContentType: "text",
+            resources: [],
+            mentions: [{ key: "@_user_1", openId: "ou_bot", name: "Assistant", isBot: true }],
+            mentionAll: false,
+            mentionedBot: true,
+            ...thread,
+            createTime,
+            raw: { header: { event_id: `ev_${messageId}`, tenant_key: "workspace_quote" } },
+          },
+        });
+        if (!event) throw new Error("Missing normalized Feishu event");
+        return event;
+      };
+      const sessionOf = async (deliveryIds: string[]) => {
+        expect(deliveryIds).toHaveLength(1);
+        const [delivery] = await value.database
+          .select({ sessionId: imMessageDeliveries.sessionId })
+          .from(imMessageDeliveries)
+          .where(eq(imMessageDeliveries.id, deliveryIds[0] as string));
+        const [session] = await value.database
+          .select()
+          .from(sessions)
+          .where(eq(sessions.id, delivery?.sessionId as string));
+        return session;
+      };
+
+      const root = await inbox.ingest(imBindingId, 1, feishuMessage("om_quote_root", 1_787_000_001_000, {}));
+      const channel = await sessionOf(root.deliveryIds);
+      expect(channel).toMatchObject({ kind: "channel", threadKey: null });
+
+      const quote = await inbox.ingest(
+        imBindingId,
+        1,
+        feishuMessage("om_quote_reply", 1_787_000_002_000, {
+          rootId: "om_quote_root",
+          replyToMessageId: "om_quote_root",
+        }),
+      );
+      expect(await sessionOf(quote.deliveryIds)).toMatchObject({ id: channel?.id, kind: "channel" });
+      const [stored] = await value.database
+        .select()
+        .from(imMessages)
+        .where(eq(imMessages.externalMessageId, "om_quote_reply"));
+      expect(stored).toMatchObject({ threadKey: null, replyToExternalId: "om_quote_root" });
+
+      const threaded = await inbox.ingest(
+        imBindingId,
+        1,
+        feishuMessage("om_thread_reply", 1_787_000_003_000, {
+          rootId: "om_quote_root",
+          threadId: "omt_quote_thread",
+          replyToMessageId: "om_quote_root",
+        }),
+      );
+      expect(await sessionOf(threaded.deliveryIds)).toMatchObject({ kind: "thread", threadKey: "omt_quote_thread" });
+      expect(
+        await value.database
+          .select({ id: sessions.id })
+          .from(sessions)
+          .where(and(eq(sessions.channelId, "oc_quote_group"), eq(sessions.kind, "thread"))),
+      ).toHaveLength(1);
     } finally {
       await value.sql.end();
     }

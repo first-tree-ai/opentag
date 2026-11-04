@@ -12,17 +12,6 @@
  * styling that stays its own.
  */
 
-@keyframes ots-fade {
-  0%,
-  100% {
-    opacity: 0.4;
-  }
-
-  50% {
-    opacity: 1;
-  }
-}
-
 /* Command block ---------------------------------------------------------- */
 
 /* Grid parents must be allowed to size the command surface to the viewport instead of inheriting
@@ -211,15 +200,6 @@
  * Anything that changes length while someone is reading is given the height of its tallest state,
  * so what sits under it keeps one position. These are measured, not chosen.
  */
-
-/* The waiting dot carries its own animation. */
-.ots-pulse {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--color-kumo-brand);
-  animation: ots-fade 1.4s ease-in-out infinite;
-}
 
 /*
  * The connect status: waiting on one line, connected on another. The class is written by

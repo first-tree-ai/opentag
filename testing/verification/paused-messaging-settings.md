@@ -86,3 +86,15 @@ With that fixture adjustment, `node scripts/unit-coverage.mjs --project server` 
 16 skipped, zero failures, zero retries, and zero flaky tests. Server line coverage is 90.75%. The Server-only patch
 coverage check uses the repository gate at its 80% threshold and passes with 139/147 changed executable lines
 covered (94.56%). The eight uncovered Slack-view lines retain the real PostgreSQL configuration evidence above.
+
+## Web regression catalogue integration
+
+The main update through `22a521a3d17b9a20cfa37e60e66e22647f58a72d` adds the Web product regression
+catalogue, simplifies setup styling and copy, and permits Context Tree selection without first pausing an Agent.
+The catalogue's former paused-messaging 404 exception is removed and replaced by ST-22, which links the existing
+read-only messaging checks and this evidence. No package manifest or lockfile changes in this base update.
+
+After integration, nine focused Web files pass all 289 tests covering messaging, paused presentation, setup,
+layout, computer choice, Context Tree settings, and catalogue ordering. The three affected Server Context Tree
+unit files pass all 56 tests. Shared and Web builds, Server/Web type checks, and repository checks pass. The
+screenshots and browser run above predate this base update; the complete new-head regression remains a CI gate.

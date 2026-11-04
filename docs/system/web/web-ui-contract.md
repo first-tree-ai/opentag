@@ -139,12 +139,32 @@ or Cloud preparation already made for it. A single exit in a fixed place, the to
 step-by-step Back and a separate Set up later that each led somewhere different. The Agent list is where every
 unfinished setup can be resumed.
 
+> **Planned — not yet implemented.** Tracking: #1215
+
+After setup the same holds for an Agent's Computer, runtime, and messaging channel. They cannot be moved; to change
+one, the person creates a new Agent and adds it to the conversation. Why: an Agent's Sessions are bound to that
+channel, runtime, and the Computer's local storage, so a move is costly and risky (see
+[Agent, Session, and Computer model](../agent-session-computer-model.md)).
+
 When the Agent's runtime is installed but signed out, the setup page's runtime row offers **Sign in** (**去登录**). It
 expands the terminal steps for that computer: open a terminal on it, run `claude` and enter `/login` for Claude Code,
 or run `codex login` for Codex. The page's existing Check again follows. The commands are short enough to type, so they show as inline code with no copy control. The Agent list row and the
 Agent page's runtime row name the same action with the same single link, which opens that setup step with the steps
 already shown. Why: sign-in stays on the user's computer. openTag only checks it and never stores Claude or Codex
 credentials, so the next step is the terminal on that computer, not a Web sign-in.
+Every setup step uses one page surface and one progress rail; the messaging step does not switch to its own
+workspace styling. The steps say only what the rows and controls do not:
+- The Cloud destination card, when the deployment offers no Cloud, stays disabled with its "Temporarily unavailable"
+  badge alone; the reason is the deployment's and the reader can do nothing about it.
+- Choosing a computer lists the Account's computers with their status, and offers **Connect a new computer** in place
+  beside them; a disconnected computer can be chosen and the step goes straight to its restore-connection command.
+- Preparing the computer adds no footer line when every row is ready or while a row is checking: the row status says
+  so. The footer speaks only when the reader has something to do (finish the step above, or check again).
+- The messaging step's heading stands alone, without a "Set up {name}" subtitle repeating the Agent.
+- The Lark step shows its QR code from 768px up, with its expiry relative ("Expires in 15 min"). Below 768px the
+  reader is usually on the phone that would scan it, so the same authorization link opens in Lark instead, and the
+  instruction and waiting line say to confirm in Lark rather than to scan.
+
 The completion screen stays visible until the user navigates away. Its primary action, **View agent**
 (**查看 Agent** in Chinese), opens that Agent's overview. Global navigation provides the return to the Agent list;
 the completion screen does not repeat that destination as a secondary action or redirect automatically.
@@ -205,6 +225,13 @@ running-Task or **Waiting** line as the list row, so the home answers what the A
 own row it never reads as a fact about the Computer or messaging below it. The Server already bounds what it holds: a local Computer without a
 heartbeat for 90 seconds reads as offline, and runtime and messaging observations expire on their own TTLs, so held
 list statuses converge on the Server's next settled answer.
+
+> **Planned — not yet implemented.** Tracking: #1215
+
+Agent status will come straight from the Server, which derives it on read; see
+[Agent status pipeline](../runtime/computer-status-pipeline.md). The Web keeps no hold and no **Refreshing status**
+note, and refetches Agent status every 10 seconds while the tab is in the foreground. This replaces the held-status
+behaviour described above.
 
 UI changes must be checked at these representative widths when the surface can render there:
 

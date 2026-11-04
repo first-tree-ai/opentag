@@ -53,7 +53,6 @@
   "im_feishu_preparing": "正在准备二维码…",
   "im_feishu_qr_alt": "在{provider}中扫描此二维码",
   "im_feishu_qr_expired": "二维码已过期",
-  "im_feishu_qr_expires": "二维码将于 {date} 过期。",
   "im_feishu_qr_expires_in": "{minutes} 分钟后过期",
   "im_feishu_reauthorize_instructions": "确认当前{provider} Bot 更新后的权限。",
   "im_feishu_retry": "再试一次",

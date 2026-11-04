@@ -131,6 +131,17 @@ the effective runtime snapshot; missing credentials and other start failures
 settle the Turn as typed, recoverable `not_started` failures. The Client never
 falls back to a different Provider.
 
+### Status state outside the Server process
+
+> **Planned — not yet implemented.** Tracking: #1215
+
+Server services keep no in-process state, so the Server can run as more than one instance. High-frequency state that
+can be lost, such as the Computer, runtime and messaging-channel sub-statuses, goes to a TTL key-value cache (Redis,
+about one minute); durable data goes to PostgreSQL. A Computer is offline after three missed heartbeats (90 seconds),
+which voids its other sub-statuses, and the Agent status is derived on read rather than stored; see
+[Agent status pipeline](runtime/computer-status-pipeline.md). This replaces the expiring per-connection observations
+described above.
+
 ## Explicit Web runtime test
 
 Web may let a user explicitly test the saved Agent runtime configuration by

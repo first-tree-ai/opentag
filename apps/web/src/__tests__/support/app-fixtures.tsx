@@ -686,6 +686,9 @@ export function installApi(
     if (path === `/api/v1/sessions/${taskSessionId}/detail/turns`) {
       return json({ items: [], nextCursor: null });
     }
+    if (path === `/api/v1/sessions/${taskSessionId}/detail/internal-sessions`) {
+      return json({ items: [], nextCursor: null });
+    }
 
     if (path === "/api/v1/agents" && init?.method === "POST") {
       if (options.agentCreateError) {

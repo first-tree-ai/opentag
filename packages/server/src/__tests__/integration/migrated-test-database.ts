@@ -1,7 +1,8 @@
 import { fileURLToPath } from "node:url";
-import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import postgres from "postgres";
+import { getContainerRuntimeClient } from "testcontainers";
 import { migrateDatabase } from "../../db/migrate.js";
+import { acquireLocalTestDatabase } from "./local-test-database.js";
 import { startPostgresTestContainer } from "./postgres-test-container.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
@@ -14,21 +15,32 @@ export interface MigratedTestDatabase {
 
 // Stable-schema suites can preserve the migration ledger and clear only application data.
 // Migration contract tests intentionally use their own empty-schema setup instead of this helper.
-export async function startMigratedTestDatabase(image?: string): Promise<MigratedTestDatabase> {
-  const container = await startPostgresTestContainer(image);
-  const databaseUrl = container.getConnectionUri();
+export async function startMigratedTestDatabase(
+  options?: string | { disposable: true },
+): Promise<MigratedTestDatabase> {
+  const image = typeof options === "string" ? options : undefined;
+  const local = !process.env.CI && !options && (await isLocalDocker());
+  const fixture = local
+    ? await acquireLocalTestDatabase()
+    : await startPostgresTestContainer(image).then((container) => ({
+        databaseUrl: container.getConnectionUri(),
+        stop: async () => {
+          await container.stop();
+        },
+      }));
+  const { databaseUrl } = fixture;
 
   try {
     await migrateDatabase(databaseUrl, migrationsFolder);
   } catch (error) {
-    await container.stop();
+    await fixture.stop();
     throw error;
   }
 
   return {
     databaseUrl,
     reset: () => resetApplicationTables(databaseUrl),
-    stop: () => stopContainer(container),
+    stop: () => fixture.stop(),
   };
 }
 
@@ -70,6 +82,7 @@ async function resetApplicationTables(databaseUrl: string): Promise<void> {
   }
 }
 
-async function stopContainer(container: StartedPostgreSqlContainer): Promise<void> {
-  await container.stop();
+async function isLocalDocker(): Promise<boolean> {
+  const { info } = await getContainerRuntimeClient();
+  return ["localhost", "127.0.0.1", "::1"].includes(info.containerRuntime.host);
 }

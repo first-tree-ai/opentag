@@ -39,7 +39,7 @@ let fixture: MigratedTestDatabase;
 let observer: ReturnType<typeof createDatabaseClient>;
 
 beforeAll(async () => {
-  fixture = await startMigratedTestDatabase();
+  fixture = await startMigratedTestDatabase({ disposable: true });
   observer = createDatabaseClient(fixture.databaseUrl);
   await observer.sql`create role caller_startup login password 'local-test-only'`;
   await observer.sql`grant usage on schema drizzle, public, billing to caller_startup`;

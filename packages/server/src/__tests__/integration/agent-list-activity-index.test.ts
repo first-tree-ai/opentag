@@ -29,6 +29,7 @@ let testDatabase: MigratedTestDatabase;
 
 beforeAll(async () => {
   testDatabase = await startMigratedTestDatabase();
+  await testDatabase.reset();
 }, 120_000);
 
 afterAll(async () => {
@@ -140,6 +141,31 @@ describe("Agent list unreported-accepted index", () => {
         expiresAt: new Date(NOW.getTime() + 86_400_000),
       });
 
+      await client.sql`
+        with history as (
+          insert into im_messages (
+            im_binding_id, provider_event_id, channel_id, external_message_id, provider_revision_key,
+            operation, direction, author_kind, author_external_id, content, provider_context, occurred_at
+          )
+          select im_binding_id, 'reported-' || gen_random_uuid(), channel_id, gen_random_uuid()::text,
+            provider_revision_key, operation, direction, author_kind, author_external_id, content, provider_context, occurred_at
+          from im_messages cross join generate_series(1, 1000) where id = ${message.id}
+          returning id
+        )
+        insert into im_message_deliveries (
+          message_id, session_id, attention, state, placement_generation, input_hash, turn_id,
+          report_owner_instance_id, accepted_at, reported_at, expires_at, result_hash, turn_report
+        )
+        select id, ${session.id}::uuid, 'direct', 'accepted', 1, 'input-' || id, 'turn-' || id,
+          ${REPORT_OWNER}::uuid, ${NOW.toISOString()}::timestamptz, ${NOW.toISOString()}::timestamptz,
+          ${NOW.toISOString()}::timestamptz + interval '1 day', repeat('a', 64),
+          '{"outcome":"completed","usage":{"inputTokens":0,"outputTokens":0}}'::jsonb
+        from history
+      `;
+      await client.sql`analyze im_message_deliveries`;
+      await client.sql`analyze sessions`;
+      await client.sql`analyze im_bindings`;
+
       queries.length = 0;
       const listed = await agents.listForAccount(owner.userId);
       expect(listed.agents).toHaveLength(1);
@@ -151,12 +177,13 @@ describe("Agent list unreported-accepted index", () => {
 
       const unreported = queries.filter((entry) => entry.query.includes('"reported_at" is null'));
       expect(unreported.length).toBeGreaterThan(0);
-      await client.sql.unsafe("set enable_seqscan = off");
-      for (const statement of unreported) {
-        const plan = await client.sql.unsafe(`explain (format json) ${statement.query}`, statement.params as never[]);
-        expect(JSON.stringify(plan)).toContain("im_message_deliveries_unreported_accepted_idx");
-      }
-      await client.sql.unsafe("reset enable_seqscan");
+      await client.sql.begin(async (sql) => {
+        await sql`set local enable_seqscan = off`;
+        for (const statement of unreported) {
+          const plan = await sql.unsafe(`explain (format json) ${statement.query}`, statement.params as never[]);
+          expect(JSON.stringify(plan)).toContain("im_message_deliveries_unreported_accepted_idx");
+        }
+      });
     } finally {
       await client.sql.end();
     }

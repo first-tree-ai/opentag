@@ -29,6 +29,7 @@ let testDatabase: MigratedTestDatabase;
 
 beforeAll(async () => {
   testDatabase = await startMigratedTestDatabase();
+  await testDatabase.reset();
 }, 120_000);
 
 afterAll(async () => {

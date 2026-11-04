@@ -10,6 +10,7 @@ let testDatabase: MigratedTestDatabase;
 let client: ReturnType<typeof createDatabaseClient>;
 beforeAll(async () => {
   testDatabase = await startMigratedTestDatabase();
+  await testDatabase.reset();
   client = createDatabaseClient(testDatabase.databaseUrl, { max: 1 });
 }, 120_000);
 afterAll(async () => {

@@ -21,6 +21,8 @@ contents, and machine-specific operational logs outside the repository.
 
 ## Verification by feature
 
+- [Local PostgreSQL reuse and disposable-resource cleanup](verification/local-postgresql.md)
+
 - [Provider CLI identity validation](verification/provider-cli-validation.md)
 
 - [SQL caller repairs: Agent and Task authority](verification/sql-caller-repairs-01.md)

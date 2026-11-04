@@ -11,6 +11,7 @@ import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated
 let pg: MigratedTestDatabase;
 beforeAll(async () => {
   pg = await startMigratedTestDatabase();
+  await pg.reset();
 }, 120000);
 afterAll(async () => pg?.stop());
 

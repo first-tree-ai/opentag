@@ -9,7 +9,7 @@ export async function startDisposablePostgres() {
   const password = randomBytes(18).toString("base64url");
   const name = `opentag-e1-pg-${process.pid}-${randomBytes(3).toString("hex")}`;
   let created = false;
-  const stop = () => execFileAsync("docker", ["rm", "-f", name], { timeout: 30_000 });
+  const stop = () => execFileAsync("docker", ["rm", "-f", "-v", name], { timeout: 30_000 });
   try {
     await execFileAsync(
       "docker",

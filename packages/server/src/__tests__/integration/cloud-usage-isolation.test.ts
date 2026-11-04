@@ -11,6 +11,7 @@ let c: ReturnType<typeof createDatabaseClient>, admin: ReturnType<typeof createD
 const services: CloudModelService[] = [];
 beforeAll(async () => {
   pg = await startMigratedTestDatabase();
+  await pg.reset();
   c = createDatabaseClient(pg.databaseUrl, { max: 2, statementTimeoutMs: 250, queryTimeoutMs: 1500 });
   admin = createDatabaseClient(pg.databaseUrl, { max: 1 });
 }, 120000);

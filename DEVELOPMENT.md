@@ -43,6 +43,10 @@ EOF
 
 Load the settings, start PostgreSQL, and create your local account:
 
+If local tests have already created `opentag-local-postgres`, run `docker start opentag-local-postgres` instead of
+the `docker compose` line below. Both use the same local `opentag` database and development credentials. Tests also
+reuse an existing default `opentag-postgres-1` Compose service on port 5432.
+
 ```bash
 set -a
 source .env.local
@@ -206,7 +210,7 @@ node --test scripts/__tests__/git-hooks.test.mjs
 
 # Prepare server dependencies and run one PostgreSQL integration file (requires Docker).
 pnpm exec turbo run build --filter='@opentag/server^...'
-pnpm --filter @opentag/server exec vitest run src/__tests__/integration/tasks.test.ts --maxWorkers=2
+pnpm --filter @opentag/server exec vitest run src/__tests__/integration/tasks.test.ts --maxWorkers=1
 ```
 
 Use `open-tag` as the CLI package name. For focused web tests, prepare web dependencies with
@@ -220,11 +224,24 @@ For a focused server integration run, use the direct `exec vitest run` example a
 `test:integration` keeps the script's existing directory filter and still selects the entire integration suite.
 Use `pnpm --filter @opentag/server test:integration` when the full integration suite is required.
 
-Each PostgreSQL integration fixture starts its own disposable database. With a local Docker endpoint, its random
+Ordinary local integration tests reuse one persistent PostgreSQL 17 container, `opentag-local-postgres`, and the same
+`opentag` database at `127.0.0.1:5432`. Its named volume is `opentag-local-postgres-data`. Local server tests default to
+one worker; a PostgreSQL advisory lock also serializes cooperating fixtures across processes and worktrees. Exiting a
+fixture releases that lock without stopping PostgreSQL, dropping the database, or clearing its data. Existing explicit
+`reset()` calls still clear application tables when a particular test needs known inputs; migrations and their ledger
+are reused. Use this database only for disposable local development/test data.
+
+Migration-history and database-fault suites explicitly request disposable containers with `{ disposable: true }`;
+an explicit PostgreSQL image
+also opts out of the shared database for version-specific checks. CI and remote Docker keep disposable fixtures.
+With a local Docker endpoint, a disposable container's random
 published port binds to `127.0.0.1`; remote Docker endpoints retain Docker's default binding. Startup runs a host-side
 `SELECT 1` with a five-second connection timeout before migrations or tests begin. If container health passes but this
 query fails, check Docker port forwarding: an open TCP port alone does not prove that PostgreSQL traffic reaches the
-container. The fixture closes the probe connection and removes the container on failure.
+container. The disposable fixture closes the probe connection and removes the container on failure. Keep Ryuk enabled
+and use `TESTCONTAINERS_HOST_OVERRIDE=127.0.0.1` with local Docker Desktop. Manual disposable-container cleanup must
+remove anonymous volumes too (`docker rm -f -v`). The shared local container and its named volume are intentionally
+retained; stop it with `docker stop opentag-local-postgres` when local development is finished.
 
 ### Container PostgreSQL probes
 

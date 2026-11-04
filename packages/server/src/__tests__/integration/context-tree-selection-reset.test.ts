@@ -12,7 +12,7 @@ let testDatabase: MigratedTestDatabase;
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
 
 beforeAll(async () => {
-  testDatabase = await startMigratedTestDatabase();
+  testDatabase = await startMigratedTestDatabase({ disposable: true });
 }, 120_000);
 afterAll(async () => testDatabase.stop());
 

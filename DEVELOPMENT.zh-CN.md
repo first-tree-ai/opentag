@@ -1,7 +1,7 @@
 # openTag 开发指南
 
 > 权威来源：[DEVELOPMENT.md](./DEVELOPMENT.md)
-> 同步日期：2026-10-26
+> 同步日期：2026-11-04
 
 ## 从源码在本地运行
 
@@ -43,6 +43,10 @@ EOF
 ### 3. 启动服务器
 
 加载配置、启动 PostgreSQL，并创建本地账号：
+
+如果本地测试已经创建 `opentag-local-postgres`，用 `docker start opentag-local-postgres` 替代下方
+`docker compose` 命令即可。两者使用同一个本地 `opentag` 库和开发凭据。测试也会复用已存在的、
+在 5432 端口提供服务的默认 `opentag-postgres-1` Compose 数据库。
 
 ```bash
 set -a
@@ -197,7 +201,7 @@ node --test scripts/__tests__/git-hooks.test.mjs
 
 # 准备 server 依赖并运行一个 PostgreSQL 集成测试文件（需要 Docker）。
 pnpm exec turbo run build --filter='@opentag/server^...'
-pnpm --filter @opentag/server exec vitest run src/__tests__/integration/tasks.test.ts --maxWorkers=2
+pnpm --filter @opentag/server exec vitest run src/__tests__/integration/tasks.test.ts --maxWorkers=1
 ```
 
 CLI 的 package 名称是 `open-tag`。运行针对性的 web 测试前，先用
@@ -210,10 +214,20 @@ Turbo 的 web typecheck 任务已包含此步骤。文件路径相对于选定�
 追加文件名仍会保留脚本已有的目录筛选条件，因而仍然选择整个集成套件。
 需要完整集成套件时，运行 `pnpm --filter @opentag/server test:integration`。
 
-每个 PostgreSQL 集成测试 fixture 启动独立的一次性数据库。本机 Docker 的随机映射端口只绑定
+普通本地集成测试复用一个持久 PostgreSQL 17 容器 `opentag-local-postgres`，共用
+`127.0.0.1:5432` 上的 `opentag` 数据库，命名卷为 `opentag-local-postgres-data`。
+本地 server 测试默认单 worker，PostgreSQL advisory lock 还会让不同进程和 worktree 的协作 fixture
+串行使用该库。fixture 退出时只释放锁，不停止 PostgreSQL、不删库、不自动清空数据；已有的显式
+`reset()` 调用仍会按用例需要清理应用表，迁移结果及其记录会复用。该库仅供可丢弃的本地开发和测试数据使用。
+
+迁移历史和数据库故障测试通过 `{ disposable: true }` 显式使用一次性容器；指定 PostgreSQL 镜像也会切换到一次性容器，
+供多版本检查使用。CI 和远程 Docker 继续使用一次性 fixture。本机一次性容器的随机映射端口只绑定
 `127.0.0.1`；远程 Docker 保留默认绑定方式。启动后先从宿主机执行 `SELECT 1`，连接超时为五秒，
 成功后才开始迁移或测试。若容器健康检查通过，但该查询失败，应检查 Docker 端口转发：TCP 端口开放
-不代表 PostgreSQL 请求已到达容器。查询失败时，fixture 会关闭探测连接并删除容器。
+不代表 PostgreSQL 请求已到达容器。查询失败时，一次性 fixture 会关闭探测连接并删除容器。
+本机 Docker Desktop 保持 Ryuk 启用并设置 `TESTCONTAINERS_HOST_OVERRIDE=127.0.0.1`。
+手工删除一次性容器时，也要删除匿名卷（`docker rm -f -v`）。共享本地容器和命名卷会保留；
+结束本地开发时，可用 `docker stop opentag-local-postgres` 停止它。
 
 ### 容器内 PostgreSQL 探针
 

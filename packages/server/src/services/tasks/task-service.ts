@@ -50,6 +50,9 @@ export type { TaskScope } from "./task-sql.js";
 
 export { TASK_SECTION_DEFAULT_LIMIT, TASK_SECTION_MAX_LIMIT };
 
+/** The longest internal Session title the Task detail shows, matching a stored Task title's bound. */
+const INTERNAL_SESSION_TITLE_MAX_LENGTH = 120;
+
 export interface ListTaskOptions {
   agentId?: string;
   cursor?: string;
@@ -601,6 +604,9 @@ export class TaskService {
   /**
    * Internal Sessions of a Task, earliest first with an `(created_at, id)` keyset cursor: every
    * internal Session the Task's own Sessions created, with their descendants, ended ones included.
+   * Each row carries a title — its stored title, or the start of the first collaboration message it
+   * received, which is the work it was created for — and its latest activity: its creation, its
+   * end, or the newest collaboration message it sent or received.
    * The page is cut on the related identities, so a Task with a hundred thousand related Sessions
    * resolves only the page's rows.
    */
@@ -620,6 +626,8 @@ export class TaskService {
         s.runtime_reasoning_effort as "runtimeReasoningEffort",
         s.ended_at as "endedAt",
         s.created_at as "createdAt",
+        coalesce(s.manual_title, s.generated_title, left(first_message.content, ${INTERNAL_SESSION_TITLE_MAX_LENGTH})) as "title",
+        greatest(s.created_at, s.ended_at, latest_message.created_at) as "lastActivityAt",
         ${cursorText(sql`s.created_at`)} as "cursorAt"
       from (
         -- The keyset order and the page are decided on the related identities alone; only the rows
@@ -632,6 +640,19 @@ export class TaskService {
         ${page.limit === undefined ? sql`` : sql`limit ${page.limit}`}
       ) p
       inner join sessions s on s.id = p.id
+      -- What the Session was asked to do: the first collaboration message it received.
+      left join lateral (
+        select m.content
+        from session_messages m
+        where m.target_session_id = s.id
+        order by m.created_at asc, m.id asc
+        limit 1
+      ) first_message on true
+      left join lateral (
+        select max(m.created_at) as created_at
+        from session_messages m
+        where m.target_session_id = s.id or m.source_session_id = s.id
+      ) latest_message on true
       where s.kind = 'internal'
       order by s.created_at asc, s.id asc
     `);

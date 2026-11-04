@@ -1592,6 +1592,53 @@ describe("TaskService bounded detail", () => {
     expect(third.nextCursor).toBeNull();
   });
 
+  it("titles each internal Session by what it was asked to do and dates it by its latest activity", async () => {
+    const { binding, bootstrap, service } = await fixture();
+    const { channel } = await turnsFor(binding.id, DM, 1);
+    const internal = (createdAt: Date, options: { manualTitle?: string; endedAt?: Date } = {}) =>
+      createSession(binding.id, {
+        channelId: DM,
+        conversationKind: "dm",
+        kind: "internal",
+        createdBySessionId: channel.id,
+        createdAt,
+        ...options,
+      });
+    const asked = await internal(minutes(1));
+    const named = await internal(minutes(2), { manualTitle: "Stored title" });
+    const silent = await internal(minutes(3), { endedAt: minutes(4) });
+    const message = (source: string | null, target: string, content: string, at: Date) => ({
+      id: crypto.randomUUID(),
+      sourceSessionId: source,
+      targetSessionId: target,
+      content,
+      contentHash: "d".repeat(64),
+      lastOutcome: "accepted" as const,
+      attemptCount: 1,
+      lastAttemptAt: at,
+      createdAt: at,
+      updatedAt: at,
+    });
+    await unitDatabase.database
+      .insert(sessionMessages)
+      .values([
+        message(channel.id, asked.id, `  Review the failing\n\ndeployment ${"and more ".repeat(30)}`, minutes(5)),
+        message(channel.id, asked.id, "A later instruction", minutes(6)),
+        message(asked.id, channel.id, "Done", minutes(7)),
+        message(channel.id, named.id, "Not the title", minutes(8)),
+      ]);
+
+    const page = await service.listInternalSessions(bootstrap.userId, channel.id, { limit: 10 });
+    const byId = new Map(page.items.map((item) => [item.id, item]));
+    const askedTitle = byId.get(asked.id)?.title ?? "";
+    // The first message it received, on one line and bounded.
+    expect(askedTitle.startsWith("Review the failing deployment and more")).toBe(true);
+    expect(askedTitle.length).toBeLessThanOrEqual(120);
+    expect(byId.get(asked.id)?.lastActivityAt).toBe(minutes(7).toISOString());
+    expect(byId.get(named.id)).toMatchObject({ title: "Stored title", lastActivityAt: minutes(8).toISOString() });
+    expect(byId.get(silent.id)).toMatchObject({ title: null, lastActivityAt: minutes(4).toISOString() });
+  });
+
   it("reads scheduled collaboration messages and deduplicates a message whose two ends are both related", async () => {
     const { binding, bootstrap, service } = await fixture();
     const { channel } = await turnsFor(binding.id, DM, 1);

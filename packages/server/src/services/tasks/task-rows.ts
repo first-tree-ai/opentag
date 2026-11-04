@@ -90,6 +90,8 @@ export interface InternalSessionRow extends Record<string, unknown> {
   runtimeReasoningEffort: string | null;
   endedAt: Date | string | null;
   createdAt: Date | string;
+  title: string | null;
+  lastActivityAt: Date | string;
   /** The exact `created_at` key of this row, at the precision the page was ordered by. */
   cursorAt: string;
 }
@@ -296,6 +298,12 @@ export function toTurn(row: TaskTurnRow): TaskTurn {
   };
 }
 
+/** One line of the internal Session's title: whitespace collapsed, empty treated as absent. */
+function internalSessionTitle(title: string | null): string | null {
+  const line = title?.replace(/\s+/g, " ").trim();
+  return line ? line : null;
+}
+
 export function toInternalSession(session: InternalSessionRow) {
   return {
     id: session.id,
@@ -304,6 +312,8 @@ export function toInternalSession(session: InternalSessionRow) {
     endedAt: session.endedAt ? toIso(session.endedAt) : null,
     runtimeModel: session.runtimeModel,
     runtimeReasoningEffort: session.runtimeReasoningEffort,
+    title: internalSessionTitle(session.title),
+    lastActivityAt: toIso(session.lastActivityAt),
   };
 }
 

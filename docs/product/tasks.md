@@ -59,8 +59,9 @@ in `sections` — all three when it names none — each with its own `nextCursor
 also page independently at `/detail/turns`, `/detail/internal-sessions` and
 `/detail/collaboration-messages`, so a reader that needs more of one section asks for that section
 alone. Each section returns at most 100 rows and 20 by default. Naming a subset is the point of the
-contract: the Web conversation renders the summary and the Turns, asks for `sections=turns`, and
-never reads the Internal Session or collaboration history it would discard. Reading any of them
+contract: the Web conversation renders the summary and the Turns and asks for `sections=turns`; it
+reads the internal Sessions from their own section, page by page, and never reads the collaboration
+history it does not show. Reading any of them
 resolves the Task and serves the requested sections from one read-only Repeatable Read transaction,
 so an authorized Task is read from a single snapshot and no wait spans external I/O. The captured-replies
 subresource also resolves its Task and reads replies in one read-only snapshot. It reads chat
@@ -258,6 +259,21 @@ once.
 Internal Sessions are read earliest first, with ended Sessions included, so paging walks the whole
 attributed history rather than only what is alive now. Both sections page on `(createdAt, id)`; a
 message or Session is never repeated across pages.
+
+Each internal Session row carries a `title`: its stored manual or generated title, or else the start
+of the first collaboration message it received, which is the work it was created for, collapsed to
+one line and bounded at 120 characters. It also carries `lastActivityAt`: the latest of its
+creation, its end, and the newest collaboration message it sent or received. Both fields are
+optional in the shared schema, so a reader still accepts an older Server's rows.
+
+The Web Task detail lists the internal Sessions above the conversation, under an **Internal
+Sessions** heading, from the `/detail/internal-sessions` section under the canonical Task id. It
+shows the first page and loads the next one on **Load more internal Sessions**. Each row shows the
+Session's title, or its model or id when it has none, with its id beside a title. It reads
+**Active** until the Session ends and **Ended** afterwards, and shows the relative time of its
+latest activity. The section appears only when the Task has internal Sessions. A page that cannot
+be read says so in the section's place and leaves the conversation in place. Collaboration messages
+are not shown.
 
 ## Boundaries
 

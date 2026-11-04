@@ -122,10 +122,11 @@ function RefreshTaskRepliesButton({ taskId }: { taskId: string }) {
 
 afterEach(() => vi.restoreAllMocks());
 
-// The Task replies subresource is read alongside the detail; tests declare its behavior here and
-// override per scenario as needed.
+// The Task replies and internal Sessions are read alongside the detail; tests declare their behavior
+// here and override per scenario as needed.
 beforeEach(() => {
   vi.spyOn(browserApi, "taskReplies").mockResolvedValue({ items: [], nextCursor: null });
+  vi.spyOn(browserApi, "taskInternalSessions").mockResolvedValue({ items: [], nextCursor: null });
 });
 
 function responseAt(index: number): string {
@@ -1456,49 +1457,77 @@ describe("Tasks view", () => {
     expect(sourceSpan?.getAttribute("data-group-message-type")).toBe("thread");
   });
 
-  it("renders internal child Sessions when returned on the Task detail page", async () => {
-    vi.spyOn(browserApi, "taskDetail").mockResolvedValue({
+  it("lists the Task's internal Sessions page by page, ended ones included, with what each was asked to do", async () => {
+    const detailRequest = vi.spyOn(browserApi, "taskDetail").mockResolvedValue({
       task: detail.task,
       turns: { items: detail.turns, nextCursor: null },
-      internalSessions: {
+    });
+    const internalSession = (id: string, overrides: Record<string, unknown> = {}) => ({
+      id,
+      createdBySessionId: sessionId,
+      createdAt: "2026-08-27T01:10:00.000Z",
+      endedAt: null,
+      runtimeModel: "gpt-5",
+      runtimeReasoningEffort: null,
+      title: null,
+      lastActivityAt: "2026-08-27T01:12:00.000Z",
+      ...overrides,
+    });
+    const sessionsRequest = vi
+      .mocked(browserApi.taskInternalSessions)
+      .mockResolvedValueOnce({
         items: [
-          {
-            id: "55555555-5555-4555-8555-555555555555",
-            createdBySessionId: sessionId,
-            createdAt: "2026-08-27T01:10:00.000Z",
-            endedAt: null,
-            runtimeModel: "gpt-5",
-            runtimeReasoningEffort: null,
-          },
-          {
-            id: "66666666-6666-4666-8666-666666666666",
-            createdBySessionId: sessionId,
-            createdAt: "2026-08-27T01:15:00.000Z",
+          internalSession("55555555-5555-4555-8555-555555555555", { title: "Review the failing deployment" }),
+          internalSession("66666666-6666-4666-8666-666666666666", {
             endedAt: "2026-08-27T01:25:00.000Z",
             runtimeModel: null,
-            runtimeReasoningEffort: null,
-          },
+          }),
         ],
+        nextCursor: "next-internal-sessions",
+      })
+      .mockResolvedValueOnce({
+        items: [internalSession("77777777-7777-4777-8777-777777777777", { title: "Summarize the logs" })],
         nextCursor: null,
-      },
-    });
+      });
 
     const { container } = await renderInRouter(<TaskDetailPage taskId={sessionId} />, {
       path: `/tasks/${sessionId}`,
     });
 
-    const list = await waitFor(() => {
-      const node = container.querySelector('[data-ui="task-internal-sessions"]');
-      expect(node).not.toBeNull();
-      return node as HTMLElement;
-    });
-    const rows = list.querySelectorAll('[data-ui="task-internal-session-row"]');
-    expect(rows).toHaveLength(2);
-    expect(within(list).getByText("gpt-5")).toBeTruthy();
+    const list = await screen.findByRole("region", { name: "Internal Sessions" });
+    // The conversation still asks for its Turns alone; internal Sessions page on their own section.
+    expect(detailRequest).toHaveBeenCalledWith(sessionId, ["turns"]);
+    expect(sessionsRequest).toHaveBeenCalledWith(sessionId, undefined);
+    expect(list.querySelectorAll('[data-ui="task-internal-session-row"]')).toHaveLength(2);
+    expect(within(list).getByText("Review the failing deployment")).toBeTruthy();
     expect(within(list).getByText("55555555-5555-4555-8555-555555555555")).toBeTruthy();
+    // Without a title or model the row names the Session by its id.
     expect(within(list).getByText("66666666-6666-4666-8666-666666666666")).toBeTruthy();
-    expect(within(list).getByText("Running")).toBeTruthy();
-    expect(within(list).getByText("Completed")).toBeTruthy();
+    expect(within(list).getByText("Active")).toBeTruthy();
+    expect(within(list).getByText("Ended")).toBeTruthy();
+
+    fireEvent.click(within(list).getByRole("button", { name: "Load more internal Sessions" }));
+    await within(list).findByText("Summarize the logs");
+    expect(sessionsRequest).toHaveBeenLastCalledWith(sessionId, "next-internal-sessions");
+    expect(list.querySelectorAll('[data-ui="task-internal-session-row"]')).toHaveLength(3);
+    expect(within(list).queryByRole("button", { name: "Load more internal Sessions" })).toBeNull();
+    expect(container.querySelector('[data-ui="task-internal-sessions-error"]')).toBeNull();
+  });
+
+  it("says when the internal Sessions could not be read without withdrawing the conversation", async () => {
+    vi.spyOn(browserApi, "taskDetail").mockResolvedValue({
+      task: detail.task,
+      turns: { items: detail.turns, nextCursor: null },
+    });
+    vi.mocked(browserApi.taskInternalSessions).mockRejectedValue(new Error("unavailable"));
+
+    const { container } = await renderInRouter(<TaskDetailPage taskId={sessionId} />, {
+      path: `/tasks/${sessionId}`,
+    });
+
+    expect(await screen.findByText("Internal Sessions could not be loaded.")).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Activity" })).toBeTruthy();
+    expect(container.querySelector('[data-ui="task-internal-sessions"]')).toBeNull();
   });
 });
 

@@ -706,6 +706,51 @@ describe("AgentService", () => {
     expect((await service.getById(bootstrap.userId, created.id)).activity).toEqual(listed.agents[0]?.activity);
   });
 
+  it("counts queued Tasks as the Task list does, beside any activity state", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id, "queued-agent");
+    const binding = await createBinding(created.id);
+    const waiting = await createSession(binding.id);
+    const another = await createSession(binding.id);
+    const ended = await createSession(binding.id);
+    // Two pending messages in one Task count as one queued Task.
+    await createDelivery(binding.id, waiting.id, { state: "pending" });
+    await createDelivery(binding.id, waiting.id, { state: "pending" });
+    await createDelivery(binding.id, another.id, { state: "pending" });
+    await createDelivery(binding.id, ended.id, { state: "pending" });
+    await unitDatabase.database.update(sessions).set({ endedAt: NOW }).where(eq(sessions.id, ended.id));
+
+    const idle = await service.listForAccount(bootstrap.userId);
+    expect(idle.agents[0]?.activity).toEqual({ state: "idle", queuedTaskCount: 2 });
+    expect((await service.getById(bootstrap.userId, created.id)).activity).toEqual(idle.agents[0]?.activity);
+
+    // Running work and queued work are reported together.
+    const busy = await createSession(binding.id);
+    await createDelivery(binding.id, busy.id, { acceptedAt: NOW, usage: {} });
+    const working = await service.listForAccount(bootstrap.userId);
+    expect(working.agents[0]?.activity).toEqual({
+      state: "working",
+      startedAt: NOW.toISOString(),
+      runningTaskCount: 1,
+      queuedTaskCount: 2,
+    });
+  });
+
+  it("does not count queued Tasks of an inactive binding", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id, "disabled-queue-agent");
+    const binding = await createBinding(created.id);
+    const session = await createSession(binding.id);
+    await createDelivery(binding.id, session.id, { state: "pending" });
+    await unitDatabase.database
+      .update(imBindings)
+      .set({ status: "disabled", encryptedCredential: null, disabledAt: NOW })
+      .where(eq(imBindings.id, binding.id));
+
+    const listed = await service.listForAccount(bootstrap.userId);
+    expect(listed.agents[0]?.activity).toEqual({ state: "idle" });
+  });
+
   it("keeps a maximum-duration unresolved delivery working", async () => {
     const { bootstrap, computer, service } = await fixture();
     const created = await createAgent(service, bootstrap.userId, computer.id, "maximum-duration-agent");

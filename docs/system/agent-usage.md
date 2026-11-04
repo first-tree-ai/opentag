@@ -88,10 +88,18 @@ Turn, so several Turns in one Task count once; the list row shows that count, an
 Waiting. The count lets a reader see at a glance which Agents are busy and how busy without opening each one, and
 Waiting says a ready Agent is free to take work. Waiting appears only beside Ready, because beside an offline, paused,
 or blocked status it would contradict the reason the Agent cannot work; a running count shows on every row, since
-work in progress is a fact whatever the status. Queued Tasks are not counted: the row reports work that has started.
-The list and detail responses include `runningTaskCount` only for a client that sends
-`x-opentag-agent-activity-task-count: 1`; the Web App sends it. Older clients validate the working activity strictly,
-so they keep receiving the shape they were released with.
+work in progress is a fact whatever the status.
+
+Every activity state also carries `queuedTaskCount` when it is positive: the number of open Tasks of an active binding
+with a delivery still `pending`, the same rule the Task list uses for "Queued". The row and the Agent home show it as
+"N tasks waiting" on every status, beside any running count. Why: queued work behind an offline Computer, a paused
+Agent, or a runtime problem is exactly what an admin needs to see to judge that the Agent is stuck; without it the
+row read as quiet. The read filters `state = 'pending'` through `im_message_deliveries_pending_idx`, so it grows with
+the messages waiting, not with the Agent's history.
+
+Clients declare which counts they read with `x-opentag-agent-activity-task-count`: `1` receives `runningTaskCount`,
+`2` also receives `queuedTaskCount`, and no header receives neither. The Web App sends `2`. Older clients validate the
+activity strictly, so each keeps receiving the shape it was released with.
 Two reads answer that question over the Agent's IM bindings, and
 `im_message_deliveries_unreported_accepted_idx` — partial on `state = 'accepted' and reported_at is null` — is the
 access path for both. Without it the reads join every Session of a binding to reach an answer, which is

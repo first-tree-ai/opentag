@@ -386,6 +386,32 @@ describe("Agent HTTP API", () => {
     expect(current.json().activity).toEqual(working);
   });
 
+  it("returns the queued Task count only to clients that read version 2", async () => {
+    const service = agentService();
+    const queued = {
+      state: "working" as const,
+      startedAt: agentDetail.updatedAt,
+      runningTaskCount: 1,
+      queuedTaskCount: 2,
+    };
+    service.getById.mockResolvedValue({ ...agentDetail, activity: queued });
+    const { app } = appWith(service);
+    const read = (version?: string) =>
+      app.inject({
+        method: "GET",
+        url: agentByIdPath(agentId),
+        headers: version ? { ...authorization, [AGENT_ACTIVITY_TASK_COUNT_HEADER]: version } : authorization,
+      });
+
+    expect((await read()).json().activity).toEqual({ state: "working", startedAt: agentDetail.updatedAt });
+    expect((await read("1")).json().activity).toEqual({
+      state: "working",
+      startedAt: agentDetail.updatedAt,
+      runningTaskCount: 1,
+    });
+    expect((await read("2")).json().activity).toEqual(queued);
+  });
+
   it("preserves malformed JSON as a typed client error", async () => {
     const { app } = appWith();
     const response = await app.inject({

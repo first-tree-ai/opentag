@@ -5,6 +5,8 @@
   "agents_capability_not_available": "Not available",
   "agents_capability_scope": "Scope",
   "agents_capability_source": "{source} source",
+  "agents_card_activity_queued_tasks_plural": "{count} tasks waiting",
+  "agents_card_activity_queued_tasks_single": "{count} task waiting",
   "agents_card_activity_running_tasks_plural": "{count} tasks running",
   "agents_card_activity_running_tasks_single": "{count} task running",
   "agents_card_activity_waiting": "Waiting",

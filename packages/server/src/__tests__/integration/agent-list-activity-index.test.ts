@@ -60,73 +60,7 @@ describe("Agent list unreported-accepted index", () => {
         schema,
         logger: { logQuery: (query, params) => queries.push({ query, params }) },
       });
-      const owner = await bootstrapInitialAdmin(database, { displayName: "Owner", email: "index@example.test" });
-      const [computer] = await database
-        .insert(computers)
-        .values({
-          ownerAccountId: owner.userId,
-          currentInstallationId: randomUUID(),
-          currentInstanceId: randomUUID(),
-          displayName: "box",
-          platform: "linux",
-          arch: "x64",
-          clientVersion: "1",
-          createdAt: NOW,
-          updatedAt: NOW,
-        })
-        .returning({ id: computers.id });
-      if (!computer) throw new Error("Computer fixture missing");
-      const agents = new AgentService(database, { now: () => NOW });
-      const agent = await agents.createForAccount(owner.userId, {
-        computerId: computer.id,
-        runtimeProvider: "codex",
-        name: "indexed",
-        displayName: "Indexed",
-      });
-      const [binding] = await database
-        .insert(imBindings)
-        .values({
-          agentId: agent.id,
-          provider: "feishu",
-          status: "active",
-          externalAppId: `app-${randomUUID()}`,
-          externalBotId: "bot",
-          credentialSchemaVersion: 1,
-          credentialGeneration: 1,
-          encryptedCredential: "sealed",
-          activatedAt: NOW,
-          createdAt: NOW,
-          updatedAt: NOW,
-        })
-        .returning({ id: imBindings.id });
-      if (!binding) throw new Error("IM binding fixture missing");
-      const [session] = await database
-        .insert(sessions)
-        .values({ imBindingId: binding.id, channelId: "C1", conversationKind: "dm", kind: "channel", createdAt: NOW })
-        .returning({ id: sessions.id });
-      if (!session) throw new Error("Session fixture missing");
-      await database
-        .insert(sessionPlacements)
-        .values({ sessionId: session.id, computerId: computer.id, generation: 1 });
-      // One unreported accepted Turn: the fixture the two activity reads exist for.
-      const [message] = await database
-        .insert(imMessages)
-        .values({
-          imBindingId: binding.id,
-          providerEventId: `event-${randomUUID()}`,
-          channelId: "C1",
-          externalMessageId: `message-${randomUUID()}`,
-          providerRevisionKey: "1",
-          operation: "created",
-          direction: "inbound",
-          authorKind: "human",
-          authorExternalId: "human",
-          content: { version: 1, fallbackText: "turn", blocks: [{ type: "text", text: "turn" }], truncated: false },
-          providerContext: { provider: "feishu", chatType: "dm" },
-          occurredAt: NOW,
-        })
-        .returning({ id: imMessages.id });
-      if (!message) throw new Error("Message fixture missing");
+      const { owner, agents, session, message } = await activityFixture(database, "indexed");
       await database.insert(imMessageDeliveries).values({
         messageId: message.id,
         sessionId: session.id,
@@ -161,4 +95,117 @@ describe("Agent list unreported-accepted index", () => {
       await client.sql.end();
     }
   }, 60_000);
+
+  it("counts queued Tasks through the pending-state index", async () => {
+    const client = createDatabaseClient(testDatabase.databaseUrl);
+    const queries: { query: string; params: unknown[] }[] = [];
+    try {
+      const database = drizzle(client.sql, {
+        schema,
+        logger: { logQuery: (query, params) => queries.push({ query, params }) },
+      });
+      const { owner, agents, agent, session, message } = await activityFixture(database, "queued");
+      // A message still waiting for delivery: the Task list reads this Task as Queued.
+      await database.insert(imMessageDeliveries).values({
+        messageId: message.id,
+        sessionId: session.id,
+        attention: "direct",
+        state: "pending",
+        placementGeneration: 1,
+        nextAttemptAt: NOW,
+        expiresAt: new Date(NOW.getTime() + 86_400_000),
+      });
+
+      queries.length = 0;
+      const listed = await agents.listForAccount(owner.userId);
+      expect(listed.agents.find((entry) => entry.id === agent.id)?.activity).toEqual({
+        state: "idle",
+        queuedTaskCount: 1,
+      });
+
+      const queued = queries.filter((entry) => entry.query.includes(`"state" = $`) && entry.params.includes("pending"));
+      expect(queued.length).toBeGreaterThan(0);
+      await client.sql.unsafe("set enable_seqscan = off");
+      for (const statement of queued) {
+        const plan = await client.sql.unsafe(`explain (format json) ${statement.query}`, statement.params as never[]);
+        expect(JSON.stringify(plan)).toContain("im_message_deliveries_pending_idx");
+      }
+      await client.sql.unsafe("reset enable_seqscan");
+    } finally {
+      await client.sql.end();
+    }
+  }, 60_000);
 });
+
+type ActivityDatabase = ReturnType<typeof drizzle<typeof schema>>;
+let owner: Awaited<ReturnType<typeof bootstrapInitialAdmin>> | undefined;
+
+/** One Agent with an active binding, one live Session, and one inbound message to deliver. */
+async function activityFixture(database: ActivityDatabase, name: string) {
+  // The database has one bootstrapped Account; every fixture Agent belongs to it.
+  owner ??= await bootstrapInitialAdmin(database, { displayName: "Owner", email: "index@example.test" });
+  const [computer] = await database
+    .insert(computers)
+    .values({
+      ownerAccountId: owner.userId,
+      currentInstallationId: randomUUID(),
+      currentInstanceId: randomUUID(),
+      displayName: "box",
+      platform: "linux",
+      arch: "x64",
+      clientVersion: "1",
+      createdAt: NOW,
+      updatedAt: NOW,
+    })
+    .returning({ id: computers.id });
+  if (!computer) throw new Error("Computer fixture missing");
+  const agents = new AgentService(database, { now: () => NOW });
+  const agent = await agents.createForAccount(owner.userId, {
+    computerId: computer.id,
+    runtimeProvider: "codex",
+    name,
+    displayName: "Indexed",
+  });
+  const [binding] = await database
+    .insert(imBindings)
+    .values({
+      agentId: agent.id,
+      provider: "feishu",
+      status: "active",
+      externalAppId: `app-${randomUUID()}`,
+      externalBotId: "bot",
+      credentialSchemaVersion: 1,
+      credentialGeneration: 1,
+      encryptedCredential: "sealed",
+      activatedAt: NOW,
+      createdAt: NOW,
+      updatedAt: NOW,
+    })
+    .returning({ id: imBindings.id });
+  if (!binding) throw new Error("IM binding fixture missing");
+  const [session] = await database
+    .insert(sessions)
+    .values({ imBindingId: binding.id, channelId: "C1", conversationKind: "dm", kind: "channel", createdAt: NOW })
+    .returning({ id: sessions.id });
+  if (!session) throw new Error("Session fixture missing");
+  await database.insert(sessionPlacements).values({ sessionId: session.id, computerId: computer.id, generation: 1 });
+  const [message] = await database
+    .insert(imMessages)
+    .values({
+      imBindingId: binding.id,
+      providerEventId: `event-${randomUUID()}`,
+      channelId: "C1",
+      externalMessageId: `message-${randomUUID()}`,
+      providerRevisionKey: "1",
+      operation: "created",
+      direction: "inbound",
+      authorKind: "human",
+      authorExternalId: "human",
+      content: { version: 1, fallbackText: "turn", blocks: [{ type: "text", text: "turn" }], truncated: false },
+      providerContext: { provider: "feishu", chatType: "dm" },
+      occurredAt: NOW,
+    })
+    .returning({ id: imMessages.id });
+  if (!message) throw new Error("Message fixture missing");
+  return { owner, agents, agent, session, message };
+}

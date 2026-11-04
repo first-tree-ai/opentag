@@ -598,9 +598,38 @@ export class AgentService {
         ),
       );
 
+    /*
+     * Tasks still waiting for delivery, counted as the Task list counts "Queued": a Task with any
+     * pending delivery in a live Session of an active binding. They wait whether or not the Agent is
+     * working, so the count rides on every activity state, and it is what shows an admin that work is
+     * piling up behind an offline Computer. The pending-state index serves the filter.
+     */
+    const queuedRows = await executor
+      .select({
+        agentId: imBindings.agentId,
+        queuedTaskCount: sql<number>`count(distinct ${imMessageDeliveries.sessionId})::int`,
+      })
+      .from(imMessageDeliveries)
+      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .where(
+        and(
+          inArray(imBindings.agentId, agentIds),
+          eq(imBindings.status, "active"),
+          isNull(sessions.endedAt),
+          eq(imMessageDeliveries.state, "pending"),
+        ),
+      )
+      .groupBy(imBindings.agentId);
+
     const activityByAgent = projectActivityByAgent(activityRows);
     for (const row of staleActivityRows) {
       if (!activityByAgent.has(row.agentId)) activityByAgent.set(row.agentId, { state: "unknown" });
+    }
+    for (const row of queuedRows) {
+      if (row.queuedTaskCount <= 0) continue;
+      const activity = activityByAgent.get(row.agentId) ?? { state: "idle" };
+      activityByAgent.set(row.agentId, { ...activity, queuedTaskCount: row.queuedTaskCount });
     }
     return activityByAgent;
   }

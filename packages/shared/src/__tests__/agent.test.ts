@@ -284,6 +284,11 @@ describe("Agent contracts", () => {
         activity: { state: "working", startedAt: agent.updatedAt, runningTaskCount: 0 },
       }),
     ).toThrow();
+    expect(AgentDetailSchema.parse({ ...summary, activity: { state: "idle", queuedTaskCount: 3 } }).activity).toEqual({
+      state: "idle",
+      queuedTaskCount: 3,
+    });
+    expect(() => AgentDetailSchema.parse({ ...summary, activity: { state: "idle", queuedTaskCount: 0 } })).toThrow();
     expect(() =>
       ListAgentsResponseSchema.parse({
         agents: [

@@ -112,7 +112,7 @@ describe("BrowserApi", () => {
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
   });
 
-  it("asks for the running Task count on the Agent list and detail reads", async () => {
+  it("asks for the running and queued Task counts on the Agent list and detail reads", async () => {
     const seen: string[] = [];
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
       seen.push(`${String(input)} ${new Headers(init?.headers).get("x-opentag-agent-activity-task-count")}`);
@@ -121,7 +121,7 @@ describe("BrowserApi", () => {
     const api = new BrowserApi(fetchImpl);
     await api.agents();
     await api.agent(taskSummary.agent.id).catch(() => undefined);
-    expect(seen).toEqual(["/api/v1/agents 1", `/api/v1/agents/${taskSummary.agent.id} 1`]);
+    expect(seen).toEqual(["/api/v1/agents 2", `/api/v1/agents/${taskSummary.agent.id} 2`]);
   });
 
   it("updates the current user profile with PATCH, response parsing, and browser CSRF", async () => {

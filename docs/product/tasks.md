@@ -265,7 +265,10 @@ message or Session is never repeated across pages.
 
 Each internal Session row carries a `title`: its stored manual or generated title, or else the start
 of the first collaboration message it received, which is the work it was created for, collapsed to
-one line and bounded at 120 characters. It also carries `lastActivityAt`: the latest of its
+one line and bounded at 120 characters (code points). The Server does the collapsing, with one
+definition of whitespace that includes Unicode spaces such as NBSP and the ideographic space, so a
+body that opens with any run of whitespace still yields its words; a title that is only whitespace
+counts as absent. It also carries `lastActivityAt`: the latest of its
 creation, its end, and the newest collaboration message it sent or received. Both fields are
 optional in the shared schema, so a reader still accepts an older Server's rows.
 

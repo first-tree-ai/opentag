@@ -50,9 +50,6 @@ export type { TaskScope } from "./task-sql.js";
 
 export { TASK_SECTION_DEFAULT_LIMIT, TASK_SECTION_MAX_LIMIT };
 
-/** The longest internal Session title the Task detail shows, matching a stored Task title's bound. */
-const INTERNAL_SESSION_TITLE_MAX_LENGTH = 120;
-
 export interface ListTaskOptions {
   agentId?: string;
   cursor?: string;
@@ -652,7 +649,8 @@ export class TaskService {
         s.runtime_reasoning_effort as "runtimeReasoningEffort",
         s.ended_at as "endedAt",
         s.created_at as "createdAt",
-        coalesce(s.manual_title, s.generated_title, first_message.title) as "title",
+        coalesce(s.manual_title, s.generated_title) as "title",
+        first_message.content as "firstMessage",
         greatest(s.created_at, s.ended_at, latest_received.created_at, latest_sent.created_at) as "lastActivityAt",
         ${cursorText(sql`s.created_at`)} as "cursorAt"
       from (
@@ -666,15 +664,13 @@ export class TaskService {
         ${page.limit === undefined ? sql`` : sql`limit ${page.limit}`}
       ) p
       inner join sessions s on s.id = p.id
-      -- What the Session was asked to do: the first collaboration message it received, collapsed to
-      -- one line before it is capped, so leading or repeated whitespace never spends the title
-      -- budget. The whole body is normalized: the schema bounds it to 16 KiB and only one message per
-      -- page row is read.
+      -- What the Session was asked to do: the whole body of the first collaboration message it
+      -- received. The Server collapses it to one line and caps it, with JavaScript's Unicode
+      -- whitespace, so the SQL and the mapper never disagree on what a space is. The body is bounded:
+      -- the schema caps it at 16 KiB (session_messages_content_bounds) and only one message per page
+      -- row is read.
       left join lateral (
-        select nullif(
-          left(btrim(regexp_replace(m.content, '[[:space:]]+', ' ', 'g')), ${INTERNAL_SESSION_TITLE_MAX_LENGTH}),
-          ''
-        ) as title
+        select m.content
         from session_messages m
         where m.target_session_id = s.id
         order by m.created_at asc, m.id asc

@@ -1609,6 +1609,9 @@ describe("TaskService bounded detail", () => {
     const silent = await internal(minutes(3), { endedAt: minutes(4) });
     const padded = await internal(minutes(3));
     const spaced = await internal(minutes(3));
+    const nbsp = await internal(minutes(3));
+    const unicodeSpaced = await internal(minutes(3));
+    const blank = await internal(minutes(3));
     const message = (source: string | null, target: string, content: string, at: Date) => ({
       id: crypto.randomUUID(),
       sourceSessionId: source,
@@ -1630,6 +1633,18 @@ describe("TaskService bounded detail", () => {
       message(channel.id, padded.id, `${" \n\t".repeat(100)}Summarize the incident\n\n  timeline`, minutes(9)),
       // Repeated whitespace between words collapses before the cap, so it does not spend the budget.
       message(channel.id, spaced.id, Array.from({ length: 40 }, (_, i) => `word${i}`).join(" \n\t  "), minutes(10)),
+      // PostgreSQL's POSIX classes do not treat NBSP as whitespace, JavaScript does: 300 leading NBSP
+      // must collapse away rather than fill the whole title budget.
+      message(channel.id, nbsp.id, `${"\u00a0".repeat(300)}Rotate the\u00a0\u00a0signing key`, minutes(11)),
+      // Ideographic, em, thin and line-separator spaces collapse like ASCII whitespace before the cap.
+      message(
+        channel.id,
+        unicodeSpaced.id,
+        `\u3000\u2003${Array.from({ length: 40 }, (_, i) => `word${i}`).join("\u3000\u2003\u2009\u2028\u00a0")}\u3000`,
+        minutes(12),
+      ),
+      // A body of Unicode whitespace alone is no title at all.
+      message(channel.id, blank.id, "\u00a0\u3000\u2003 \n\u00a0", minutes(13)),
     ]);
 
     const page = await service.listInternalSessions(bootstrap.userId, channel.id, { limit: 10 });
@@ -1644,6 +1659,9 @@ describe("TaskService bounded detail", () => {
     expect(byId.get(padded.id)?.title).toBe("Summarize the incident timeline");
     const collapsed = Array.from({ length: 40 }, (_, i) => `word${i}`).join(" ");
     expect(byId.get(spaced.id)?.title).toBe(collapsed.slice(0, 120));
+    expect(byId.get(nbsp.id)?.title).toBe("Rotate the signing key");
+    expect(byId.get(unicodeSpaced.id)?.title).toBe(collapsed.slice(0, 120));
+    expect(byId.get(blank.id)?.title).toBeNull();
   });
 
   it("reads scheduled collaboration messages and deduplicates a message whose two ends are both related", async () => {

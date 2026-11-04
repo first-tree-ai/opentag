@@ -1,6 +1,6 @@
 ---
 title: "Web App"
-description: "Admin-console scope and experience principles, design guide, Web UI contract, Computer and Skill surfaces, internationalization, and analytics of the openTag Web App."
+description: "Admin-console scope and experience principles, UX review rubric, design guide, Web UI contract, Computer and Skill surfaces, internationalization, and analytics of the openTag Web App."
 ---
 
 # Web App
@@ -18,7 +18,8 @@ UI contract define visual direction and application behavior together.
 
 The Web and the connect command follow the team's product-experience
 principles. This section says where each is applied to openTag, so new UI and
-UX reviews start from the existing rule instead of reinventing it.
+UX reviews start from the existing rule instead of reinventing it. Reviews check
+them with the [UX review rubric](ux-review-rubric.md).
 
 - **Only what the admin can act on**: the admin-console scope above.
 - **One fact, one place, one label**: a state uses one label on every page
@@ -63,6 +64,8 @@ UX reviews start from the existing rule instead of reinventing it.
 
 - **[Web UI contract](web-ui-contract.md)** — composition rules and
   acceptance criteria for product UI.
+- **[UX review rubric](ux-review-rubric.md)** — observable checks, severity,
+  finding format, and what not to report when reviewing the Web.
 - **[Computer connection controls](computer-connection-controls.md)** — the
   Account Computer connection surface.
 - **[Skill details reader](skill-details-reader.md)** — reading a Skill's full

@@ -4,8 +4,8 @@
  *
  * This file is only the wiring: arguments, Docker, PostgreSQL, migrations and file output. The run
  * itself, the measurement and the container checks live in `scripts/benchmark/`, beside this file,
- * where unit tests drive them through injected ports. Importing those modules never starts a
- * container, and no test imports this file.
+ * where unit tests drive them through injected ports. Entry tests replace the run before importing
+ * this file, so they verify wiring without starting a container.
  *
  * It owns one disposable loopback container, never reads `DATABASE_URL` or a `.env` file, applies the
  * real migrations, keeps constraints and indexes enabled, and uses the service client's default query

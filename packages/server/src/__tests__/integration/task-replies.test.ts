@@ -19,6 +19,8 @@ import {
   OUTBOUND_CREATED_REVISION_KEY,
   type OutboundCaptureEvent,
 } from "../../services/im/im-outbound-capture.js";
+import { ImMessageInbox } from "../../services/im/index.js";
+import { normalizeFeishuMessage } from "../../services/im-bindings/feishu/index.js";
 import { TaskService } from "../../services/tasks/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
@@ -493,6 +495,132 @@ describe("Task replies subresource", () => {
     });
     const viaChild = await service.listReplies(value.bootstrap.userId, followup.id, { limit: 20 });
     expect(viaChild.items.map((item) => item.externalMessageId)).toEqual(["om_first_reply"]);
+    await value.sql.end();
+  });
+
+  it("shows the captured reply to an inbound quote reply in that quote reply's Task, not the quoted root's", async () => {
+    const value = await accountFixture();
+    const [binding] = await value.database
+      .insert(imBindings)
+      .values({
+        agentId: value.agent.id,
+        provider: "feishu",
+        status: "active",
+        externalAppId: "cli_quote",
+        externalTeamId: "workspace_quote",
+        externalBotId: "ou_bot",
+        credentialSchemaVersion: 1,
+        credentialGeneration: 1,
+        encryptedCredential: "synthetic",
+        activatedAt: new Date("2026-09-22T00:00:00.000Z"),
+      })
+      .returning();
+    if (!binding) throw new Error("IM Binding fixture was not created");
+    const inbox = new ImMessageInbox(value.database);
+    const ingest = async (messageId: string, createTime: number, thread: { rootId?: string; parentId?: string }) => {
+      const [event] = normalizeFeishuMessage({
+        appId: "cli_quote",
+        teamId: "workspace_quote",
+        message: {
+          messageId,
+          chatId: "oc_quote_group",
+          chatType: "group",
+          senderId: "ou_human",
+          content: `@_user_1 ${messageId}`,
+          rawContentType: "text",
+          resources: [],
+          mentions: [{ key: "@_user_1", openId: "ou_bot", name: "Atlas", isBot: true }],
+          mentionAll: false,
+          mentionedBot: true,
+          ...(thread.rootId ? { rootId: thread.rootId } : {}),
+          ...(thread.parentId ? { replyToMessageId: thread.parentId } : {}),
+          createTime,
+          raw: { header: { event_id: `ev_${messageId}`, tenant_key: "workspace_quote" } },
+        },
+      });
+      if (!event) throw new Error("Missing normalized Feishu event");
+      const result = await inbox.ingest(binding.id, 1, event);
+      expect(result.deliveryIds).toHaveLength(1);
+      const [delivery] = await value.database
+        .select({ kind: sessions.kind, threadKey: sessions.threadKey })
+        .from(imMessageDeliveries)
+        .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+        .where(eq(imMessageDeliveries.id, result.deliveryIds[0] as string));
+      expect(delivery).toEqual({ kind: "channel", threadKey: null });
+      const [stored] = await value.database
+        .select()
+        .from(imMessages)
+        .where(eq(imMessages.externalMessageId, messageId));
+      if (!stored) throw new Error(`Inbound ${messageId} was not stored`);
+      return stored;
+    };
+    const root = await ingest("om_quoted_root", Date.parse("2026-09-22T01:00:00.000Z"), {});
+    const quote = await ingest("om_quote", Date.parse("2026-09-22T01:01:00.000Z"), {
+      rootId: "om_quoted_root",
+      parentId: "om_quoted_root",
+    });
+    expect(quote.threadKey).toBeNull();
+
+    // Feishu answers an unthreaded reply with the quote chain's root_id and the target as parent_id.
+    await captureFeishuReply(value.database, binding.id, {
+      messageId: "om_agent_reply",
+      chatId: "oc_quote_group",
+      text: "Answer to the quote reply",
+      rootId: "om_quoted_root",
+      parentId: "om_quote",
+    });
+
+    const service = new TaskService(value.database);
+    const quoteReplies = await service.listReplies(value.bootstrap.userId, quote.id, { limit: 20 });
+    expect(quoteReplies.items.map((item) => item.externalMessageId)).toEqual(["om_agent_reply"]);
+    const rootReplies = await service.listReplies(value.bootstrap.userId, root.id, { limit: 20 });
+    expect(rootReplies.items).toEqual([]);
+    await value.sql.end();
+  });
+
+  it("keeps a native-thread reply stored by the earlier capture, without threadId, in its original root Task", async () => {
+    const value = await accountFixture();
+    const binding = await bind(value.database, value.agent.id, "feishu", "ou_bot");
+    const rootAnchor = await inboundMessage(value.database, {
+      bindingId: binding.id,
+      channelId: "oc_legacy_group",
+      externalMessageId: "om_root",
+      providerContext: { provider: "feishu", chatType: "group" },
+      occurredAt: new Date("2026-09-22T01:00:00.000Z"),
+    });
+    await captureFeishuReply(value.database, binding.id, {
+      messageId: "om_first",
+      chatId: "oc_legacy_group",
+      text: "First thread reply",
+      rootId: "om_root",
+      parentId: "om_root",
+      threadId: "omt_native",
+      createTime: String(Date.parse("2026-09-22T01:01:00.000Z")),
+    });
+    // The row the earlier capture stored for a reply to om_first whose response omitted thread_id and
+    // root_id: thread key and root resolved from the stored parent, but no threadId recorded.
+    await value.database.insert(imMessages).values({
+      imBindingId: binding.id,
+      providerEventId: null,
+      channelId: "oc_legacy_group",
+      externalMessageId: "om_legacy_second",
+      providerRevisionKey: OUTBOUND_CREATED_REVISION_KEY,
+      operation: "created",
+      direction: "outbound",
+      threadKey: "omt_native",
+      replyToExternalId: "om_first",
+      authorKind: "bot",
+      authorExternalId: "ou_bot",
+      authorDisplayName: null,
+      content: { version: 1, fallbackText: "Legacy second reply", blocks: [], truncated: false },
+      providerContext: { provider: "feishu", parentId: "om_first", rootId: "om_root" },
+      occurredAt: new Date("2026-09-22T01:02:00.000Z"),
+      receivedAt: new Date("2026-09-22T01:02:00.000Z"),
+    });
+
+    const service = new TaskService(value.database);
+    const replies = await service.listReplies(value.bootstrap.userId, rootAnchor.id, { limit: 20 });
+    expect(replies.items.map((item) => item.externalMessageId)).toEqual(["om_legacy_second", "om_first"]);
     await value.sql.end();
   });
 

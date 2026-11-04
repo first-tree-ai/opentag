@@ -626,8 +626,10 @@ function inheritParentFeishuContext(
   const parentFeishu = parent.providerContext.provider === "feishu" ? parent.providerContext : undefined;
   const parentChatMode = parentFeishu?.chatMode;
   const parentGroupMessageType = parentFeishu?.groupMessageType;
+  const parentThreadId = parentFeishu?.threadId;
   return {
     ...current,
+    ...(parentThreadId && !current.threadId ? { threadId: parentThreadId } : {}),
     ...(rootId && !current.rootId ? { rootId } : {}),
     ...(parentChatMode && !current.chatMode ? { chatMode: parentChatMode } : {}),
     ...(parentGroupMessageType && !current.groupMessageType ? { groupMessageType: parentGroupMessageType } : {}),
@@ -653,7 +655,9 @@ function parseFeishuSend(event: OutboundCaptureEvent, reply: boolean): OutboundC
     message: {
       channelId: channel.channelId,
       externalMessageId,
-      threadKey: meta.threadId ?? meta.rootId,
+      // Only a real Feishu thread names a thread. Without `thread_id`, `root_id` is the top of a
+      // quote chain, so the reply's topic is resolved from the message it answers instead.
+      threadKey: meta.threadId,
       replyToExternalId: meta.replyToExternalId,
       responseAuthorExternalId: meta.responseAuthorExternalId,
       content: feishuBodyContent(msgType, body, timeSource, event.injectedSessionFooter),
@@ -968,7 +972,9 @@ export class ImOutboundCapture {
     const rootId = parentRootId ?? (parent.threadKey ? null : parent.externalMessageId);
     const providerContext = inheritParentFeishuContext(message.providerContext, parent, rootId);
     return {
-      threadKey: message.threadKey ?? parent.threadKey ?? parentRootId ?? parent.externalMessageId,
+      // An unthreaded reply joins the topic of the message it answers: the parent's own thread when
+      // it has one, otherwise the parent itself. A quote chain's `root_id` never names the topic.
+      threadKey: message.threadKey ?? parent.threadKey ?? parent.externalMessageId,
       providerContext,
     };
   }

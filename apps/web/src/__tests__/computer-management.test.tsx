@@ -31,7 +31,7 @@ describe("Account Computer management", () => {
     const restore = screen.getByRole("link", { name: "Reconnect" });
     expect(restore.getAttribute("href")).toContain(`computerId=${computerId}`);
     fireEvent.click(restore);
-    expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Copy" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Reconnect" })).toBeNull();
     expect(JSON.parse(String(repairRequests()[0]?.[1]?.body))).toEqual({
       mode: "repair",
@@ -76,7 +76,7 @@ describe("Account Computer management", () => {
     expect(JSON.parse(String(repairRequests()[0]?.[1]?.body))).toEqual({ mode: "create" });
     expect(screen.getByRole("heading", { name: "Ada's Mac" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Connect a new computer" })).toBeNull();
-    expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Copy" })).toBeTruthy();
   });
 
   it("starts the connection requested from Agent settings once, then drops the request from the URL", async () => {
@@ -84,7 +84,7 @@ describe("Account Computer management", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
     render(<App />);
     fireEvent.click(await screen.findByRole("link", { name: "Connect a new computer" }));
-    expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Copy" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Ada's Mac" })).toBeTruthy();
     expect(screen.getByRole("link", { name: /Back to/ })).toBeTruthy();
     await waitFor(() => expect(window.location.search).not.toContain("connect="));
@@ -102,8 +102,8 @@ describe("Account Computer management", () => {
     expect(screen.queryByRole("button", { name: "Connect a new computer" })).toBeNull();
     expect(repairRequests()).toHaveLength(0);
     fireEvent.click(connect);
-    expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
-    expect(screen.getByText("Copy the task to your Agent on this computer.")).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Copy" })).toBeTruthy();
+    expect(screen.getByText("Run this in a terminal on this computer, or send it to your Agent there.")).toBeTruthy();
     expect(repairRequests()).toHaveLength(1);
     expect(JSON.parse(String(repairRequests()[0]?.[1]?.body))).toEqual({ mode: "create" });
   });
@@ -196,7 +196,7 @@ describe("Account Computer management", () => {
     openComputer();
     fireEvent.click(await screen.findByRole("button", { name: "Connect computer" }));
     // After redemption the used command is gone and only the connection status remains.
-    await waitFor(() => expect(screen.queryByRole("button", { name: "Copy for Agent" })).toBeNull(), {
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Copy" })).toBeNull(), {
       timeout: 3_000,
     });
     expect(screen.getByText("Waiting for your computer…")).toBeTruthy();
@@ -235,14 +235,14 @@ describe("Account Computer management", () => {
     openComputer();
     fireEvent.click(await screen.findByRole("button", { name: "Restore connection" }));
     const expectAttempt = async () => {
-      if (codeState === "pending") expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
+      if (codeState === "pending") expect(await screen.findByRole("button", { name: "Copy" })).toBeTruthy();
       else expect(await screen.findByText("Waiting for Ada's Mac to reconnect…", {}, { timeout: 3_000 })).toBeTruthy();
     };
     await expectAttempt();
     failed = true;
     fireEvent(window, new Event("focus"));
     expect(await screen.findByText("Status unavailable")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Copy for Agent" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
     expect(screen.queryByText("Offline")).toBeNull();
     failed = false;
     fireEvent(window, new Event("focus"));
@@ -251,7 +251,7 @@ describe("Account Computer management", () => {
     online = true;
     fireEvent(window, new Event("focus"));
     expect(await screen.findByText("Online", {}, { timeout: 3_000 })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Copy for Agent" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
     expect(document.querySelector('[data-ui="computer-recovery"]')).toBeNull();
   });
 
@@ -285,18 +285,16 @@ describe("Account Computer management", () => {
     const restore = await screen.findByRole("button", { name: "Restore connection" });
     // Several offline computers would otherwise each issue a command and lengthen the page.
     expect(screen.getByText("Offline")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Copy for Agent" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
     expect(repairRequests()).toHaveLength(0);
 
     fireEvent.click(restore);
-    expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Copy" })).toBeTruthy();
     expect(repairRequests()).toHaveLength(1);
     expect(screen.queryByText("Offline")).toBeNull();
     expect(screen.queryByRole("button", { name: "Restore connection" })).toBeNull();
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.queryByRole("button", { name: "Get connection help" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Show full instructions" }));
-    expect(screen.getByRole("region", { name: "Restore connection" }).textContent).toContain(computerId);
     const region = screen.getByRole("region", { name: "Restore connection" });
     expect(region.closest('[data-ui="computer-management"]')).toBeTruthy();
     expect(within(region).queryByText("Assistant requested a repair?")).toBeNull();

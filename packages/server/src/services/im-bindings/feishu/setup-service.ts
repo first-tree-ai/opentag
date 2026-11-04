@@ -237,10 +237,18 @@ export class FeishuSetupService {
     if (this.#heartbeatTimer || this.#stopping) return;
     this.#stopped = false;
     this.#heartbeatTimer = setInterval(() => {
-      this.#trackDetached("FEISHU_SETUP_HEARTBEAT_FAILED", this.#heartbeat(), "scheduler");
-      this.#trackDetached("FEISHU_SETUP_SWEEP_FAILED", this.#sweep(), "scheduler");
+      this.#trackDetached("FEISHU_SETUP_HEARTBEAT_FAILED", this.maintainHeartbeat(), "scheduler");
+      this.#trackDetached("FEISHU_SETUP_SWEEP_FAILED", this.maintainSweep(), "scheduler");
     }, this.#timing.ownerHeartbeatMs);
     this.#heartbeatTimer.unref();
+  }
+
+  async maintainHeartbeat(): Promise<void> {
+    await this.#heartbeat();
+  }
+
+  async maintainSweep(): Promise<void> {
+    await this.#sweep();
   }
 
   /**

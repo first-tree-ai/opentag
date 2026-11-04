@@ -40,6 +40,11 @@ export function describeConnectFailure(
         reason: "openTag already has another computer registered with this installation.",
         next: NEW_COMMAND,
       };
+    case "COMPUTER_TARGET_MISMATCH":
+      return {
+        reason: "This command restores a different computer than this one.",
+        next: "Run it on the computer it names in openTag, or connect this one as a new computer.",
+      };
     case "AUTH_USER_SUSPENDED":
       return {
         reason: "The openTag account that issued this code is suspended.",

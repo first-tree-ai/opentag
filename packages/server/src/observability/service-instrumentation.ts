@@ -393,11 +393,28 @@ export function instrumentAppOptions<T extends object>(options: T, perfLogger: P
 const DEFAULT_WORKER_METHODS = [
   "runOnce",
   "runPass",
+  "runJanitorOnce",
+  "runExpiryOnce",
+  "runRetentionOnce",
+  "maintain",
+  "maintainHeartbeat",
+  "maintainSweep",
+  "poll",
+  "reconcile",
   "check",
   "refresh",
   "notifyComputerReady",
   "notifyCloudRunnerReady",
 ] as const;
+
+const WORKER_METHOD_OVERRIDES: Readonly<Record<string, readonly string[]>> = {
+  FeishuSetupService: ["maintainHeartbeat", "maintainSweep"],
+  FeishuConnectionManager: ["maintain"],
+  RuntimeApprovalOwner: ["poll"],
+  CloudModelService: ["reconcile"],
+};
+
+const instrumentedWorkers = new WeakSet<object>();
 
 export function instrumentWorker<T extends object>(
   worker: T | undefined,
@@ -408,8 +425,8 @@ export function instrumentWorker<T extends object>(
   },
 ): T | undefined {
   const perfLogger = options.perfLogger;
-  if (!worker || !perfLogger?.config.enabled || instrumentedServices.has(worker)) return worker;
-  const methods = options.methods ?? DEFAULT_WORKER_METHODS;
+  if (!worker || !perfLogger?.config.enabled || instrumentedWorkers.has(worker)) return worker;
+  const methods = options.methods ?? WORKER_METHOD_OVERRIDES[options.workerName] ?? DEFAULT_WORKER_METHODS;
   const record = worker as Record<string, unknown>;
   for (const methodName of methods) {
     const original = Reflect.get(worker, methodName, worker);
@@ -427,7 +444,7 @@ export function instrumentWorker<T extends object>(
         { fallbackErrorCode: "WORKER_OPERATION_FAILED" },
       );
   }
-  instrumentedServices.set(worker, worker);
+  instrumentedWorkers.add(worker);
   return worker;
 }
 

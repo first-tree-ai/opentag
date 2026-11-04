@@ -76,6 +76,25 @@ fence for the guarantee; mixed old/new writers or rollback reopen the admission-
 
 ## Runtime budget and accepted recovery
 
+Retained-report reconciliation processes one bounded manifest of at most 65 claims
+in one transaction. Empty manifests do no SQL. The transaction locks the live
+Session with `NO KEY UPDATE`, then its placement with `UPDATE` and rechecks the
+Computer and generation. One batched scope JOIN loads only unreported manifest
+deliveries in that Session and locks only those delivery rows, in ascending ID
+order. The JOIN retains the message, Session, placement, binding, Agent and
+Computer identity checks; it does not take row locks on every joined table.
+
+Reported rows are unchanged by a retained claim, including their report owner
+and hash. Exact terminal replays are acknowledged by the normal report path
+without ownership reassignment. For accepted unreported rows, matching Turn,
+dispatch, input hash and generation remain required, and a different non-null
+result hash cannot replace the existing result. Owner/hash fields are updated
+only when they change. Matching unchanged rows still run the existing feedback
+recovery, so a missing or queued target can recover without rewriting delivery
+fields. Pending and expired correlated dispatches retain their atomic batch,
+acceptance and feedback restoration. SQL errors roll back the entire manifest;
+claims do not redispatch input or manufacture a terminal report.
+
 Message retention is an ingress deadline, not an execution budget. A Local or Cloud Client Turn
 uses the explicit `runtime.budget.maxDurationMs`, or the existing 30-minute default when it is
 absent, then takes the smaller of that budget and the remaining message deadline. An explicit

@@ -292,6 +292,68 @@ describe("computer connect", () => {
     expect(await readMachineCredentials(home)).toEqual(credentialsBefore);
   });
 
+  it("stops a repair command on a computer other than the one it restores, before using the code", async () => {
+    const home = await temporaryHome();
+    const computerId = crypto.randomUUID();
+    await runComputerConnect({
+      api: {
+        exchangeComputerConnectCode: vi.fn(async (input: { installationId: string }) => ({
+          computerId,
+          installationId: input.installationId,
+          machineToken: `otmc_${crypto.randomUUID()}.${"a".repeat(43)}`,
+        })),
+      },
+      code: "valid-code",
+      home,
+      noStart: true,
+      serverUrl: "https://opentag.example",
+    });
+    const exchange = vi.fn();
+
+    await expect(
+      runComputerConnect({
+        api: { exchangeComputerConnectCode: exchange },
+        code: "repair-code",
+        home,
+        noStart: true,
+        serverUrl: "https://opentag.example",
+        expectedComputerId: crypto.randomUUID(),
+      }),
+    ).rejects.toMatchObject({ code: "COMPUTER_TARGET_MISMATCH" });
+    expect(exchange).not.toHaveBeenCalled();
+
+    // The named Computer, or a home whose identity is gone, proceeds.
+    const same = vi.fn(async (input: { installationId: string }) => ({
+      computerId,
+      installationId: input.installationId,
+      machineToken: `otmc_${crypto.randomUUID()}.${"b".repeat(43)}`,
+    }));
+    await runComputerConnect({
+      api: { exchangeComputerConnectCode: same },
+      code: "repair-code",
+      home,
+      noStart: true,
+      serverUrl: "https://opentag.example",
+      expectedComputerId: computerId,
+    });
+    expect(same).toHaveBeenCalledOnce();
+    const fresh = await temporaryHome();
+    const unknown = vi.fn(async (input: { installationId: string }) => ({
+      computerId,
+      installationId: input.installationId,
+      machineToken: `otmc_${crypto.randomUUID()}.${"c".repeat(43)}`,
+    }));
+    await runComputerConnect({
+      api: { exchangeComputerConnectCode: unknown },
+      code: "repair-code",
+      home: fresh,
+      noStart: true,
+      serverUrl: "https://opentag.example",
+      expectedComputerId: computerId,
+    });
+    expect(unknown).toHaveBeenCalledOnce();
+  });
+
   it("restarts an active daemon after storing a machine credential without requiring Account login", async () => {
     const home = await temporaryHome();
     const manager = managerFixture();

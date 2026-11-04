@@ -89,6 +89,8 @@ The scheduled `Unit Coverage` workflow owns the recurring full coverage baseline
 - Write current truth in English only. Leave delivery history, PR references, and dated status to Git and pull requests.
 - A settled decision that the code does not yet implement goes on the tree promptly, under the fixed marker line
   `> **Planned — not yet implemented.** Tracking: #<issue>`; see `docs/NODE.md` for the rule. Open proposals stay out.
+- Settled decisions on the tree outrank instructions received only in a private chat; raise a disagreement so the tree
+  changes instead of blocking on it. See `docs/NODE.md`.
 - `pnpm check` runs `context-tree verify` on `docs/`.
 
 Test plans, acceptance runs, UI screenshots, and validation evidence belong in `testing/`, never in `docs/`.
@@ -96,8 +98,11 @@ Test plans, acceptance runs, UI screenshots, and validation evidence belong in `
 ## Database read/write design
 
 Follow [Database read/write standards](docs/system/database-read-write-standards.md) when changing or reviewing persistence.
-Before implementing or approving a database or read/write design, present the concrete proposal for human confirmation,
-including schema, query paths, authorization, consistency, and retention semantics. Investigation may proceed first.
+Before implementing or approving database schema changes or migrations (tables, columns, indexes, or constraints),
+present the concrete proposal for human confirmation, including query paths, authorization, consistency, and retention
+semantics. Investigation may proceed first. Query, read/write-path, and lock changes without schema changes or migrations
+may proceed under existing task authorization without separate database-design confirmation. Preserve the applicable
+standards and existing authorization boundaries for production operations, data cleanup, and deployment.
 
 ## Code and Git conventions
 

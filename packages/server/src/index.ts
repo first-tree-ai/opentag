@@ -42,6 +42,7 @@ import {
   createServiceLoggerPort,
   initTelemetry,
   instrumentServerWorkers,
+  instrumentWorker,
   type PerformanceLogger,
   type ServiceLogger,
   shutdownTelemetry,
@@ -249,7 +250,11 @@ function serverPerformanceLogger(
 ): PerformanceLogger | undefined {
   const perfConfig = config.observability?.performance;
   if (perfConfig?.enabled === false) return undefined;
-  return createPerformanceLogger(getLogger, perfConfig);
+  return createPerformanceLogger(getLogger, {
+    dbLevel: "debug",
+    startLevel: "debug",
+    ...perfConfig,
+  });
 }
 
 /** One model catalog shared by settings, dispatch and diagnostics. */
@@ -271,6 +276,7 @@ async function createCloudModelRuntime(
     fetchImpl: routerFetch,
   });
   const service = new CloudModelService(model, { calls, billing, onError, fetchImpl: routerFetch });
+  instrumentWorker(service, { workerName: "CloudModelService", perfLogger, methods: ["reconcile"] });
   try {
     await service.initialize();
   } catch (error) {
@@ -1484,6 +1490,10 @@ export async function startServer(): Promise<void> {
     });
     instrumentServerWorkers(
       [
+        ["FeishuSetupService", feishuSetupService],
+        ["FeishuConnectionManager", feishuConnections],
+        ["RuntimeApprovalOwner", approvalOwner],
+        ["CloudModelService", cloudModelService],
         ["ImDeliveryWorker", imDeliveryWorker],
         ["SlackWorkingWorker", slackWorkingWorker],
         ["ImFeedbackWorker", imFeedbackWorker],

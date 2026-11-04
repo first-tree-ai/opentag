@@ -221,7 +221,8 @@ const EncryptionKeyRingSchema = z
 
 const ServerLogLevelSchema = z.enum(["trace", "debug", "info", "warn", "error", "fatal", "silent"]).default("info");
 export type ServerLogLevel = z.infer<typeof ServerLogLevelSchema>;
-const PerformanceLogLevelSchema = z.enum(["debug", "info", "warn"]).default("debug");
+const PerformanceLogLevelValueSchema = z.enum(["debug", "info", "warn"]);
+const PerformanceLogLevelSchema = PerformanceLogLevelValueSchema.default("debug");
 
 function validateMcpGoogleClientPair(
   value: {
@@ -396,6 +397,8 @@ const ServerEnvironmentSchema = z
     OPENTAG_LOG_LEVEL: ServerLogLevelSchema,
     OPENTAG_PERF_LOG_ENABLED: booleanString("true"),
     OPENTAG_PERF_LOG_LEVEL: PerformanceLogLevelSchema,
+    OPENTAG_PERF_DB_LOG_LEVEL: PerformanceLogLevelValueSchema.optional(),
+    OPENTAG_PERF_START_LOG_LEVEL: PerformanceLogLevelValueSchema.optional(),
     OPENTAG_PERF_SLOW_THRESHOLD_MS: z.coerce.number().int().min(1).default(1_000),
     /*
      * The single overall Cloud switch. Off by default; enabling requires a valid storage prefix and
@@ -972,6 +975,8 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_LOG_LEVEL: environment.OPENTAG_LOG_LEVEL,
     OPENTAG_PERF_LOG_ENABLED: environment.OPENTAG_PERF_LOG_ENABLED,
     OPENTAG_PERF_LOG_LEVEL: environment.OPENTAG_PERF_LOG_LEVEL,
+    OPENTAG_PERF_DB_LOG_LEVEL: emptyToUndefined(environment.OPENTAG_PERF_DB_LOG_LEVEL),
+    OPENTAG_PERF_START_LOG_LEVEL: emptyToUndefined(environment.OPENTAG_PERF_START_LOG_LEVEL),
     OPENTAG_PERF_SLOW_THRESHOLD_MS: environment.OPENTAG_PERF_SLOW_THRESHOLD_MS,
     OPENTAG_CLOUD_IDENTITIES_ENABLED: environment.OPENTAG_CLOUD_IDENTITIES_ENABLED,
     OPENTAG_CLOUD_STORAGE_BASE: emptyToUndefined(environment.OPENTAG_CLOUD_STORAGE_BASE),
@@ -1064,6 +1069,8 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
         enabled: parsed.OPENTAG_PERF_LOG_ENABLED,
         level: parsed.OPENTAG_PERF_LOG_LEVEL,
         slowThresholdMs: parsed.OPENTAG_PERF_SLOW_THRESHOLD_MS,
+        ...(parsed.OPENTAG_PERF_DB_LOG_LEVEL ? { dbLevel: parsed.OPENTAG_PERF_DB_LOG_LEVEL } : {}),
+        ...(parsed.OPENTAG_PERF_START_LOG_LEVEL ? { startLevel: parsed.OPENTAG_PERF_START_LOG_LEVEL } : {}),
       },
     },
     port: parsed.OPENTAG_PORT,

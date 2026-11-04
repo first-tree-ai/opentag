@@ -3,7 +3,7 @@ import { agentRuntimeOptionsPath, RUNTIME_CAPABILITY } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import { createApp } from "../app.js";
-import { AgentRuntimeOptionsOwner } from "../runtime/agent-runtime-options-owner.js";
+import { AgentRuntimeOptionsOwner, isRuntimeOptionsAbortError } from "../runtime/agent-runtime-options-owner.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import { AgentRuntimeOptionsService } from "../services/agents/agent-runtime-options-service.js";
 import { AgentServiceError } from "../services/agents/errors.js";
@@ -122,13 +122,20 @@ describe("Agent runtime options", () => {
     const controller = new AbortController();
     const promise = f.owner.start(f.input, controller.signal);
     controller.abort();
-    await expect(promise).rejects.toMatchObject({ statusCode: 503 });
+    await expect(promise).rejects.toSatisfy(
+      (error) => isRuntimeOptionsAbortError(error) && (error as AgentServiceError).statusCode === 503,
+    );
     expect(f.frames[1]).toMatchObject({ type: "agent-runtime:options:cancel" });
     const preAborted = new AbortController();
     preAborted.abort();
     const preAbortedPromise = f.owner.start(f.input, preAborted.signal);
     await expect(preAbortedPromise).rejects.toBeInstanceOf(AgentServiceError);
-    await expect(preAbortedPromise).rejects.toMatchObject({ statusCode: 503, code: "SERVICE_UNAVAILABLE" });
+    await expect(preAbortedPromise).rejects.toSatisfy(
+      (error) =>
+        isRuntimeOptionsAbortError(error) &&
+        (error as AgentServiceError).statusCode === 503 &&
+        (error as AgentServiceError).code === "SERVICE_UNAVAILABLE",
+    );
     expect(f.frames).toHaveLength(2);
   });
 
@@ -202,7 +209,7 @@ describe("Agent runtime options", () => {
     expect(f.frames).toHaveLength(1);
   });
 
-  it("cancels in-flight Computer queries without logging a 503 Request failed error when the HTTP client aborts, while preserving 503/504 for connected clients", async () => {
+  it("cancels in-flight Computer queries without logging a 503 Request failed error when the HTTP client aborts, while preserving independent server failure logs and 503/504 for connected clients", async () => {
     const f = await fixture();
     const chunks: string[] = [];
     const authService = {
@@ -218,33 +225,66 @@ describe("Agent runtime options", () => {
       loggerStream: { write: (chunk) => chunks.push(String(chunk)) },
     });
     apps.push(app);
-    let rawRequest: { aborted?: boolean; emit(event: string): boolean } | undefined;
-    app.addHook("onRequest", async (request) => {
-      rawRequest = request.raw;
+    let rawReply: { destroyed: boolean } | undefined;
+    app.addHook("onRequest", async (_request, reply) => {
+      rawReply = reply.raw;
     });
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    const url = `${address}${agentRuntimeOptionsPath(agentId)}`;
 
-    const abortedResponse = app.inject({
-      method: "GET",
-      url: agentRuntimeOptionsPath(agentId),
+    const cancelController = new AbortController();
+    const cancelledFetch = fetch(url, {
       headers: { authorization: "Bearer test" },
+      signal: cancelController.signal,
     });
     await vi.waitFor(() => expect(f.frames).toHaveLength(1));
-    if (!rawRequest) throw new Error("Expected request.raw to be captured");
-    rawRequest.aborted = true;
-    rawRequest.emit("aborted");
+    cancelController.abort();
+    await expect(cancelledFetch).rejects.toThrow();
+    await vi.waitFor(() =>
+      expect(f.frames[1]).toMatchObject({
+        type: "agent-runtime:options:cancel",
+        requestId: f.frames[0]?.requestId,
+      }),
+    );
+    const errorLogsAfterCancel = () =>
+      chunks
+        .flatMap((chunk) => chunk.trim().split("\n"))
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { err?: { message?: string }; level?: number; msg?: string })
+        .filter((record) => record.level === 50 && record.msg === "Request failed");
+    expect(errorLogsAfterCancel()).toEqual([]);
 
-    const abortedResult = await abortedResponse;
-    expect(abortedResult.statusCode).toBe(499);
-    expect(f.frames[1]).toMatchObject({
-      type: "agent-runtime:options:cancel",
-      requestId: f.frames[0]?.requestId,
+    let enterBarrier: (() => void) | undefined;
+    const enteredBarrier = new Promise<void>((resolve) => {
+      enterBarrier = resolve;
     });
-    const errorLogs = chunks
-      .flatMap((chunk) => chunk.trim().split("\n"))
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as { level?: number; msg?: string })
-      .filter((record) => record.level === 50 && record.msg === "Request failed");
-    expect(errorLogs).toEqual([]);
+    let failBarrier: ((error: Error) => void) | undefined;
+    vi.mocked(f.agents.getConfigById).mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          enterBarrier?.();
+          failBarrier = reject;
+        }),
+    );
+    const storageAbortController = new AbortController();
+    const disconnectedStorageFetch = fetch(url, {
+      headers: { authorization: "Bearer test" },
+      signal: storageAbortController.signal,
+    });
+    await enteredBarrier;
+    storageAbortController.abort();
+    await expect(disconnectedStorageFetch).rejects.toThrow();
+    await vi.waitFor(() => expect(rawReply?.destroyed).toBe(true));
+    failBarrier?.(new Error("storage invariant failed"));
+    await vi.waitFor(() =>
+      expect(errorLogsAfterCancel()).toEqual([
+        expect.objectContaining({
+          level: 50,
+          msg: "Request failed",
+          err: expect.objectContaining({ message: "storage invariant failed" }),
+        }),
+      ]),
+    );
 
     const timed = await fixture(true, 20);
     const timedApp = createApp({

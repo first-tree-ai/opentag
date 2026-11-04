@@ -32,6 +32,12 @@ Sparse snapshots are conservatively preserved: the in-process verifier does not 
 intentionally unmaterialized tracked files as proof that a snapshot is clean. Their
 full Git index, cache, and any isolated write sessions remain available after restore.
 
+> **Planned — not yet implemented.** Tracking: #1259
+
+Context Tree repository caches and snapshots are always kept in the archive, replacing the omission
+of reconstructable read-only caches above. Treeless partial clones keep them to a few megabytes,
+and a restored cache lets an Agent's first sync fetch only new commits.
+
 Gateway write routing hints (`{id, source}` only) live in
 `.opentag/context-tree/command-sessions` inside the workspace. Fresh Runner hosts and rebinding
 recover them with the CLI session/draft; host routing files are dispensable. UUID, 4-KiB, schema,

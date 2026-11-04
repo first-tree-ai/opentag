@@ -131,21 +131,22 @@ Credentials come from the current execution and are never stored there.
 
 > **Planned — not yet implemented.** Tracking: #1259
 
-This replaces the lifetime caching of ready results and the snapshot path in the managed system
-prompt described above. The cross-host sync contract and the CLI's fetch freshness window are
-recorded in the team Context Tree; OpenTag follows the same contract as Claude Code and Codex.
+This replaces OpenTag's own sync at Agent start, the lifetime caching of ready results, and the
+snapshot path in the managed system prompt described above. The cross-host sync contract and the
+CLI's treeless cache, parallel fetch, and fetch freshness window are recorded in the team Context
+Tree; OpenTag follows the same contract as Claude Code and Codex.
 
+- OpenTag does not sync when it starts an Agent, in the foreground or background. Preparation
+  writes the project configuration, the `context-tree` shim, the packaged Skills, and the managed
+  GitHub transport.
 - The managed system prompt names the connected trees (selector and project path) and the rule to
   read Context through the `context-tree-read` skill. It carries no snapshot path or commit SHA,
   because those change with every new revision and would invalidate the provider's prompt cache.
-- Agents obtain the current snapshot with `context-tree sync` at task boundaries, as the skill
-  states, and reuse one `treeRoot` within a task.
-- Each Turn runs `context-tree sync --offline` (about 0.2 seconds) to verify the snapshot and record
-  its use. When the last networked refresh of a workspace is older than five minutes, a networked
-  refresh starts in the background and does not delay the Turn; a later sync within the CLI's
-  freshness window returns that revision without network work.
-- A ready result is no longer reused for the client's lifetime. Stale and unavailable results keep
-  their current reporting and retry cooldown.
+- Agents run `context-tree sync` at task boundaries, as the skill states, through the same command
+  gateway on Local and Cloud, and reuse the returned `treeRoot` within the task. Writes keep using
+  `context-tree write prepare` and `write finish` through that gateway.
+- Cloud workspace persistence keeps the Context Tree repository caches and snapshots; see
+  [Cloud workspace persistence](../cloud/cloud-workspace-persistence.md).
 
 ## Authorization and writes
 

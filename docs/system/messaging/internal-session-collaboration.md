@@ -130,7 +130,9 @@ Server tells the Session that created it (`created_by_session_id`):
   that ack only after the notice has a final answer (or the three attempts are spent), and only on the
   still-current connection. If the Runner detaches or the Server stops first, the settlement stays journaled; the
   Runner replays it to the next connection, which commits it as `already_recorded` and notifies again under the same
-  notice ID. The wait runs outside the Runner's frame handling.
+  notice ID. The wait runs outside the Runner's frame handling. Until that ack reaches the exact connection, the
+  settling allocation stays in the Sandbox reclaim barrier, so idle reclamation or borrow cannot delete the journal;
+  see [Cloud context](../cloud/cloud-context.md).
 
 The notice is an ordinary SessionMessage from the child to its creator. It uses the existing authorization, lock order,
 activity projection, and delivery, including the visible-Session callback rules. A visible creator's callback Run

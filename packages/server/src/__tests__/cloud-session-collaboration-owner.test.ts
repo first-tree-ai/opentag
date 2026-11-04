@@ -958,7 +958,20 @@ describe("CloudSessionCollaborationOwner", () => {
     // the notice is in flight; a replay on the same connection does not start a second notice.
     await stack.owner.handleSettled(first.connection, settled);
     await vi.waitFor(() => expect(notifyRunOutcome).toHaveBeenCalledOnce());
-    await expect(stack.owner.hasUnsettledSessionWork({ sessionId: fixture.sessionId })).resolves.toBe(false);
+    // The durable row is terminal, but the withheld ack leaves the Runner journal as the only
+    // replay owner: the exact allocation stays an idle/borrow reclaim barrier.
+    const barrier = () =>
+      stack.owner.hasUnsettledSessionWork({ allocation: fixture.scope, sessionId: fixture.sessionId });
+    await expect(barrier()).resolves.toBe(true);
+    await expect(stack.owner.hasUnsettledSessionWork({ sessionId: fixture.sessionId })).resolves.toBe(true);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(true);
+    // Custody is allocation-scoped: it never pins a replacement allocation of the same Sandbox.
+    await expect(
+      stack.owner.hasUnsettledSessionWork({
+        allocation: { ...fixture.scope, environmentGeneration: fixture.scope.environmentGeneration + 1 },
+        sessionId: fixture.sessionId,
+      }),
+    ).resolves.toBe(false);
     await stack.owner.handleSettled(first.connection, settled);
     expect(notifyRunOutcome).toHaveBeenCalledOnce();
     expect(acks(first.sent)).toEqual([]);
@@ -977,11 +990,16 @@ describe("CloudSessionCollaborationOwner", () => {
       ),
     );
     expect(acks(first.sent)).toEqual([]);
+    // The notice is final but its ack never reached a Runner: the journal on this allocation still
+    // owns replay, so the barrier survives the detach.
+    await expect(barrier()).resolves.toBe(true);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(true);
 
     // The replay on the next connection notifies again under that connection and only then acks.
     const second = await attachRunner(stack, fixture);
     await stack.owner.handleSettled(second.connection, settled);
     await vi.waitFor(() => expect(notifyRunOutcome).toHaveBeenCalledTimes(2));
+    await expect(barrier()).resolves.toBe(true);
     expect(notifyRunOutcome).toHaveBeenLastCalledWith(
       expect.objectContaining({
         messageId,
@@ -995,6 +1013,34 @@ describe("CloudSessionCollaborationOwner", () => {
         expect.objectContaining({ messageId, status: "already_recorded", turnId: `turn-${messageId}` }),
       ]),
     );
+    // The replayed settlement's final ack was handed to the exact Runner: custody is released.
+    await expect(barrier()).resolves.toBe(false);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
+    await stack.owner.close();
+  });
+
+  it("never holds a reclaim barrier for a settlement that cannot commit", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    const stack = makeStack(fixture);
+    const notifyRunOutcome = vi.fn(async () => "notified" as const);
+    stack.owner.setRunOutcomeNotifier({ notifyRunOutcome });
+    const attach = await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "accepted",
+    });
+    await stack.owner.handleSettled(attach.connection, settleFrame(messageId, "failed"));
+    await vi.waitFor(() =>
+      expect(attach.sent).toContainEqual(expect.objectContaining({ messageId, type: "session:message:settled:ack" })),
+    );
+    // A conflicting outcome for the terminal record is neither acked nor left as custody.
+    await stack.owner.handleSettled(attach.connection, settleFrame(messageId, "unknown"));
+    expect(attach.sent.filter((frame) => frame.type === "session:message:settled:ack")).toHaveLength(1);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
+    await expect(
+      stack.owner.hasUnsettledSessionWork({ allocation: fixture.scope, sessionId: fixture.sessionId }),
+    ).resolves.toBe(false);
     await stack.owner.close();
   });
 
@@ -1045,12 +1091,17 @@ describe("CloudSessionCollaborationOwner", () => {
         expect.any(String),
       ),
     );
-    // The bounded attempts are spent, so the settlement is finally acked and retired.
+    // The bounded attempts are spent, so the settlement is finally acked and retired, which also
+    // releases the allocation's reclaim barrier.
     await vi.waitFor(() =>
       expect(attach.sent).toContainEqual(
         expect.objectContaining({ messageId: failedId, type: "session:message:settled:ack" }),
       ),
     );
+    await expect(
+      stack.owner.hasUnsettledSessionWork({ allocation: fixture.scope, sessionId: fixture.sessionId }),
+    ).resolves.toBe(false);
+    expect(stack.owner.isSandboxBusy(fixture.scope)).toBe(false);
     await stack.owner.close();
   });
 

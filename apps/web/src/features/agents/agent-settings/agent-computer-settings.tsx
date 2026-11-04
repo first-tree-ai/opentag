@@ -44,11 +44,7 @@ export function AgentComputerSettings({
   const actionLabel = computerActionLabel(connection);
   return (
     <div className="grid w-full min-w-0 max-w-3xl gap-8 wrap-anywhere">
-      <AgentSettingsPageHeader
-        description={m.agent_settings_computer_description()}
-        id="computer-heading"
-        title={m.agents_status_computer()}
-      />
+      <AgentSettingsPageHeader id="computer-heading" title={m.agents_status_computer()} />
       {agent.computer ? (
         <section aria-label={m.computer_agent_location()} className="grid gap-4">
           <ComputerIdentity

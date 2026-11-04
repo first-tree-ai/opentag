@@ -182,6 +182,7 @@ function serviceFixture(
   const targetInstallationId = randomUUID();
   const instanceId = randomUUID();
   const source: SessionCliSourceContext = {
+    proofId: crypto.randomUUID(),
     agentId,
     computerId: randomUUID(),
     connectionInstanceId: randomUUID(),

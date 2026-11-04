@@ -218,12 +218,36 @@ function diagnosticErrorText(safe: DiagnosticEnvelope): { message: string; stack
   const stack = typeof error?.stack === "string" && error.stack ? { stack: error.stack } : {};
   const dedupe = safe.code === "resource_load_failed" ? { dedupeKey: safe.code } : {};
   if (typeof error?.message === "string" && error.message) return { message: error.message, ...stack, ...dedupe };
-  if (typeof safe.resourcePath !== "string") return { message: safe.code, ...dedupe };
-  /*
-   * A stale client after a deploy hunts for every chunk hash that no longer exists; one relayed
-   * report per cooldown says that, one per path would only say it louder.
-   */
-  return { message: `${safe.code}: ${safe.resourcePath}`, dedupeKey: safe.code };
+  if (typeof safe.resourcePath === "string") {
+    /*
+     * A stale client after a deploy hunts for every chunk hash that no longer exists; one relayed
+     * report per cooldown says that, one per path would only say it louder.
+     */
+    return { message: `${safe.code}: ${safe.resourcePath}`, dedupeKey: safe.code };
+  }
+  if (typeof safe.routeTemplate === "string" && safe.routeTemplate) {
+    const issueSummary = formatDiagnosticIssues(safe.issues);
+    const message = issueSummary
+      ? `${safe.code}: ${safe.routeTemplate} (${issueSummary})`
+      : `${safe.code}: ${safe.routeTemplate}`;
+    return { message, dedupeKey: `${safe.code}:${safe.routeTemplate}` };
+  }
+  return { message: safe.code, ...dedupe };
+}
+
+function formatDiagnosticIssues(issues: unknown): string {
+  if (!Array.isArray(issues)) return "";
+  return issues
+    .slice(0, 3)
+    .flatMap((entry) => {
+      if (!entry || typeof entry !== "object") return [];
+      const rawPath = (entry as { path?: unknown }).path;
+      const path = Array.isArray(rawPath) ? rawPath.map(String).join(".") : typeof rawPath === "string" ? rawPath : "";
+      const rawCode = (entry as { code?: unknown }).code;
+      const code = typeof rawCode === "string" && rawCode ? rawCode : "invalid";
+      return [`${path || "<root>"}:${code}`];
+    })
+    .join(", ");
 }
 
 /**
@@ -244,12 +268,7 @@ export function installWindowDiagnosticHandlers(
   ): boolean => {
     if (!resourcePath?.startsWith("/assets/")) return false;
     const now = reporter.readNow();
-    if (
-      reloadSource !== undefined &&
-      reloadSource !== source &&
-      now >= reloadAt &&
-      now - reloadAt < STALE_ASSET_UNLOAD_GRACE_MS
-    ) {
+    if (reloadSource !== undefined && now >= reloadAt && now - reloadAt < STALE_ASSET_UNLOAD_GRACE_MS) {
       if (source === "preload") preloadReloadUnloading = true;
       return true;
     }

@@ -42,6 +42,7 @@ import {
   createServiceLoggerPort,
   initTelemetry,
   instrumentServerWorkers,
+  instrumentWorker,
   type PerformanceLogger,
   type ServiceLogger,
   shutdownTelemetry,
@@ -49,7 +50,7 @@ import {
 import { createPlatformRuntime } from "./platform-runtime.js";
 import { AgentRuntimeOptionsOwner } from "./runtime/agent-runtime-options-owner.js";
 import { AgentRuntimeTestOwner } from "./runtime/agent-runtime-test-owner.js";
-import { type AgentSessionStopDependencies, stopAgentSessions } from "./runtime/agent-session-stopper.js";
+import { stopCloudThenLocalAgentSessions } from "./runtime/agent-session-stopper.js";
 import { loadApprovalAuthority } from "./runtime/approval-authority.js";
 import { ApprovalMessenger } from "./runtime/approval-messenger.js";
 import { PostgresApprovalStore } from "./runtime/approval-store.js";
@@ -72,19 +73,12 @@ import {
   AgentRuntimeTestService,
   AgentSelfService,
   AgentService,
-  type AgentSessionStopTarget,
   AgentSetupService,
   CloudAgentRuntimeTester,
   DatabaseAgentOwnerResolver,
 } from "./services/agents/index.js";
 import { SlackAutoSetupService } from "./services/agents/slack-auto-setup-service.js";
-import {
-  AuthService,
-  ConnectCodeService,
-  DevBrowserAuthService,
-  formatStartupError,
-  PostAuthenticationService,
-} from "./services/auth/index.js";
+import { AuthService, ConnectCodeService, DevBrowserAuthService, formatStartupError } from "./services/auth/index.js";
 import { createChannelTargetPoller } from "./services/channel-target/index.js";
 import { loadCloudBilling } from "./services/cloud-billing-module.js";
 import { CloudCallStore } from "./services/cloud-call-store.js";
@@ -96,7 +90,6 @@ import { ComputerService, MachineAuthService } from "./services/computers/index.
 import { ApplicationCipher } from "./services/crypto.js";
 import { AgentGitHubCredentialService } from "./services/github/agent-github-credential-service.js";
 import { GitHubApiClient } from "./services/github/github-api-client.js";
-import { GitHubExecutionCredentials } from "./services/github-proxy/execution-credentials.js";
 import { ExternalCallPolicy } from "./services/im/external-call-policy.js";
 import { ImFeedbackActionsService } from "./services/im/im-feedback-actions.js";
 import { handleFeishuFeedbackAction } from "./services/im/im-feedback-callback.js";
@@ -155,7 +148,7 @@ import { AccountSetupService } from "./services/setup/index.js";
 import { S3SkillObjectStore, SkillObjectGc, SkillPresetService, SkillService } from "./services/skills/index.js";
 import { RemoteSkillService } from "./services/skills/source/remote-skill-service.js";
 import { TaskService } from "./services/tasks/index.js";
-import { closeServerResources } from "./shutdown.js";
+import { closeServerResources, startClosingServerResources } from "./shutdown.js";
 import { defaultWebAppRoot } from "./web-app.js";
 
 export { bootstrapInitialAdmin } from "./admin/bootstrap.js";
@@ -257,7 +250,11 @@ function serverPerformanceLogger(
 ): PerformanceLogger | undefined {
   const perfConfig = config.observability?.performance;
   if (perfConfig?.enabled === false) return undefined;
-  return createPerformanceLogger(getLogger, perfConfig);
+  return createPerformanceLogger(getLogger, {
+    dbLevel: "debug",
+    startLevel: "debug",
+    ...perfConfig,
+  });
 }
 
 /** One model catalog shared by settings, dispatch and diagnostics. */
@@ -279,6 +276,7 @@ async function createCloudModelRuntime(
     fetchImpl: routerFetch,
   });
   const service = new CloudModelService(model, { calls, billing, onError, fetchImpl: routerFetch });
+  instrumentWorker(service, { workerName: "CloudModelService", perfLogger, methods: ["reconcile"] });
   try {
     await service.initialize();
   } catch (error) {
@@ -350,57 +348,6 @@ function workerCloudOptions(
   };
 }
 
-/** Surface non-cancelled stop outcomes without turning a best-effort cancel into a hard failure. */
-function reportCloudStopOutcomes(
-  outcomes: Awaited<ReturnType<CloudDeliveryOwner["cancelSessionDeliveries"]>>,
-  onDiagnostic?: (code: string) => void,
-): void {
-  for (const outcome of outcomes) {
-    // A cancelled owning turn needs no diagnostic; a lost socket or a failed frame send stays
-    // explicitly visible instead of being swallowed as "best effort".
-    if (outcome.status === "cancelled") continue;
-    onDiagnostic?.(
-      outcome.status === "no_connection" ? "CLOUD_DELIVERY_STOP_NO_CONNECTION" : "CLOUD_DELIVERY_STOP_SEND_FAILED",
-    );
-  }
-}
-
-/**
- * Explicit Session stop for Cloud Sessions cancels the in-flight Cloud turn on its owning Runner
- * (best-effort; the cancellation report still flows through the durable report path) before the
- * Local reconcile-based stop runs. Cloud cancel failures never block the Local stop path.
- */
-async function stopCloudThenLocalAgentSessions(
-  database: DatabaseClient,
-  targets: AgentSessionStopTarget[],
-  cloudDelivery: CloudDeliveryOwner | undefined,
-  dependencies: AgentSessionStopDependencies,
-  onDiagnostic?: (code: string) => void,
-  cloudSession?: CloudSessionCollaborationOwner,
-): Promise<void> {
-  if (cloudDelivery) {
-    for (const target of targets) {
-      try {
-        reportCloudStopOutcomes(await cloudDelivery.cancelSessionDeliveries(target.sessionId), onDiagnostic);
-      } catch {
-        // The cancel path itself failed; Local stop and Runner scope invalidation still proceed.
-        onDiagnostic?.("CLOUD_DELIVERY_STOP_FAILED");
-      }
-    }
-  }
-  for (const target of targets) {
-    try {
-      const outcomes = await cloudSession?.cancelSessionMessages(target.sessionId);
-      for (const outcome of outcomes ?? []) {
-        if (outcome.status !== "requested") onDiagnostic?.("CLOUD_SESSION_STOP_UNCONFIRMED");
-      }
-    } catch {
-      onDiagnostic?.("CLOUD_SESSION_STOP_FAILED");
-    }
-  }
-  await stopAgentSessions(database, targets, dependencies);
-}
-
 function cloudSessionAuthorityOptions(
   fence: CloudRuntimeFence | undefined,
   credentials: Parameters<typeof createCloudDeliveryComposition>[0]["credentialOwner"],
@@ -424,7 +371,6 @@ function createContextTreeServices(
         management: github.management,
         api: github.api,
         computerKind,
-        credentials: new GitHubExecutionCredentials(github.management),
       })
     : undefined;
   return {
@@ -462,11 +408,12 @@ function createSkillRuntime(
   config: ServerConfig,
   database: DatabaseClient,
   logger: ServiceLogger,
+  proofs: SessionCliProofService,
   perfLogger?: PerformanceLogger,
 ): { service: SkillService; remote: RemoteSkillService; preset: SkillPresetService; gc?: SkillObjectGc } {
   const storage = config.skillStorage;
   if (!storage.enabled) {
-    const service = new SkillService({ database, keyPrefix: "skills", logger });
+    const service = new SkillService({ database, keyPrefix: "skills", logger, proofs });
     return {
       service,
       remote: new RemoteSkillService({ skills: service, logger, performanceLogger: perfLogger }),
@@ -485,7 +432,7 @@ function createSkillRuntime(
     logger,
     fetch: createInstrumentedFetch(perfLogger, { provider: "s3-skills" }),
   });
-  const service = new SkillService({ database, store, keyPrefix: storage.prefix, logger });
+  const service = new SkillService({ database, store, keyPrefix: storage.prefix, logger, proofs });
   const remote = new RemoteSkillService({ skills: service, logger, performanceLogger: perfLogger });
   const preset = new SkillPresetService({ skills: service, logger });
   if (storage.gcIntervalSeconds <= 0) return { service, remote, preset };
@@ -634,10 +581,22 @@ export function installProcessFatalHandlers(
 export async function startServer(): Promise<void> {
   const readiness = new BootstrapReadiness();
   let app: ReturnType<typeof createApp> | undefined;
+  const shutdown = new AbortController();
+  let listenAttempt: Promise<unknown> | undefined;
   const uninstallFatalHandlers = installProcessFatalHandlers(() => app?.log);
   let databaseSql: ReturnType<typeof createDatabaseClient>["sql"] | undefined;
   let cloudBilling: CloudBilling | undefined;
   let cloudModelService: CloudModelService | undefined;
+  let databaseProbe: ReturnType<typeof createDedicatedDatabaseReadinessProbe> | undefined;
+  let sharedCleanup: Promise<void> | undefined;
+  const closeSharedResources = () => {
+    sharedCleanup ??= closeServerResources([
+      ["database readiness probe", () => databaseProbe?.close()],
+      ["database pool", () => databaseSql?.end({ timeout: DATABASE_CLOSE_TIMEOUT_SECONDS })],
+      ["telemetry", () => shutdownTelemetry()],
+    ]);
+    return sharedCleanup;
+  };
   const knownSecrets: string[] = collectKnownSecrets(process.env);
   const reportDiagnostic = createServerDiagnosticReporter(() => app?.log);
   const serviceLogger = (module: string) => createServiceLoggerPort(() => app?.log, module);
@@ -672,7 +631,7 @@ export async function startServer(): Promise<void> {
       deadlineMs: DATABASE_READINESS_TIMEOUT_MS,
       log: { debug: (fields, message) => app?.log.debug(fields, message) },
     });
-    const postAuthentication = new PostAuthenticationService(database);
+    databaseProbe = databaseReadinessProbe;
     const imCallPolicy = new ExternalCallPolicy({
       allowedHosts: ["slack.com", "files.slack.com", "open.feishu.cn", "open.larksuite.com"],
       maxConcurrency: 16,
@@ -699,9 +658,6 @@ export async function startServer(): Promise<void> {
     });
     const dev = config.devAuth ? new DevBrowserAuthService(database, config.devAuth.email) : undefined;
     const betterAuth = createBetterAuth(database, {
-      onSessionCreating: async (userId) => {
-        await postAuthentication.ensureAccountReady(userId);
-      },
       publicUrl: config.publicUrl,
       secret: config.betterAuthSecret,
       secureCookies: isHostedEnvironment(config.environment),
@@ -1010,7 +966,13 @@ export async function startServer(): Promise<void> {
       executions: platformRuntime.credentials.owner.executionRegistry,
       executionLive: (id) => platformRuntime.credentials.owner.isExecutionLive(id),
     });
-    const skillRuntime = createSkillRuntime(config, database, serviceLogger("skills"), perfLogger);
+    const skillRuntime = createSkillRuntime(
+      config,
+      database,
+      serviceLogger("skills"),
+      sessionCliProofService,
+      perfLogger,
+    );
     const slackWorkingStore = new SlackWorkingStore(database);
     const domainOwner = new RuntimeDomainOwner(registry, custody, {
       onTurnActivity: (frame, context) => acknowledgeFeedbackActivity(database, frame, context),
@@ -1049,7 +1011,9 @@ export async function startServer(): Promise<void> {
     const agentRuntimeOptionsOwner = new AgentRuntimeOptionsOwner(registry);
     const agentRuntimeTestOwner = new AgentRuntimeTestOwner(registry);
     const slackAutoSetupOwner = new SlackAutoSetupOwner(registry);
-    const cloudSlackAutoSetupOwner = new CloudSlackAutoSetupOwner();
+    const cloudSlackAutoSetupOwner = new CloudSlackAutoSetupOwner({
+      fetchImpl: createInstrumentedFetch(perfLogger, { provider: "slack" }),
+    });
     const agentService = new AgentService(database, {
       mcpCredentialCipher: mcpCipher,
       ...optionalCloudUsage(config, cloudUsage),
@@ -1070,8 +1034,7 @@ export async function startServer(): Promise<void> {
           cloudDeliveryOwner,
           {
             currentInstanceId: (computerId) => registry.currentInstanceId(computerId),
-            requestReconcile: (computerId, instanceId, request, onDispatched) =>
-              domainOwner.requestReconcile(computerId, instanceId, request, onDispatched),
+            requestReconcile: domainOwner.requestReconcile.bind(domainOwner),
           },
           reportDiagnostic,
           cloudSessionOwner,
@@ -1169,7 +1132,11 @@ export async function startServer(): Promise<void> {
           state: new SlackOAuthStateService(config.jwtSecret),
         })
       : undefined;
-    const resolveImAdapter = createImProviderAdapterResolver({ imBindings: imBindingService, slackApi });
+    const resolveImAdapter = createImProviderAdapterResolver({
+      imBindings: imBindingService,
+      slackApi,
+      feishuPolicy: imCallPolicy,
+    });
     const imFeedbackMessenger = new ImFeedbackMessenger(
       imBindingService,
       imCallPolicy,
@@ -1224,6 +1191,7 @@ export async function startServer(): Promise<void> {
       ...optionalAllocationStatus(cloudRunnerRuntime),
       ...optionalNoteActivity(cloudRunnerRuntime),
       logger: serviceLogger("cloud-delivery"),
+      performanceLogger: perfLogger,
     });
     const cloudDeliveryOwner = cloudDelivery.cloudDeliveryOwner;
     cloudDeliveryOwnerRef = cloudDeliveryOwner;
@@ -1301,7 +1269,40 @@ export async function startServer(): Promise<void> {
       publicUrl: config.publicUrl,
       sessions: sessionService,
     });
+    let stopping: Promise<void> | undefined;
+    const beginShutdown = () => {
+      shutdown.abort();
+      stopping ??= startClosingServerResources([
+        ["schedule scheduler", () => scheduleScheduler.stop()],
+        ["channel target poller", () => channelTargetPoller.stop()],
+        ["sandbox idle reclaimer", () => sandboxIdleReclaimer?.stop()],
+        ["IM delivery worker", () => imDeliveryWorker.stop()],
+        ["IM message inbox", () => imMessageInbox.close()],
+        ["Slack working worker", () => slackWorkingWorker.stop()],
+        ["IM feedback worker", () => imFeedbackWorker?.stop()],
+        ["Cloud Slack setup requests", () => cloudSlackAutoSetupOwner.close()],
+        ["MCP refresh worker", () => mcpRefreshWorker.stop()],
+        ["skill garbage collector", () => skillRuntime.gc?.stop()],
+        ["GitHub Context Tree operations", () => githubContextTreeOperations?.close()],
+        ["platform runtime", () => platformRuntime.close()],
+        ["Feishu setup service", () => feishuSetupService.stop()],
+        ["Feishu connections", () => feishuConnections.stop()],
+        ["Cloud Session work", () => cloudSessionOwner?.close()],
+        ["Cloud runtime tests", () => cloudModelRuntime?.tester.close()],
+        ["Cloud model work", () => cloudModelService?.close()],
+        ["runner image prewarm worker", () => runnerImagePrewarmWorker?.stop()],
+      ]);
+      void stopping.catch(() => undefined);
+      return stopping;
+    };
     app = createApp({
+      beginShutdown,
+      shutdownSignal: shutdown.signal,
+      closeResources: () =>
+        closeServerResources([
+          ["IM feedback operations", () => imFeedback.close()],
+          ["shared resources", closeSharedResources],
+        ]),
       environment: config.environment,
       revision: config.buildRevision,
       imFeedback,
@@ -1489,6 +1490,10 @@ export async function startServer(): Promise<void> {
     });
     instrumentServerWorkers(
       [
+        ["FeishuSetupService", feishuSetupService],
+        ["FeishuConnectionManager", feishuConnections],
+        ["RuntimeApprovalOwner", approvalOwner],
+        ["CloudModelService", cloudModelService],
         ["ImDeliveryWorker", imDeliveryWorker],
         ["SlackWorkingWorker", slackWorkingWorker],
         ["ImFeedbackWorker", imFeedbackWorker],
@@ -1513,13 +1518,13 @@ export async function startServer(): Promise<void> {
     skillRuntime.gc?.start();
     channelTargetPoller.start();
     const closeForSignal = () => {
-      void app?.close().catch((error) => {
+      void beginShutdown();
+      void closeServerResources([
+        ["startup listener", () => listenAttempt],
+        ["application", () => app?.close()],
+      ]).catch((error) => {
         const failures = (error instanceof AggregateError ? error.errors : [error]).map((failure) => ({
-          detail: formatStartupError(failure, knownSecrets),
-          cause:
-            failure instanceof Error && failure.cause !== undefined
-              ? formatStartupError(failure.cause, knownSecrets)
-              : undefined,
+          detail: formatStartupFailure(failure, knownSecrets),
         }));
         app?.log.error({ failures }, "Failed to close OpenTag server");
         process.exitCode = 1;
@@ -1527,52 +1532,28 @@ export async function startServer(): Promise<void> {
     };
     process.once("SIGINT", closeForSignal);
     process.once("SIGTERM", closeForSignal);
-    app.addHook("preClose", async () => {
-      cloudModelRuntime?.tester.close();
-      cloudSlackAutoSetupOwner.close();
-    });
     app.addHook("onClose", async () => {
       uninstallFatalHandlers();
       process.off("SIGINT", closeForSignal);
       process.off("SIGTERM", closeForSignal);
-      const imagePrewarmStopped = runnerImagePrewarmWorker?.stop();
-      void imagePrewarmStopped?.catch(() => undefined);
-      await closeServerResources([
-        ["schedule scheduler", () => scheduleScheduler.stop()],
-        ["channel target poller", () => channelTargetPoller.stop()],
-        ["sandbox idle reclaimer", () => sandboxIdleReclaimer?.stop()],
-        ["IM delivery worker", () => imDeliveryWorker.stop()],
-        ["Slack working worker", () => slackWorkingWorker.stop()],
-        ["IM feedback worker", () => imFeedbackWorker?.stop()],
-        ["IM feedback operations", () => imFeedback.close()],
-        ["MCP refresh worker", () => mcpRefreshWorker.stop()],
-        ["skill garbage collector", () => skillRuntime.gc?.stop()],
-        ["GitHub Context Tree operations", () => githubContextTreeOperations?.close()],
-        ["platform runtime", () => platformRuntime.close()],
-        ["Feishu setup service", () => feishuSetupService.stop()],
-        ["Feishu connections", () => feishuConnections.stop()],
-        ["runner image prewarm worker", () => imagePrewarmStopped],
-        ["database readiness probe", () => databaseReadinessProbe.close()],
-        ["database pool", () => sql.end({ timeout: DATABASE_CLOSE_TIMEOUT_SECONDS })],
-        ["telemetry", () => shutdownTelemetry()],
-      ]);
     });
     app.log.info(serverEnvironmentSummary(config), "Resolved OpenTag environment");
     app.log.info({ databaseTimeouts: config.databaseTimeouts }, "Resolved database timeouts");
     reportIgnoredCloudBilling(config, app.log);
     reportIgnoredGitHubConfiguration(app.log);
     readiness.complete("application");
-    await app.listen({ host: config.host, port: config.port });
+    listenAttempt = app.listen({ host: config.host, port: config.port });
+    await listenAttempt;
+    if (shutdown.signal.aborted) return;
     readiness.complete("listen");
     runnerImagePrewarmWorker?.start();
   } catch (error) {
     uninstallFatalHandlers();
     const failure = await closeServerResources([
       ["application", () => app?.close()],
-      ["cloud model service", () => cloudModelService?.close()],
-      ["cloud billing", () => cloudBilling?.close()],
-      ["database pool", () => databaseSql?.end({ timeout: DATABASE_CLOSE_TIMEOUT_SECONDS })],
-      ["telemetry", () => shutdownTelemetry()],
+      ["cloud model service", () => (app ? undefined : cloudModelService?.close())],
+      ["cloud billing", () => (app ? undefined : cloudBilling?.close())],
+      ["shared resources", () => closeSharedResources()],
     ]).then(
       () => error,
       (cleanupError) =>

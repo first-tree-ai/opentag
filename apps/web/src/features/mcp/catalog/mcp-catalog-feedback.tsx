@@ -23,7 +23,7 @@ export function catalogFailure(cause: unknown): string {
     return m.mcp_feedback_unreachable();
   if (cause instanceof ApiError && cause.code === MCP_ERROR_CODES.OAUTH_FLOW_EXPIRED)
     return m.mcp_authorization_expired();
-  return connectionFailure(cause);
+  return connectionFailure(cause, undefined, undefined, true);
 }
 
 export function McpCatalogFeedbackActions({ feedback, title }: { feedback: McpCatalogFeedback; title: string }) {

@@ -187,6 +187,17 @@ describe("SkillsPage", () => {
     });
   });
 
+  it("confirms a finished upload by the installed Skill's name", async () => {
+    stubList([]);
+    vi.spyOn(browserApi, "uploadAgentSkill").mockResolvedValue(skill() as never);
+    wrap(<SkillsPage agentId={AGENT_ID} />);
+    await screen.findByText(/No Skills yet/);
+
+    fireEvent.change(fileInput(), { target: { files: [archiveFile("notes.skill", "hello")] } });
+
+    expect(await screen.findByRole("status")).toHaveProperty("textContent", `Installed ${skill().name}`);
+  });
+
   it("confirms a name conflict and only then re-uploads with replace on", async () => {
     stubList([]);
     const replacements: { replace: boolean }[] = [];
@@ -297,6 +308,20 @@ describe("SkillsPage", () => {
     fireEvent.click(await screen.findByRole("switch", { name: "Enable Release notes writer" }));
 
     await waitFor(() => expect(update).toHaveBeenCalledWith(AGENT_ID, SKILL_ID, { enabled: false }));
+  });
+
+  it("keeps a toggled switch enabled and focused while its write is pending", async () => {
+    stubList([skill({ enabled: true })]);
+    const update = vi.spyOn(browserApi, "updateAgentSkill").mockImplementation(() => new Promise(() => undefined));
+    wrap(<SkillsPage agentId={AGENT_ID} />);
+    const toggle = await screen.findByRole("switch", { name: "Enable Release notes writer" });
+    toggle.focus();
+    fireEvent.click(toggle);
+    await waitFor(() => expect(update).toHaveBeenCalledTimes(1));
+    expect(toggle.hasAttribute("disabled")).toBe(false);
+    expect(document.activeElement).toBe(toggle);
+    fireEvent.click(toggle);
+    expect(update).toHaveBeenCalledTimes(1);
   });
 
   it("deletes only after the confirmation", async () => {

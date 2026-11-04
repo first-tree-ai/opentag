@@ -33,6 +33,7 @@ export const SKILL_GC_DEFAULT_INTERVAL_MS = 60 * 60 * 1000;
 export const SKILL_GC_DEFAULT_GRACE_MS = 24 * 60 * 60 * 1000;
 export const SKILL_GC_DEFAULT_PAGE_SIZE = 200;
 export const SKILL_GC_DEFAULT_MAX_DELETES_PER_RUN = 500;
+export const SKILL_GC_DEFAULT_MAX_PAGES_PER_RUN = 10;
 /** Bounded `inArray` chunk so one pass cannot build an unbounded SQL statement. */
 const REFERENCE_CHUNK = 200;
 
@@ -54,6 +55,7 @@ export interface SkillObjectGcOptions {
   intervalMs?: number;
   pageSize?: number;
   maxDeletesPerRun?: number;
+  maxPagesPerRun?: number;
   now?: () => Date;
   logger?: ServiceLogger;
   onError?: (error: unknown) => void;
@@ -67,10 +69,13 @@ export class SkillObjectGc {
   readonly #intervalMs: number;
   readonly #pageSize: number;
   readonly #maxDeletesPerRun: number;
+  readonly #maxPagesPerRun: number;
   readonly #now: () => Date;
   readonly #logger?: ServiceLogger;
   readonly #onError: (error: unknown) => void;
-  #running = false;
+  #inflight: Promise<SkillObjectGcSummary> | undefined;
+  #stopped = false;
+  #cursor: string | undefined;
   #timer: NodeJS.Timeout | undefined;
 
   constructor(options: SkillObjectGcOptions) {
@@ -81,13 +86,16 @@ export class SkillObjectGc {
     this.#intervalMs = options.intervalMs ?? SKILL_GC_DEFAULT_INTERVAL_MS;
     this.#pageSize = options.pageSize ?? SKILL_GC_DEFAULT_PAGE_SIZE;
     this.#maxDeletesPerRun = options.maxDeletesPerRun ?? SKILL_GC_DEFAULT_MAX_DELETES_PER_RUN;
+    this.#maxPagesPerRun = options.maxPagesPerRun ?? SKILL_GC_DEFAULT_MAX_PAGES_PER_RUN;
+    if (!Number.isSafeInteger(this.#maxPagesPerRun) || this.#maxPagesPerRun < 1)
+      throw new Error("Skill GC page quota must be a positive safe integer");
     this.#now = options.now ?? (() => new Date());
     if (options.logger) this.#logger = options.logger;
     this.#onError = options.onError ?? (() => undefined);
   }
 
   start(): void {
-    if (this.#timer) return;
+    if (this.#timer || this.#stopped) return;
     this.#timer = setInterval(() => {
       void this.runOnce().catch(this.#onError);
     }, this.#intervalMs);
@@ -95,16 +103,14 @@ export class SkillObjectGc {
     this.#timer.unref?.();
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
+    this.#stopped = true;
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = undefined;
+    await this.#inflight;
   }
 
-  /**
-   * One pass: page through the prefix, delete the old unreferenced Skill objects, and report the
-   * counts. Never throws a store or database failure at the caller — the wrapper logs it.
-   */
-  async runOnce(): Promise<SkillObjectGcSummary> {
+  runOnce(): Promise<SkillObjectGcSummary> {
     const summary: SkillObjectGcSummary = {
       scanned: 0,
       deleted: 0,
@@ -113,36 +119,48 @@ export class SkillObjectGc {
       skippedForeign: 0,
       durationMs: 0,
     };
+    if (this.#inflight || this.#stopped) return Promise.resolve(summary);
+    const task = this.#run(summary).finally(() => {
+      if (this.#inflight === task) this.#inflight = undefined;
+    });
+    this.#inflight = task;
+    return task;
+  }
+
+  async #run(summary: SkillObjectGcSummary): Promise<SkillObjectGcSummary> {
     const startedAt = Date.now();
-    if (this.#running) return summary;
-    this.#running = true;
-    try {
-      let cursor: string | undefined;
-      do {
-        const page = await this.#store.list(`${this.#prefix}/`, {
-          limit: this.#pageSize,
-          ...(cursor === undefined ? {} : { cursor }),
-        });
-        cursor = page.nextCursor;
-        const candidates = this.#candidates(page.objects, summary);
-        const referenced = await this.#referencedKeys(candidates.map((candidate) => candidate.key));
-        for (const candidate of candidates) {
-          if (summary.deleted >= this.#maxDeletesPerRun) break;
-          // Re-check the single key immediately before deleting: a row can be inserted after the
-          // batch above, and that new reference must win over this delete.
-          if (referenced.has(candidate.key) || (await this.#isReferenced(candidate.key))) {
-            summary.skippedReferenced += 1;
-            continue;
-          }
-          await this.#deleteOne(candidate.key, summary);
-        }
-      } while (cursor !== undefined && summary.deleted < this.#maxDeletesPerRun);
-    } finally {
-      this.#running = false;
+    for (let page = 0; page < this.#maxPagesPerRun && !this.#stopped; page += 1) {
+      if (!(await this.#collectPage(summary))) break;
     }
     summary.durationMs = Date.now() - startedAt;
     this.#logger?.info({ ...summary, prefix: this.#prefix }, "Skill object GC run completed");
     return summary;
+  }
+
+  async #collectPage(summary: SkillObjectGcSummary): Promise<boolean> {
+    const page = await this.#store
+      .list(`${this.#prefix}/`, {
+        limit: this.#pageSize,
+        ...(this.#cursor === undefined ? {} : { cursor: this.#cursor }),
+      })
+      .catch((error) => {
+        this.#cursor = undefined;
+        throw error;
+      });
+    if (this.#stopped) return false;
+    const candidates = this.#candidates(page.objects, summary);
+    const referenced = await this.#referencedKeys(candidates.map((candidate) => candidate.key));
+    for (const candidate of candidates) {
+      if (this.#stopped || summary.deleted >= this.#maxDeletesPerRun) break;
+      if (referenced.has(candidate.key) || (await this.#isReferenced(candidate.key))) {
+        summary.skippedReferenced += 1;
+        continue;
+      }
+      if (this.#stopped) break;
+      await this.#deleteOne(candidate.key, summary);
+    }
+    this.#cursor = page.nextCursor;
+    return !this.#stopped && this.#cursor !== undefined && summary.deleted < this.#maxDeletesPerRun;
   }
 
   /** Applies the three eligibility rules, counting the objects that are not candidates. */
@@ -167,6 +185,7 @@ export class SkillObjectGc {
   async #referencedKeys(keys: string[]): Promise<Set<string>> {
     const referenced = new Set<string>();
     for (let index = 0; index < keys.length; index += REFERENCE_CHUNK) {
+      if (this.#stopped) break;
       const chunk = keys.slice(index, index + REFERENCE_CHUNK);
       if (chunk.length === 0) continue;
       const rows = await this.#database

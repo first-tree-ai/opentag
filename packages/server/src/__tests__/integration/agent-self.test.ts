@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
-import { agents, mcpServers, users } from "../../db/schema/index.js";
+import { agents, mcpServerAuthorizations, mcpServers, users } from "../../db/schema/index.js";
 import { AgentSelfService, AgentService, DatabaseAgentOwnerResolver } from "../../services/agents/index.js";
 import { ApplicationCipher } from "../../services/crypto.js";
 import {
@@ -28,8 +28,17 @@ afterAll(async () => testDatabase.stop());
 
 beforeEach(async () => testDatabase.reset());
 
-async function fixture() {
-  const client = createDatabaseClient(testDatabase.databaseUrl);
+async function fixture(discoveryTimeoutMs?: number) {
+  const client = createDatabaseClient(
+    testDatabase.databaseUrl,
+    discoveryTimeoutMs === undefined
+      ? undefined
+      : {
+          max: 1,
+          statementTimeoutMs: 500,
+          queryTimeoutMs: 2000,
+        },
+  );
   const bootstrap = await bootstrapInitialAdmin(client.database, { displayName: "Admin", email: "admin@example.com" });
   const agentService = new AgentService(client.database);
   const mcp = new McpServerService({ database: client.database });
@@ -43,6 +52,7 @@ async function fixture() {
   });
   const flows = new McpOAuthFlowService({
     database: client.database,
+    discoveryTimeoutMs,
     cipher,
     oauth: new McpOAuthClient({ fetcher, publicUrl: "https://opentag.example.com" }),
     servers: mcp,
@@ -63,6 +73,7 @@ async function fixture() {
       authenticate: async (proof) => {
         if (proof !== "valid-proof") throw new Error("invalid proof");
         return {
+          proofId: crypto.randomUUID(),
           agentId: agent.id,
           computerId: randomUUID(),
           connectionInstanceId: randomUUID(),
@@ -382,40 +393,106 @@ describe("Agent self-configuration against PostgreSQL", () => {
     }
   });
 
-  it("aborts and rolls back definition insert if Agent ownership changes concurrently (P1, DB1)", async () => {
+  it.each(["transfer", "opt-out"] as const)("serializes MCP create before an independent %s", async (change) => {
     const value = await fixture();
+    const control = createDatabaseClient(testDatabase.databaseUrl, { max: 2 });
+    const writer = createDatabaseClient(testDatabase.databaseUrl);
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const locked = new Promise<void>((r) => {
+      entered = r;
+    });
+    let holder = Promise.resolve();
+    let creation: Promise<unknown> = Promise.resolve();
+    let changing: Promise<unknown> = Promise.resolve();
     try {
       await enableSelfConfiguration(value);
-      const otherUser = await createUser(value.database, "other-owner@example.com");
-
-      // Inject a trigger on mcp_servers INSERT that simulates concurrent Agent transfer
+      const other = await createUser(value.database, "other-owner@example.com");
+      if (change === "transfer") value.agent = await value.agentService.suspendById(value.accountId, value.agent.id);
       await value.sql.unsafe(`
-        CREATE FUNCTION simulate_concurrent_agent_transfer() RETURNS trigger LANGUAGE plpgsql AS $$
-        BEGIN
-          UPDATE agents SET created_by_user_id = '${otherUser.id}' WHERE id = '${value.agent.id}';
-          RETURN NEW;
-        END $$;
-        CREATE TRIGGER simulate_concurrent_agent_transfer AFTER INSERT ON mcp_servers
-        FOR EACH ROW EXECUTE FUNCTION simulate_concurrent_agent_transfer();
+        CREATE FUNCTION pause_mcp_definition() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN PERFORM pg_advisory_xact_lock(64016); RETURN NEW; END $$;
+        CREATE TRIGGER pause_mcp_definition AFTER INSERT ON mcp_servers
+        FOR EACH ROW EXECUTE FUNCTION pause_mcp_definition();
       `);
-
+      holder = control.sql
+        .begin(async (tx) => {
+          await tx`select pg_advisory_xact_lock(64016)`;
+          entered();
+          await gate;
+        })
+        .then(() => undefined);
+      await locked;
+      creation = value.mcp.createAndAttachServer(
+        value.accountId,
+        value.agent.id,
+        { name: "serialized-create", url: "https://mcp.race.example/mcp", defaultAuthKind: "bearer" },
+        true,
+        "agent-self",
+      );
+      await expect
+        .poll(
+          async () =>
+            (
+              await control.sql`select count(*)::int as n from pg_stat_activity where datname=current_database() and wait_event='advisory'`
+            )[0]?.n,
+        )
+        .toBe(1);
+      let changed = false;
+      changing = (
+        change === "transfer"
+          ? new AgentService(writer.database).transferToAccount({
+              agentId: value.agent.id,
+              targetAccountId: other.id,
+              slack: "disable",
+            })
+          : new AgentService(writer.database).updateById(value.accountId, value.agent.id, {
+              expectedRevision: value.agent.revision,
+              selfConfigurationEnabled: false,
+            })
+      ).then((v) => {
+        changed = true;
+        return v;
+      });
+      await expect
+        .poll(
+          async () =>
+            (
+              await control.sql`select count(*)::int as n from pg_stat_activity where datname=current_database() and wait_event_type='Lock'`
+            )[0]?.n,
+        )
+        .toBeGreaterThanOrEqual(2);
+      expect(changed).toBe(false);
+      release();
+      await holder;
+      expect(await creation).toMatchObject({ name: "serialized-create", enabled: true });
+      await changing;
+      const current = await writer.database.select().from(agents).where(eq(agents.id, value.agent.id));
+      expect(current[0]).toMatchObject(
+        change === "transfer" ? { createdByUserId: other.id } : { selfConfigurationEnabled: false },
+      );
       await expect(
-        value.mcp.createAndAttachServer(value.accountId, value.agent.id, {
-          name: "race-transfer-mcp",
-          url: "https://mcp.race.example/mcp",
-          defaultAuthKind: "bearer",
-        }),
-      ).rejects.toMatchObject({ code: "MCP_SERVER_NOT_FOUND" });
-
-      // Verify that the definition insert was completely rolled back
-      const rows = await value.database
-        .select({ id: mcpServers.id })
-        .from(mcpServers)
-        .where(eq(mcpServers.name, "race-transfer-mcp"));
-      expect(rows).toEqual([]);
+        value.mcp.createAndAttachServer(
+          value.accountId,
+          value.agent.id,
+          { name: "after-change", url: "https://mcp.race.example/mcp", defaultAuthKind: "bearer" },
+          true,
+          "agent-self",
+        ),
+      ).rejects.toMatchObject({
+        code: change === "transfer" ? "MCP_SERVER_NOT_FOUND" : "AGENT_SELF_CONFIGURATION_DISABLED",
+      });
     } finally {
-      await value.sql.unsafe(`DROP TRIGGER IF EXISTS simulate_concurrent_agent_transfer ON mcp_servers;`);
-      await value.sql.unsafe(`DROP FUNCTION IF EXISTS simulate_concurrent_agent_transfer();`);
+      release?.();
+      await holder;
+      await Promise.allSettled([creation, changing]);
+      await value.sql.unsafe(
+        "DROP TRIGGER IF EXISTS pause_mcp_definition ON mcp_servers; DROP FUNCTION IF EXISTS pause_mcp_definition()",
+      );
+      await writer.sql.end();
+      await control.sql.end();
       await value.sql.end();
     }
   });
@@ -588,4 +665,136 @@ describe("Agent self-configuration against PostgreSQL", () => {
       await value.sql.end();
     }
   });
+});
+
+describe("Agent self OAuth discovery limits on PostgreSQL", () => {
+  it.each(["duplicates", "oversized", "fourth-valid"] as const)("bounds actual metadata work for %s", async (mode) => {
+    const endpoint = await McpFixtureServer.start({
+      protectedResourceMetadata: (self) => ({
+        resource: `${self}/mcp`,
+        authorization_servers:
+          mode === "duplicates"
+            ? Array(16).fill(self)
+            : mode === "oversized"
+              ? Array.from({ length: 16 }, (_, i) => `${self}/issuer${i}`)
+              : [1, 2, 3].map((i) => `${self}/issuer${i}`).concat(self),
+      }),
+      ...(mode === "duplicates"
+        ? { authorizationServerMetadata: (self: string) => ({ issuer: `${self}/wrong` }) }
+        : {}),
+    });
+    const value = await fixture();
+    try {
+      const scope = await value.self.authenticate("valid-proof");
+      const server = await value.self.createMcpServer(scope, {
+        name: "bounded",
+        url: endpoint.endpoint,
+        defaultAuthKind: "oauth",
+      });
+      const running = value.self.startMcpOAuth(scope, server.mcpServerId, {});
+      if (mode === "fourth-valid") {
+        const result = await running;
+        const token = new URL(result.authorizationUrl).searchParams.get("token");
+        expect(token).toBeTruthy();
+        const handoff = await value.flows.redeemHandoffToken(token as string, value.accountId);
+        expect(new URL(handoff.targetUrl).pathname).toBe("/authorize");
+      } else
+        await expect(running).rejects.toMatchObject({
+          code: "MCP_OAUTH_FAILED",
+          ...(mode === "oversized" ? { detail: { maxCandidates: 4 } } : {}),
+        });
+      const metadataRequests = endpoint.requests.filter(
+        (r) => r.url.startsWith("/.well-known/") && !r.url.startsWith("/.well-known/oauth-protected-resource"),
+      );
+      expect(metadataRequests).toHaveLength(mode === "duplicates" ? 1 : mode === "oversized" ? 0 : 4);
+      expect(endpoint.tokensIssued).toBe(0);
+      expect(endpoint.registrations).toBe(0);
+    } finally {
+      await endpoint.stop();
+      await value.sql.end();
+    }
+  });
+
+  it("never registers or publishes after preparation SQL outlives the discovery deadline", async () => {
+    const endpoint = await McpFixtureServer.start({ dynamicRegistrationOnly: true });
+    const value = await fixture(80);
+    const observer = createDatabaseClient(testDatabase.databaseUrl, { max: 1 });
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    let entered!: () => void;
+    const locked = new Promise<void>((r) => {
+      entered = r;
+    });
+    let lock = Promise.resolve();
+    try {
+      const scope = await value.self.authenticate("valid-proof");
+      const server = await value.self.createMcpServer(scope, {
+        name: "late-preparation",
+        url: endpoint.endpoint,
+        defaultAuthKind: "oauth",
+      });
+      await value.database
+        .insert(mcpServerAuthorizations)
+        .values({ agentId: value.agent.id, mcpServerId: server.mcpServerId, kind: "oauth", status: "pending" });
+      lock = observer.sql
+        .begin(async (tx) => {
+          await tx`lock table mcp_client_registrations in access exclusive mode`;
+          entered();
+          await gate;
+        })
+        .then(() => undefined);
+      await locked;
+      await expect(value.self.startMcpOAuth(scope, server.mcpServerId, {})).rejects.toMatchObject({
+        code: "MCP_UPSTREAM_UNAVAILABLE",
+      });
+      release();
+      await lock;
+      const [row] = await value.database
+        .select()
+        .from(mcpServerAuthorizations)
+        .where(eq(mcpServerAuthorizations.mcpServerId, server.mcpServerId));
+      expect(row).toMatchObject({ status: "error", state: null, ciphertext: null });
+      expect(endpoint.registrations).toBe(0);
+      expect(endpoint.tokensIssued).toBe(0);
+      expect(
+        await observer.sql`select pid from pg_stat_activity where datname=current_database() and state='idle in transaction'`,
+      ).toHaveLength(0);
+    } finally {
+      release();
+      await lock;
+      await observer.sql.end();
+      await endpoint.stop();
+      await value.sql.end();
+    }
+  });
+});
+
+it("authenticates self with one owner/opt-in SELECT and creates MCP with three SELECTs", async () => {
+  const value = await fixture();
+  const queries: string[] = [];
+  const original = value.sql.options.debug;
+  value.sql.options.debug = (_id, query) => {
+    queries.push(query);
+  };
+  try {
+    const scope = await value.self.authenticate("valid-proof");
+    expect(scope).toMatchObject({ accountId: value.accountId, agentId: value.agent.id });
+    expect(queries.filter((q) => q.trimStart().toLowerCase().startsWith("select"))).toHaveLength(1);
+    queries.length = 0;
+    expect(
+      await value.mcp.createAndAttachServer(
+        value.accountId,
+        value.agent.id,
+        { name: "sql-count", url: "https://mcp.example/mcp", defaultAuthKind: "oauth" },
+        true,
+        "agent-self",
+      ),
+    ).toMatchObject({ name: "sql-count", enabled: true });
+    expect(queries.filter((q) => q.trimStart().toLowerCase().startsWith("select"))).toHaveLength(3);
+  } finally {
+    value.sql.options.debug = original;
+    await value.sql.end();
+  }
 });

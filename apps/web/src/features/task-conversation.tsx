@@ -19,7 +19,7 @@ import {
   TaskOutgoingReply,
   TaskOutgoingReplyMeta,
 } from "./task-outgoing-replies.js";
-import { taskStatusGroup, taskStatusGroupLabel, taskStatusGroupTone } from "./task-status.js";
+import { taskStatusLabel, taskStatusTone } from "./task-status.js";
 import { buildTaskTimeline, type CapturedTaskReply, type TaskReport, type TaskTimelineEntry } from "./task-timeline.js";
 
 export function TaskActivity({
@@ -164,7 +164,7 @@ function TaskInternalSessionsList({ sessions }: { sessions: TaskInternalSessionI
     <div className="grid gap-2 rounded-lg border border-kumo-line bg-kumo-base p-4" data-ui="task-internal-sessions">
       <ul className="grid divide-y divide-kumo-line">
         {sessions.map((session) => {
-          const status = session.status ? taskStatusGroup(session.status) : session.endedAt ? "completed" : "running";
+          const status = session.status ?? (session.endedAt ? "completed" : "running");
           const activityAt = session.endedAt ?? session.createdAt;
           const preview = session.title?.trim() || session.runtimeModel || session.id;
           return (
@@ -180,7 +180,7 @@ function TaskInternalSessionsList({ sessions }: { sessions: TaskInternalSessionI
                 ) : null}
               </div>
               <div className="flex items-center gap-3">
-                <StatusIndicator label={taskStatusGroupLabel(status)} tone={taskStatusGroupTone(status)} />
+                <StatusIndicator label={taskStatusLabel(status)} tone={taskStatusTone(status)} />
                 <time
                   className="whitespace-nowrap text-xs text-kumo-subtle"
                   dateTime={activityAt}

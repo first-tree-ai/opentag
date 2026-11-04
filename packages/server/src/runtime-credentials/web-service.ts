@@ -9,6 +9,7 @@ import {
   type WebSearchResult,
   webServiceScopeForOperation,
 } from "@opentag/shared";
+import { updateCurrentPerformanceContext } from "../observability/performance-logger.js";
 import type { RuntimeExecutionRegistry } from "./execution-registry.js";
 import { RuntimeWebError, type RuntimeWebExecutionAuthorizer } from "./web-execution.js";
 import type { RuntimeWebRouterKeyResolver } from "./web-policy.js";
@@ -86,6 +87,31 @@ export class RuntimeWebService {
    */
   executionComputerId(executionId: string): string | undefined {
     return this.#executions.get(executionId)?.computerId;
+  }
+
+  executionContext(executionId: string):
+    | {
+        accountId: string;
+        agentId: string;
+        sessionId: string;
+        computerId: string;
+        deliveryId?: string;
+        turnId?: string;
+        sandboxId?: string;
+      }
+    | undefined {
+    const execution = this.#executions.get(executionId);
+    if (!execution) return undefined;
+    return {
+      accountId: execution.accountId,
+      agentId: execution.agentId,
+      sessionId: execution.sessionId,
+      computerId: execution.computerId,
+      ...(execution.source?.kind === "delivery"
+        ? { deliveryId: execution.source.deliveryId, turnId: execution.source.turnId }
+        : {}),
+      ...(execution.sandbox?.sandboxId ? { sandboxId: execution.sandbox.sandboxId } : {}),
+    };
   }
 
   search(input: {
@@ -170,6 +196,16 @@ export class RuntimeWebService {
         abortError,
       );
       accountId = execution.accountId;
+      updateCurrentPerformanceContext({
+        accountId: execution.accountId,
+        agentId: execution.agentId,
+        sessionId: execution.sessionId,
+        computerId: execution.computerId,
+        ...(execution.source?.kind === "delivery"
+          ? { deliveryId: execution.source.deliveryId, turnId: execution.source.turnId }
+          : {}),
+        ...(execution.sandbox?.sandboxId ? { sandboxId: execution.sandbox.sandboxId } : {}),
+      });
       const routerKey = this.#policy.resolveRouterKey({ accountId: execution.accountId });
       if (!routerKey) {
         // A deployment with no configured Router key refuses the call; there is no fallback key.

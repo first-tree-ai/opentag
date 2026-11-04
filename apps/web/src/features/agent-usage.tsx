@@ -143,13 +143,7 @@ export function AgentUsageTab({ agentId }: { agentId: string }) {
   const { retry, state } = useAgentUsage(agentId, windowDays);
   return (
     <div className="@container/usage-tab grid gap-6" data-ui="usage-tab">
-      <PageHeader
-        description={m.usage_description()}
-        layout="title-actions"
-        spacing="relaxed"
-        title={m.usage_title()}
-        titleId="agent-usage-page-heading"
-      >
+      <PageHeader layout="title-actions" spacing="relaxed" title={m.usage_title()} titleId="agent-usage-page-heading">
         <UsageWindowSelect options={AGENT_USAGE_WINDOW_OPTIONS} value={windowDays} onChange={setWindowDays} />
       </PageHeader>
       <UsageSummaryState state={state} onRetry={retry} />
@@ -374,25 +368,14 @@ function UsageMetrics({ compact = false, usage }: { compact?: boolean; usage: Us
   );
 }
 
+/** How many Tasks reported no usage, said quietly under the totals they are missing from. */
 function UsageCoverage({ usage }: { usage: AgentUsageDetail }) {
-  if (usage.tasks === usage.measuredTasks) return null;
-  const noCoverage = usage.measuredTasks === 0;
+  const unreported = usage.tasks - usage.measuredTasks;
+  if (unreported <= 0) return null;
   return (
-    <Banner
-      className="text-kumo-default"
-      data-ui="usage-coverage"
-      description={
-        noCoverage
-          ? m.usage_coverage_none_description({ tasks: formatNumber(usage.tasks) })
-          : m.usage_coverage_partial_description({
-              measuredTasks: formatNumber(usage.measuredTasks),
-              tasks: formatNumber(usage.tasks),
-            })
-      }
-      role="status"
-      size="sm"
-      variant="alert"
-    />
+    <p className="m-0 text-sm text-kumo-subtle" data-ui="usage-coverage">
+      {m.usage_tasks_unreported({ count: formatNumber(unreported) })}
+    </p>
   );
 }
 

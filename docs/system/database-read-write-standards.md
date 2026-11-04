@@ -18,10 +18,15 @@ identity comes from the database. They are review requirements, not a claim
 that every existing path already complies. Keep the rule IDs when recording
 a finding or explaining an exception.
 
-Present a concrete database or read/write design for human confirmation before
-implementing or approving it. Include the affected paths, invariants, access
+Present a concrete proposal for human confirmation before implementing or
+approving database schema changes or migrations, including tables, columns,
+indexes, and constraints. Include the affected paths, invariants, access
 patterns, transaction and lock boundaries, failure behavior, validation, cost,
-and benefit. Investigation and local experiments may proceed first.
+and benefit. Investigation and local experiments may proceed first. Query,
+read/write-path, and lock changes without schema changes or migrations may
+proceed under existing task authorization without separate database-design
+confirmation. These standards and existing authorization boundaries for
+production operations, data cleanup, and deployment still apply.
 
 Preserve existing ownership, authorization, state transitions, revisions,
 generations, quotas, ordering, deduplication, retention, and custody semantics.
@@ -61,6 +66,20 @@ Finding a deviation does not authorize its implementation.
   [Observability](../operations/observability.md). A statement deadline,
   transaction idle timeout, transport deadline, and whole-operation budget
   cover different waits; document which component owns each applicable bound.
+  Benchmark admin, fixture and EXPLAIN connections reuse the shared client with
+  one connection and a five-second native close. Fixture statements use the
+  shared 30-second statement / 35-second elapsed budgets, measured separately
+  from the shorter startup migration budget.
+- The current budget for a single database query is 500 ms on representative data. It is still being calibrated and
+  may prove too high or too low; tighter or looser targets, overall or for a particular path, are set by a human
+  decision. It is a performance budget, not the statement timeout (`OPENTAG_DATABASE_STATEMENT_TIMEOUT_MS`, 30 seconds
+  by default), which only cancels runaway statements. Why: one stated budget lets changes, including Agent-authored
+  ones, be checked consistently, while deciding where faster is worth the cost stays a judgement call.
+
+HTTP authentication hooks belong in route options so application shutdown can
+retain their actual Promises through client disconnect. Ordinary callers need
+no extra drain set. Detached work and operations hidden by timeout races retain
+an explicit owner until actual settlement.
 
 ## Migrations
 
@@ -85,7 +104,7 @@ Do not widen the routine startup budget or rewrite merged migration history to a
 | ID | Requirement | Review evidence |
 | --- | --- | --- |
 | AT1 | Facts that must hold together commit in one atomic statement or transaction. | List the invariant, primary and related writes, deduplication record, and state change. A mid-operation failure leaves no partial combination. |
-| AT2 | Helpers whose work must roll back together use the same transaction executor. | Trace the actual caller through nested services and callbacks. A root pool call inside a transaction callback does not join that transaction. A locking helper requires a transaction in its type contract; ordinary reads may accept either executor. |
+| AT2 | Helpers whose work must roll back together use the same transaction executor. | Trace nested services and library hooks to the transaction, including adapter opt-ins. A root pool call does not join it. A locking helper requires a transaction type; ordinary reads may accept either executor. |
 | AT3 | Failure after commit is distinct from rollback. | A notification or cleanup failure does not undo a committed lifecycle change or prove an object is unreferenced. Keep the commit boundary visible in error handling. |
 
 ## 2. Final database authority

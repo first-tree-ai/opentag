@@ -1,6 +1,7 @@
 import type { ChannelName, RuntimeChannelTarget } from "@opentag/shared";
 import { RuntimeChannelTargetSchema } from "@opentag/shared";
 import { z } from "zod";
+import { readBoundedJson } from "../cloud-run/bounded-json.js";
 
 /**
  * Tracks the exact channel latest target the Server advertises to connected Clients.
@@ -73,10 +74,11 @@ export function createChannelTargetPoller(options: ChannelTargetPollerOptions): 
         signal: AbortSignal.timeout(10_000),
       });
       if (!response.ok) {
+        await response.body?.cancel();
         logger.warn({ status: response.status, url: pointerUrl }, "Channel target poll returned a non-OK status");
         return undefined;
       }
-      body = await response.json();
+      body = await readBoundedJson(response);
     } catch (error) {
       logger.warn(
         { error: error instanceof Error ? error.message : String(error), url: pointerUrl },
@@ -126,12 +128,12 @@ export function createChannelTargetPoller(options: ChannelTargetPollerOptions): 
     return pending;
   }
 
-  return {
+  const poller: ChannelTargetPoller = {
     get: () => current,
     start: () => {
       if (timer) return;
-      void refresh();
-      timer = setInterval(() => void refresh(), options.intervalMs);
+      void poller.refresh();
+      timer = setInterval(() => void poller.refresh(), options.intervalMs);
       timer.unref();
     },
     stop: () => {
@@ -143,4 +145,5 @@ export function createChannelTargetPoller(options: ChannelTargetPollerOptions): 
     },
     refresh,
   };
+  return poller;
 }

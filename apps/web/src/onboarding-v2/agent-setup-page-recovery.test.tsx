@@ -544,7 +544,7 @@ describe("AgentSetupPage with the Lab Computer adapters", () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
     renderSetup(memory.adapter, { computerAdapter: memory.computerAdapter });
     await settle();
-    expect(screen.getByRole("button", { name: "Copy for Agent" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
     expect(memory.inspect().computerConnectState).toBe("pending");
     expect(screen.getByText("Waiting for Review Mac to reconnect…")).toBeTruthy();
 

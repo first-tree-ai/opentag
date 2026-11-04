@@ -13,15 +13,7 @@ export async function verifyPublishedContextTree(
   path = ".",
 ): Promise<void> {
   if (!ContextTreePathSchema.safeParse(path).success) throw new GitPublicationError("tree_invalid");
-  const entries = (await runTrustedGit(["-C", repository, "ls-tree", "-rz", sha], options))
-    .toString("utf8")
-    .split("\0")
-    .filter(Boolean);
-  for (const entry of entries) {
-    const name = entry.slice(entry.indexOf("\t") + 1);
-    const selected = path === "." || name === path || name.startsWith(`${path}/`) || path.startsWith(`${name}/`);
-    if (selected && /^(160000|120000) /.test(entry)) throw new GitPublicationError("tree_invalid");
-  }
+  await assertSupportedCommittedPath(repository, sha, path, options);
   const checkout = join(options.cwd, `tree-${sha}`);
   await runTrustedGit(["-C", repository, "worktree", "add", "--detach", checkout, sha], options);
   let tree = checkout;
@@ -52,6 +44,41 @@ export async function verifyPublishedContextTree(
     payload === null ||
     !("ok" in payload) ||
     payload.ok !== true
+  ) {
+    throw new GitPublicationError("tree_invalid");
+  }
+}
+
+async function assertSupportedCommittedPath(
+  repository: string,
+  sha: string,
+  path: string,
+  options: GitProcessOptions,
+): Promise<void> {
+  const args = ["--literal-pathspecs", "-C", repository, "ls-tree", "-rz", sha];
+  if (path !== ".") {
+    let ancestor = "";
+    for (const part of path.split("/")) {
+      ancestor = ancestor ? `${ancestor}/${part}` : part;
+      const entry = await runTrustedGit(
+        ["--literal-pathspecs", "-C", repository, "ls-tree", "-z", sha, "--", ancestor],
+        options,
+      );
+      if (!/^040000 tree [0-9a-f]+\t[^\0]+\0$/.test(entry.toString("utf8"))) {
+        throw new GitPublicationError("tree_invalid");
+      }
+    }
+    args.push("--", path);
+  }
+  assertSupportedEntries(await runTrustedGit(args, options));
+}
+
+function assertSupportedEntries(output: Buffer): void {
+  if (
+    output
+      .toString("utf8")
+      .split("\0")
+      .some((entry) => /^(160000|120000) /.test(entry))
   ) {
     throw new GitPublicationError("tree_invalid");
   }

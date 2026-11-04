@@ -59,6 +59,7 @@ async function fixture() {
     authenticate: vi.fn(async (proof: string) => {
       if (proof !== "proof") throw new SessionCliProofError("invalid_proof", "Invalid proof");
       return {
+        proofId: crypto.randomUUID(),
         agentId: source.id,
         computerId: computer.id,
         connectionInstanceId: randomUUID(),

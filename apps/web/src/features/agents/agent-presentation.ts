@@ -58,7 +58,7 @@ function agentAvailabilityCardStatus(agent: AgentListItem): AgentCardStatus {
  * shows on every row; "waiting" only shows beside Ready, where it is the useful thing to know rather
  * than a contradiction of a blocked or paused status. An unknown activity says nothing.
  */
-function agentActivityDetail(agent: AgentListItem, ready: boolean): string | undefined {
+export function agentActivityDetail(agent: Pick<AgentListItem, "activity">, ready: boolean): string | undefined {
   const { activity } = agent;
   if (activity.state === "working") {
     const count = activity.runningTaskCount;
@@ -150,7 +150,8 @@ export function imBindingStateLabel(binding: ImBindingSummary): string {
   return {
     active: m.im_connected(),
     provisioning: m.im_connecting(),
-    reauthorization_required: m.im_permissions_required(),
+    // One wording for this state everywhere it is shown.
+    reauthorization_required: m.agents_card_status_messaging_permissions_required(),
     error: m.im_connection_error(),
     disabled: m.im_disconnected(),
   }[binding.bindingState];
@@ -639,7 +640,7 @@ function agentMessagingConnectionLabel(binding: ImBindingSummary): string {
   const labels: Record<ImBindingSummary["bindingState"], string> = {
     active: m.agents_status_channel_connected(),
     provisioning: m.agents_status_channel_setting_up(),
-    reauthorization_required: m.agents_status_channel_permissions_update_required(),
+    reauthorization_required: m.agents_card_status_messaging_permissions_required(),
     error: m.agents_status_channel_connection_error(),
     disabled: m.agents_status_channel_disabled(),
   };

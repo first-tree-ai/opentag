@@ -51,7 +51,9 @@ alone. Each section returns at most 100 rows and 20 by default. Naming a subset 
 contract: the Web conversation renders the summary and the Turns, asks for `sections=turns`, and
 never reads the Internal Session or collaboration history it would discard. Reading any of them
 resolves the topic and serves the requested sections from one read-only Repeatable Read transaction,
-so an authorized topic is read from a single snapshot and no wait spans external I/O.
+so an authorized topic is read from a single snapshot and no wait spans external I/O. The captured-replies
+subresource also resolves its stored-message scope and reads replies in one read-only snapshot;
+it does not depend on a Runtime Session existing.
 
 Every section cursor is the exact ordering key of the last row it returned: the timestamp at the
 microsecond precision PostgreSQL compares, not the millisecond a browser `Date` would keep, plus the
@@ -115,6 +117,11 @@ The status is the topic's latest execution situation, read by precedence:
 4. Otherwise the outcome of the latest execution: `completed`, `failed` (including rejected
    deliveries), `cancelled` (a queued delivery the Account withdrew before it ran), or `expired` (a
    delivery that expired unprocessed, or an unreported Turn whose deadline has passed).
+
+The Web reads these in four groups (Queued, Running, Completed, Failed) for filtering: `ended` and
+`cancelled` filter with Completed, and `expired` with Failed. A `cancelled` Task still shows its own
+neutral **Cancelled** label rather than Completed. Why: the Account withdrew it before it ran, and
+"Completed" would claim work that never happened.
 
 Each detail Turn exposes `delivery.isRunning` from the same effective predicate as the list. The Web
 shows progress only when that value is true; persisted `accepted` alone does not prove liveness.

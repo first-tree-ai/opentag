@@ -1,7 +1,11 @@
 import type { ClientRequest, IncomingMessage } from "node:http";
 import https from "node:https";
 import { type GitHubProxyFailureCode, githubProxyHeaders } from "@opentag/shared";
-import { extractExternalTransportCode, sanitizeExternalUrl } from "../../observability/external-call-logger.js";
+import {
+  extractExternalTransportCode,
+  isExternalTimeoutError,
+  sanitizeExternalUrl,
+} from "../../observability/external-call-logger.js";
 import {
   type PerformanceLogger,
   type PerformanceOperationHandle,
@@ -48,6 +52,7 @@ export class GitHubHttpTransport {
       operation: "external.github.proxy",
       attributes: {
         provider: "github",
+        externalService: "github",
         httpMethod: input.method.toUpperCase(),
         ...urlMeta,
       },
@@ -56,7 +61,17 @@ export class GitHubHttpTransport {
       return await runWithPerformanceContext(handle.context, () => this.#executeRequest(input, handle));
     } catch (error) {
       const transportCode = extractExternalTransportCode(error);
-      handle.fail(error, transportCode ? { transportCode } : undefined, "EXTERNAL_CALL_FAILED");
+      const timedOut = isExternalTimeoutError(error, undefined, transportCode);
+      handle.fail(
+        error,
+        {
+          attemptCount: 1,
+          retryCount: 0,
+          ...(transportCode ? { transportCode } : {}),
+          ...(timedOut ? { timedOut: true } : {}),
+        },
+        "EXTERNAL_CALL_FAILED",
+      );
       throw error;
     }
   }
@@ -151,17 +166,27 @@ export class GitHubHttpTransport {
           clearTimeout(timer);
         }
         if (chunk.done) {
-          handle?.complete({ status });
+          handle?.complete({ status, attemptCount: 1, retryCount: 0 });
           return;
         }
         yield chunk.value;
       }
     } catch (error) {
       const mapped = error instanceof GitHubProxyError ? error : new GitHubProxyError("github_response_truncated");
-      handle?.fail(mapped, { status }, mapped.code);
+      const timedOut = isExternalTimeoutError(mapped, mapped.code);
+      handle?.fail(
+        mapped,
+        {
+          status,
+          attemptCount: 1,
+          retryCount: 0,
+          ...(timedOut ? { timedOut: true } : {}),
+        },
+        mapped.code,
+      );
       throw mapped;
     } finally {
-      handle?.complete({ status });
+      handle?.complete({ status, attemptCount: 1, retryCount: 0 });
       response.destroy();
     }
   }

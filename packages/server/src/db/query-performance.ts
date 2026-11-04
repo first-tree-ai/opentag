@@ -45,20 +45,53 @@ const IGNORED_TARGET_KEYWORDS = new Set([
   "set",
   "where",
   "stdin",
-  " dual",
+  "dual",
+  "skip",
+  "nowait",
+  "of",
+  "locked",
+  "share",
+  "key",
+  "no",
+  "update",
 ]);
 
-const TARGET_PATTERNS: readonly RegExp[] = [
-  /\binto\s+"?([A-Za-z_][A-Za-z0-9_.]*)"?/i,
-  /\bupdate\s+(?:only\s+)?"?([A-Za-z_][A-Za-z0-9_.]*)"?/i,
-  /\bfrom\s+(?:only\s+)?"?([A-Za-z_][A-Za-z0-9_.]*)"?/i,
-  /\btable\s+(?:if\s+exists\s+)?"?([A-Za-z_][A-Za-z0-9_.]*)"?/i,
+const INTO_TARGET_PATTERN = /\binto\s+"?([A-Za-z_][A-Za-z0-9_.]*)"?/gi;
+const UPDATE_TARGET_PATTERN = /(?<!\b(?:for|key|do)\s+)\bupdate\s+(?:only\s+)?"?([A-Za-z_][A-Za-z0-9_.]*)"?/gi;
+const FROM_TARGET_PATTERN = /\bfrom\s+(?:only\s+)?"?([A-Za-z_][A-Za-z0-9_.]*)"?/gi;
+const TABLE_TARGET_PATTERN = /\btable\s+(?:if\s+exists\s+)?"?([A-Za-z_][A-Za-z0-9_.]*)"?/gi;
+
+const DEFAULT_TARGET_PATTERNS: readonly RegExp[] = [
+  INTO_TARGET_PATTERN,
+  UPDATE_TARGET_PATTERN,
+  FROM_TARGET_PATTERN,
+  TABLE_TARGET_PATTERN,
 ];
 
-const IDENTIFIER_CHAR_PATTERN = /[A-Za-z0-9_$\x80-\xff]/;
+const SELECT_TARGET_PATTERNS: readonly RegExp[] = [
+  INTO_TARGET_PATTERN,
+  FROM_TARGET_PATTERN,
+  UPDATE_TARGET_PATTERN,
+  TABLE_TARGET_PATTERN,
+];
+
+const CTE_NAME_PATTERN =
+  /(?:\bwith(?:\s+recursive)?\s+|,\s*)"?([A-Za-z_][A-Za-z0-9_]*)"?\s+as\s+(?:(?:not\s+)?materialized\s+)?\(/gi;
+
 const STRING_PREFIX_CHAR_PATTERN = /^[EeBbXxNn]$/;
-const DOLLAR_TAG_PATTERN = /^\$(?:[A-Za-z_\x80-\xff][A-Za-z0-9_\x80-\xff]*)?\$/;
 const SIMPLE_DOUBLE_QUOTED_IDENTIFIER = /^"([A-Za-z_][A-Za-z0-9_.]*)"/;
+
+function isDollarTagStartChar(code: number): boolean {
+  return (code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a) || code === 0x5f || code >= 0x80;
+}
+
+function isDollarTagChar(code: number): boolean {
+  return isDollarTagStartChar(code) || (code >= 0x30 && code <= 0x39);
+}
+
+function isIdentifierChar(code: number): boolean {
+  return isDollarTagChar(code) || code === 0x24;
+}
 
 function skipLineComment(raw: string, start: number): number {
   let i = start + 2;
@@ -106,10 +139,26 @@ function skipSingleQuotedLiteral(raw: string, quoteStart: number, allowBackslash
   return raw.length;
 }
 
+function matchDollarTag(raw: string, start: number): string | undefined {
+  if (raw[start] !== "$") return undefined;
+  let cursor = start + 1;
+  if (raw[cursor] === "$") return "$$";
+  const firstCode = raw.charCodeAt(cursor);
+  if (Number.isNaN(firstCode) || !isDollarTagStartChar(firstCode)) return undefined;
+  cursor += 1;
+  while (cursor < raw.length) {
+    if (raw[cursor] === "$") {
+      return raw.slice(start, cursor + 1);
+    }
+    if (!isDollarTagChar(raw.charCodeAt(cursor))) return undefined;
+    cursor += 1;
+  }
+  return undefined;
+}
+
 function skipDollarQuotedLiteral(raw: string, start: number): number | undefined {
-  const match = DOLLAR_TAG_PATTERN.exec(raw.slice(start));
-  if (!match) return undefined;
-  const delimiter = match[0];
+  const delimiter = matchDollarTag(raw, start);
+  if (!delimiter) return undefined;
   const closeIndex = raw.indexOf(delimiter, start + delimiter.length);
   return closeIndex === -1 ? raw.length : closeIndex + delimiter.length;
 }
@@ -134,7 +183,7 @@ function consumeDoubleQuotedIdentifier(raw: string, start: number): { nextIndex:
 }
 
 function prefixedLiteralQuoteOffset(raw: string, index: number): number {
-  if (index > 0 && IDENTIFIER_CHAR_PATTERN.test(raw[index - 1] ?? "")) return 0;
+  if (index > 0 && isIdentifierChar(raw.charCodeAt(index - 1))) return 0;
   const ch = raw[index] ?? "";
   if ((ch === "U" || ch === "u") && raw[index + 1] === "&" && raw[index + 2] === "'") return 2;
   if (STRING_PREFIX_CHAR_PATTERN.test(ch) && raw[index + 1] === "'") return 1;
@@ -175,13 +224,32 @@ function stripSqlCommentsAndLiterals(raw: string): string {
   return out.replace(/\s+/g, " ").trim();
 }
 
-function extractTargetTable(cleanedSql: string): string | undefined {
-  for (const pattern of TARGET_PATTERNS) {
-    const match = pattern.exec(cleanedSql);
-    const candidate = match?.[1]?.replaceAll('"', "");
-    if (!candidate || candidate.length > 64) continue;
-    if (IGNORED_TARGET_KEYWORDS.has(candidate.toLowerCase())) continue;
-    return candidate;
+function extractCteNames(cleanedSql: string): Set<string> {
+  const names = new Set<string>();
+  for (const match of cleanedSql.matchAll(CTE_NAME_PATTERN)) {
+    const name = match[1]?.toLowerCase();
+    if (name) names.add(name);
+  }
+  return names;
+}
+
+function targetPatternsFor(sqlCommand: string): readonly RegExp[] {
+  return sqlCommand === "SELECT" ? SELECT_TARGET_PATTERNS : DEFAULT_TARGET_PATTERNS;
+}
+
+function isUsableTargetCandidate(candidate: string | undefined, cteNames: ReadonlySet<string>): candidate is string {
+  if (!candidate || candidate.length > 64) return false;
+  const normalized = candidate.toLowerCase();
+  return !IGNORED_TARGET_KEYWORDS.has(normalized) && !cteNames.has(normalized);
+}
+
+function extractTargetTable(cleanedSql: string, sqlCommand: string): string | undefined {
+  const cteNames = extractCteNames(cleanedSql);
+  for (const pattern of targetPatternsFor(sqlCommand)) {
+    for (const match of cleanedSql.matchAll(pattern)) {
+      const candidate = match[1]?.replaceAll('"', "");
+      if (isUsableTargetCandidate(candidate, cteNames)) return candidate;
+    }
   }
   return undefined;
 }
@@ -197,7 +265,7 @@ export function summarizeSqlQuery(
   const skeleton = stripSqlCommentsAndLiterals(strings.slice(0, 64).join(" $1 "));
   const firstToken = skeleton.split(/\s+/, 1)[0]?.toUpperCase() ?? "";
   const sqlCommand = KNOWN_SQL_COMMANDS.has(firstToken) ? firstToken : "OTHER";
-  const dbTarget = extractTargetTable(skeleton);
+  const dbTarget = extractTargetTable(skeleton, sqlCommand);
   const paramCount = Array.isArray(args) ? args.length : 0;
   return {
     sqlCommand,

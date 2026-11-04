@@ -2,7 +2,7 @@ import type { AgentAdminConfig } from "@opentag/shared/browser";
 import { type FormEvent, useState } from "react";
 import { browserApi } from "../../../api.js";
 import * as m from "../../../paraglide/messages.js";
-import { KumoInputControl, SettingsList, SettingsRow, Switch } from "../../../ui/design-system.js";
+import { KumoInputControl, SettingsList, SettingsRow } from "../../../ui/design-system.js";
 import { AgentSettingsPageHeader, SettingsSaveActions, UnsavedChangesGuard } from "./settings-layout.js";
 
 export function GeneralConfigForm({
@@ -14,14 +14,12 @@ export function GeneralConfigForm({
 }) {
   const [config, setConfig] = useState(initialConfig);
   const [displayName, setDisplayName] = useState(initialConfig.displayName);
-  const [selfConfigurationEnabled, setSelfConfigurationEnabled] = useState(initialConfig.selfConfigurationEnabled);
   const [message, setMessage] = useState<string>();
   const [saving, setSaving] = useState(false);
-  const [selfConfigurationSaving, setSelfConfigurationSaving] = useState(false);
   const dirty = displayName !== config.displayName;
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!dirty || saving || selfConfigurationSaving) return;
+    if (!dirty || saving) return;
     setSaving(true);
     setMessage(undefined);
     try {
@@ -34,25 +32,6 @@ export function GeneralConfigForm({
       setMessage(cause instanceof Error ? cause.message : m.agent_settings_save_name_failed());
     } finally {
       setSaving(false);
-    }
-  }
-  async function changeSelfConfiguration(next: boolean) {
-    if (saving || selfConfigurationSaving) return;
-    setSelfConfigurationSaving(true);
-    setMessage(undefined);
-    try {
-      const updated = await browserApi.updateAgent(config.id, {
-        expectedRevision: config.revision,
-        selfConfigurationEnabled: next,
-      });
-      setConfig(updated);
-      setSelfConfigurationEnabled(updated.selfConfigurationEnabled);
-      setMessage(m.agent_settings_self_configuration_saved());
-      onAgentChanged();
-    } catch (cause) {
-      setMessage(cause instanceof Error ? cause.message : m.agent_settings_save_self_configuration_failed());
-    } finally {
-      setSelfConfigurationSaving(false);
     }
   }
   return (
@@ -76,22 +55,10 @@ export function GeneralConfigForm({
               />
             </div>
           </SettingsRow>
-          <SettingsRow
-            description={m.agent_settings_self_configuration_description()}
-            label={m.agent_settings_self_configuration()}
-          >
-            <Switch
-              aria-label={m.agent_settings_self_configuration()}
-              checked={selfConfigurationEnabled}
-              disabled={saving || selfConfigurationSaving}
-              onCheckedChange={(next) => void changeSelfConfiguration(next === true)}
-              transitioning={selfConfigurationSaving}
-            />
-          </SettingsRow>
         </SettingsList>
         {dirty ? (
           <SettingsSaveActions
-            busy={saving || selfConfigurationSaving}
+            busy={saving}
             onDiscard={() => {
               setDisplayName(config.displayName);
               setMessage(undefined);

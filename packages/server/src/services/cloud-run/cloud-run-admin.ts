@@ -1,4 +1,5 @@
 import type { ChannelName } from "@opentag/shared";
+import { z } from "zod";
 import { readBoundedJson } from "./bounded-json.js";
 import { CloudRunAdminError } from "./errors.js";
 import {
@@ -67,6 +68,7 @@ export interface CloudRunAdminOptions {
   regionalApiBaseUrl?: (region: string) => string;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
+  diagnosticSessionIds?: readonly string[];
 }
 // A 400 rejected before allocation may use the equivalent regional v1 representation. No other
 // error retries POST: a timeout/5xx may already have created the deterministic resource.
@@ -100,6 +102,7 @@ export class CloudRunAdmin {
   readonly #regionalApiBaseUrl: (region: string) => string;
   readonly #sleep: (ms: number) => Promise<void>;
   readonly #now: () => number;
+  readonly #diagnosticSessionIds: readonly string[];
   constructor(config: CloudRunAdminConfig, options: CloudRunAdminOptions) {
     this.#config = config;
     this.#fetch = options.fetchImpl ?? fetch;
@@ -108,6 +111,8 @@ export class CloudRunAdmin {
     this.#regionalApiBaseUrl = options.regionalApiBaseUrl ?? ((r) => `https://${r}-run.googleapis.com`);
     this.#sleep = options.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.#now = options.now ?? Date.now;
+    const selection = z.array(z.string().uuid()).min(1).max(16).safeParse(options.diagnosticSessionIds);
+    this.#diagnosticSessionIds = selection.success ? selection.data : [];
   }
   instanceIdFor(identity: RunnerInstanceIdentityInput): string {
     return runnerInstanceId(identity);
@@ -417,6 +422,13 @@ export class CloudRunAdmin {
         ...(spec.controlToken ? [{ name: "OPENTAG_RUNNER_CONTROL_TOKEN", value: spec.controlToken }] : []),
         { name: "OPENTAG_RUNNER_SANDBOX_NAME", value: runnerInstanceId(spec) },
         ...(spec.workspacePersistence === true ? [{ name: "OPENTAG_RUNNER_WORKSPACE_PERSISTENCE", value: "1" }] : []),
+        ...(spec.environment === "staging" && this.#diagnosticSessionIds.includes(spec.sessionId)
+          ? [
+              { name: "OPENTAG_ENV", value: "staging" },
+              { name: "OPENTAG_CLOUD_LATENCY_DIAGNOSTICS", value: "true" },
+              { name: "OPENTAG_CLOUD_LATENCY_SESSION_IDS", value: this.#diagnosticSessionIds.join(",") },
+            ]
+          : []),
       ],
       resources: { limits: { cpu: "1", memory: "1Gi" }, cpuIdle: false },
       // The Instance ingress policy and the default TCP startup probe both require exactly this

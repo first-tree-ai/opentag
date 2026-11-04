@@ -976,6 +976,7 @@ async function createCollaborationFixture(
       sessions: fixture.sessions,
     }),
     source: {
+      proofId: crypto.randomUUID(),
       agentId: fixture.agentId,
       computerId: fixture.computerId,
       connectionInstanceId: instanceId,

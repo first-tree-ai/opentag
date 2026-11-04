@@ -79,10 +79,8 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByRole("button", { name: "Connect Slack" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Connect Lark" })).toBeTruthy();
-    // Nothing is connected yet, so the page's own sentence stands alone with no heading restating it.
-    expect(
-      screen.getByText("Reach this Agent in a chat app, where it works as a digital coworker on the team."),
-    ).toBeTruthy();
+    // Nothing is connected yet; the page carries no subtitle restating its title.
+    expect(screen.queryByText(/digital coworker/)).toBeNull();
     expect(screen.queryByRole("heading", { name: "Messaging app" })).toBeNull();
   });
 
@@ -210,10 +208,7 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Messaging app" })).toBeTruthy();
-    // One sentence describes the page in either state, so a connected reader still reads it.
-    expect(
-      screen.getByText("Reach this Agent in a chat app, where it works as a digital coworker on the team."),
-    ).toBeTruthy();
+    expect(screen.queryByText(/digital coworker/)).toBeNull();
     const identity = document.querySelector('[data-ui="messaging-app-identity"]') as HTMLElement;
     expect(identity).toBeTruthy();
     // The mark and the bot name already say which channel this is, and the state reads under the name.
@@ -520,7 +515,7 @@ describe("OpenTag Web App Shell", () => {
     installApi({ bindingReauth: true, bound: true });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
-    expect(await screen.findByText("Permissions required")).toBeTruthy();
+    expect(await screen.findByText("Messaging permissions need updating")).toBeTruthy();
     expect(screen.queryByText(/Online/)).toBeNull();
     expect(screen.getByRole("button", { name: /Update permissions$/ })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Change bot" }));

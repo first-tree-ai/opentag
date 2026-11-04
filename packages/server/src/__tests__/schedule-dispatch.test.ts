@@ -28,6 +28,7 @@ import {
 } from "../services/schedules/index.js";
 import { SessionCollaborationService, SessionService } from "../services/sessions/index.js";
 import type { ScheduledMessageSnapshot } from "../services/sessions/session-collaboration-service.js";
+import { stubScheduleScope } from "./support/schedule-scope.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 /*
@@ -292,7 +293,11 @@ function makeStack(
   const management = new ScheduleService({
     database: db.database,
     owners: new DatabaseAgentOwnerResolver(db.database),
-    proofs: { authenticate: () => Promise.reject(new Error("no proofs in this suite")) },
+    proofs: {
+      assertCurrentSource: async () => undefined,
+      lockCurrentSource: async () => undefined,
+      authenticate: () => Promise.reject(new Error("no proofs in this suite")),
+    },
     publicUrl: PUBLIC_URL,
     clock: testClock,
   });
@@ -315,12 +320,12 @@ async function claimOf(stack: Stack, scheduleId: string, allowDispatch = true) {
 }
 
 function managementScope(seed: Seed) {
-  return {
+  return stubScheduleScope({
     accountId: seed.accountId,
     agentId: seed.agentId,
     sessionId: seed.targetSessionId,
     sessionKind: "channel" as const,
-  };
+  });
 }
 
 async function scheduleRow(scheduleId: string) {

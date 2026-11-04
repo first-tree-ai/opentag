@@ -50,12 +50,14 @@ Self-configuration is enabled by default. New Agents start with `selfConfigurati
 `0072_self_configuration_default_enabled` turned it on for every Agent that was not deleted. That migration cannot
 tell an earlier owner opt-out from the earlier default, so it turned both on.
 
-The owner turns it off or on with the Self-configuration switch on the Agent's Name settings page, or through the
+The owner turns it off or on with the Self-configuration switch on the Agent's Model settings page, beside Ask for
+approval, or through the
 Account-scoped Agent update API with `selfConfigurationEnabled`. The Agent cannot change this flag through
 `self update`.
 
 When `selfConfigurationEnabled` is false, every route under `/api/v1/runtime/agent` returns HTTP 403 with
-`AGENT_SELF_CONFIGURATION_DISABLED`, including read routes. The managed prompt includes the Self-configuration
+`AGENT_SELF_CONFIGURATION_DISABLED`, including read routes. Agent-originated configuration writes also recheck
+this switch under the existing Agent mutation lock, so an earlier authenticated request cannot bypass a later opt-out. The managed prompt includes the Self-configuration
 section only when the flag is true and the Session CLI is available, and only on a Local Computer. That section
 covers instructions, model, and reasoning effort.
 

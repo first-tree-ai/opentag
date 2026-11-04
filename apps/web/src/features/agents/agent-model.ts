@@ -208,6 +208,17 @@ export function projectAgentAvailability(
     return { state: "unconfirmed", reason: "runtime_unconfirmed", lastConfirmedAt: null, dependencies };
   }
   if (runtimeDependency.status !== "ready") {
+    /*
+     * A Provider check still running is not an answer, so a messaging problem the same read already
+     * confirmed outranks it: the reader learns what is known and gets its action now, instead of a
+     * "checking" status that only turns into that same problem once the probe finishes.
+     */
+    const confirmedMessaging = confirmedMessagingOverCheck(
+      runtimeDependency.status,
+      bindingEvidenceConfirmed ? binding : undefined,
+      dependencies,
+    );
+    if (confirmedMessaging) return confirmedMessaging;
     return {
       state: "action_required",
       reason: "runtime_unavailable",
@@ -220,6 +231,23 @@ export function projectAgentAvailability(
   }
   if (!binding) return { state: "not_connected", reason: "im_not_connected", lastConfirmedAt: null, dependencies };
   return messagingAvailability(binding, handoff, dependencies);
+}
+
+/** A confirmed binding problem that needs the reader's action while the Provider is still checking. */
+function confirmedMessagingOverCheck(
+  runtimeStatus: ProviderReadinessStatus | null,
+  binding: ImBindingSummary | undefined,
+  dependencies: AgentAvailability["dependencies"],
+): AgentAvailability | undefined {
+  if (runtimeStatus !== "checking" || !binding) return undefined;
+  if (
+    binding.bindingState !== "reauthorization_required" &&
+    binding.bindingState !== "error" &&
+    binding.bindingState !== "disabled"
+  ) {
+    return undefined;
+  }
+  return messagingAvailability(binding, undefined, dependencies);
 }
 
 /** The Agent-wide verdict once every dependency up to the messaging binding has confirmed. */

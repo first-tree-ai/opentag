@@ -62,7 +62,6 @@ export function PermissionsField({
         <div className="grid gap-4 p-4" data-ui="settings-row">
           <div className="grid gap-1">
             <strong className="text-sm font-medium text-kumo-strong">{m.agent_settings_command_allowlist()}</strong>
-            <p className="text-sm text-kumo-subtle">{m.agent_settings_command_allowlist_description()}</p>
           </div>
           {value.allowCommands.length > 0 ? (
             <ul className="flex flex-wrap gap-2" aria-label={m.agent_settings_command_allowlist()}>

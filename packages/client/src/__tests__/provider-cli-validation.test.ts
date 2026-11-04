@@ -284,6 +284,7 @@ describe("provider CLI validation runner", () => {
       expect(options.env.LARKSUITE_CLI_BRAND).toBe("feishu");
       expect(options.env.LARKSUITE_CLI_TENANT_ACCESS_TOKEN).toBe("tenant-token");
       expect(options.env.LARKSUITE_CLI_USER_ACCESS_TOKEN).toBeUndefined();
+      expect(options.env.LARKSUITE_CLI_REMOTE_META).toBe("off");
       return { stdout: '{"code":0,"msg":"ok","bot":{"open_id":"ou_bot"}}', stderr: "" };
     });
     const runner = new ProviderCliValidationRunner({
@@ -710,6 +711,7 @@ exit 1
       expect(options.env.LARKSUITE_CLI_TENANT_ACCESS_TOKEN).toBe("otrh_tenant_handle");
       expect(options.env.LARKSUITE_CLI_USER_ACCESS_TOKEN).toBeUndefined();
       expect(options.env.LARKSUITE_CLI_APP_SECRET).toBeUndefined();
+      expect(options.env.LARKSUITE_CLI_REMOTE_META).toBe("off");
       return { stdout: '{"code":0,"msg":"ok","bot":{"open_id":"ou_bot"}}', stderr: "" };
     });
     const cleaned: string[] = [];
@@ -719,6 +721,7 @@ exit 1
       environment: {
         LARKSUITE_CLI_TENANT_ACCESS_TOKEN: "otrh_tenant_handle",
         LARKSUITE_CLI_USER_ACCESS_TOKEN: undefined,
+        LARKSUITE_CLI_REMOTE_META: "on",
       },
       signal: sessionAbort.signal,
       cleanup: async () => {

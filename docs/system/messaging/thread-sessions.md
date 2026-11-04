@@ -16,6 +16,18 @@ A Thread Session is materialized only after a real inbound provider event carrie
 - In `all_message` mode, a thread-scoped event materializes or wakes the Thread Session even when it does not address the Agent. The Thread delivery is `ambient` unless the message itself addresses the Agent; direct continuity only extends how long the delivery is retained. The Channel Session receives a separate `ambient` observer copy of the same message.
 - In `mention_only` mode, an unaddressed event is delivered to the Thread Session only after trusted direct continuity has been established. Otherwise it is not delivered and does not materialize a Thread Session.
 
+When an event omits its provider root, the Inbox selects the newest nonempty root from the same
+binding/Channel/Thread's inbound history. It retains occurrence-time, provider-revision and ID
+ordering, projecting one root in SQL instead of materializing every stored context. No root keeps
+the existing continuity fallback.
+
+If a direct Channel root arrives after its Thread replies, SQL selects the latest
+external-message revisions across the original binding/Channel/time scope and
+matches each Thread's latest nonempty root before reading full message content.
+Cross-Thread revisions still supersede older input; unrelated payloads are not
+materialized. Existing ended-Thread fences, delivery retention and queue capacity
+remain in effect.
+
 The Thread Session owns the provider reply and the task execution for a message delivered to both scopes. The Channel observer copy is ambient channel context only: it must not reply, react, or perform another provider mutation for that message, and it must not investigate, execute or repeat, delegate, or create artifacts for that task — the observer Turn finishes without tool calls or task work. Reply role does not remove the Channel Session's normal IM credentials or CLI capabilities. If an ended-session fence prevents an ambient Thread delivery, the remaining Channel delivery is an ordinary owner delivery, not an observer copy.
 
 The Server owns working reactions and terminal error cards for eligible directly addressed human inputs. It projects working when custody accepts the input, removes working on completion, and requests a warning plus one execution-root card on failure. The Agent keeps normal progress silent and sends its final result through the provider CLI. The Channel observer copy and internal Sessions do not publish IM reactions or replies for that input.

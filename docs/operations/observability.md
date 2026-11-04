@@ -23,12 +23,12 @@ synonyms:
 | Request correlation | `requestId` | HTTP or client request identifier. |
 | Trace correlation | `traceId` | Active OpenTelemetry trace identifier injected via logger mixin. |
 | Account boundary | `accountId` | Tenant boundary for an Agent and its resources. |
-| Agent, Computer, Session, Delivery, Sandbox | `agentId`, `computerId`, `sessionId`, `deliveryId`, `sandboxId` | Stable resource identifiers. |
+| Agent, Computer, Session, Delivery, Turn, Sandbox | `agentId`, `computerId`, `sessionId`, `deliveryId`, `turnId`, `sandboxId` | Stable resource and Turn execution identifiers. |
 | Sandbox environment generation | `environmentGeneration` | Monotonic allocation generation for a Cloud Sandbox. |
-| Provider | `provider` | A provider name such as `feishu` or `slack`. |
-| Outcome | `outcome` | A stable state transition such as `accepted`, `failed`, or `rejected`. |
+| Provider / External service | `provider`, `externalService` | External dependency identifier (`slack`, `feishu`, `github`, `mcp`, `cloud-router`, `web-router`, `cloud-run`, `gcp-metadata`, `gcs`, `sandbox-runner`, `s3-skills`, `skill-source`, `gcp-error-reporting`, `channel-target`), kept distinct from the Pino base `service="opentag-server"`. |
+| Outcome | `outcome` | A stable state transition such as `accepted`, `started`, `completed`, `failed`, or `rejected`. |
 | Error identity | `errorCode`, `code` | Use the structured error code (dual-written as `errorCode` and `code` for compatibility). Do not invent `reason`, `errorReason`, `failureReason`, `dropReason`, or `detail` for the same concept. |
-| Attempt | `attempt` | Numeric retry or execution attempt. |
+| Attempt and retry counts | `attempt`, `attemptCount`, `retryCount`, `timedOut` | Numeric execution attempt, total attempts, retry count, and timeout indicator on external calls. |
 | Duration | `durationMs` | Elapsed time in milliseconds. |
 | Status | `status` | Protocol or provider status when it is not an outcome. |
 | Base service identity | `service`, `environment`, `revision` | Standard service metadata present on all server records. |
@@ -100,6 +100,14 @@ is never replayed, while local decrypt failures and rate limits still release th
 Query `operation=github.refresh` together with `connectionId` or `attemptId`. Production's existing
 WARN-and-above stdout shipping retains failures and settlement records, not the INFO phase stream.
 Process termination can leave only a started phase; missing completion is not proof of a timeout.
+
+## Google sign-in transport budget
+
+The built-in Google authorization-code exchange has a 10 s native fetch budget,
+including token-body parsing. An uncertain exchange is not retried with the same
+code. A complete token result keeps its original commit/rollback handling during
+client disconnect or shutdown. A pinned core patch preserves this boundary until
+the library provides equivalent native cancellation.
 
 ## Cloud Pi phase diagnostics
 
@@ -205,6 +213,17 @@ It requires `OPENTAG_ENV=staging`, `OPENTAG_CLOUD_LATENCY_DIAGNOSTICS=true` and 
 `OPENTAG_CLOUD_LATENCY_SESSION_IDS` list of at most 16 UUIDs. It emits no added records by default
 or in other environments. `OPENTAG_REVISION` is a full lowercase Git SHA, otherwise `unknown`.
 
+The production composition snapshots the validated selection into a typed Cloud Run Admin option.
+Only new Staging Instances whose birth Session is selected receive `OPENTAG_ENV=staging`,
+`OPENTAG_CLOUD_LATENCY_DIAGNOSTICS=true` and the full approved Session list in their container
+environment. Other create requests retain their existing shape. Both create API versions share
+this construction. The Server revision is not forwarded as the Runner revision.
+
+Existing or adopted Instances are never patched to change diagnostics. Borrowing an Instance born
+without these settings can leave Runner records unavailable; retain that sample as missing evidence.
+Disabling Server selection affects future creation only: existing immutable settings last until
+normal reclamation, while the Runner continues to apply the Session allowlist after a transfer.
+
 Each observation reserves a summary within 32 records / 64 KiB. Observers retain at most 1,024
 identities for quota enforcement without evicting them to reopen budgets. Server retries share
 one delivery budget and have separate attempt identities; duplicate attempts and repeated workspace
@@ -220,6 +239,34 @@ aggregate counts/quantiles without resource IDs or raw files. It does not infer 
 end-to-end latency from missing records. Deployment, live collection and actual log arrival remain
 separate operational acceptance; no exporter, scheduler, storage or retention change is installed.
 
+The same Staging selection enables a separate Runner shutdown stream on existing stderr:
+`module=cloud-runner`, `operation=shutdown.diagnostic`, `version=1`. It captures the
+Session, Sandbox and generation from the current committed assignment, falling back to the last
+accepted authenticated welcome if no assignment exists. Capture happens at the first stop request,
+or at cleanup entry for an exit without a stop request. A prior accepted welcome in this process
+is required; a persisted assignment alone cannot attribute unauthenticated startup. A refused
+cross-Session rebind keeps the held assignment's identity and Session selection. This diagnostic-only identity
+survives control-channel closure, including Server release before provider SIGTERM; it never
+authorizes execution on a closed channel. No prior accepted welcome means no attributed records.
+Repeated signals do not reopen the stream, and a later welcome cannot change its captured identity.
+
+Each Runner serve invocation emits at most eight records / 16 KiB, including its reserved summary.
+The stream measures `controller_drain` (the existing controller close call), `native_cleanup`
+(active acceptance cancellation/wait and the existing conditional native destroy), and
+`gateway_health_close` (the existing web gateway and health listener close calls). Existing caught
+errors and no-op cleanup remain part of those call boundaries. A false native cleanup result emits
+failure. Dropped records leave sequence gaps. Missing phases, output loss and absent summaries are
+incomplete evidence. The summary describes these cleanup calls, not the global process exit code
+or proof that the process exited.
+Elapsed time between the request and first phase includes existing connection/acceptance draining
+before cleanup entry; a native destroy may already have happened during that interval.
+
+Shutdown records share the bounded payload and process-local clock rules above, carry no Turn ID,
+and remain separate from Turn latency reports. They add no wait, flush or retry policy. Their
+durations cannot establish provider deletion time, SIGTERM delivery time or an ingress latency
+distribution; provider state transitions require independent evidence. See the
+[shutdown validation guide](https://github.com/first-tree-ai/opentag/blob/main/testing/performance/cloud-latency/SHUTDOWN.md).
+
 ## Full-stack performance logging
 
 When `OPENTAG_PERF_LOG_ENABLED` is `true` (the default), the Server emits paired `started` and
@@ -228,15 +275,29 @@ When `OPENTAG_PERF_LOG_ENABLED` is `true` (the default), the Server emits paired
 - **Entrypoints (`perfCategory="http" | "ws" | "worker"`)** — Fastify HTTP requests (excluding `/healthz`, `/readyz`, and WebSocket upgrade requests), non-heartbeat Runtime and Cloud Runner WebSocket frames (`ws.runner.frame.<type>`), Runtime Provider Proxy data-plane streams (`ws.provider_proxy.stream` with `provider`, `requestBytes`, `responseBytes`, and `firstByteMs`), and background worker passes.
 - **Domain services (`perfCategory="service"`)** — Public methods on core Server services (including `SandboxRunnerService`, `CloudDeliveryOwner`, `CloudSessionCollaborationOwner`, and `RunnerWorkspaceService`) and trusted Git subprocess invocations (`module="git-subprocess"`, `operation="subprocess.git.<subcommand>"`), wrapped via non-intrusive proxies and context-bound child spans.
 - **Database queries (`perfCategory="db"`)** — Every executed Drizzle and `postgres.js` query (`operation="db.query"`), transaction (`operation="db.transaction"`), and savepoint (`operation="db.savepoint"`). Lazy queries that are never awaited and `no_pipeline` readiness probes do not emit records. Records carry `sqlCommand`, `dbTarget`, `paramCount`, `rowCount`, `inTransaction`, and `sqlState` on error, without logging raw SQL text or bound parameters.
-- **External service calls (`perfCategory="external"`)** — Outbound requests through `ExternalCallPolicy` (Feishu and Slack), `McpOutboundFetcher`, GitHub API and proxy transports, Cloud Model and Web Routers, Cloud Run Admin and GCP Metadata Server, S3/GCS object stores, remote Skill sources, and Error Reporting. Streaming responses settle on body EOF or body error rather than header arrival. User-configured or user-content URLs (MCP, Skill sources, Slack file downloads, provider proxy) log `httpMethod` and `targetHost` only; `targetPath` is included only for fixed, server-owned API route templates.
+- **External service calls (`perfCategory="external"`)** — Outbound requests through `ExternalCallPolicy` (Feishu and Slack), Feishu channel handshakes (`external.feishu.channel.connect`), `McpOutboundFetcher`, GitHub API and proxy transports, Runtime Provider Proxy (`slack`, `feishu`, `github`), Cloud Model and Web Routers, Cloud Run Admin and GCP Metadata Server, S3/GCS object stores, Sandbox Runner control RPCs (`external.sandbox-runner.deliveryDispatch`, `external.sandbox-runner.deliveryRun`, `external.sandbox-runner.deliverySteer`, `external.sandbox-runner.deliveryQuery`, `external.sandbox-runner.sessionMessage`, `external.sandbox-runner.runAcceptance`, and `external.sandbox-runner.sealWorkspace`), remote Skill sources, Channel Target releases, and Error Reporting. Every external call settlement record includes `provider`, `externalService`, `operation`, `durationMs`, `outcome`, `attemptCount`, and `retryCount` (plus `errorCode`, `transportCode`, and `timedOut=true` when a call fails or times out; pre-dispatch rejections record `attemptCount=0`). Streaming responses settle on body EOF or body error rather than header arrival. User-configured or user-content URLs (MCP, Skill sources, Slack file downloads, provider proxy) log `httpMethod` and `targetHost` only; `targetPath` is included only for fixed, server-owned API route templates.
+
+Provider proxy stream failure warnings retain registered IM adapter failure codes, including
+`validation_scope`, `operation_not_registered`, and body/header rejection codes, alongside the
+existing transport and GitHub allowlists. Unknown codes use `upstream_unavailable`. These warnings
+contain only provider and controlled code; they omit raw error messages, paths, headers, bodies,
+capabilities, and identities.
 
 Every started operation generates a unique `callId` and records `startedAt` (ISO-8601 UTC). Its matching
 settlement record carries the same `callId` and `startedAt` plus `endedAt` (ISO-8601 UTC) and monotonic
-`durationMs`. Nested operations propagate `requestId`, `parentCallId`, `callerOperation`, `sandboxId`,
-and `environmentGeneration` through `AsyncLocalStorage`. Routine start and completion records emit at
-`OPENTAG_PERF_LOG_LEVEL` (default `debug`, matching per-request detail in the level contract); operations
-whose `durationMs` meets or exceeds `OPENTAG_PERF_SLOW_THRESHOLD_MS` attach `slow=true`, and failed
-operations emit at `warn`. Setting `OPENTAG_PERF_LOG_ENABLED=false` bypasses proxy/fetch wrapping and
+`durationMs`. Nested operations propagate `requestId`, `parentCallId`, `callerOperation`, and Turn/resource
+correlation identifiers (`accountId`, `agentId`, `computerId`, `sessionId`, `deliveryId`, `turnId`,
+`sandboxId`, and `environmentGeneration`) through `AsyncLocalStorage`, so every database query and external
+service call within a Turn can be correlated end to end. Routine completion records emit at
+`OPENTAG_PERF_LOG_LEVEL` (default `debug`), while `outcome="started"` records emit at
+`OPENTAG_PERF_START_LOG_LEVEL` (default `debug`) and fast database completions (`perfCategory="db"`,
+`slow` absent) emit at `OPENTAG_PERF_DB_LOG_LEVEL` (default `debug`). Operations whose `durationMs` meets
+or exceeds `OPENTAG_PERF_SLOW_THRESHOLD_MS` attach `slow=true` and emit at `OPENTAG_PERF_LOG_LEVEL`, and
+failed operations emit at `warn`. Because the production Google Cloud Ops Agent pipeline uploads `WARNING`
+(Pino `warn`) and above by default, failed external calls are always ingested in Cloud Logging; to ingest
+routine `started`/`completed` performance records into Cloud Logging during a production bottleneck window
+without changing Ops Agent filters, set `OPENTAG_PERF_LOG_LEVEL=warn` (alongside `OPENTAG_LOG_LEVEL=info`
+or `debug` for local stdout). Setting `OPENTAG_PERF_LOG_ENABLED=false` bypasses proxy/fetch wrapping and
 context allocation.
 
 In addition to paired performance spans, the Server and Cloud Runner emit structured lifecycle and
@@ -267,7 +328,9 @@ OPENTAG_OTEL_SAMPLE_RATE=1
 | `OPENTAG_OTEL_SAMPLE_RATE` | `1` | Global head sample rate in the inclusive range `0` to `1` |
 | `OPENTAG_LOG_LEVEL` | `info` | Server Pino level: `trace`, `debug`, `info`, `warn`, `error`, `fatal`, or `silent` |
 | `OPENTAG_PERF_LOG_ENABLED` | `true` | Enables paired start/end performance logs across HTTP/WS entrypoints, services, database queries, and external calls |
-| `OPENTAG_PERF_LOG_LEVEL` | `debug` | Default Pino level (`debug`, `info`, or `warn`) for routine performance start and completion records |
+| `OPENTAG_PERF_LOG_LEVEL` | `debug` | Default Pino level (`debug`, `info`, or `warn`) for routine performance completion records (and slow DB completions) |
+| `OPENTAG_PERF_DB_LOG_LEVEL` | `debug` | Pino level (`debug`, `info`, or `warn`) for routine fast database completion records (`perfCategory="db"`) |
+| `OPENTAG_PERF_START_LOG_LEVEL` | `debug` | Pino level (`debug`, `info`, or `warn`) for `outcome="started"` performance records |
 | `OPENTAG_PERF_SLOW_THRESHOLD_MS` | `1000` | Slow-operation threshold in milliseconds; completions at or above this duration set `slow=true` |
 | `GOOGLE_CLOUD_PROJECT` | unset | Forwards relayed Web App and CLI errors to Google Cloud Error Reporting; see [Client error reporting](error-reporting.md) |
 | `OPENTAG_ERROR_REPORTING_CREDENTIALS_JSON` | unset | Service account key JSON for that forwarding; unset uses Application Default Credentials |
@@ -423,6 +486,10 @@ unlock; it does not restart for each file. PostgreSQL 16 uses a stricter 10 s cl
 its native statement and transaction-idle limits still apply. Verification has a 10 s total budget. Direct timeout parameters in the connection URL cannot disable this startup policy. Losing the dedicated startup session invalidates the attempt;
 a replacement cannot inherit its advisory lock. Failure ends that startup attempt without widening its budget.
 Large index builds and bulk backfills require a separate measured execution, compatibility and recovery design.
+
+HTTP request stages and producer work drain before the first database-pool close.
+Shutdown also joins a pending listen attempt and cannot restart prewarm or publish
+readiness after a stop request.
 
 Database shutdown supplies `end({ timeout: 1 })` on its first call, including startup cleanup. After the graceful
 budget the driver destroys remaining sockets, even if a peer withholds its closing acknowledgement.

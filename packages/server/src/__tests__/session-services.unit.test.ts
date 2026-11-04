@@ -1416,6 +1416,7 @@ describe("ImResourceService with the unit database", () => {
 
 describe("SessionCollaborationService response mapping", () => {
   const source = {
+    proofId: crypto.randomUUID(),
     agentId: "agent",
     computerId: "computer",
     connectionInstanceId: "instance",

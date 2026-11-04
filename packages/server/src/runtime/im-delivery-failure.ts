@@ -72,6 +72,13 @@ export const EXPECTED_RECOVERY_CODES = new Set([
   "IM_DELIVERY_RECOVERY_REPORTING",
 ]);
 
+/** Steer and custody deferral codes that are expected waiting states, not operator-facing failures. */
+export const EXPECTED_DEFERRED_CODES: ReadonlySet<string> = new Set([
+  "IM_DELIVERY_STEER_DEFERRED",
+  "IM_DELIVERY_STEER_STARTING",
+  "IM_DELIVERY_CUSTODY_DEFERRED",
+]);
+
 export interface DeliveryFailureDeps {
   database: DatabaseClient;
   now: () => number;
@@ -126,6 +133,11 @@ export interface DeliveryFailureOptions {
   allowTerminal?: boolean;
 }
 
+function shouldEmitFailureDiagnostic(code: string, previousErrorCode: DeliveryAttempt["previousErrorCode"]): boolean {
+  if (EXPECTED_DEFERRED_CODES.has(code)) return false;
+  return (previousErrorCode ? canonicalFailureCode(previousErrorCode) : undefined) !== code;
+}
+
 /**
  * Record one failed attempt: bounded backoff from the attempt counter plus the placement
  * Computer's silence, or — for a dispatch that has now spent the whole runtime budget on the same
@@ -152,6 +164,8 @@ export async function recordDeliveryFailure(
     .where(
       and(
         eq(imMessageDeliveries.id, attempt.deliveryId),
+        isNull(imMessageDeliveries.reportedAt),
+        eq(imMessageDeliveries.attemptCount, attempt.attemptCount),
         sql`${imMessageDeliveries.state} in ('pending', 'accepted', 'expired')`,
         ...(attempt.claimToken ? [eq(imMessageDeliveries.lastErrorCode, attempt.claimToken)] : []),
       ),
@@ -160,8 +174,8 @@ export async function recordDeliveryFailure(
   if (!updated) return;
   logDispatchRetryScheduled(deps.logger, attempt.deliveryId, bounded, delayMs);
   // One line per failure run, not one per attempt: a repeated code adds nothing an operator can act on.
-  const previousCode = attempt.previousErrorCode ? canonicalFailureCode(attempt.previousErrorCode) : undefined;
-  if (previousCode !== bounded) deps.onDiagnostic(bounded, diagnosticContext(attempt));
+  if (shouldEmitFailureDiagnostic(bounded, attempt.previousErrorCode))
+    deps.onDiagnostic(bounded, diagnosticContext(attempt));
   deps.onMetric({ name: "retry", value: 1 });
   if (isCloudReadinessRetry(bounded) && (!attempt.claimToken || !deps.readyRetryClaims.has(attempt.claimToken))) {
     // A ready event may have seen this row's claim marker before the backoff was recorded.

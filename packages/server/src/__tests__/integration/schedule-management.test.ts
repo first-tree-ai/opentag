@@ -22,7 +22,7 @@ import {
 import { eq, sql as sqlTag } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../../app.js";
-import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
+import { createDatabaseClient } from "../../db/client.js";
 import { agentSchedules, sessions } from "../../db/schema/index.js";
 import { DatabaseAgentOwnerResolver } from "../../services/agents/index.js";
 import type { UserAuthService } from "../../services/auth/index.js";
@@ -35,7 +35,7 @@ const T0 = new Date("2026-09-28T01:00:00.000Z");
 const PUBLIC_URL = "https://opentag.example.com";
 
 let testDatabase: MigratedTestDatabase;
-let client: { database: DatabaseClient; sql: { end(): Promise<void> } };
+let client: ReturnType<typeof createDatabaseClient>;
 let currentTime: Date;
 let proofs: Map<string, SessionCliSourceContext>;
 let service: ScheduleService;
@@ -57,6 +57,8 @@ beforeEach(async () => {
     database: client.database,
     owners: new DatabaseAgentOwnerResolver(client.database),
     proofs: {
+      assertCurrentSource: async () => undefined,
+      lockCurrentSource: async () => undefined,
       authenticate: async (token) => {
         const source = proofs.get(token);
         if (!source) throw new SessionCliProofError("invalid_proof", "unknown proof");
@@ -153,6 +155,7 @@ function registerProof(
   sessionKind: "channel" | "thread" | "internal",
 ) {
   proofs.set(token, {
+    proofId: crypto.randomUUID(),
     agentId: seed.agentId,
     computerId: randomUUID(),
     connectionInstanceId: randomUUID(),
@@ -345,6 +348,8 @@ describe("ScheduleService creation validation and DTO", () => {
 
   function serviceAuthenticate() {
     return {
+      assertCurrentSource: async () => undefined,
+      lockCurrentSource: async () => undefined,
       authenticate: async (token: string) => {
         const source = proofs.get(token);
         if (!source) throw new SessionCliProofError("invalid_proof", "unknown proof");
@@ -928,4 +933,29 @@ describe("Schedule HTTP surfaces end to end (M01)", () => {
       await closeClient();
     }
   });
+});
+
+it("authenticates Schedule access while self-configuration is off with one owner read", async () => {
+  try {
+    const seed = await seedConversation("schedule-owner@example.test", "schedule-owner");
+    registerProof("owner-only", seed, seed.channelSessionId, "channel");
+    await client.sql`update agents set self_configuration_enabled=false where id=${seed.agentId}`;
+    const queries: string[] = [];
+    const original = client.sql.options.debug;
+    client.sql.options.debug = (_id, query) => {
+      queries.push(query);
+    };
+    try {
+      expect(await authenticate("owner-only")).toMatchObject({
+        accountId: seed.accountId,
+        agentId: seed.agentId,
+        sessionId: seed.channelSessionId,
+      });
+      expect(queries.filter((q) => q.trimStart().toLowerCase().startsWith("select"))).toHaveLength(1);
+    } finally {
+      client.sql.options.debug = original;
+    }
+  } finally {
+    await closeClient();
+  }
 });

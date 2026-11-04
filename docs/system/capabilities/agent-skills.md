@@ -100,7 +100,8 @@ the Server copies into the row.
 tests — the same interface/adapter/fake shape as `WorkspaceObjectStore` in
 `packages/server/src/services/sandboxes/workspace-object-store.ts`. `list` is a bounded
 `ListObjectsV2` page (`prefix`, optional `cursor`/`limit`) used only by the object collector; the S3
-adapter parses its XML with a small extractor rather than an XML dependency.
+adapter bounds the streamed XML to 4 MiB of bytes before UTF-8 decoding and parsing with a small
+extractor. Overflow cancels the reader and reports `invalid_response`; later passes can recover.
 
 `aws4fetch` is chosen over the AWS SDK v3 because it is SigV4 over `fetch` with zero transitive
 dependencies and no default-checksum behaviour, which several S3-compatible services reject. The
@@ -151,7 +152,18 @@ hold:
   key is re-checked immediately before its delete, because a row can appear between the two.
 
 Deletes are capped per run (`maxDeletesPerRun`, default 500); a failed delete is logged and left for
-the next pass. Logging is one `info` summary per run (scanned, deleted, skipped-young,
+the next pass. A pass also lists at most ten pages (`maxPagesPerRun`) of 200 entries by default,
+so young/referenced objects and failed deletions cannot drive an entire-prefix scan. The worker
+keeps the next-page cursor in memory across passes and wraps only at listing end. A delete cap
+reached mid-page leaves the remaining keys for a later wrap; they are not reported as processed.
+A failed LIST clears its continuation for the next scheduled pass and never retries inline.
+At the default hourly cadence this admits at most 2,000 listed entries per hour; full-prefix
+revisit time depends on population and deletion backlog. This is a work bound, not a measured
+production cleanup SLA.
+
+Stop closes GC admission and waits for its actual current list/SQL/delete work. It rechecks stop
+between stages and objects. Repeated stop callers join the same work; stopped collectors cannot
+be restarted, and manual passes return an empty summary. Construct a new collector to restart. Logging is one `info` summary per run (scanned, deleted, skipped-young,
 skipped-referenced, duration), `debug` per delete, and `warn` on a failed delete.
 
 Failed writes still check the current row before deleting their own object: a lost commit acknowledgement
@@ -415,6 +427,16 @@ a conflicting name retains `SKILL_NAME_CONFLICT`, while a new name without a slo
 `SKILL_LIMIT_REACHED`. Replacements keep their existing row/revision CAS and do not consume a slot.
 A failed admission uses the existing reference-aware object cleanup; an uncertain commit never
 justifies deleting a possibly referenced object.
+
+Enable, remove and replace also guard the current owned Agent before the row/revision CAS.
+Account, Computer and Runtime reads resolve authority and Skill rows in one read-only Repeatable
+Read snapshot. Archive preparation, PUT, download and cleanup stay outside those transactions.
+Runtime calls preserve their authenticated Session, proof ID, Computer, placement generation,
+installation and connection identity through presets and uploads. Final writes reuse Session CLI
+proof authority under the Agent guard, then lock binding → Session → placement → Computer → proof
+before the Skill mutation. An ended Session, replaced proof/placement, rebind or closed execution
+cannot authorize a later write. Skills remain available independently of the Agent configuration
+self-edit opt-in switch.
 
 Names are 1–64 characters of lowercase letters, numbers, and single hyphens; they may not start or
 end with a hyphen and may not contain consecutive hyphens (`SkillNameSchema`). Ten names are reserved

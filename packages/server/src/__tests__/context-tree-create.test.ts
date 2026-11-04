@@ -58,12 +58,10 @@ function fixture(repository = "acme/memory") {
         : fetch(url, init),
   });
   const workspace = new GitWorkspace();
-  const credentials = { acquire: vi.fn() };
   const runner = new GitHubContextTreeOperations({
     management,
     api,
     workspace,
-    credentials,
     computerKind: async () => "local",
   });
   operations.push(runner);
@@ -90,7 +88,19 @@ function fixture(repository = "acme/memory") {
     expectedRuntimeConfigRevision: 1,
   };
   const run = () => service.run(accountId, config.id, input);
-  return { accountId, connection, management, fetch, api, workspace, runner, credentials, config, agents, input, run };
+  return {
+    accountId,
+    connection,
+    management,
+    fetch,
+    api,
+    workspace,
+    runner,
+    config,
+    agents,
+    input,
+    run,
+  };
 }
 
 it.each(["acme/memory", "Alice/memory"])(
@@ -122,7 +132,6 @@ it.each(["acme/memory", "Alice/memory"])(
     expect(f.agents.updateContextTreeSelection).toHaveBeenCalledWith(f.accountId, f.config.id, expect.any(Object), [
       { kind: "git", repository, path: ".", ref: "trunk" },
     ]);
-    expect(f.credentials.acquire).not.toHaveBeenCalled();
     const root = f.workspace.root;
     await f.runner.close();
     expect(existsSync(root as string)).toBe(false);

@@ -899,6 +899,7 @@ describe("AgentService", () => {
     expect(stopSessions).toHaveBeenCalledWith([
       {
         agentId: created.id,
+        agentRevision: suspended.revision,
         computerId: computer.id,
         installationId: computer.installationId,
         placementGeneration: 1,

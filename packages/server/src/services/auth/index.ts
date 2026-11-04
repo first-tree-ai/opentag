@@ -18,7 +18,6 @@ export {
 } from "./connect-code-service.js";
 export { DevBrowserAuthService } from "./dev-browser-auth.js";
 export { AuthServiceError } from "./errors.js";
-export { type PostAuthenticationResult, PostAuthenticationService } from "./post-authentication.js";
 export { formatStartupError, generateSecret, hashSecret, redactSecrets } from "./security.js";
 export { validateOAuthNext } from "./sign-in-destination.js";
 export type { AuthTokenIdentity, AuthTokenPair, AuthTokenProvider } from "./token-provider.js";

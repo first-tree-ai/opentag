@@ -156,6 +156,7 @@ function projectActivityByAgent(rows: readonly AgentActivityEvidence[]): Map<str
 
 export interface AgentSessionStopTarget {
   agentId: string;
+  agentRevision: number;
   computerId: string;
   installationId: string;
   placementGeneration: number;
@@ -498,7 +499,8 @@ export class AgentService {
     } catch (error) {
       const constraintName = uniqueConstraintName(error);
       if (constraintName && input.creationIntentId) {
-        const replay = await this.#replayCreationIntent(
+        const replay = await this.#findCreationIntent(
+          this.#database,
           callerUserId,
           input.creationIntentId,
           creationIntentFingerprint(input),
@@ -523,16 +525,6 @@ export class AgentService {
       });
     }
     return result.config;
-  }
-
-  async #replayCreationIntent(
-    callerUserId: string,
-    creationIntentId: string,
-    intentFingerprint: string,
-  ): Promise<AgentAdminConfig | undefined> {
-    return this.#database.transaction(async (transaction) => {
-      return this.#findCreationIntent(transaction, callerUserId, creationIntentId, intentFingerprint);
-    });
   }
 
   async #findCreationIntent(
@@ -722,9 +714,13 @@ export class AgentService {
     };
   }
 
-  async getById(callerUserId: string, agentId: string): Promise<AgentDetail> {
+  getSummaryById(callerUserId: string, agentId: string): Promise<AgentSummary> {
+    return this.#readAgentSummary(this.#database, callerUserId, agentId);
+  }
+
+  async #readAgentSummary(executor: QueryExecutor, callerUserId: string, agentId: string): Promise<AgentSummary> {
     const creator = alias(users, "agent_creator");
-    const [row] = await this.#database
+    const [row] = await executor
       .select({
         id: agents.id,
         createdByUserId: agents.createdByUserId,
@@ -749,13 +745,20 @@ export class AgentService {
       .leftJoin(computers, eq(computers.id, agents.computerId))
       .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
       .limit(1);
-    if (!row || row.createdByUserId !== callerUserId) throw resourceNotFound();
-    const recoveryStartedAt = new Date(this.#now().getTime() - AGENT_ACTIVITY_RECOVERY_WINDOW_MS);
-    const activityByAgent = await this.#readActivityByAgent(this.#database, [agentId], recoveryStartedAt);
-    return {
-      ...toAgentSummary({ ...row, computer: toAgentComputer(row) }),
-      activity: activityByAgent.get(agentId) ?? { state: "idle" },
-    };
+    if (!row) throw resourceNotFound();
+    return toAgentSummary({ ...row, computer: toAgentComputer(row) });
+  }
+
+  async getById(callerUserId: string, agentId: string): Promise<AgentDetail> {
+    return this.#database.transaction(
+      async (transaction) => {
+        const agent = await this.#readAgentSummary(transaction, callerUserId, agentId);
+        const recoveryStartedAt = new Date(this.#now().getTime() - AGENT_ACTIVITY_RECOVERY_WINDOW_MS);
+        const activityByAgent = await this.#readActivityByAgent(transaction, [agentId], recoveryStartedAt);
+        return { ...agent, activity: activityByAgent.get(agentId) ?? { state: "idle" } };
+      },
+      { isolationLevel: "repeatable read", accessMode: "read only" },
+    );
   }
 
   async getUsageById(
@@ -854,7 +857,12 @@ export class AgentService {
     return toAgentAdminConfig(scope.agent, scope.runtimeConfig, scope.computerId);
   }
 
-  async updateById(callerUserId: string, agentId: string, rawInput: UpdateAgentRequest): Promise<AgentAdminConfig> {
+  async updateById(
+    callerUserId: string,
+    agentId: string,
+    rawInput: UpdateAgentRequest,
+    source: "account" | "agent-self" = "account",
+  ): Promise<AgentAdminConfig> {
     const input = UpdateAgentRequestSchema.parse(rawInput);
     // Validate an explicit Cloud model choice BEFORE the mutation transaction: no Agent row lock is
     // held across the catalog's network read, and a rejected choice leaves no revision writes.
@@ -867,6 +875,14 @@ export class AgentService {
     const result = await this.#database.transaction(async (transaction) => {
       const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId);
       this.#requireManagePermission(scope);
+      if (source === "agent-self" && !scope.agent.selfConfigurationEnabled) {
+        throw new AgentServiceError(
+          "AGENT_SELF_CONFIGURATION_DISABLED",
+          "deterministic",
+          "The Account has disabled self-configuration for this Agent",
+          403,
+        );
+      }
       if (scope.agent.revision !== input.expectedRevision) {
         throw new AgentServiceError(
           "AGENT_REVISION_CONFLICT",
@@ -1687,6 +1703,7 @@ export class AgentService {
     return transaction
       .select({
         agentId: imBindings.agentId,
+        agentRevision: sql<number>`${agents.revision} + 1`,
         installationId: computers.currentInstallationId,
         computerId: sessionPlacements.computerId,
         placementGeneration: sessionPlacements.generation,

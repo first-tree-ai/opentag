@@ -1043,9 +1043,6 @@ describe("background and WebSocket tracing", () => {
     expect(() =>
       owner.requestReconcile(computerId, instanceId, { ...conflictRequest, sessionId: randomUUID() }),
     ).toThrow();
-    owner.close();
-    await expect(pendingConflict).resolves.toBeInstanceOf(Error);
-
     const reportBody = {
       deliveryId: acceptedRequest.deliveryId,
       turnId: randomUUID(),
@@ -1068,10 +1065,13 @@ describe("background and WebSocket tracing", () => {
       context,
     );
 
+    await owner.close();
+    await expect(pendingConflict).resolves.toBeInstanceOf(Error);
+
     const timeoutOwner = new RuntimeDomainOwner(registry, custody as never, { requestTimeoutMs: 2 });
     const timeoutRequest = runtimeReconcileRequest(computerId);
     await expect(timeoutOwner.requestReconcile(computerId, instanceId, timeoutRequest)).rejects.toThrow();
-    timeoutOwner.close();
+    await timeoutOwner.close();
 
     const failingRegistry = new ConnectionRegistry();
     const failingComputerId = randomUUID();
@@ -1093,7 +1093,7 @@ describe("background and WebSocket tracing", () => {
     await expect(
       failingOwner.requestReconcile(failingComputerId, failingInstanceId, sendFailureRequest),
     ).rejects.toThrow();
-    failingOwner.close();
+    await failingOwner.close();
 
     const typedRegistryFailures = [
       [new RuntimeRegistrySendError("instance_replaced", "PRIVATE_REPLACED_RUNTIME_BODY"), "RUNTIME_INSTANCE_REPLACED"],
@@ -1110,7 +1110,7 @@ describe("background and WebSocket tracing", () => {
       await expect(typedFailureOwner.requestReconcile(request.installationId, randomUUID(), request)).rejects.toBe(
         error,
       );
-      typedFailureOwner.close();
+      await typedFailureOwner.close();
     }
 
     const capacityOwner = new RuntimeDomainOwner(registry, custody as never, {
@@ -1123,7 +1123,7 @@ describe("background and WebSocket tracing", () => {
       .catch((error: unknown) => error);
     const capacityRejectedRequest = runtimeReconcileRequest(computerId);
     expect(() => capacityOwner.requestReconcile(computerId, instanceId, capacityRejectedRequest)).toThrow();
-    capacityOwner.close();
+    await capacityOwner.close();
     await expect(capacityPending).resolves.toBeInstanceOf(Error);
 
     const spans = exporter.getFinishedSpans();

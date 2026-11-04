@@ -768,6 +768,9 @@ export class ImOutboundCapture {
   readonly #now: () => Date;
   readonly #deadlineMs: number;
   readonly #slackWorkingStatus: boolean;
+  #closed = false;
+  #closing: Promise<void> | undefined;
+  readonly #work = new Set<Promise<unknown>>();
 
   constructor(database: DatabaseClient, options: ImOutboundCaptureOptions = {}) {
     this.#database = database;
@@ -777,12 +780,35 @@ export class ImOutboundCapture {
     this.#deadlineMs = options.deadlineMs ?? OUTBOUND_CAPTURE_DEADLINE_MS;
   }
 
+  close(): Promise<void> {
+    if (this.#closing) return this.#closing;
+    this.#closed = true;
+    this.#closing = (async () => {
+      while (this.#work.size) await Promise.allSettled([...this.#work]);
+    })();
+    return this.#closing;
+  }
+
+  #track<T>(operation: Promise<T>): Promise<T> {
+    this.#work.add(operation);
+    void operation.then(
+      () => this.#work.delete(operation),
+      () => this.#work.delete(operation),
+    );
+    return operation;
+  }
+
   /**
    * Persist one verified observation. This is the isolation boundary the proxy relies on: it
    * resolves never with an error, so a capture failure can never rewrite the confirmed send's
    * outcome or cause a resend. Failures land in the structured log with codes only.
    */
-  async capture(event: OutboundCaptureEvent): Promise<void> {
+  capture(event: OutboundCaptureEvent): Promise<void> {
+    if (this.#closed) return Promise.resolve();
+    return this.#track(this.#capture(event));
+  }
+
+  async #capture(event: OutboundCaptureEvent): Promise<void> {
     const deadlineAt = Date.now() + this.#deadlineMs;
     try {
       await this.#persist(event, deadlineAt);
@@ -859,12 +885,13 @@ export class ImOutboundCapture {
     if (remainingMs <= 0) throw new OutboundCaptureDeadlineError();
     const compiled = statement.toSQL();
     const pending = this.#database.$client.unsafe<T[]>(compiled.sql, compiled.params as never[]);
+    const actual = this.#track(Promise.resolve(pending));
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timedOut = new Promise<"timeout">((resolve) => {
       timer = setTimeout(() => resolve("timeout"), remainingMs);
     });
     try {
-      const result = await Promise.race([pending, timedOut]);
+      const result = await Promise.race([actual, timedOut]);
       if (result === "timeout") {
         await cancelPendingStatement(pending, OUTBOUND_CAPTURE_CANCEL_GRACE_MS);
         throw new OutboundCaptureDeadlineError();

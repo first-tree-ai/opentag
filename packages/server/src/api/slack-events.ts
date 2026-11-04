@@ -77,6 +77,7 @@ export type SlackWebhookReceiptStoreLike = Pick<SlackWebhookReceiptStore, "claim
 type SlackEventsReceiptOptions = { receipts?: SlackWebhookReceiptStoreLike };
 
 export interface SlackEventsRouteOptions extends SlackEventsReceiptOptions {
+  maxPendingEvents?: number;
   approvalOwner?: Pick<RuntimeApprovalOwner, "decide">;
   imFeedback?: Pick<ImFeedbackActionsService, "submitNativeRetry">;
   feedbackResponse?: (input: {
@@ -349,6 +350,13 @@ export function registerSlackEventsRoute(app: FastifyInstance, options: SlackEve
       logger.info(
         { ...logContext, stage: "receipt", outcome: "ignored", reason: "duplicate_receipt" },
         "Slack inbound ignored",
+      );
+      return reply.code(200).send({ ok: true });
+    }
+    if (closing || pending.size >= (options.maxPendingEvents ?? 8)) {
+      logger.info(
+        { ...logContext, stage: "receipt", outcome: "deferred" },
+        "Slack inbound deferred to durable recovery",
       );
       return reply.code(200).send({ ok: true });
     }

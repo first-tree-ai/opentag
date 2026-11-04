@@ -82,6 +82,10 @@ updates preserve blank values and require the same App/Team/Bot identity. The co
 authority, Computer, binding ID and generation. Uncertain save results are resolved by reading state, never automatic POST
 replay. Credentials are cleared on success, close, and Agent changes and are never returned by the management API.
 
+Automatic setup carries its original Computer into this final Agent-guarded activation check.
+A rebind during external Slack inspection rejects before storing credentials or a binding. The
+unlocked pre-bind placement read is unnecessary; the later current-target check still precedes CLI callbacks.
+
 First-party OAuth start/callback and explicit replacement semantics, signed Events, proxy/runtime, old CLI contracts,
 and Feishu remain. Older servers keep OAuth recovery; missing `slackOAuthAvailable` retains the old behavior and only
 explicit `false` hides the entry. Both human and other-Bot messages follow Agent `receiveMode`; `all_message` ambient

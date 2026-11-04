@@ -155,7 +155,7 @@ export async function createPlatformRuntime(options: {
         throw new AuthServiceError("AUTH_INVALID_TOKEN", "credential", "The Cloud control credential is invalid", 401);
     },
     close: async () => {
-      credentials.close();
+      await credentials.close();
     },
   };
 }

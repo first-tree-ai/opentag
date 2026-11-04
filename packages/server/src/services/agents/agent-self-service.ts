@@ -35,8 +35,7 @@ import { AgentServiceError, resourceNotFound } from "./errors.js";
  */
 
 export interface AgentOwnerResolver {
-  resolveAccountId(agentId: string): Promise<string>;
-  isSelfConfigurationEnabled(agentId: string): Promise<boolean>;
+  resolve(agentId: string): Promise<{ accountId: string; selfConfigurationEnabled: boolean }>;
 }
 
 export class DatabaseAgentOwnerResolver implements AgentOwnerResolver {
@@ -46,24 +45,14 @@ export class DatabaseAgentOwnerResolver implements AgentOwnerResolver {
     this.#database = database;
   }
 
-  async resolveAccountId(agentId: string): Promise<string> {
+  async resolve(agentId: string): Promise<{ accountId: string; selfConfigurationEnabled: boolean }> {
     const [row] = await this.#database
-      .select({ accountId: agents.createdByUserId })
+      .select({ accountId: agents.createdByUserId, selfConfigurationEnabled: agents.selfConfigurationEnabled })
       .from(agents)
       .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
       .limit(1);
     if (!row) throw resourceNotFound();
-    return row.accountId;
-  }
-
-  async isSelfConfigurationEnabled(agentId: string): Promise<boolean> {
-    const [row] = await this.#database
-      .select({ selfConfigurationEnabled: agents.selfConfigurationEnabled })
-      .from(agents)
-      .where(and(eq(agents.id, agentId), ne(agents.status, "deleted")))
-      .limit(1);
-    if (!row) throw resourceNotFound();
-    return row.selfConfigurationEnabled;
+    return row;
   }
 }
 
@@ -109,10 +98,12 @@ export class AgentSelfService {
   }
 
   async updateConfig(scope: AgentSelfScope, input: UpdateSelfAgentRequest): Promise<AgentAdminConfig> {
-    const updated = await this.#options.agents.updateById(scope.accountId, scope.agentId, {
-      expectedRevision: input.expectedRevision,
-      runtimeConfig: input.runtimeConfig,
-    });
+    const updated = await this.#options.agents.updateById(
+      scope.accountId,
+      scope.agentId,
+      { expectedRevision: input.expectedRevision, runtimeConfig: input.runtimeConfig },
+      "agent-self",
+    );
     // Field names only: instructions are Agent-authored text and never belong in a log line.
     this.#audit(scope, "agent_self.config_updated", {
       fields: Object.keys(input.runtimeConfig).sort(),
@@ -273,8 +264,8 @@ export class AgentSelfService {
 
   async authenticate(proof: string): Promise<AgentSelfScope> {
     const source = await this.#options.proofs.authenticate(proof);
-    const accountId = await this.#options.owners.resolveAccountId(source.agentId);
-    if (!(await this.#options.owners.isSelfConfigurationEnabled(source.agentId))) {
+    const { accountId, selfConfigurationEnabled } = await this.#options.owners.resolve(source.agentId);
+    if (!selfConfigurationEnabled) {
       this.#options.logger?.debug(
         { agentId: source.agentId, sessionId: source.sessionId, code: "AGENT_SELF_CONFIGURATION_DISABLED" },
         "agent self-configuration is disabled by the Agent owner",

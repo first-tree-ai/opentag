@@ -244,12 +244,7 @@ export function installWindowDiagnosticHandlers(
   ): boolean => {
     if (!resourcePath?.startsWith("/assets/")) return false;
     const now = reporter.readNow();
-    if (
-      reloadSource !== undefined &&
-      reloadSource !== source &&
-      now >= reloadAt &&
-      now - reloadAt < STALE_ASSET_UNLOAD_GRACE_MS
-    ) {
+    if (reloadSource !== undefined && now >= reloadAt && now - reloadAt < STALE_ASSET_UNLOAD_GRACE_MS) {
       if (source === "preload") preloadReloadUnloading = true;
       return true;
     }

@@ -33,7 +33,6 @@ const betterAuthSecret = "im-binding-test-secret-at-least-32-characters";
 /** The credential provider the server composes, so these fixtures exercise the shipped one. */
 function sessionAuth(database: DatabaseClient) {
   return createBetterAuth(database, {
-    onSessionCreating: async () => {},
     publicUrl: "http://localhost:8000",
     secret: betterAuthSecret,
     secureCookies: false,

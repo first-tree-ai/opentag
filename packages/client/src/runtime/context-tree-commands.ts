@@ -21,11 +21,17 @@ export interface ContextTreeCommandResult {
   stdout: string;
   stderr: string;
 }
+export interface ContextTreeSessionHints {
+  read(id: string, signal: AbortSignal): Promise<string>;
+  write(id: string, hint: string): Promise<void>;
+  remove(id: string): Promise<void>;
+}
 export interface ContextTreeCommandOptions {
   parent: RuntimeCredentialRelay;
   sources: readonly ContextTreeConnection[];
   workspace: string;
   stateDirectory: string;
+  sessionHints?: ContextTreeSessionHints;
   environment: () => Record<string, string | undefined>;
   execute: (
     args: readonly string[],
@@ -45,6 +51,7 @@ export class ContextTreeCommandGateway {
   #settled?: Promise<void>;
   #settle?: () => void;
   #closed = false;
+  #closing?: Promise<void>;
   socketPath?: string;
   port?: number;
 
@@ -169,13 +176,18 @@ export class ContextTreeCommandGateway {
 
   async #runCommand(command: ManagedCommand, signal: AbortSignal): Promise<ContextTreeCommandResult> {
     if (command.operation === "sync" && !command.source) return this.#syncAll(command.offline === true, signal);
-    const source = command.source ?? (command.id ? await this.#sessionSource(command.id) : undefined);
+    const source = command.source ?? (command.id ? await this.#sessionSource(command.id, signal) : undefined);
     if (!source) throw new Error("Choose a configured Context Tree");
     const result = await this.#execute(source, command.argv, signal);
     if (result.code !== 0) return result;
     if (command.operation === "prepare") await this.#rememberSession(result.stdout, source);
-    if (command.id && (command.operation === "abort" || JSON.parse(result.stdout || "{}").outcome === "published"))
-      await rm(this.#hint(command.id), { force: true });
+    if (
+      command.id &&
+      (command.operation === "abort" || ["published", "unchanged"].includes(JSON.parse(result.stdout || "{}").outcome))
+    ) {
+      if (this.#options.sessionHints) await this.#options.sessionHints.remove(command.id);
+      else await rm(this.#hint(command.id), { force: true });
+    }
     return result;
   }
 
@@ -208,12 +220,25 @@ export class ContextTreeCommandGateway {
       session.connection.projectRoot !== this.#project()
     )
       throw new Error("Context Tree preparation target changed");
-    await mkdir(this.#options.stateDirectory, { recursive: true, mode: 0o700 });
-    await writeFile(this.#hint(session.id), JSON.stringify({ id: session.id, source }), { mode: 0o600, flag: "wx" });
+    const hint = JSON.stringify({ id: session.id, source });
+    if (Buffer.byteLength(hint) > 4096) throw new Error("Invalid Context Tree routing hint");
+    if (this.#options.sessionHints) await this.#options.sessionHints.write(session.id, hint);
+    else {
+      await mkdir(this.#options.stateDirectory, { recursive: true, mode: 0o700 });
+      await writeFile(this.#hint(session.id), hint, { mode: 0o600, flag: "wx" });
+    }
   }
 
-  async close(): Promise<void> {
-    if (this.#closed) return;
+  close(): Promise<void> {
+    if (!this.#closing) {
+      this.#closing = this.#close();
+      // Parent abort can initiate cleanup before its owner awaits it.
+      void this.#closing.catch(() => undefined);
+    }
+    return this.#closing;
+  }
+
+  async #close(): Promise<void> {
     this.#closed = true;
     this.#abort.abort();
     this.#server?.closeAllConnections();
@@ -221,9 +246,12 @@ export class ContextTreeCommandGateway {
     try {
       await this.#relay?.close("context_tree_closed");
     } finally {
-      this.#server?.closeAllConnections();
-      if (this.#server) await new Promise<void>((done) => this.#server?.close(() => done()));
-      if (this.#directory) await rm(this.#directory, { recursive: true, force: true });
+      try {
+        this.#server?.closeAllConnections();
+        if (this.#server) await new Promise<void>((done) => this.#server?.close(() => done()));
+      } finally {
+        if (this.#directory) await rm(this.#directory, { recursive: true, force: true });
+      }
     }
   }
 
@@ -233,8 +261,10 @@ export class ContextTreeCommandGateway {
   #hint(id: string): string {
     return join(this.#options.stateDirectory, `${z.string().uuid().parse(id)}.json`);
   }
-  async #sessionSource(id: string): Promise<ContextTreeConnection> {
-    const bytes = await readFile(this.#hint(id));
+  async #sessionSource(id: string, signal: AbortSignal): Promise<ContextTreeConnection> {
+    const bytes = this.#options.sessionHints
+      ? Buffer.from(await this.#options.sessionHints.read(id, signal))
+      : await readFile(this.#hint(id));
     if (bytes.length > 4096) throw new Error("Invalid Context Tree routing hint");
     const hint = SessionHintSchema.parse(JSON.parse(bytes.toString("utf8")));
     const source = this.#options.sources.find(

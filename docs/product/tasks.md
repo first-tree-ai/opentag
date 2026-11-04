@@ -222,8 +222,11 @@ carry a dispatch correlation, so a withdrawn delivery is never picked up later. 
 is the withdrawn delivery's activity, and so the Task's latest activity: the response carries the
 refreshed Task summary with status `cancelled`, even when an earlier Turn of the Task finished
 after the withdrawn message arrived, and the status stays `cancelled` until a later Turn runs in
-the Session. A `200` therefore always means that every queued delivery of the Task was withdrawn
-and the Task reads `cancelled`; a Task with a running Turn, or with a delivery a worker is
+the Session. The cancel holds the Task's IM binding against admission while it runs, the same row
+every inbound admission locks before it queues a delivery: a message admitted before the cancel is
+withdrawn with the rest, and one that arrives meanwhile waits and joins the queue after it, so a
+message is never left queued beside a withdrawal. A `200` therefore always means that every queued
+delivery of the Task was withdrawn and the Task reads `cancelled`; a Task with a running Turn, or with a delivery a worker is
 dispatching, answers `409` and nothing of it is withdrawn.
 
 Only a queued Task cancels. A Task that is `running`, or that already finished, answers `409

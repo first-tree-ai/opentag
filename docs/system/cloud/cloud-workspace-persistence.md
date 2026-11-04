@@ -20,7 +20,24 @@ The Server's existing durable delivery custody remains authoritative for executi
 
 Platform credential exclusion relies on the directory boundary. It is not secret detection for
 files an Agent or user independently creates in the workspace. Other Session directories are not
-mounted or synchronized. Agent-wide Context Tree integration remains E8.
+mounted or synchronized. Agent-wide Context Tree integration remains E8. Under
+`.opentag/context-tree/home/.context-tree`, `cleanup` logs are always omitted, and reconstructable
+read-only Git caches (`repositories` and `snapshots`) are omitted when no active `sessions` or
+`worktrees` entries exist and every snapshot worktree is verified clean in-process against a
+detached commit reachable from published upstream refs in its bare repository (without spawning
+`git` over workspace config). Whenever loose or packed local branch refs, unpublished commits,
+rewritten/force-pushed upstream history, staged changes, unstaged edits, or untracked files
+exist—or when Git cleanliness cannot be verified—those directories are preserved in the archive.
+Sparse snapshots are conservatively preserved: the in-process verifier does not treat
+intentionally unmaterialized tracked files as proof that a snapshot is clean. Their
+full Git index, cache, and any isolated write sessions remain available after restore.
+
+Gateway write routing hints (`{id, source}` only) live in
+`.opentag/context-tree/command-sessions` inside the workspace. Fresh Runner hosts and rebinding
+recover them with the CLI session/draft; host routing files are dispensable. UUID, 4-KiB, schema,
+file-type and current-source checks apply. Confirmed prepare/terminal settlement uses bounded
+Sandbox I/O and is joined by gateway close even after request cancellation. Published, unchanged
+and aborted sessions remove their hint; uncertain publication retains it for explicit recovery.
 
 ## Save and restore boundaries
 
@@ -49,14 +66,35 @@ settles through the existing custody recovery as unknown, never automatic task r
 
 At a Turn boundary, the Runner keeps the Session execution slot occupied, stops native Sandbox
 writers, saves the workspace, and then reopens execution. Native deletion also removes orphaned
-background processes. The workspace survives that namespace reset. A completed external action
-does not become safe to replay merely because persistence failed. A failed save produces an honest
-`workspace_failed` Turn report while preserving the execution-effects classification and local files.
-Reconciliation sends that report before attempting another save. Deterministic archive violations
-(size/count limits, unsupported entries, unsafe paths) stop retries of unchanged files and keep
-execution blocked, but retain the control/report connection. Transient storage failures retry on
-reconnection. A crash during the save, before journaling the terminal report, is reconciled as
-unknown execution effects and never automatically replayed.
+background processes. The workspace survives that namespace reset. If a Turn fails before prompt
+acceptance (`executionEffects: "not_started"`) and its checkpoint save fails, the Runner validates
+the last committed archive in a sibling staging directory before replacing the dirty workspace (and
+resets the native Sandbox namespace when configured) instead of wiping local files up front or
+latching a terminal `workspace_failed` block over unaccepted work; if that rollback itself fails,
+recovery re-restores the saved baseline rather than uploading the unverified directory. A completed
+external action does not become safe to replay merely because persistence failed. A failed save
+produces an honest `workspace_failed` Turn report while preserving the execution-effects
+classification and local files. Reconciliation sends that report before attempting another save.
+Deterministic archive violations (size/count limits, unsupported entries, unsafe paths) stop
+retries of unchanged files and keep execution blocked, but retain the control/report connection.
+Transient storage failures receive up to three uploads of the same archive, with one- and
+two-second backoff, within one shared 120-second upload/readback budget. Network failures, HTTP
+408/429 and 5xx are retryable; other HTTP failures, authorization loss, invalid protocol responses
+and CAS conflicts are not. Before another upload, readback must confirm the original object
+generation, metageneration, owner and contents. A matching committed write succeeds without another
+upload; unavailable readback stops the batch. Retries never rebase local files onto an unrelated
+newer object. Exhausted transient saves retain local files and can retry on reconnection. A crash
+before journaling the terminal report is reconciled as unknown execution effects and never
+automatically replayed.
+
+[IM task feedback](../messaging/im-feedback.md) exposes Account-confirmed save/release and explicit discard
+for a failed Session, reusing these generation-bound operations. The feedback action is recorded before cloud I/O;
+an unknown result is queried without submitting again. Only a verified seal for the exact environment permits a
+"saved" card result. A release without that proof remains explicitly unverified.
+
+Checkpoint diagnostics retain the archive failure code and the original error cause. Both IM
+Turns and internal Session messages log deterministic archive failures without cycling the control
+connection. Log messages include the error code, not workspace filenames or the raw error cause.
 
 Normal release first closes admission through `releasing`, then asks the Runner to quiesce,
 receive durable Server acknowledgments for terminal reports, and save a sealed archive. The
@@ -77,6 +115,16 @@ Instances that the provider confirms were created without persistence keep their
 behavior; a missing archive alone is not proof of a legacy Instance. The default seal wait is
 480 seconds to cover drain, checkpoint, final upload, and archive work; individual HTTP transfers
 retain the 120-second deadline.
+
+The Cloud Agent page exposes a collapsed workspace recovery panel, also reachable through
+`/agents/<agentId>?recovery=true`. It pages the existing Account-owned Cloud overview, including
+ordinary checkpoint failures that have no release-error marker. Opening it only reads status.
+Retry save and release uses the ordinary generation-bound Account stop request; it is not an
+in-place resume. Discard requires a second confirmation explaining permanent loss since the last
+successful save and uses the existing explicit discard body. The browser checks the current
+generation before sending either request; the Server's locked generation check remains authoritative.
+An uncertain mutation triggers status reads and never an automatic resubmission. The previous
+complete archive is preserved, and recovery never repeats an external task action.
 
 OOM, SIGKILL, and machine loss cannot guarantee a final save. Changes since the last successful
 boundary may be lost, including progress within a long-running Turn. Already-started operations

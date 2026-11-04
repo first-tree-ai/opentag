@@ -6,7 +6,7 @@ import type {
   TurnReportRequest,
   TurnReportResult,
 } from "@opentag/shared";
-import { and, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, or } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
 import {
   agents,
@@ -18,10 +18,14 @@ import {
   sessionPlacements,
   sessions,
 } from "../db/schema/index.js";
+import type { ServiceLogger } from "../observability/service-logger.js";
+import { finishImFeedback, startImFeedback } from "../services/im/im-feedback-store.js";
+import { lockImAgentCustody, readInboundPendingAgents } from "../services/im/inbound-admission.js";
 import { finishSlackWorkingTurn } from "../services/im/slack-working-store.js";
 import { SessionService } from "../services/sessions/session-service.js";
 import { releaseImBatch, reserveImBatch, settleImBatch } from "./im-delivery-batch.js";
-import { lockSteeredRecoverySessions, requeueSteeredDeliveries } from "./im-delivery-recovery.js";
+import { lockSteeredRecoverySessions, requeueSteeredDeliveries, type SessionEnsurer } from "./im-delivery-recovery.js";
+import { acceptedReportDeadlineMs } from "./im-delivery-retry.js";
 import type { RuntimeCustodyStoreDispatchRelease } from "./runtime-custody-store.types.js";
 import type { RuntimeBusinessContext } from "./runtime-session.js";
 
@@ -44,7 +48,13 @@ export interface RecordedTurnRecord {
 }
 
 export type DeliveryCustodyStatus = "accepted" | "already_accepted" | "conflict" | "stale_generation";
-export type DeliveryDispatchStatus = "dispatched" | "already_dispatched" | "conflict" | "stale_generation" | "claimed";
+export type DeliveryDispatchStatus =
+  | "dispatched"
+  | "already_dispatched"
+  | "conflict"
+  | "stale_generation"
+  | "claimed"
+  | "inbound_pending";
 export type DeliveryReleaseStatus = "released" | "already_released" | "conflict";
 export type SteerCustodyStatus = "steered" | "already_steered" | "conflict" | "stale_generation";
 export type SteerReleaseStatus = "released" | "already_released" | "conflict";
@@ -106,7 +116,31 @@ export interface RuntimeCustodyStore extends RuntimeCustodyStoreDispatchRelease 
   recordTurn(
     report: TurnReportRequest,
     context: RuntimeBusinessContext,
+    options?: RecordTurnOptions,
   ): Promise<TurnReportResult["status"] | undefined>;
+}
+
+export interface RecordTurnOptions {
+  /**
+   * Maintenance only: refuse the write unless the authority that justified a synthetic report is
+   * still absent. The transaction locks the Agent and the binding first, in the order the binding
+   * lifecycle mutates them, then the recovery Sessions, and rechecks the authority under those
+   * locks. A genuine report never passes this.
+   */
+  requireAbsentAuthority?: boolean;
+}
+
+export interface TerminalReportWriteOptions {
+  /** The reason a settlement records beside the report; a real report writes none. */
+  reason?: string;
+}
+
+/** The identity a maintenance settlement locked before it took any recovery-Session lock. */
+export interface MaintenanceAuthority {
+  deliveryId: string;
+  sessionId: string;
+  bindingId: string;
+  agentId: string;
 }
 
 interface DeliveryScope {
@@ -118,20 +152,179 @@ interface DeliveryScope {
   agentId: string;
 }
 
+/**
+ * The complete terminal-report contract inside the caller's transaction: the report columns, the
+ * Slack working turn reaching `terminal` with its lease expired and its target dirtied, and — for a
+ * non-completed outcome — the steered children returning to the queue exactly once.
+ *
+ * Callers own the custody fence (which report may land on which row) and the recovery-Session lock,
+ * because that lock must precede every placement and delivery lock. Every other obligation of a
+ * terminal report lives here, so the fenced `recordTurn` path and the historical-generation
+ * settlement cannot drift. The maintenance authority guard is deliberately not here: it has to take
+ * its row locks before the recovery-Session lock, so `recordTurn` runs it first. Returns the
+ * terminalized child ids, or `undefined` when the write matched no row.
+ */
+export async function writeTerminalReport(
+  transaction: DatabaseTransaction,
+  report: TurnReportRequest,
+  now: Date,
+  sessions: SessionEnsurer,
+  options: TerminalReportWriteOptions = {},
+): Promise<string[] | undefined> {
+  const [written] = await transaction
+    .update(imMessageDeliveries)
+    .set({
+      dispatchPayload: null,
+      resultHash: report.resultHash,
+      turnReport: report,
+      reportedAt: now,
+      lastErrorCode: null,
+      ...(options.reason ? { reason: options.reason } : {}),
+    })
+    .where(eq(imMessageDeliveries.id, report.deliveryId))
+    .returning({ id: imMessageDeliveries.id });
+  if (!written) return undefined;
+  await finishSlackWorkingTurn(transaction, report.deliveryId, now);
+  const recovered =
+    report.outcome === "completed"
+      ? { terminalizedIds: [] }
+      : await requeueSteeredDeliveries(transaction, report.deliveryId, now, sessions);
+  await finishImFeedback(transaction, report, now);
+  return recovered.terminalizedIds;
+}
+
+/**
+ * Lock the rows that authorize a maintenance settlement, before any recovery-Session lock.
+ *
+ * The order is the one the binding lifecycle mutates in: `ImBindingService.disable` locks the Agent
+ * (`assertCanManageForMutation`), then the binding, and only then updates that binding's Sessions.
+ * A settlement that took the Session first would close a Session -> Agent -> binding -> Session cycle
+ * with a concurrent disable, which PostgreSQL answers with `40P01`. Taking the Agent and binding
+ * first makes one side wait at the first lock instead.
+ *
+ * Returns the identity it locked, so the caller can reload and recheck it under these locks.
+ */
+export async function lockMaintenanceAuthority(
+  transaction: DatabaseTransaction,
+  deliveryId: string,
+): Promise<MaintenanceAuthority | undefined> {
+  const [identity] = await transaction
+    .select({ sessionId: imMessageDeliveries.sessionId, bindingId: sessions.imBindingId })
+    .from(imMessageDeliveries)
+    .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+    .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+    .where(eq(imMessageDeliveries.id, deliveryId))
+    .limit(1);
+  if (!identity) return undefined;
+  const [agent] = await transaction
+    .select({ id: agents.id })
+    .from(agents)
+    .innerJoin(imBindings, eq(imBindings.id, identity.bindingId))
+    .where(eq(agents.id, imBindings.agentId))
+    .for("no key update", { of: agents })
+    .limit(1);
+  if (!agent) return undefined;
+  const [binding] = await transaction
+    .select({ id: imBindings.id })
+    .from(imBindings)
+    .where(eq(imBindings.id, identity.bindingId))
+    .for("no key update")
+    .limit(1);
+  if (!binding) return undefined;
+  return { deliveryId, sessionId: identity.sessionId, bindingId: identity.bindingId, agentId: agent.id };
+}
+
+/**
+ * Recheck the maintenance authority under the locks `lockMaintenanceAuthority` took, after the row
+ * and every identity have been reloaded.
+ *
+ * A cross-table `EXISTS` in the report `UPDATE` is not a guard: under Read Committed an uncommitted
+ * reactivation is invisible to the statement's snapshot, and the reactivation touches other rows, so
+ * both transactions commit and the persisted `unknown` beats the real owner. The locks taken first
+ * make a lifecycle mutation wait for this settlement (or this settlement wait for it), and this
+ * recheck then reads the committed outcome. Every identity is compared with what was locked, so a
+ * Session that moved to another binding, or a binding that moved to another Agent, refuses instead
+ * of authorizing a report for rows this transaction does not hold.
+ */
+export async function maintenanceAuthorityAbsent(
+  transaction: DatabaseTransaction,
+  authority: MaintenanceAuthority,
+  now: Date,
+): Promise<boolean> {
+  const [delivery] = await transaction
+    .select({ sessionId: imMessageDeliveries.sessionId, acceptedAt: imMessageDeliveries.acceptedAt })
+    .from(imMessageDeliveries)
+    .where(eq(imMessageDeliveries.id, authority.deliveryId))
+    .limit(1);
+  if (!delivery || delivery.sessionId !== authority.sessionId || !delivery.acceptedAt) return false;
+  if (now.getTime() < acceptedReportDeadlineMs(delivery.acceptedAt.getTime())) return false;
+  const [session] = await transaction
+    .select({ endedAt: sessions.endedAt, bindingId: sessions.imBindingId })
+    .from(sessions)
+    .where(eq(sessions.id, authority.sessionId))
+    .limit(1);
+  if (!session || session.bindingId !== authority.bindingId) return false;
+  const [binding] = await transaction
+    .select({ status: imBindings.status, agentId: imBindings.agentId })
+    .from(imBindings)
+    .where(eq(imBindings.id, authority.bindingId))
+    .limit(1);
+  if (!binding || binding.agentId !== authority.agentId) return false;
+  const [agent] = await transaction
+    .select({ status: agents.status })
+    .from(agents)
+    .where(eq(agents.id, authority.agentId))
+    .limit(1);
+  if (!agent) return false;
+  return session.endedAt !== null || binding.status !== "active" || agent.status === "deleted";
+}
+
+type MaintenanceGate = { ok: true; authority?: MaintenanceAuthority } | { ok: false };
+
+/**
+ * The maintenance gate as one step: take the Agent and binding locks first when the caller asked for
+ * the maintenance authority, or pass through for a genuine report.
+ */
+async function maintenanceGate(
+  transaction: DatabaseTransaction,
+  deliveryId: string,
+  enabled: boolean,
+): Promise<MaintenanceGate> {
+  if (!enabled) return { ok: true };
+  const authority = await lockMaintenanceAuthority(transaction, deliveryId);
+  return authority ? { ok: true, authority } : { ok: false };
+}
+
+/** Recheck the gate after the row reload. A genuine report has nothing to recheck. */
+async function maintenanceStillAbsent(
+  transaction: DatabaseTransaction,
+  gate: MaintenanceGate,
+  now: Date,
+): Promise<boolean> {
+  if (!gate.ok) return false;
+  return gate.authority ? maintenanceAuthorityAbsent(transaction, gate.authority, now) : true;
+}
+
 export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
   readonly #database: DatabaseClient;
   readonly #sessions: SessionService;
   readonly #now: () => Date;
   readonly #onDeliverySettled?: (deliveryId: string) => void;
+  readonly #logger?: ServiceLogger;
 
   constructor(
     database: DatabaseClient,
-    options: { now?: () => Date; onDeliverySettled?: (deliveryId: string) => void } = {},
+    options: {
+      now?: () => Date;
+      onDeliverySettled?: (deliveryId: string) => void;
+      logger?: ServiceLogger;
+    } = {},
   ) {
     this.#database = database;
     this.#sessions = new SessionService(database);
     this.#now = options.now ?? (() => new Date());
     this.#onDeliverySettled = options.onDeliverySettled;
+    this.#logger = options.logger;
   }
 
   async beginDeliveryDispatch(
@@ -140,6 +333,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
     context: DeliveryDispatchContext,
   ): Promise<DeliveryDispatchStatus> {
     return this.#database.transaction(async (transaction) => {
+      await lockImAgentCustody(transaction, request.agentId);
       const scope = await this.#deliveryScope(transaction, request.deliveryId);
       if (!scope || !deliveryRequestMatches(scope, request)) return "conflict";
       if (!placementMatches(scope, context.computerId, request.placementGeneration)) return "stale_generation";
@@ -154,7 +348,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
         .limit(1)
         .for("update");
       if (sandbox && (sandbox.lifecycle !== "ready" || sandbox.idleReclaimAt !== null)) return "claimed";
-      const existing = existingDispatchStatus(scope.delivery, request.requestId, inputHash);
+      const existing = await this.#dispatchAdmission(transaction, scope, request.requestId, inputHash);
       if (existing) return existing;
       if (!(await reserveImBatch(transaction, request, this.#now()))) return "conflict";
       const [dispatched] = await transaction
@@ -226,11 +420,12 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
     context: DeliveryDispatchContext,
   ): Promise<DeliveryDispatchStatus> {
     return this.#database.transaction(async (transaction) => {
+      await lockImAgentCustody(transaction, request.agentId);
       const scope = await this.#deliveryScope(transaction, request.deliveryId);
       if (!scope || !steerRequestMatches(scope, request)) return "conflict";
       if (!placementMatches(scope, context.computerId, request.placementGeneration)) return "stale_generation";
       if (scope.delivery.state !== "pending") return "conflict";
-      const existing = existingDispatchStatus(scope.delivery, request.requestId, inputHash);
+      const existing = await this.#dispatchAdmission(transaction, scope, request.requestId, inputHash);
       if (existing) return existing;
       if (scope.delivery.steerTargetDeliveryId !== null) return "conflict";
       if (!(await this.#steerTargetMatches(transaction, scope, request, context))) return "conflict";
@@ -276,7 +471,10 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       }
       if (!(await this.#steerTargetMatches(transaction, scope, request, context, true))) return "conflict";
       const written = await this.#writeSteered(transaction, request.deliveryId, semanticHash, request.rootDeliveryId);
-      if (written) await settleImBatch(transaction, request, request.rootDeliveryId, this.#now());
+      if (written) {
+        await settleImBatch(transaction, request, request.rootDeliveryId, this.#now());
+        await startImFeedback(transaction, request.rootDeliveryId, this.#now());
+      }
       return written ? "steered" : "conflict";
     });
     if (status === "steered" || status === "already_steered") this.#onDeliverySettled?.(request.rootDeliveryId);
@@ -300,7 +498,10 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       if (!steerTransitionMatches(scope.delivery, request.requestId, inputHash)) return "conflict";
       if (!(await this.#absorbedTargetMatches(transaction, scope, rootDeliveryId, turnId, context))) return "conflict";
       const written = await this.#writeSteered(transaction, request.deliveryId, semanticHash, rootDeliveryId);
-      if (written) await settleImBatch(transaction, request, rootDeliveryId, this.#now());
+      if (written) {
+        await settleImBatch(transaction, request, rootDeliveryId, this.#now());
+        await startImFeedback(transaction, rootDeliveryId, this.#now());
+      }
       return written ? "steered" : "conflict";
     });
   }
@@ -320,6 +521,19 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
           .update(imMessageDeliveries)
           .set({ lastErrorCode: "IM_DELIVERY_STEER_UNKNOWN", nextAttemptAt: new Date(this.#now().getTime() + 30_000) })
           .where(eq(imMessageDeliveries.id, request.deliveryId));
+        this.#logger?.warn(
+          {
+            module: "runtime-custody",
+            operation: "im.custody.release",
+            outcome: "uncertain",
+            code: "IM_DELIVERY_STEER_UNKNOWN",
+            errorCode: "IM_DELIVERY_STEER_UNKNOWN",
+            deliveryId: request.deliveryId,
+            sessionId: request.sessionId,
+            rootDeliveryId: request.rootDeliveryId,
+          },
+          "IM steer custody released as uncertain",
+        );
         return "released";
       }
       const [released] = await transaction
@@ -385,7 +599,10 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
           ),
         )
         .returning({ id: imMessageDeliveries.id });
-      if (accepted) await settleImBatch(transaction, request, request.deliveryId, this.#now(), true);
+      if (accepted) {
+        await settleImBatch(transaction, request, request.deliveryId, this.#now(), true);
+        await startImFeedback(transaction, request.deliveryId, this.#now());
+      }
       return accepted ? "accepted" : "conflict";
     });
   }
@@ -395,57 +612,104 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
     claims: NonNullable<SessionReconcileResult["retainedReports"]>,
     context: RuntimeBusinessContext,
   ): Promise<void> {
+    if (claims.length === 0) return;
     await this.#database.transaction(async (transaction) => {
-      const [placement] = await transaction
-        .select()
-        .from(sessionPlacements)
-        .innerJoin(sessions, eq(sessions.id, sessionPlacements.sessionId))
+      const [session] = await transaction
+        .select({ id: sessions.id })
+        .from(sessions)
+        .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
         .where(
           and(
-            eq(sessionPlacements.sessionId, request.sessionId),
+            eq(sessions.id, request.sessionId),
             eq(sessionPlacements.computerId, context.computerId),
             eq(sessionPlacements.generation, request.placementGeneration),
             isNull(sessions.endedAt),
           ),
         )
         .limit(1)
+        .for("no key update", { of: sessions });
+      if (!session) return;
+      const [placement] = await transaction
+        .select({ computerId: sessionPlacements.computerId, generation: sessionPlacements.generation })
+        .from(sessionPlacements)
+        .where(eq(sessionPlacements.sessionId, request.sessionId))
         .for("update");
-      if (!placement) return;
-      for (const claim of claims) {
-        const scope = await this.#deliveryScope(transaction, claim.deliveryId);
-        if (!scope || !retainedClaimMatches(scope, claim, request, context)) continue;
-        if (scope.delivery.state === "pending" || scope.delivery.state === "expired") {
-          await settleRetainedBatch(transaction, scope.delivery, this.#now());
-          await transaction
-            .update(imMessageDeliveries)
-            .set({
-              state: "accepted",
-              inputHash: claim.inputHash,
-              turnId: claim.turnId,
-              reportOwnerInstanceId: context.instanceId,
-              resultHash: claim.resultHash,
-              acceptedAt: this.#now(),
-              steerTargetDeliveryId: null,
-              reason: null,
-              lastErrorCode: null,
-            })
-            .where(
-              and(
-                eq(imMessageDeliveries.id, claim.deliveryId),
-                inArray(imMessageDeliveries.state, ["pending", "expired"]),
-                eq(imMessageDeliveries.dispatchRequestId, claim.dispatchRequestId),
-                eq(imMessageDeliveries.dispatchInputHash, claim.inputHash),
-              ),
-            );
-          continue;
+      if (
+        !placement ||
+        placement.computerId !== context.computerId ||
+        placement.generation !== request.placementGeneration
+      ) {
+        return;
+      }
+      const scopes = await this.#deliveryScopes(
+        transaction,
+        claims.map((claim) => claim.deliveryId),
+        request.sessionId,
+        true,
+      );
+      const claimsById = new Map(claims.map((claim) => [claim.deliveryId, claim]));
+      for (const scope of scopes) {
+        const claim = claimsById.get(scope.delivery.id);
+        if (claim && retainedClaimMatches(scope, claim, request, context)) {
+          await this.#restoreRetainedDelivery(transaction, scope, claim, context);
         }
-        if (scope.delivery.state !== "accepted" || scope.delivery.turnId !== claim.turnId) continue;
-        await transaction
-          .update(imMessageDeliveries)
-          .set({ reportOwnerInstanceId: context.instanceId, resultHash: claim.resultHash })
-          .where(eq(imMessageDeliveries.id, claim.deliveryId));
       }
     });
+  }
+
+  async #restoreRetainedDelivery(
+    transaction: DatabaseTransaction,
+    scope: DeliveryScope,
+    claim: NonNullable<SessionReconcileResult["retainedReports"]>[number],
+    context: RuntimeBusinessContext,
+  ): Promise<void> {
+    if (scope.delivery.reportedAt !== null) return;
+    if (scope.delivery.state === "pending" || scope.delivery.state === "expired") {
+      await settleRetainedBatch(transaction, scope.delivery, this.#now());
+      const restored = await transaction
+        .update(imMessageDeliveries)
+        .set({
+          state: "accepted",
+          inputHash: claim.inputHash,
+          turnId: claim.turnId,
+          reportOwnerInstanceId: context.instanceId,
+          resultHash: claim.resultHash,
+          acceptedAt: this.#now(),
+          steerTargetDeliveryId: null,
+          reason: null,
+          lastErrorCode: null,
+        })
+        .where(
+          and(
+            eq(imMessageDeliveries.id, claim.deliveryId),
+            inArray(imMessageDeliveries.state, ["pending", "expired"]),
+            eq(imMessageDeliveries.dispatchRequestId, claim.dispatchRequestId),
+            eq(imMessageDeliveries.dispatchInputHash, claim.inputHash),
+          ),
+        )
+        .returning({ id: imMessageDeliveries.id });
+      if (restored.length) await startImFeedback(transaction, claim.deliveryId, this.#now());
+      return;
+    }
+    if (scope.delivery.state !== "accepted" || scope.delivery.turnId !== claim.turnId) return;
+    if (scope.delivery.reportOwnerInstanceId !== context.instanceId || scope.delivery.resultHash !== claim.resultHash) {
+      const [claimed] = await transaction
+        .update(imMessageDeliveries)
+        .set({ reportOwnerInstanceId: context.instanceId, resultHash: claim.resultHash })
+        .where(
+          and(
+            eq(imMessageDeliveries.id, claim.deliveryId),
+            eq(imMessageDeliveries.sessionId, scope.session.id),
+            eq(imMessageDeliveries.state, "accepted"),
+            eq(imMessageDeliveries.turnId, claim.turnId),
+            isNull(imMessageDeliveries.reportedAt),
+            or(isNull(imMessageDeliveries.resultHash), eq(imMessageDeliveries.resultHash, claim.resultHash)),
+          ),
+        )
+        .returning({ id: imMessageDeliveries.id });
+      if (!claimed) return;
+    }
+    await startImFeedback(transaction, claim.deliveryId, this.#now());
   }
 
   async getDelivery(deliveryId: string): Promise<AcceptedDeliveryRecord | undefined> {
@@ -505,9 +769,18 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
   async recordTurn(
     report: TurnReportRequest,
     context: RuntimeBusinessContext,
+    options: RecordTurnOptions = {},
   ): Promise<TurnReportResult["status"] | undefined> {
     const terminalizedIds: string[] = [];
     const status = await this.#database.transaction(async (transaction) => {
+      /*
+       * A maintenance report locks the Agent and the binding first, in the order the binding
+       * lifecycle mutates them, and only then the recovery Sessions: `ImBindingService.disable`
+       * holds Agent and binding and then updates this Session, so the reverse order would close a
+       * Session -> Agent -> binding -> Session cycle. Ordinary reports take no Agent or binding lock.
+       */
+      const gate = await maintenanceGate(transaction, report.deliveryId, options.requireAbsentAuthority === true);
+      if (!gate.ok) return "conflict";
       if (report.outcome !== "completed") await lockSteeredRecoverySessions(transaction, [report.deliveryId]);
       const scope = await this.#deliveryScope(transaction, report.deliveryId);
       if (!scope) return undefined;
@@ -516,26 +789,28 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       const replay = recordedReportStatus(scope.delivery, report);
       if (replay) return replay;
       if (!recordTurnFenceMatches(scope, context, report)) return undefined;
-      await transaction
-        .update(imMessageDeliveries)
-        .set({
-          dispatchPayload: null,
-          resultHash: report.resultHash,
-          turnReport: report,
-          reportedAt: this.#now(),
-          lastErrorCode: null,
-        })
-        .where(eq(imMessageDeliveries.id, report.deliveryId));
-      await finishSlackWorkingTurn(transaction, report.deliveryId, this.#now());
-      if (report.outcome !== "completed") {
-        const recovered = await requeueSteeredDeliveries(transaction, report.deliveryId, this.#now(), this.#sessions);
-        terminalizedIds.push(...recovered.terminalizedIds);
-      }
+      // Reloaded under every lock now held: the authority, and the identities it was locked for.
+      if (!(await maintenanceStillAbsent(transaction, gate, this.#now()))) return "conflict";
+      const terminalized = await writeTerminalReport(transaction, report, this.#now(), this.#sessions);
+      if (!terminalized) return "conflict";
+      terminalizedIds.push(...terminalized);
       return "recorded" as const;
     });
     if (status === "recorded" || status === "already_recorded") this.#onDeliverySettled?.(report.deliveryId);
     for (const deliveryId of terminalizedIds) this.#onDeliverySettled?.(deliveryId);
     return status;
+  }
+
+  async #dispatchAdmission(
+    transaction: DatabaseTransaction,
+    scope: DeliveryScope,
+    requestId: string,
+    inputHash: string,
+  ): Promise<DeliveryDispatchStatus | undefined> {
+    const existing = existingDispatchStatus(scope.delivery, requestId, inputHash);
+    if (existing) return existing;
+    if ((await readInboundPendingAgents(transaction, [scope.agentId])).has(scope.agentId)) return "inbound_pending";
+    return undefined;
   }
 
   async #steerTargetMatches(
@@ -574,7 +849,17 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       .limit(1)
       .for("update");
     if (!placement) return undefined;
-    const [scope] = await transaction
+    const [scope] = await this.#deliveryScopes(transaction, [deliveryId], identity.sessionId);
+    return scope;
+  }
+
+  async #deliveryScopes(
+    transaction: DatabaseTransaction,
+    deliveryIds: string[],
+    sessionId: string,
+    unreportedOnly = false,
+  ): Promise<DeliveryScope[]> {
+    return transaction
       .select({
         delivery: imMessageDeliveries,
         message: imMessages,
@@ -590,10 +875,15 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .innerJoin(agents, eq(agents.id, imBindings.agentId))
       .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
-      .where(eq(imMessageDeliveries.id, deliveryId))
-      .limit(1)
+      .where(
+        and(
+          inArray(imMessageDeliveries.id, deliveryIds),
+          eq(imMessageDeliveries.sessionId, sessionId),
+          unreportedOnly ? isNull(imMessageDeliveries.reportedAt) : undefined,
+        ),
+      )
+      .orderBy(asc(imMessageDeliveries.id))
       .for("update", { of: imMessageDeliveries });
-    return scope;
   }
 
   async #writeSteered(

@@ -70,6 +70,7 @@ import {
 import { CLOUD_STEER_RELAY_SOURCE, cloudSteerResult, cloudSteerSocketPath } from "./cloud-steer-control.js";
 import { CloudWorkspaceError } from "./cloud-workspace.js";
 import { CONTEXT_TREE_COMMAND_WORKER_SOURCE } from "./context-tree-command-worker.js";
+import { createSandboxContextTreeSessionHints } from "./context-tree-session-hints.js";
 import { NativeProviderBridge } from "./native-provider-bridge.js";
 import { type NativeSandbox, NativeSandboxError, SANDBOX_NODE, SANDBOX_WORKER_ENTRY } from "./native-sandbox.js";
 import type { NativeSandboxWebGateway, NativeWebExecutionChannel } from "./web-gateway.js";
@@ -161,7 +162,7 @@ export interface CloudTurnRunnerOptions {
    */
   readonly sandboxReset?: () => Promise<void>;
   /** E5: quiesce writers and save while the Turn slot is held, before publishing its report. */
-  readonly checkpoint?: () => Promise<void>;
+  readonly checkpoint?: (options?: { readonly executionEffects?: TurnCompletion["executionEffects"] }) => Promise<void>;
   readonly log?: (message: string) => void;
   readonly onDiagnostic?: (record: Readonly<Record<string, unknown>>) => void;
   /** Unexpected durable-boundary failures that must surface instead of being swallowed. */
@@ -190,10 +191,11 @@ function workerStopDiagnostic(
   else if (error instanceof NativeSandboxError && error.message === "Sandbox execution deadline exceeded")
     stopType = "exec_timeout";
   else if (failed) stopType = "exec_rejected";
+  const expectedShutdown = aborted && !bridgeFailed;
   return {
-    severity: failed || exitCode !== 0 ? "ERROR" : "INFO",
+    severity: !expectedShutdown && (failed || exitCode !== 0) ? "ERROR" : "INFO",
     workerExitCode: exitCode,
-    errorCode: error instanceof NativeSandboxError ? error.code : undefined,
+    errorCode: !expectedShutdown && error instanceof NativeSandboxError ? error.code : undefined,
     stopType,
   };
 }
@@ -1590,10 +1592,17 @@ export class CloudTurnRunner {
     let checkpointError: unknown;
     if (checkpoint) {
       try {
-        await this.#options.checkpoint?.();
+        await this.#options.checkpoint?.({ executionEffects: completion.executionEffects });
       } catch (error) {
         checkpointError = error;
-        completion = workspaceSaveFailure(completion);
+        if (completion.executionEffects !== "not_started") {
+          completion = workspaceSaveFailure(completion);
+        } else if (this.#options.sandboxReset) {
+          this.#markSandboxDirty();
+          await this.#resetSandboxNamespace().catch((resetError) => {
+            checkpointError = resetError;
+          });
+        }
       }
     }
     // Record exactly one honest result AFTER the save attempt. A crash before this point leaves
@@ -1603,12 +1612,7 @@ export class CloudTurnRunner {
     if (!recorded.report) return;
     this.#notifyJournalChanged();
     this.#send({ type: "delivery:report", report: recorded.report, requestId: randomUUID() });
-    if (
-      checkpointError !== undefined &&
-      !(checkpointError instanceof CloudWorkspaceError && !checkpointError.retryable)
-    ) {
-      this.#reportPersistenceError(checkpointError);
-    }
+    if (checkpointError !== undefined) this.#reportCheckpointError(checkpointError);
   }
 
   #buildReport(
@@ -1702,7 +1706,9 @@ export class CloudTurnRunner {
     if (this.#active?.entryKey === entry.deliveryId && steering) this.#active.steering = steering;
     const openExecution =
       this.#options.openExecution ?? ((input: CloudTurnExecutionOpenInput) => this.#openBridgeExecution(input));
+    const openStartedAtMs = Date.now();
     const execution = await openExecution({ delivery, scope, turnId: entry.turnId, signal });
+    const credentialOpenMs = Math.max(0, Date.now() - openStartedAtMs);
     try {
       // The credential bridge is open, but the worker has not started; close it without calling
       // the worker when a stop or grant revocation landed during the open.
@@ -1721,7 +1727,7 @@ export class CloudTurnRunner {
       });
       const timeoutMs = turnTimeoutMs(delivery, Date.now()) + CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS;
       this.#activity.start(delivery, entry.turnId);
-      return await this.#runWorker({ stdin, timeoutMs }, signal, execution, {
+      return await this.#runWorker({ stdin, timeoutMs, credentialOpenMs }, signal, execution, {
         ...scope,
         turnId: entry.turnId,
         deliveryId: delivery.deliveryId,
@@ -1766,7 +1772,12 @@ export class CloudTurnRunner {
       completion = { errorReason: "client_shutdown", executionEffects: "may_have_occurred", outcome: "cancelled" };
     }
     const cleanup = await this.#cleanupInterrupted(completion);
-    await this.#settleSessionTerminal(current, sessionSettlementOutcome(cleanup.completion), true);
+    await this.#settleSessionTerminal(
+      current,
+      sessionSettlementOutcome(cleanup.completion),
+      true,
+      cleanup.completion.executionEffects,
+    );
     if (cleanup.failure !== undefined) this.#reportPersistenceError(cleanup.failure);
   }
 
@@ -1786,27 +1797,30 @@ export class CloudTurnRunner {
     entry: CloudJournalSessionEntry,
     outcome: CloudJournalSettlementOutcome,
     checkpoint = false,
+    executionEffects?: TurnCompletion["executionEffects"],
   ): Promise<void> {
     let effective = outcome;
     let checkpointError: unknown;
     if (checkpoint) {
       try {
-        await this.#options.checkpoint?.();
+        await this.#options.checkpoint?.(executionEffects ? { executionEffects } : undefined);
       } catch (error) {
         checkpointError = error;
-        effective = "failed";
+        if (executionEffects !== "not_started") {
+          effective = "failed";
+        } else if (this.#options.sandboxReset) {
+          this.#markSandboxDirty();
+          await this.#resetSandboxNamespace().catch((resetError) => {
+            checkpointError = resetError;
+          });
+        }
       }
     }
     const recorded = await this.#options.journal.recordSessionSettled(entry.messageId, entry.scope, effective);
     if (!recorded.settlement) return;
     this.#notifyJournalChanged();
     this.#sendSessionSettled(recorded);
-    if (
-      checkpointError !== undefined &&
-      !(checkpointError instanceof CloudWorkspaceError && !checkpointError.retryable)
-    ) {
-      this.#reportPersistenceError(checkpointError);
-    }
+    if (checkpointError !== undefined) this.#reportCheckpointError(checkpointError);
   }
 
   async #runSessionInSandbox(
@@ -1829,7 +1843,9 @@ export class CloudTurnRunner {
     const openExecution =
       this.#options.openSessionExecution ??
       ((input: CloudSessionExecutionOpenInput) => this.#openSessionBridgeExecution(input));
+    const openStartedAtMs = Date.now();
     const execution = await openExecution({ message, scope, turnId: entry.turnId, signal });
+    const credentialOpenMs = Math.max(0, Date.now() - openStartedAtMs);
     try {
       if (signal.aborted || generation !== this.#channelGeneration) return cancelledBeforeStart();
       const stdin = serializeRunnerCloudSessionWorkerStdin({
@@ -1847,7 +1863,7 @@ export class CloudTurnRunner {
         ...(this.#options.piSessionDirectory ? { piSessionDirectory: this.#options.piSessionDirectory } : {}),
       });
       const timeoutMs = Math.max(1, Date.parse(deadlineAt) - Date.now()) + CLOUD_TURN_EXEC_TIMEOUT_GRACE_MS;
-      return await this.#runWorker({ stdin, timeoutMs }, signal, execution, {
+      return await this.#runWorker({ stdin, timeoutMs, credentialOpenMs }, signal, execution, {
         ...scope,
         turnId: entry.turnId,
         messageId: message.messageId,
@@ -1859,7 +1875,7 @@ export class CloudTurnRunner {
 
   /** Both execution paths use the same transport-failure and completion boundary. */
   async #runWorker(
-    input: { stdin: string; timeoutMs: number },
+    input: { stdin: string; timeoutMs: number; credentialOpenMs?: number },
     signal: AbortSignal,
     execution: CloudTurnExecutionHandle,
     context: PiDiagnosticContext,
@@ -1913,6 +1929,7 @@ export class CloudTurnRunner {
           Boolean(execution.bridgeFailure?.()),
         ),
         execTimeoutMs: input.timeoutMs,
+        ...(input.credentialOpenMs !== undefined ? { credentialOpenMs: input.credentialOpenMs } : {}),
       });
     }
   }
@@ -1968,6 +1985,7 @@ export class CloudTurnRunner {
       workspace: "/workspace",
       sources: input.contextTrees,
       stateDirectory: join(this.#options.stateDirectory, "context-tree-command-sessions", input.agentId),
+      sessionHints: createSandboxContextTreeSessionHints(this.#options.sandbox, "/workspace"),
       environment: () => {
         const routing = {
           OPENTAG_PROVIDER_PROXY_URL: `http://127.0.0.1:${CLOUD_CONNECT_PROXY_PORT}`,
@@ -2268,6 +2286,14 @@ export class CloudTurnRunner {
       () => undefined,
     );
     return run;
+  }
+
+  #reportCheckpointError(error: unknown): void {
+    if (error instanceof CloudWorkspaceError && !error.retryable && error.archiveErrorCode !== undefined) {
+      this.#log(`cloud workspace checkpoint failed: ${error.message}`);
+      return;
+    }
+    this.#reportPersistenceError(error);
   }
 
   #reportPersistenceError(error: unknown): void {

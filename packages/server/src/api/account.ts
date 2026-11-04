@@ -18,6 +18,7 @@ import {
   AccountSandboxRunnerStopRequestSchema,
   AccountSetupCompletionSchema,
   AccountSetupResetRequestSchema,
+  AGENT_ACTIVITY_TASK_COUNT_HEADER,
   AgentAdminConfigSchema,
   AgentCreationIntentIdSchema,
   AgentCreationIntentResultSchema,
@@ -41,7 +42,9 @@ import {
   ListTaskRepliesResponseSchema,
   ListTasksResponseSchema,
   negotiateProviderReadinessFromHeaders,
+  projectAgentActivityForClient,
   type RuntimeProviderReadinessNegotiation,
+  requestsAgentActivityTaskCount,
   requestsCloudIdentityV1,
   TASK_BY_ID_TEMPLATE,
   TASK_CANCEL_TEMPLATE,
@@ -237,12 +240,14 @@ export function registerAccountRoutes(
     app.get(HTTP_PATHS.accountAgents, { preHandler }, async (request, reply) => {
       const account = accountId(request);
       const response = await agentService.listForAccount(account);
+      const includeTaskCount = requestsAgentActivityTaskCount(request.headers[AGENT_ACTIVITY_TASK_COUNT_HEADER]);
       return reply.code(200).send(
         ListAgentsResponseSchema.parse({
-          agents:
-            options.slackOAuthAvailable === undefined
-              ? response.agents
-              : response.agents.map((agent) => ({ ...agent, slackOAuthAvailable: options.slackOAuthAvailable })),
+          agents: response.agents.map((agent) => ({
+            ...agent,
+            activity: projectAgentActivityForClient(agent.activity, includeTaskCount),
+            ...(options.slackOAuthAvailable === undefined ? {} : { slackOAuthAvailable: options.slackOAuthAvailable }),
+          })),
         }),
       );
     });
@@ -500,6 +505,7 @@ export function registerAccountRoutes(
               downloadBaseUrl,
               environment,
               publicUrl,
+              targetComputerId: input.mode === "repair" ? input.targetComputerId : undefined,
             }),
             expiresIn: issued.expiresIn,
             issuedAt: issued.issuedAt.toISOString(),

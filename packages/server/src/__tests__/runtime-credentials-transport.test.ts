@@ -3,6 +3,7 @@ import { once } from "node:events";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
+import { createPerformanceLogger, type PerformanceLogger } from "../observability/performance-logger.js";
 import { RuntimeCapabilityStore } from "../runtime-credentials/capability-store.js";
 import {
   type RuntimeConnectionFence,
@@ -12,10 +13,15 @@ import {
 import { RuntimeProviderProxyTransport } from "../runtime-credentials/data-transport.js";
 import { RuntimeExecutionRegistry } from "../runtime-credentials/execution-registry.js";
 import { UnavailableRuntimeGitHubAdmission } from "../runtime-credentials/github-admission.js";
+import { ProviderOperationRegistry } from "../runtime-credentials/operation-registry.js";
 import type { ProviderProxyAdapter } from "../runtime-credentials/provider-proxy-adapter.js";
+import { ImProviderProxyAdapter } from "../runtime-credentials/provider-proxy-adapter.js";
 import type { RuntimeScopeResolverPort, RuntimeScopeSnapshot } from "../runtime-credentials/scope-resolver.js";
+import { SLACK_OPERATIONS } from "../runtime-credentials/slack-operations.js";
 import { RuntimeProxyTicketStore } from "../runtime-credentials/ticket-store.js";
 import { runtimeExecutionProviderBinding } from "../runtime-credentials/types.js";
+import { RuntimeUrlHandleStore } from "../runtime-credentials/url-handle-store.js";
+import { deferred } from "./support/deferred.js";
 
 const AGENT = "00000000-0000-4000-8000-0000000000a1";
 const COMPUTER = "00000000-0000-4000-8000-0000000000c1";
@@ -134,6 +140,7 @@ async function setup(
   adapter: ProviderProxyAdapter,
   options: {
     logger?: { warn(record: Record<string, unknown>, message: string): void };
+    performanceLogger?: PerformanceLogger;
     connectionFence?: RuntimeConnectionFence;
     brokerConnectionFence?: RuntimeConnectionFence;
     cloud?: boolean;
@@ -200,6 +207,7 @@ async function setup(
     executions,
     ...(options.connectionFence ? { connectionFence: options.connectionFence } : {}),
     ...(options.logger ? { logger: options.logger } : {}),
+    ...(options.performanceLogger ? { performanceLogger: options.performanceLogger } : {}),
     authTimeoutMs: 150,
     revalidateIntervalMs: options.revalidateIntervalMs ?? 60_000,
     ...(options.chunkMaxBytes !== undefined ? { chunkMaxBytes: options.chunkMaxBytes } : {}),
@@ -269,7 +277,18 @@ async function drainBinaryUntilFrame(queue: MessageQueue, type: string): Promise
 
 describe("RuntimeProviderProxyTransport", () => {
   it("authenticates the first-frame ticket and streams a request/response with credits", async () => {
-    const state = await setup(echoAdapter());
+    const perfRecords: Array<Record<string, unknown>> = [];
+    const baseLogger = {
+      debug: (payload: Record<string, unknown>) => perfRecords.push(payload),
+      info: (payload: Record<string, unknown>) => perfRecords.push(payload),
+      warn: (payload: Record<string, unknown>) => perfRecords.push(payload),
+      error: (payload: Record<string, unknown>) => perfRecords.push(payload),
+    };
+    const performanceLogger = createPerformanceLogger(
+      () => baseLogger as unknown as Parameters<typeof createPerformanceLogger>[0] extends () => infer R ? R : never,
+      { enabled: true, level: "debug", slowThresholdMs: 1_000 },
+    );
+    const state = await setup(echoAdapter(), { performanceLogger });
     const { ticket } = state.tickets.issue({
       executionId: state.record.executionId,
       computerId: COMPUTER,
@@ -291,6 +310,92 @@ describe("RuntimeProviderProxyTransport", () => {
     expect(chunk.data.subarray(0, 4).readUInt32BE(0)).toBe(7);
     expect(chunk.data.subarray(4).toString("utf8")).toBe("HELLO");
     expect(await queue.nextJson()).toEqual({ type: "end", streamId: 7 });
+    expect(perfRecords).toContainEqual(
+      expect.objectContaining({
+        module: "runtime-provider-proxy",
+        perfCategory: "ws",
+        operation: "ws.provider_proxy.stream",
+        outcome: "completed",
+        provider: "slack",
+        statusCode: 200,
+        requestBytes: 5,
+        responseBytes: 5,
+        firstByteMs: expect.any(Number),
+      }),
+    );
+    socket.close();
+  });
+
+  it("settles a cancelled stream as failed rather than completed when the upstream generator settles after cancel", async () => {
+    const perfRecords: Array<Record<string, unknown>> = [];
+    const baseLogger = {
+      debug: (payload: Record<string, unknown>) => perfRecords.push(payload),
+      info: (payload: Record<string, unknown>) => perfRecords.push(payload),
+      warn: (payload: Record<string, unknown>) => perfRecords.push(payload),
+      error: (payload: Record<string, unknown>) => perfRecords.push(payload),
+    };
+    const performanceLogger = createPerformanceLogger(
+      () => baseLogger as unknown as Parameters<typeof createPerformanceLogger>[0] extends () => infer R ? R : never,
+      { enabled: true, level: "debug", slowThresholdMs: 1_000 },
+    );
+    let releaseGenerator!: () => void;
+    const generatorWaiting = new Promise<void>((resolve) => {
+      releaseGenerator = resolve;
+    });
+    let generatorFinished!: () => void;
+    const generatorSettled = new Promise<void>((resolve) => {
+      generatorFinished = resolve;
+    });
+    const waitingAdapter: ProviderProxyAdapter = {
+      handle: async () => ({
+        status: 200,
+        headers: { "content-type": "text/plain" },
+        body: {
+          [Symbol.asyncIterator]: () => ({
+            async next() {
+              try {
+                await generatorWaiting;
+                return { done: true as const, value: undefined };
+              } finally {
+                generatorFinished();
+              }
+            },
+          }),
+        },
+      }),
+    };
+    const state = await setup(waitingAdapter, { performanceLogger });
+    const { ticket } = state.tickets.issue({
+      executionId: state.record.executionId,
+      computerId: COMPUTER,
+      instanceId: "instance-1",
+      connectionId: "connection-1",
+    });
+    const { socket, queue } = await connect(state.port, ticket);
+    expect(await queue.nextJson()).toEqual({ type: "ready", executionId: state.record.executionId });
+    socket.send(openFrame(7, state.grant.token, "/api/chat.postMessage"));
+    socket.send(JSON.stringify({ type: "end", streamId: 7 }));
+    const response = await queue.nextJson();
+    expect(response).toMatchObject({ type: "response", streamId: 7, status: 200 });
+    socket.send(JSON.stringify({ type: "cancel", streamId: 7 }));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    releaseGenerator();
+    await generatorSettled;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    const terminalRecords = perfRecords.filter(
+      (record) => record.operation === "ws.provider_proxy.stream" && record.outcome !== "started",
+    );
+    expect(terminalRecords).toHaveLength(1);
+    expect(terminalRecords[0]).toMatchObject({
+      module: "runtime-provider-proxy",
+      perfCategory: "ws",
+      operation: "ws.provider_proxy.stream",
+      outcome: "failed",
+      errorCode: "cancelled",
+      provider: "slack",
+      statusCode: 200,
+    });
     socket.close();
   });
 
@@ -940,7 +1045,22 @@ it("bounds target checks per stream and does not let a slow check delay another 
 });
 
 describe("Provider stream failure diagnostics", () => {
-  it.each(["scope_denied", "private-error-code"])("logs only bounded provider/reason metadata for %s", async (code) => {
+  it.each([
+    ["scope_denied", "scope_denied"],
+    ["github_destination_blocked", "github_destination_blocked"],
+    ["operation_not_registered", "operation_not_registered"],
+    ["validation_scope", "validation_scope"],
+    ["header_rejected", "header_rejected"],
+    ["body_invalid", "body_invalid"],
+    ["body_too_large", "body_too_large"],
+    ["write_outcome_unknown", "write_outcome_unknown"],
+    ["upstream_unavailable", "upstream_unavailable"],
+    ["handle_invalid", "handle_invalid"],
+    ["cancelled", "cancelled"],
+    ["response_invalid", "response_invalid"],
+    ["private-error-code", "upstream_unavailable"],
+    ["validation_scope private-token", "upstream_unavailable"],
+  ])("logs only bounded provider/reason metadata for %s", async (code, expectedCode) => {
     const logs: unknown[] = [];
     const state = await setup(
       {
@@ -968,7 +1088,7 @@ describe("Provider stream failure diagnostics", () => {
     expect(await queue.nextJson()).toMatchObject({ type: "error", code });
     expect(logs).toEqual([
       {
-        record: { provider: "slack", code: code === "scope_denied" ? code : "upstream_unavailable" },
+        record: { provider: "slack", code: expectedCode },
         message: "Provider proxy stream failed",
       },
     ]);
@@ -977,3 +1097,130 @@ describe("Provider stream failure diagnostics", () => {
     socket.close();
   });
 });
+
+it.each(["broker", "adapter", "revalidation"] as const)(
+  "joins disconnected proxy %s work before transport close resolves",
+  async (phase) => {
+    const entered = deferred(),
+      resume = deferred();
+    let upstreamSignal: AbortSignal | undefined;
+    const adapter: ProviderProxyAdapter = {
+      handle: vi.fn(async (request) => {
+        upstreamSignal = request.signal;
+        if (phase === "adapter") {
+          entered.resolve();
+          await resume.promise;
+        }
+        return {
+          status: 200,
+          headers: {},
+          body: (async function* () {
+            if (phase === "revalidation") {
+              yield Buffer.from("first");
+              await resume.promise;
+            }
+          })(),
+        };
+      }),
+    };
+    const state = await setup(adapter, { revalidateIntervalMs: 20 });
+    const originalBegin = state.broker.beginRequest.bind(state.broker);
+    const originalRevalidate = state.broker.revalidate.bind(state.broker);
+    const spy =
+      phase === "broker"
+        ? vi.spyOn(state.broker, "beginRequest").mockImplementation(async (...args) => {
+            upstreamSignal = args[0].signal;
+            const result = await originalBegin(...args);
+            entered.resolve();
+            await resume.promise;
+            return result;
+          })
+        : phase === "revalidation"
+          ? vi.spyOn(state.broker, "revalidate").mockImplementation(async (...args) => {
+              const result = await originalRevalidate(...args);
+              entered.resolve();
+              await resume.promise;
+              return result;
+            })
+          : undefined;
+    const { ticket } = state.tickets.issue(state.record);
+    const { socket, queue } = await connect(state.port, ticket);
+    await queue.nextJson();
+    let drained = false;
+    try {
+      socket.send(openFrame(1, state.grant.token));
+      await entered.promise;
+      const disconnected = once(socket, "close");
+      socket.close();
+      await disconnected;
+      const closing = state.transport.close().then(() => {
+        drained = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(drained).toBe(false);
+      expect(upstreamSignal?.aborted).toBe(true);
+      resume.resolve();
+      await closing;
+      if (phase === "broker") expect(adapter.handle).not.toHaveBeenCalled();
+      expect(state.connections[0]?.snapshot()).toEqual({ active: 0, retired: 0, bufferedBytes: 0 });
+    } finally {
+      resume.resolve();
+      await state.transport.close();
+      spy?.mockRestore();
+    }
+  },
+);
+
+it.each(["download", "upload"] as const)(
+  "does not create late %s handles after execution close during confirmed capture",
+  async (kind) => {
+    const entered = deferred(),
+      resume = deferred(),
+      urlHandles = new RuntimeUrlHandleStore();
+    let captured = false,
+      drained = false;
+    const payload =
+      kind === "upload"
+        ? { ok: true, upload_url: "https://files.slack.com/upload/v1/test" }
+        : { ok: true, file: { id: "F1", url_private: "https://files.slack.com/files-pri/T-F/report" } };
+    const adapter = new ImProviderProxyAdapter({
+      provider: "slack",
+      registry: new ProviderOperationRegistry(SLACK_OPERATIONS),
+      urlHandles,
+      fetchImpl: (async () =>
+        new Response(JSON.stringify(payload), { headers: { "content-type": "application/json" } })) as typeof fetch,
+      outboundCapture: {
+        capture: async () => {
+          entered.resolve();
+          await resume.promise;
+          captured = true;
+        },
+      },
+    });
+    const state = await setup(adapter);
+    const unsubscribe = state.executions.onClose(({ executionId }) => urlHandles.revokeExecution(executionId));
+    const { ticket } = state.tickets.issue(state.record);
+    const { socket, queue } = await connect(state.port, ticket);
+    await queue.nextJson();
+    try {
+      const path = kind === "upload" ? "/api/files.getUploadURLExternal" : "/api/files.completeUploadExternal";
+      socket.send(openFrame(1, state.grant.token, path));
+      socket.send(JSON.stringify({ type: "end", streamId: 1 }));
+      await entered.promise;
+      state.executions.close(state.record.executionId, "owner_lost");
+      const closing = state.transport.close().then(() => {
+        drained = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(drained).toBe(false);
+      resume.resolve();
+      await closing;
+      expect(captured).toBe(true);
+      expect(urlHandles.size).toBe(0);
+    } finally {
+      resume.resolve();
+      await state.transport.close();
+      unsubscribe();
+    }
+  },
+);

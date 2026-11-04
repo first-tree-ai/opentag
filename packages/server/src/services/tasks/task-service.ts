@@ -137,7 +137,8 @@ export class TaskService {
    */
   async get(accountId: string, taskId: string, options: GetTaskOptions): Promise<TaskDetail> {
     const cursor = parseCursor(options.cursor);
-    const scope = await this.#scopeOfMessage(this.database, accountId, taskId);
+    const scope =
+      (await this.#scopeOfMessage(this.database, accountId, taskId)) ?? (await this.#scopeOfSession(accountId, taskId));
     if (!scope) throw taskNotFound();
     const [[row], turns, internalSessions, collaboration] = await Promise.all([
       this.#summaryRows(this.database, accountId, { scope, limit: 1 }),
@@ -335,15 +336,22 @@ export class TaskService {
    */
   async listReplies(accountId: string, taskId: string, options: GetTaskOptions): Promise<ListTaskRepliesResponse> {
     const cursor = parseCursor(options.cursor);
-    const scope = await this.#replyScopeOfMessage(accountId, taskId);
-    if (!scope) throw taskNotFound();
-    const rows = await this.#replyRows(scope, cursor, options.limit + 1);
-    const page = rows.slice(0, options.limit);
-    const last = page.at(-1);
-    return {
-      items: page.map(toReply),
-      nextCursor: rows.length > options.limit && last ? encodeCursor(last.cursorAt, last.id) : null,
-    };
+    return this.database.transaction(
+      async (transaction) => {
+        const scope =
+          (await this.#replyScopeOfMessage(transaction, accountId, taskId)) ??
+          (await this.#scopeOfSession(accountId, taskId, transaction));
+        if (!scope) throw taskNotFound();
+        const rows = await this.#replyRows(transaction, scope, cursor, options.limit + 1);
+        const page = rows.slice(0, options.limit);
+        const last = page.at(-1);
+        return {
+          items: page.map(toReply),
+          nextCursor: rows.length > options.limit && last ? encodeCursor(last.cursorAt, last.id) : null,
+        };
+      },
+      { isolationLevel: "repeatable read", accessMode: "read only" },
+    );
   }
 
   /**
@@ -358,7 +366,9 @@ export class TaskService {
   ): Promise<T> {
     return this.database.transaction(
       async (transaction) => {
-        const scope = await this.#scopeOfMessage(transaction, accountId, taskId);
+        const scope =
+          (await this.#scopeOfMessage(transaction, accountId, taskId)) ??
+          (await this.#scopeOfSession(accountId, taskId, transaction));
         if (!scope) throw taskNotFound();
         return read(transaction, scope);
       },
@@ -405,8 +415,12 @@ export class TaskService {
    * for a first confirmed send. Private context comes from the stored provider context, and any
    * unknown or group context keeps a concrete topic key rather than widening to the channel.
    */
-  async #replyScopeOfMessage(accountId: string, messageId: string): Promise<TopicScope | undefined> {
-    const rows = await this.database.execute<ScopeRow>(sql`
+  async #replyScopeOfMessage(
+    executor: QueryExecutor,
+    accountId: string,
+    messageId: string,
+  ): Promise<TopicScope | undefined> {
+    const rows = await executor.execute<ScopeRow>(sql`
       with anchor as (
         select
           m.im_binding_id,
@@ -455,16 +469,23 @@ export class TaskService {
     return row ? { bindingId: row.bindingId, channelId: row.channelId, topicKey: row.topicKey } : undefined;
   }
 
-  /** The topic a Session's title applies to; a group's channel Session titles nothing. */
-  async #scopeOfSession(accountId: string, sessionId: string): Promise<TopicScope | undefined> {
-    const located = await this.database.execute<ChannelScope & Record<string, unknown>>(sql`
+  /**
+   * The topic a 1:1 Session belongs to (a thread Session or a private-chat channel Session); a
+   * group's channel Session is shared across top-level topics and resolves nothing here.
+   */
+  async #scopeOfSession(
+    accountId: string,
+    sessionId: string,
+    executor: QueryExecutor = this.database,
+  ): Promise<TopicScope | undefined> {
+    const located = await executor.execute<ChannelScope & Record<string, unknown>>(sql`
       select s.im_binding_id as "bindingId", s.channel_id as "channelId"
       from sessions s
       where s.id = ${sessionId}::uuid
     `);
     const [channel] = [...located];
     if (!channel) return undefined;
-    const rows = await this.database.execute<ScopeRow>(sql`
+    const rows = await executor.execute<ScopeRow>(sql`
       with ${topicCtes({ accountId, scope: { bindingId: channel.bindingId, channelId: channel.channelId }, now: this.#now() })}
       select
         ts.im_binding_id as "bindingId",
@@ -598,8 +619,13 @@ export class TaskService {
    * has no inbound mapping yet, and a record that cannot be proven to belong is not shown. A
    * private chat (null topic key) takes the whole conversation, as it does inbound.
    */
-  async #replyRows(scope: TopicScope, cursor: TaskCursor | undefined, limit: number): Promise<TaskReplyRow[]> {
-    const rows = await this.database.execute<TaskReplyRow>(sql`
+  async #replyRows(
+    executor: QueryExecutor,
+    scope: TopicScope,
+    cursor: TaskCursor | undefined,
+    limit: number,
+  ): Promise<TaskReplyRow[]> {
+    const rows = await executor.execute<TaskReplyRow>(sql`
       with thread_roots as (
         select distinct on (m.im_binding_id, m.channel_id, m.thread_key)
           m.im_binding_id,
@@ -774,6 +800,8 @@ export class TaskService {
         case when p.is_thread then 'thread' else 'channel' end as "sessionKind",
         p.channel_id as "channelId",
         case when p.is_thread then p.topic_key else null end as "threadKey",
+        p.chat_mode as "chatMode",
+        p.group_message_type as "groupMessageType",
         p.anchor_at as "createdAt",
         case when ts.id is not null then ts.ended_at else cs.ended_at end as "endedAt",
         ts.manual_title as "manualTitle",

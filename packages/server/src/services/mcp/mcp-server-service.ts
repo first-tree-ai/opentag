@@ -57,7 +57,6 @@ async function assertAgentEligible(
   agentId: string,
   accountId: string,
   source: "account" | "agent-self",
-  forUpdate: boolean,
 ): Promise<void> {
   const query = tx
     .select({
@@ -68,7 +67,7 @@ async function assertAgentEligible(
     })
     .from(agents)
     .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, accountId), ne(agents.status, "deleted")));
-  const [row] = forUpdate ? await query.for("update") : await query;
+  const [row] = await query.for("update");
   if (!row) {
     throw new McpServiceError(MCP_ERROR_CODES.SERVER_NOT_FOUND, "The Agent was not found");
   }
@@ -177,7 +176,7 @@ export class McpServerService {
     try {
       return await this.#database.transaction(async (tx) => {
         await lockMcpAccounts(tx, [accountId]);
-        await assertAgentEligible(tx, agentId, accountId, source, true);
+        await assertAgentEligible(tx, agentId, accountId, source);
 
         const [serverRow] = await tx
           .insert(mcpServers)
@@ -195,8 +194,6 @@ export class McpServerService {
           })
           .returning();
         if (!serverRow) throw mcpServerNotFound();
-
-        await assertAgentEligible(tx, agentId, accountId, source, false);
 
         const [bindingRow] = await tx
           .insert(agentMcpServers)
@@ -427,7 +424,7 @@ export class McpServerService {
     try {
       await this.#database.transaction(async (transaction) => {
         await lockMcpAccounts(transaction, [accountId]);
-        if (source === "agent-self") await assertAgentEligible(transaction, agentId, accountId, source, true);
+        if (source === "agent-self") await assertAgentEligible(transaction, agentId, accountId, source);
         const [agent] = await transaction
           .select({ id: agents.id })
           .from(agents)
@@ -510,7 +507,7 @@ export class McpServerService {
     await this.#database.transaction(async (transaction) => {
       await lockMcpAccounts(transaction, [accountId]);
       if (source === "agent-self") {
-        await assertAgentEligible(transaction, agentId, accountId, source, true);
+        await assertAgentEligible(transaction, agentId, accountId, source);
       }
 
       const [server] = await transaction

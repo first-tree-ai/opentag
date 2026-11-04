@@ -42,7 +42,11 @@ import {
 import { createLogger } from "../../observability/logger.js";
 import { claudePermissionRules } from "../native-permissions.js";
 import { probeClaudeEnvironmentCredential } from "./credential-probe.js";
-import { type ClaudeCodeHostedToolBridge, startClaudeCodeHostedToolBridge } from "./hosted-tool-bridge.js";
+import {
+  type ClaudeCodeHostedToolBridge,
+  createClaudeCodeBridgeIdentity,
+  startClaudeCodeHostedToolBridge,
+} from "./hosted-tool-bridge.js";
 import {
   ClaudeCodeProcess,
   type ClaudeCodeProcessClient,
@@ -166,6 +170,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   readonly #hostedTools?: AgentHostedTools;
   readonly #skillPaths: readonly string[];
   readonly #startHostedToolBridge: typeof startClaudeCodeHostedToolBridge;
+  readonly #bridgeIdentity = createClaudeCodeBridgeIdentity();
   readonly #systemPrompt: string;
   readonly #textBlocks = new Map<string, TextBlockState>();
   readonly #tools = new Map<string, ToolState>();
@@ -236,6 +241,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
           this.#skillPaths,
           mcpGateway,
           this.#cwd,
+          this.#bridgeIdentity,
         );
         process = this.#createProcess(this.#arguments(request, hostedToolBridge));
       } catch (error) {
@@ -329,7 +335,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
         : []),
       ...(this.#sessionExists ? ["--resume", this.#sessionId] : ["--session-id", this.#sessionId]),
       "--permission-mode",
-      this.#policy.approvals === "never" ? "bypassPermissions" : "auto",
+      this.#policy.approvals === "never" ? "bypassPermissions" : "acceptEdits",
       ...(this.#policy.approvals === "never" ? [] : ["--permission-prompt-tool", "stdio"]),
       "--settings",
       JSON.stringify({
@@ -747,7 +753,7 @@ export class ClaudeCodeAgentRuntimeFactory implements AgentRuntimeFactory {
       if (!result.streamJson) {
         issues.push({
           code: "version_incompatible",
-          message: "Claude Code requires stream-json, auto mode, and stdio permission prompts",
+          message: "Claude Code requires stream-json, acceptEdits mode, and stdio permission prompts",
         });
       }
       if (result.credentialIssue) {
@@ -915,7 +921,7 @@ async function probeClaudeCode(
     helpResult.stdout.includes("--mcp-config") &&
     helpResult.stdout.includes("--strict-mcp-config") &&
     helpResult.stdout.includes("--allowedTools") &&
-    /\bauto\b/.test(helpResult.stdout) &&
+    /\bacceptEdits\b/.test(helpResult.stdout) &&
     helpResult.stdout.includes("--permission-prompt-tool") &&
     helpResult.stdout.includes("--append-system-prompt");
   const authentication = await probeClaudeCodeCredential(command, execution, signal);

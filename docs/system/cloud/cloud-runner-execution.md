@@ -154,8 +154,13 @@ authenticated late report is answered `conflict`, the `unknown` outcome stays te
 children returned to the queue by that settlement are not re-absorbed into the turn. A live Runner
 that answers `reported` is never settled that way, because it replays the journaled report on the
 same socket; an overdue replay is logged as `CLOUD_DELIVERY_REPORT_REPLAY_OVERDUE` for the report
-path to explain. Without E5 persistence, `restore_required` rejects replacement explicitly. With E5,
-replacement allocation is permitted but cannot execute before verified restoration. A stopped
+path to explain. The first overdue recovery warns immediately with the delivery, Turn, connection
+and query phase; repeats on that connection warn at most once per hour while queries and report
+replays continue normally. A replacement connection gets a fresh warning. This process-local
+throttle retains at most 1,024 deliveries, evicting the oldest warning when full; an evicted
+delivery or a Server restart can warn again sooner. Recording a report or detaching its connection
+clears the corresponding warning state. Without E5 persistence, `restore_required` rejects replacement
+explicitly. With E5, replacement allocation is permitted but cannot execute before verified restoration. A stopped
 environment rejects input explicitly. Transient model/Runner unavailability remains retryable within the input
 deadline, with exponential delays from two seconds to a thirty-second cap using the existing
 attempt counter.
@@ -476,6 +481,13 @@ References: [native Sandbox CLI](https://docs.cloud.google.com/run/docs/referenc
 One Cloud Agent can execute several **Agent Sessions** concurrently. Each Session still owns one
 Sandbox and one Instance; it does not share a writable workspace or Pi history with another
 Session. Cloud Computer remains the Account's logical identity, not an execution lock.
+
+Physical occupancy and cleanup follow the retained Session placement's Cloud Computer owner until
+verified absence, including after Agent suspension, deletion or transfer. Managed execution still
+requires current active Account/Agent/binding/Session authority and the Agent's current Computer.
+Reservation locks capacity first, then authority rows before Sandbox; physical cleanup and borrow
+ownership checks never acquire those authority locks after locking Sandbox. Agent overview keeps
+current Agent ownership and can use its retained owned Cloud placements after detach.
 
 The existing IM delivery worker uses a Session lane for Cloud and an Agent lane for Local. Durable
 custody follows the same boundary: a running or uncertain Cloud delivery fences its own Session;

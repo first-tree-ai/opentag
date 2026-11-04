@@ -4,7 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { test as base, expect, request as playwrightRequest } from "@playwright/test";
+import { test as base, expect, type Page, request as playwrightRequest } from "@playwright/test";
 import { baseURL, repositoryRoot } from "../playwright.config.js";
 
 const execFileAsync = promisify(execFile);
@@ -72,6 +72,8 @@ async function psql(url: string, sql: string): Promise<string> {
       `PGPASSWORD=${password}`,
       "postgres",
       "psql",
+      "-h",
+      "127.0.0.1",
       "-U",
       username,
       "-d",
@@ -225,18 +227,46 @@ async function seedTask(runtime: RuntimeFile, agentId: string): Promise<string> 
   return messageId;
 }
 
+export type ExpectedDiagnostic = {
+  routeTemplate: string;
+  status?: number;
+  code?: string;
+};
+
+const pageExpectedDiagnostics = new WeakMap<object, ExpectedDiagnostic[]>();
+
+export function allowExpectedDiagnostic(page: Page, ...diagnostics: ExpectedDiagnostic[]): void {
+  const current = pageExpectedDiagnostics.get(page) ?? [];
+  current.push(...diagnostics);
+  pageExpectedDiagnostics.set(page, current);
+}
+
 const browserTest = base.extend({
   page: async ({ page }, use, testInfo) => {
     const browserErrors: string[] = [];
     page.on("console", (message) => {
       // Chromium reports this CSP fallback as console.error even though it is emitted by the
       // development server's policy and is not an application failure.
-      if (
-        message.type() === "error" &&
-        !/script-src.*not explicitly set/u.test(message.text()) &&
-        !message.text().startsWith("Failed to load resource:")
-      ) {
-        browserErrors.push(`console.error: ${message.text()}`);
+      const text = message.text();
+      const isExpectedCsp = /script-src.*not explicitly set/u.test(text);
+      const isResourceLoad = text.startsWith("Failed to load resource:");
+      const allowed = pageExpectedDiagnostics.get(page);
+      const isAllowedDiagnostic =
+        allowed !== undefined &&
+        allowed.some((expected) => {
+          if (!text.includes("[OpenTag] Diagnostic")) return false;
+          if (!text.includes(expected.routeTemplate)) return false;
+          if (expected.status !== undefined && !new RegExp(`\\bstatus:\\s*${expected.status}\\b`, "u").test(text)) {
+            return false;
+          }
+          if (expected.code !== undefined && !new RegExp(`\\bcode:\\s*${expected.code}\\b`, "u").test(text)) {
+            return false;
+          }
+          return true;
+        });
+
+      if (message.type() === "error" && !isExpectedCsp && !isResourceLoad && !isAllowedDiagnostic) {
+        browserErrors.push(`console.error: ${text}`);
       }
     });
     page.on("pageerror", (error) => browserErrors.push(`pageerror: ${error.message}`));

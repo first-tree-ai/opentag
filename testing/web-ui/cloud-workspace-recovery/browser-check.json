@@ -1,0 +1,94 @@
+{
+  "fixtureOnly": true,
+  "realCloudActions": false,
+  "results": [
+    {
+      "locale": "en",
+      "width": 1440,
+      "noHorizontalOverflow": true,
+      "axeViolations": 0,
+      "discardRequiresConfirmation": true,
+      "activeSaveRequiresConfirmation": true,
+      "escapeRestoresFocus": true,
+      "mutations": 2,
+      "allocationReads": 3
+    },
+    {
+      "locale": "en",
+      "width": 768,
+      "noHorizontalOverflow": true,
+      "axeViolations": 0,
+      "discardRequiresConfirmation": true,
+      "activeSaveRequiresConfirmation": true,
+      "escapeRestoresFocus": true,
+      "mutations": 0,
+      "allocationReads": 0
+    },
+    {
+      "locale": "en",
+      "width": 390,
+      "noHorizontalOverflow": true,
+      "axeViolations": 0,
+      "discardRequiresConfirmation": true,
+      "activeSaveRequiresConfirmation": true,
+      "escapeRestoresFocus": true,
+      "mutations": 0,
+      "allocationReads": 0
+    },
+    {
+      "locale": "en",
+      "width": 320,
+      "noHorizontalOverflow": true,
+      "axeViolations": 0,
+      "discardRequiresConfirmation": true,
+      "activeSaveRequiresConfirmation": true,
+      "escapeRestoresFocus": true,
+      "mutations": 0,
+      "allocationReads": 0
+    },
+    {
+      "locale": "zh",
+      "width": 1440,
+      "noHorizontalOverflow": true,
+      "axeViolations": 0,
+      "discardRequiresConfirmation": true,
+      "activeSaveRequiresConfirmation": true,
+      "escapeRestoresFocus": true,
+      "mutations": 0,
+      "allocationReads": 0
+    },
+    {
+      "locale": "zh",
+      "width": 768,
+      "noHorizontalOverflow": true,
+      "axeViolations": 0,
+      "discardRequiresConfirmation": true,
+      "activeSaveRequiresConfirmation": true,
+      "escapeRestoresFocus": true,
+      "mutations": 0,
+      "allocationReads": 0
+    },
+    {
+      "locale": "zh",
+      "width": 390,
+      "noHorizontalOverflow": true,
+      "axeViolations": 0,
+      "discardRequiresConfirmation": true,
+      "activeSaveRequiresConfirmation": true,
+      "escapeRestoresFocus": true,
+      "mutations": 0,
+      "allocationReads": 0
+    },
+    {
+      "locale": "zh",
+      "width": 320,
+      "noHorizontalOverflow": true,
+      "axeViolations": 0,
+      "discardRequiresConfirmation": true,
+      "activeSaveRequiresConfirmation": true,
+      "escapeRestoresFocus": true,
+      "mutations": 0,
+      "allocationReads": 0
+    }
+  ]
+}

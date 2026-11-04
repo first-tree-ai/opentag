@@ -105,6 +105,7 @@ export function AgentConfigSettingsContent({
               computerKind={agent.computerKind}
               computerOnline={agent.availability.dependencies.computer.state === "ready"}
               initialConfig={config}
+              onAgentChanged={onAgentChanged}
               save={(input) => browserApi.updateAgent(config.id, input)}
               section={section}
             />

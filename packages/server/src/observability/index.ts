@@ -16,6 +16,16 @@ export {
   type ErrorReporterOptions,
   type ErrorReportingClient,
 } from "./error-reporting.js";
+export {
+  createInstrumentedFetch,
+  type ExternalCallTraceInput,
+  type ExternalCallTraceOptions,
+  extractExternalTransportCode,
+  isExternalTimeoutError,
+  markExternalCallTimedOut,
+  sanitizeExternalUrl,
+  traceExternalCall,
+} from "./external-call-logger.js";
 export { type FeishuInboundFailureCode, traceFeishuInbound } from "./feishu-tracing.js";
 export {
   initTelemetry,
@@ -40,6 +50,34 @@ export {
   withRootSpan,
   withSpan,
 } from "./otel-helpers.js";
+export {
+  createPerformanceLogger,
+  DEFAULT_PERFORMANCE_LOGGING_CONFIG,
+  exitPerformanceContext,
+  getCurrentPerformanceContext,
+  getCurrentPerformanceLogger,
+  type PerformanceCategory,
+  type PerformanceExecutionContext,
+  type PerformanceLogger,
+  type PerformanceLoggingConfig,
+  type PerformanceLogLevel,
+  type PerformanceOperationHandle,
+  type PerformanceStartInput,
+  type PerformanceTraceOptions,
+  resolvePerformanceLoggingConfig,
+  runWithPerformanceContext,
+  safePerformanceErrorCode,
+  updateCurrentPerformanceContext,
+} from "./performance-logger.js";
+export {
+  type InstrumentServiceOptions,
+  instrumentAppOptions,
+  instrumentServerWorkers,
+  instrumentService,
+  instrumentWorker,
+  prepareAppPerformance,
+  registerHttpPerformanceHooks,
+} from "./service-instrumentation.js";
 export { createServiceLoggerPort, type ServiceLogger } from "./service-logger.js";
 export {
   endRuntimeConnectionSpan,

@@ -20,6 +20,11 @@ import {
 import type WebSocket from "ws";
 import type { RawData } from "ws";
 import {
+  type PerformanceLogger,
+  type PerformanceOperationHandle,
+  runWithPerformanceContext,
+} from "../observability/performance-logger.js";
+import {
   type RuntimeConnectionFence,
   type RuntimeCredentialBroker,
   RuntimeCredentialError,
@@ -27,6 +32,7 @@ import {
 import { AsyncByteQueue, QUEUE_END } from "./data-transport-queue.js";
 import type { RuntimeExecutionRegistry } from "./execution-registry.js";
 import type { ProviderProxyAdapter, ProviderProxyRequest } from "./provider-proxy-adapter.js";
+import { RUNTIME_PROXY_FAILURE_CODES } from "./provider-proxy-support.js";
 import type { RuntimeProxyTicketStore } from "./ticket-store.js";
 
 interface ResolvedTransportLimits {
@@ -46,6 +52,7 @@ export interface RuntimeProviderProxyTransportOptions {
   /** Exact current control connection; a replaced connection invalidates tickets immediately. */
   connectionFence?: RuntimeConnectionFence;
   logger?: { warn(record: Record<string, unknown>, message: string): void };
+  performanceLogger?: PerformanceLogger;
   now?: () => number;
   authTimeoutMs?: number;
   headerMaxBytes?: number;
@@ -59,7 +66,9 @@ interface ProxyStream {
   id: number;
   state: "opening" | "open" | "closed";
   abort: AbortController;
+  abortCode?: string;
   authorization?: Awaited<ReturnType<RuntimeCredentialBroker["beginRequest"]>>;
+  sessionId?: string;
   requestBody: AsyncByteQueue;
   uploadCredit: number;
   downloadCredit: number;
@@ -67,6 +76,10 @@ interface ProxyStream {
   requestEnded: boolean;
   downloadNotify?: () => void;
   responseStarted: boolean;
+  startedAtMs: number;
+  requestBytes: number;
+  responseBytes: number;
+  firstByteMs?: number;
   revalidating?: boolean;
   targetRecheck?: (signal: AbortSignal) => Promise<void>;
 }
@@ -80,6 +93,8 @@ interface ProxyStream {
 export class RuntimeProviderProxyTransport {
   readonly #options: RuntimeProviderProxyTransportOptions;
   readonly #limits: ResolvedTransportLimits;
+  readonly #connections = new Set<ProxyDataConnection>();
+  #closing: Promise<void> | undefined;
 
   constructor(options: RuntimeProviderProxyTransportOptions) {
     this.#options = options;
@@ -94,9 +109,24 @@ export class RuntimeProviderProxyTransport {
   }
 
   attach(socket: WebSocket): { snapshot(): { active: number; retired: number; bufferedBytes: number } } {
+    if (this.#closing) {
+      socket.close(1001, "Server shutting down");
+      return { snapshot: () => ({ active: 0, retired: 0, bufferedBytes: 0 }) };
+    }
     const connection = new ProxyDataConnection(socket, this.#options, this.#limits);
+    this.#connections.add(connection);
     connection.start();
+    socket.once("close", () => {
+      void connection.close().then(() => this.#connections.delete(connection));
+    });
     return { snapshot: () => connection.snapshot() };
+  }
+
+  close(): Promise<void> {
+    this.#closing ??= Promise.allSettled([...this.#connections].map((connection) => connection.close())).then(() => {
+      this.#connections.clear();
+    });
+    return this.#closing;
   }
 }
 
@@ -112,11 +142,31 @@ class ProxyDataConnection {
   #unsubscribeClose?: () => void;
   #revalidateTimer?: ReturnType<typeof setInterval>;
   #authTimer?: ReturnType<typeof setTimeout>;
+  readonly #work = new Set<Promise<unknown>>();
+  #closing: Promise<void> | undefined;
 
   constructor(socket: WebSocket, options: RuntimeProviderProxyTransportOptions, limits: ResolvedTransportLimits) {
     this.#socket = socket;
     this.#transport = options;
     this.#limits = limits;
+  }
+
+  close(): Promise<void> {
+    if (this.#closing) return this.#closing;
+    this.#destroy();
+    this.#socket.close(1001, "Server shutting down");
+    this.#closing = (async () => {
+      while (this.#work.size) await Promise.allSettled([...this.#work]);
+    })();
+    return this.#closing;
+  }
+
+  #track(operation: Promise<unknown>): void {
+    this.#work.add(operation);
+    void operation.then(
+      () => this.#work.delete(operation),
+      () => this.#work.delete(operation),
+    );
   }
 
   snapshot(): { active: number; retired: number; bufferedBytes: number } {
@@ -192,7 +242,10 @@ class ProxyDataConnection {
     this.#unsubscribeClose = this.#transport.executions?.onClose((event) => {
       if (event.executionId === this.#executionId) this.#fail(4000, "proxy_execution_closed");
     });
-    this.#revalidateTimer = setInterval(() => void this.#revalidateStreams(), this.#limits.revalidateIntervalMs);
+    this.#revalidateTimer = setInterval(
+      () => this.#track(this.#revalidateStreams()),
+      this.#limits.revalidateIntervalMs,
+    );
     this.#revalidateTimer.unref?.();
     this.#sendJson({
       type: "ready",
@@ -270,6 +323,9 @@ class ProxyDataConnection {
       downloadCredit: this.#limits.initialCreditBytes,
       requestEnded: false,
       responseStarted: false,
+      startedAtMs: (this.#transport.now ?? Date.now)(),
+      requestBytes: 0,
+      responseBytes: 0,
     };
     if (this.#activeStreamCount() >= this.#limits.maxStreams) {
       this.#sendJson({ type: "error", streamId: stream.id, code: "resource_limit" });
@@ -277,7 +333,7 @@ class ProxyDataConnection {
       return;
     }
     this.#streams.set(stream.id, stream);
-    void this.#runStream(stream, frame).catch(() => undefined);
+    this.#track(this.#runStream(stream, frame));
   }
 
   async #runStream(
@@ -293,6 +349,8 @@ class ProxyDataConnection {
   ): Promise<void> {
     const broker = this.#transport.broker;
     const adapter = this.#transport.adapters?.get(frame.provider);
+    const perfHandle = startProxyStreamPerf(this.#transport.performanceLogger, frame.provider, frame.method);
+    let responseStatus: number | undefined;
     try {
       if (!broker || !adapter) throw new RuntimeCredentialError("provider_mismatch");
       const authorization = await broker.beginRequest({
@@ -306,7 +364,8 @@ class ProxyDataConnection {
         throw new RuntimeCredentialError("credential_scope_denied");
       }
       stream.authorization = authorization;
-      if (stream.state === "closed") return;
+      stream.sessionId = authorization.sessionId;
+      if (this.#settleIfStreamCancelled(perfHandle, stream, frame.provider)) return;
       stream.state = "open";
       const request: ProviderProxyRequest = {
         executionId: authorization.executionId,
@@ -324,8 +383,20 @@ class ProxyDataConnection {
           stream.targetRecheck = check;
         },
       };
-      const response = await adapter.handle(request, authorization);
-      if (this.#streamClosed(stream)) return;
+      const perfContext = buildStreamPerformanceContext(
+        this.#transport.executions,
+        authorization.executionId,
+        authorization.sessionId,
+        stream.id,
+        frame.provider,
+        perfHandle,
+      );
+      const response = await runWithPerformanceContext(perfContext, () => adapter.handle(request, authorization));
+      responseStatus = response.status;
+      if (this.#settleIfStreamCancelled(perfHandle, stream, frame.provider, responseStatus)) {
+        await response.body[Symbol.asyncIterator]().return?.();
+        return;
+      }
       const head = {
         type: "response" as const,
         streamId: stream.id,
@@ -342,15 +413,15 @@ class ProxyDataConnection {
       stream.responseStarted = true;
       this.#sendJson(head);
       await this.#pipeResponseBody(stream, response.body);
-      if (!this.#streamClosed(stream)) {
-        this.#sendJson({ type: "end", streamId: stream.id });
-        this.#closeStream(stream);
-      }
+      if (this.#settleIfStreamCancelled(perfHandle, stream, frame.provider, responseStatus)) return;
+      completeProxyStreamPerf(perfHandle, stream, frame.provider, response.status);
+      this.#sendJson({ type: "end", streamId: stream.id });
+      this.#closeStream(stream);
     } catch (error) {
+      const code = this.#settleFailedStreamPerf(perfHandle, stream, frame.provider, error, responseStatus);
       // A stream that already ended or was aborted locally must not emit a late terminal frame:
       // the client may have finished it already, and a stale cancel/error would be a violation.
       if (this.#streamClosed(stream)) return;
-      const code = errorCodeOf(error);
       this.#logStreamFailure(frame.provider, code);
       if (stream.responseStarted) {
         this.#sendJson({ type: "cancel", streamId: stream.id, code });
@@ -361,12 +432,38 @@ class ProxyDataConnection {
     }
   }
 
+  #settleIfStreamCancelled(
+    perfHandle: PerformanceOperationHandle | undefined,
+    stream: ProxyStream,
+    provider: RuntimeCredentialProvider,
+    statusCode?: number,
+  ): boolean {
+    if (!this.#streamClosed(stream) && !stream.abort.signal.aborted) return false;
+    failProxyStreamPerf(perfHandle, stream, provider, undefined, stream.abortCode ?? "cancelled", statusCode);
+    return true;
+  }
+
+  #settleFailedStreamPerf(
+    perfHandle: PerformanceOperationHandle | undefined,
+    stream: ProxyStream,
+    provider: RuntimeCredentialProvider,
+    error: unknown,
+    statusCode?: number,
+  ): string {
+    const closedOrAborted = this.#streamClosed(stream) || stream.abort.signal.aborted;
+    const code = stream.abortCode ?? (closedOrAborted ? "cancelled" : errorCodeOf(error));
+    failProxyStreamPerf(perfHandle, stream, provider, closedOrAborted ? undefined : error, code, statusCode);
+    return code;
+  }
+
   #logStreamFailure(provider: RuntimeCredentialProvider, code: string): void {
     // Operational diagnosis only: no paths, headers, capabilities, bodies, identities, or raw errors.
     const safe =
       ["scope_denied", "invalid_request", "unavailable", "credential_scope_denied", "provider_unavailable"].includes(
         code,
-      ) || Object.hasOwn(GITHUB_PROXY_FAILURE_STATUSES, code);
+      ) ||
+      RUNTIME_PROXY_FAILURE_CODES.some((failureCode) => failureCode === code) ||
+      Object.hasOwn(GITHUB_PROXY_FAILURE_STATUSES, code);
     this.#transport.logger?.warn(
       { provider, code: safe ? code : "upstream_unavailable" },
       "Provider proxy stream failed",
@@ -387,6 +484,7 @@ class ProxyDataConnection {
       if (stream.abort.signal.aborted || this.#streamClosed(stream)) return;
       // Replenish the Server's own window as the body is consumed: the client spends granted
       // credit, so uploads larger than the initial 1 MiB window must replenish this counter too.
+      stream.requestBytes += chunk.byteLength;
       stream.uploadCredit += chunk.byteLength;
       this.#sendJson({ type: "credit", streamId: stream.id, bytes: chunk.byteLength });
       yield chunk;
@@ -394,7 +492,11 @@ class ProxyDataConnection {
   }
 
   async #pipeResponseBody(stream: ProxyStream, body: AsyncIterable<Uint8Array>): Promise<void> {
+    const now = this.#transport.now ?? Date.now;
     for await (const chunk of body) {
+      if (stream.firstByteMs === undefined && chunk.byteLength > 0) {
+        stream.firstByteMs = Math.max(0, now() - stream.startedAtMs);
+      }
       let offset = 0;
       while (offset < chunk.byteLength) {
         if (stream.abort.signal.aborted || this.#streamClosed(stream)) return;
@@ -403,6 +505,7 @@ class ProxyDataConnection {
         if (stream.abort.signal.aborted || this.#streamClosed(stream)) return;
         const piece = chunk.subarray(offset, offset + size);
         offset += size;
+        stream.responseBytes += piece.byteLength;
         stream.downloadCredit -= piece.byteLength;
         this.#socket.send(Buffer.from(encodeProviderProxyDataFrame(stream.id, piece)));
       }
@@ -473,6 +576,7 @@ class ProxyDataConnection {
     } catch (error) {
       if (this.#streamClosed(stream)) return;
       const code = errorCodeOf(error);
+      stream.abortCode = code;
       this.#logStreamFailure(stream.authorization.provider, code);
       if (stream.responseStarted) this.#sendJson({ type: "cancel", streamId: stream.id, code });
       else this.#sendJson({ type: "error", streamId: stream.id, code });
@@ -553,8 +657,97 @@ function rawBuffer(data: RawData): Buffer {
   return Buffer.from(data);
 }
 
+function buildStreamPerformanceContext(
+  executions: RuntimeExecutionRegistry | undefined,
+  executionId: string,
+  sessionId: string,
+  streamId: number,
+  provider: RuntimeCredentialProvider,
+  perfHandle?: PerformanceOperationHandle,
+) {
+  const execution = executions?.get(executionId);
+  const callId = perfHandle?.callId ?? `${executionId}:${streamId}`;
+  const operation = perfHandle?.context.operation ?? `runtime.provider-proxy.${provider}`;
+  if (!execution) {
+    return {
+      callId,
+      operation,
+      sessionId,
+    };
+  }
+  const delivery = execution.source?.kind === "delivery" ? execution.source : undefined;
+  const sandboxId = execution.sandbox?.sandboxId;
+  return {
+    callId,
+    operation,
+    accountId: execution.accountId,
+    agentId: execution.agentId,
+    sessionId: execution.sessionId,
+    computerId: execution.computerId,
+    ...(delivery ? { deliveryId: delivery.deliveryId, turnId: delivery.turnId } : {}),
+    ...(sandboxId ? { sandboxId } : {}),
+  };
+}
+
 function errorCodeOf(error: unknown): string {
   if (error instanceof RuntimeCredentialError) return error.code;
   if (error && typeof error === "object" && "code" in error && typeof error.code === "string") return error.code;
   return "upstream_unavailable";
+}
+
+function startProxyStreamPerf(
+  perfLogger: PerformanceLogger | undefined,
+  provider: RuntimeCredentialProvider,
+  method: string,
+): PerformanceOperationHandle | undefined {
+  if (!perfLogger) return undefined;
+  return perfLogger.startOperation({
+    module: "runtime-provider-proxy",
+    category: "ws",
+    operation: "ws.provider_proxy.stream",
+    attributes: { provider, method },
+  });
+}
+
+function proxyStreamAttributes(stream: ProxyStream, provider: RuntimeCredentialProvider): Record<string, unknown> {
+  return {
+    provider,
+    requestBytes: stream.requestBytes,
+    responseBytes: stream.responseBytes,
+    ...(stream.firstByteMs !== undefined ? { firstByteMs: stream.firstByteMs } : {}),
+  };
+}
+
+function completeProxyStreamPerf(
+  perfHandle: PerformanceOperationHandle | undefined,
+  stream: ProxyStream,
+  provider: RuntimeCredentialProvider,
+  statusCode: number,
+): void {
+  if (!perfHandle) return;
+  perfHandle.complete({
+    statusCode,
+    ...(stream.sessionId ? { sessionId: stream.sessionId } : {}),
+    ...proxyStreamAttributes(stream, provider),
+  });
+}
+
+function failProxyStreamPerf(
+  perfHandle: PerformanceOperationHandle | undefined,
+  stream: ProxyStream,
+  provider: RuntimeCredentialProvider,
+  error: unknown,
+  code: string,
+  statusCode?: number,
+): void {
+  if (!perfHandle) return;
+  perfHandle.fail(
+    error,
+    {
+      ...(statusCode !== undefined ? { statusCode } : {}),
+      ...(stream.sessionId ? { sessionId: stream.sessionId } : {}),
+      ...proxyStreamAttributes(stream, provider),
+    },
+    code,
+  );
 }

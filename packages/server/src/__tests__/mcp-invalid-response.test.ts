@@ -1,4 +1,4 @@
-import { MCP_ERROR_CODES, MCP_MODERN_PROTOCOL_VERSION } from "@opentag/shared";
+import { MCP_AUTH_REJECTION_SUMMARY, MCP_ERROR_CODES, MCP_MODERN_PROTOCOL_VERSION } from "@opentag/shared";
 import { describe, expect, it } from "vitest";
 import { McpUpstreamCaller } from "../services/mcp/mcp-gateway-upstream.js";
 import { McpProbe } from "../services/mcp/mcp-probe.js";
@@ -85,6 +85,37 @@ async function rejectionOf(promise: Promise<unknown>): Promise<McpTransportError
 
 /** A body that is HTML, not JSON: what a proxy answers when the upstream never replied. */
 const HTML_PAGE = "<!doctype html><html><body><h1>502 Bad Gateway</h1></body></html>";
+
+const OAUTH_REJECTIONS = [401, 403].flatMap((status) =>
+  ["application/json", "text/event-stream"].map((contentType) => ({
+    status,
+    contentType,
+    body: (id: string) => {
+      const error = { error: status === 401 ? "invalid_token" : "insufficient_scope", error_description: "private" };
+      return contentType === "application/json"
+        ? JSON.stringify(error)
+        : `data: ${JSON.stringify({ jsonrpc: "2.0", id, ...error })}\n\n`;
+    },
+  })),
+);
+
+describe("OAuth-shaped HTTP failures", () => {
+  it.each(OAUTH_REJECTIONS)("classifies $status $contentType as a credential rejection", async (answer) => {
+    for (const legacy of [false, true]) {
+      const { transport, sent } = transportFor([answer]);
+      const call = legacy ? transport.callLegacy.bind(transport) : transport.call.bind(transport);
+      const error = await rejectionOf(call(ACCOUNT, ENDPOINT, "tools/call", { name: "create_issue" }, {}));
+
+      expect(error).toMatchObject({
+        code: MCP_ERROR_CODES.UPSTREAM_ERROR,
+        status: answer.status,
+        message: MCP_AUTH_REJECTION_SUMMARY,
+      });
+      expect(error.rpcError).toBeUndefined();
+      expect(sent.map((exchange) => exchange.method)).toEqual(["tools/call"]);
+    }
+  });
+});
 
 describe("a 2xx response that is not an answer", () => {
   /*
@@ -333,8 +364,8 @@ describe("an acknowledgement is not an answer to a request", () => {
  *
  * Reading `payload.error.message` off whatever the Server sent threw a raw `TypeError` for
  * `"error": null`, and a `code` of the wrong type was silently rewritten to `-32602` — a verdict
- * the downgrade rules then treat as the Server's own. A present but unreadable member is a protocol
- * failure with a fixed message and the real HTTP status; a readable one is still preserved.
+ * the downgrade rules then treat as the Server's own. A present but unreadable member on 2xx is a
+ * protocol failure; non-2xx keeps the HTTP failure. A readable member is still preserved.
  */
 describe("a malformed JSON-RPC error member", () => {
   const MALFORMED = [
@@ -368,13 +399,14 @@ describe("a malformed JSON-RPC error member", () => {
     });
   }
 
-  it("keeps the real status when a malformed member arrives with a failure status", async () => {
+  it.each([400, 500])("uses the HTTP %i failure when a malformed member arrives", async (status) => {
     const { transport } = transportFor([
-      { status: 400, body: (id) => JSON.stringify({ jsonrpc: "2.0", id, error: { code: "-32022" } }) },
+      { status, body: (id) => JSON.stringify({ jsonrpc: "2.0", id, error: { code: "-32022" } }) },
     ]);
     const error = await rejectionOf(transport.call(ACCOUNT, ENDPOINT, "server/discover", {}, {}));
     expect(error.code).toBe(MCP_ERROR_CODES.UPSTREAM_ERROR);
-    expect(error.status).toBe(400);
+    expect(error.status).toBe(status);
+    expect(error.message).toBe(`The MCP Server returned HTTP ${status}`);
     // No invented `-32602` for the downgrade rules to read as a Server verdict.
     expect(error.rpcError).toBeUndefined();
   });
@@ -444,6 +476,17 @@ describe("the gateway never replays a side-effecting tool call after an unreadab
         }),
     };
   }
+
+  it.each(OAUTH_REJECTIONS)("dispatches once for an OAuth-shaped $status $contentType failure", async (answer) => {
+    const { sent, call } = callerFor(() => answer);
+    const error = await rejectionOf(call());
+
+    expect(error.message).toBe(MCP_AUTH_REJECTION_SUMMARY);
+    expect(error.status).toBe(answer.status);
+    expect(error.rpcError).toBeUndefined();
+    expect(sent.map((exchange) => exchange.method)).toEqual(["tools/call"]);
+    expect(sent[0]?.headers.authorization).toBe("Bearer upstream");
+  });
 
   it.each([
     { label: "an HTML page at 200", answer: { status: 200, body: HTML_PAGE, contentType: "text/html" } },

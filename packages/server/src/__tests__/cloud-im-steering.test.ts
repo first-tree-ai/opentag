@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { RuntimeImSteerRequest } from "@opentag/shared";
 import { expect, it, vi } from "vitest";
+import { createPerformanceLogger } from "../observability/performance-logger.js";
 import type { RuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
 import { CloudImSteering } from "../services/sandboxes/cloud-im-steering.js";
 import { CloudRuntimeFence } from "../services/sandboxes/cloud-runtime-fence.js";
@@ -164,3 +165,81 @@ it.each([
     expect(moved).toEqual(original);
   },
 );
+
+it("defers Cloud steering behind pending receipt work without sending or releasing custody", async () => {
+  const send = vi.fn(() => true);
+  const release = vi.fn();
+  const sessionId = randomUUID();
+  const sandboxId = randomUUID();
+  const record = new CloudRuntimeFence().attach({
+    computerId: randomUUID(),
+    installationId: randomUUID(),
+    imInputVersion: 1,
+    scope: {
+      sandboxId,
+      sessionId,
+      environmentGeneration: 1,
+      resourceName: "projects/p/locations/r/instances/test",
+    },
+  });
+  const records: Array<Record<string, unknown>> = [];
+  const perfLogger = createPerformanceLogger(
+    () =>
+      ({
+        isLevelEnabled: () => true,
+        debug: (payload: Record<string, unknown>) => records.push(payload),
+        info: (payload: Record<string, unknown>) => records.push(payload),
+        warn: (payload: Record<string, unknown>) => records.push(payload),
+      }) as never,
+  );
+  const steering = new CloudImSteering({
+    database: {} as never,
+    custody: {
+      beginSteerDispatch: vi.fn(async () => "inbound_pending"),
+      releaseSteerDispatch: release,
+    } as unknown as RuntimeCustodyStore,
+    performanceLogger: perfLogger,
+    connection: async () => ({ record, context: {} as never, send }),
+    current: () => true,
+    validAllocation: async () => true,
+    context: () => ({}) as never,
+    send,
+  });
+  const request: RuntimeImSteerRequest = {
+    type: "im:steer",
+    requestId: randomUUID(),
+    deliveryId: randomUUID(),
+    imMessageId: randomUUID(),
+    sessionId,
+    agentId: randomUUID(),
+    placementGeneration: 1,
+    rootDeliveryId: randomUUID(),
+    expectedTurnId: "turn",
+    attention: "direct",
+    content: {
+      kind: "text",
+      text: "later",
+      providerRef: {
+        provider: "feishu",
+        teamBrand: "feishu",
+        appId: "app",
+        botOpenId: "bot",
+        chatId: "chat",
+        messageId: "msg",
+      },
+    },
+  };
+  const dispatched = vi.fn();
+  await expect(steering.request(request, dispatched)).rejects.toMatchObject({ code: "IM_DELIVERY_INBOUND_PENDING" });
+  expect(send).not.toHaveBeenCalled();
+  expect(dispatched).not.toHaveBeenCalled();
+  expect(release).not.toHaveBeenCalled();
+  expect(records.at(-1)).toMatchObject({
+    operation: "external.sandbox-runner.deliverySteer",
+    outcome: "failed",
+    code: "IM_DELIVERY_INBOUND_PENDING",
+    sandboxId,
+    attemptCount: 0,
+    retryCount: 0,
+  });
+});

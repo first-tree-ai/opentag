@@ -39,6 +39,39 @@ async function directory() {
 }
 
 describe("Context Tree command boundary", () => {
+  it("returns a TIMEOUT result when a managed sync request is aborted", async () => {
+    const root = await directory();
+    const owner = parent();
+    let started!: () => void;
+    const running = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const gateway = new ContextTreeCommandGateway({
+      parent: owner.relay,
+      sources: [source],
+      workspace: root,
+      stateDirectory: join(root, "private"),
+      environment: () => ({}),
+      execute: async (_args, _environment, signal) => {
+        started();
+        return new Promise<never>((_, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      },
+    });
+    await gateway.listen("tcp");
+    cleanups.push(() => gateway.close());
+    const controller = new AbortController();
+    const result = runContextTreeCli({ root, cliPath: "unused", skillsPath: root }, ["sync"], {
+      env: { OPENTAG_CONTEXT_TREE_URL: `http://127.0.0.1:${gateway.port}` },
+      signal: controller.signal,
+    });
+    const checked = expect(result).resolves.toEqual({ payload: undefined, failureCode: "TIMEOUT" });
+    await running;
+    controller.abort();
+    await checked;
+  });
+
   it.each(["internal", "visible"])("preserves standalone commands in a legacy %s Session", async (kind) => {
     const root = await directory();
     const client = join(root, "client.mjs");
@@ -230,6 +263,62 @@ describe("Context Tree command boundary", () => {
     release();
     await first;
     expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it("aborts in-flight gateway command when the HTTP client times out and recovers offline", async () => {
+    const root = await directory();
+    const pack = resolveContextTreePackage();
+    if (!pack) throw new Error("Missing pinned CLI");
+    const owner = parent();
+    const calls: string[][] = [];
+    let abortedOnline = false;
+    const gateway = new ContextTreeCommandGateway({
+      parent: owner.relay,
+      sources: [source],
+      workspace: root,
+      stateDirectory: join(root, "state"),
+      environment: () => ({}),
+      execute: async (args, _environment, signal) => {
+        calls.push([...args]);
+        if (!args.includes("--offline")) {
+          await new Promise<void>((resolve) => {
+            signal.addEventListener(
+              "abort",
+              () => {
+                abortedOnline = true;
+                resolve();
+              },
+              { once: true },
+            );
+          });
+          throw new Error("aborted online sync");
+        }
+        return {
+          code: 0,
+          stdout: JSON.stringify({ schemaVersion: 3, connections: [] }),
+          stderr: "",
+        };
+      },
+    });
+    await gateway.listen("tcp");
+    cleanups.push(() => gateway.close());
+    const env = { OPENTAG_CONTEXT_TREE_URL: `http://127.0.0.1:${gateway.port}` };
+    const timedOut = await runContextTreeCli(pack, ["sync"], {
+      cwd: root,
+      env,
+      signal: AbortSignal.timeout(20),
+    });
+    expect(timedOut).toEqual({ payload: undefined, failureCode: "TIMEOUT" });
+    const offline = await runContextTreeCli(pack, ["sync", "--offline"], {
+      cwd: root,
+      env,
+      signal: AbortSignal.timeout(2_000),
+    });
+    expect(abortedOnline).toBe(true);
+    expect(offline).toEqual({ payload: { schemaVersion: 3, connections: [] } });
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).not.toContain("--offline");
+    expect(calls[1]).toContain("--offline");
   });
 
   it.each(["local", "cloud"])(

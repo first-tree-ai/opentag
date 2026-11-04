@@ -26,6 +26,7 @@ import {
 } from "@opentag/shared";
 import { outcomeAttrs, runtimeAttrs, setActiveSpanAttributes, tracePromise, withSpan } from "../observability/index.js";
 import type { ServiceLogger } from "../observability/service-logger.js";
+import { InboundReceiptPendingError } from "../services/im/inbound-admission.js";
 import { type ConnectionRegistry, RuntimeRegistrySendError } from "./connection-registry.js";
 import type { AcceptedDeliveryRecord, RecordedTurnRecord, RuntimeCustodyStore } from "./runtime-custody-store.js";
 import type { RuntimeBusinessContext, RuntimeBusinessOptions } from "./runtime-session.js";
@@ -224,6 +225,10 @@ interface StartingDelivery {
 }
 
 export class RuntimeDomainOwner {
+  readonly #work = new Set<Promise<unknown>>();
+  #closed = false;
+  #closing: Promise<void> | undefined;
+
   readonly #registry: ConnectionRegistry;
   readonly #custody: RuntimeCustodyStore;
   readonly #logger?: ServiceLogger;
@@ -260,30 +265,37 @@ export class RuntimeDomainOwner {
   }
 
   getDelivery(deliveryId: string): Promise<AcceptedDeliveryRecord | undefined> {
-    return this.#custody.getDelivery(deliveryId);
+    if (this.#closed)
+      return Promise.reject(new RuntimeDomainRequestError("stopped", "The runtime domain owner stopped"));
+    return this.#track(this.#custody.getDelivery(deliveryId));
   }
 
   getTurn(turnId: string): Promise<RecordedTurnRecord | undefined> {
-    return this.#custody.getTurn(turnId);
+    if (this.#closed)
+      return Promise.reject(new RuntimeDomainRequestError("stopped", "The runtime domain owner stopped"));
+    return this.#track(this.#custody.getTurn(turnId));
   }
 
-  close(): void {
+  close(): Promise<void> {
+    if (this.#closing) return this.#closing;
+    this.#closed = true;
     for (const pending of this.#pending.values()) {
       clearTimeout(pending.timer);
       if (pending.kind === "steer") {
-        void this.#custody.releaseSteerDispatch(pending.request, pending.inputHash, "uncertain").catch(() => undefined);
+        void this.#track(
+          this.#custody.releaseSteerDispatch(pending.request, pending.inputHash, "uncertain").catch(() => undefined),
+        );
       } else if (pending.kind === "delivery") {
-        void this.#custody
-          .releaseDeliveryDispatch(pending.request, pending.inputHash, "deferred")
-          .catch(() => undefined);
+        void this.#track(
+          this.#custody.releaseDeliveryDispatch(pending.request, pending.inputHash, "deferred").catch(() => undefined),
+        );
       }
       pending.reject(new RuntimeDomainRequestError("stopped", "The runtime domain owner stopped"));
     }
     this.#pending.clear();
-    this.#startingDeliveries.clear();
-    this.#expiredDeliveries.clear();
-    this.#completed.clear();
-    this.#preparingReconciles.clear();
+
+    this.#closing = this.#drain();
+    return this.#closing;
   }
 
   requestReconcile(
@@ -294,6 +306,8 @@ export class RuntimeDomainOwner {
     admission?: RuntimeDispatchAdmission<SessionReconcileResult>,
     signal?: AbortSignal,
   ): Promise<SessionReconcileResult> {
+    if (this.#closed)
+      return Promise.reject(new RuntimeDomainRequestError("stopped", "The runtime domain owner stopped"));
     const attrs = runtimeAttrs({
       requestId: request.requestId,
       sessionId: request.sessionId,
@@ -334,6 +348,7 @@ export class RuntimeDomainOwner {
           onDispatched?.();
           operation = existing.promise;
         } else {
+          signal?.throwIfAborted();
           operation = preparation(computerId, instanceId, request).then((prepared) =>
             this.#withDispatchAdmission(
               admission,
@@ -361,11 +376,7 @@ export class RuntimeDomainOwner {
             computerId,
             promise: operation,
           });
-          while (this.#preparingReconciles.size > this.#options.maxPendingRequests) {
-            const oldest = this.#preparingReconciles.keys().next().value;
-            if (oldest === undefined) break;
-            this.#preparingReconciles.delete(oldest);
-          }
+          this.#trimPreparingReconciles();
         }
       }
     } catch (error) {
@@ -393,6 +404,18 @@ export class RuntimeDomainOwner {
     instanceId: string,
     request: RuntimeImSteerRequest,
     onDispatched?: () => void,
+    signal?: AbortSignal,
+  ): Promise<RuntimeImSteerResult> {
+    this.#assertRunning();
+    return this.#track(this.#steerRequest(computerId, instanceId, request, onDispatched, signal));
+  }
+
+  async #steerRequest(
+    computerId: string,
+    instanceId: string,
+    request: RuntimeImSteerRequest,
+    onDispatched?: () => void,
+    signal?: AbortSignal,
   ): Promise<RuntimeImSteerResult> {
     if (this.#registry.currentInstanceId(computerId) !== instanceId) {
       throw new RuntimeDomainRequestError("authority_unavailable", "The Computer instance is not current");
@@ -410,12 +433,16 @@ export class RuntimeDomainOwner {
         inputHash,
         semanticHash,
         onDispatched,
+        signal,
       ) as Promise<RuntimeImSteerResult>;
     }
+    signal?.throwIfAborted();
     const dispatch = await this.#custody.beginSteerDispatch(request, inputHash, {
       computerId,
       instanceId,
     });
+    signal?.throwIfAborted();
+    if (dispatch === "inbound_pending") throw new InboundReceiptPendingError();
     if (dispatch === "conflict") throw new RuntimeDomainConflictError("The steer dispatch conflicts");
     if (dispatch === "stale_generation") {
       throw new RuntimeDomainRequestError("stale_placement", "The steer dispatch placement is stale");
@@ -430,6 +457,7 @@ export class RuntimeDomainOwner {
         inputHash,
         semanticHash,
         onDispatched,
+        signal,
       ) as Promise<RuntimeImSteerResult>;
     } catch (error) {
       if (dispatch === "dispatched")
@@ -443,7 +471,10 @@ export class RuntimeDomainOwner {
     instanceId: string,
     request: DirectImMessageDeliveryRequest,
     onDispatched?: () => void,
+    signal?: AbortSignal,
   ): Promise<ImMessageDeliveryResult> {
+    if (this.#closed)
+      return Promise.reject(new RuntimeDomainRequestError("stopped", "The runtime domain owner stopped"));
     const attrs = runtimeAttrs({
       requestId: request.requestId,
       deliveryId: request.deliveryId,
@@ -456,7 +487,7 @@ export class RuntimeDomainOwner {
     });
     let operation: Promise<ImMessageDeliveryResult>;
     try {
-      operation = this.#requestDelivery(computerId, instanceId, request, onDispatched);
+      operation = this.#requestDelivery(computerId, instanceId, request, onDispatched, signal);
     } catch (error) {
       return tracePromise(
         "runtime.delivery",
@@ -485,29 +516,33 @@ export class RuntimeDomainOwner {
     admission?: RuntimeDispatchAdmission<SessionMessageDeliveryResult>,
     signal?: AbortSignal,
   ): Promise<SessionMessageDeliveryResult> {
-    return this.#withDispatchAdmission(
-      admission,
-      (admissionDispatched) =>
-        this.#request(
-          "session-message",
-          computerId,
-          instanceId,
-          request,
-          hashTuple([
-            request.messageId,
-            sessionMessageRequestOriginKey(request),
-            request.targetSessionId,
-            request.agentId,
-            request.placementGeneration,
-            request.content,
-            request.runtime,
-          ]),
-          undefined,
-          undefined,
-          admissionDispatched,
-          signal,
-        ) as Promise<SessionMessageDeliveryResult>,
-      onDispatched,
+    if (this.#closed)
+      return Promise.reject(new RuntimeDomainRequestError("stopped", "The runtime domain owner stopped"));
+    return this.#track(
+      this.#withDispatchAdmission(
+        admission,
+        (admissionDispatched) =>
+          this.#request(
+            "session-message",
+            computerId,
+            instanceId,
+            request,
+            hashTuple([
+              request.messageId,
+              sessionMessageRequestOriginKey(request),
+              request.targetSessionId,
+              request.agentId,
+              request.placementGeneration,
+              request.content,
+              request.runtime,
+            ]),
+            undefined,
+            undefined,
+            admissionDispatched,
+            signal,
+          ) as Promise<SessionMessageDeliveryResult>,
+        onDispatched,
+      ),
     );
   }
 
@@ -516,6 +551,7 @@ export class RuntimeDomainOwner {
     operation: (onDispatched?: () => void) => Promise<T>,
     onDispatched?: () => void,
   ): Promise<T> {
+    this.#assertRunning();
     if (!admission) return operation(onDispatched);
     return admission((admissionDispatched) =>
       operation(() => {
@@ -530,6 +566,14 @@ export class RuntimeDomainOwner {
     });
   }
 
+  #trimPreparingReconciles(): void {
+    while (this.#preparingReconciles.size > this.#options.maxPendingRequests) {
+      const oldest = this.#preparingReconciles.keys().next().value;
+      if (oldest === undefined) break;
+      this.#preparingReconciles.delete(oldest);
+    }
+  }
+
   #traceOnce<T>(
     name: string,
     attrs: Record<string, unknown>,
@@ -541,7 +585,7 @@ export class RuntimeDomainOwner {
     if (existing) return existing as Promise<T>;
     const traced = tracePromise(name, attrs, () => operation, resultAttrs, errorAttrs);
     this.#tracedPromises.set(operation, traced);
-    return traced;
+    return this.#track(traced);
   }
 
   #requestDelivery(
@@ -549,6 +593,7 @@ export class RuntimeDomainOwner {
     instanceId: string,
     request: DirectImMessageDeliveryRequest,
     onDispatched?: () => void,
+    signal?: AbortSignal,
   ): Promise<ImMessageDeliveryResult> {
     const inputHash = computeDirectInputHash(request);
     const requestHash = hashTuple([request.deliveryId, inputHash]);
@@ -574,21 +619,24 @@ export class RuntimeDomainOwner {
         inputHash,
         undefined,
         onDispatched,
+        signal,
       ) as Promise<ImMessageDeliveryResult>;
     }
     this.#registry.assertSnapshotCompatible(computerId, instanceId, request);
-    const promise = this.#startDelivery(computerId, instanceId, request, requestHash, inputHash, onDispatched);
+    const promise = this.#startDelivery(computerId, instanceId, request, requestHash, inputHash, onDispatched, signal);
     const owner = { computerId, hash: requestHash, instanceId, promise };
     this.#startingDeliveries.set(request.requestId, owner);
-    void promise.then(
-      () => {
-        if (this.#startingDeliveries.get(request.requestId) === owner)
-          this.#startingDeliveries.delete(request.requestId);
-      },
-      () => {
-        if (this.#startingDeliveries.get(request.requestId) === owner)
-          this.#startingDeliveries.delete(request.requestId);
-      },
+    void this.#track(
+      promise.then(
+        () => {
+          if (this.#startingDeliveries.get(request.requestId) === owner)
+            this.#startingDeliveries.delete(request.requestId);
+        },
+        () => {
+          if (this.#startingDeliveries.get(request.requestId) === owner)
+            this.#startingDeliveries.delete(request.requestId);
+        },
+      ),
     );
     return promise;
   }
@@ -600,11 +648,16 @@ export class RuntimeDomainOwner {
     requestHash: string,
     inputHash: string,
     onDispatched?: () => void,
+    signal?: AbortSignal,
   ): Promise<ImMessageDeliveryResult> {
+    this.#assertRunning();
+    signal?.throwIfAborted();
     const dispatch = await this.#custody.beginDeliveryDispatch(request, inputHash, {
       computerId,
       instanceId,
     });
+    signal?.throwIfAborted();
+    if (dispatch === "inbound_pending") throw new InboundReceiptPendingError();
     if (dispatch === "conflict") throw new RuntimeDomainConflictError("The delivery dispatch conflicts");
     if (dispatch === "stale_generation") {
       throw new RuntimeDomainRequestError("stale_placement", "The delivery dispatch placement is stale");
@@ -619,6 +672,7 @@ export class RuntimeDomainOwner {
         inputHash,
         undefined,
         onDispatched,
+        signal,
       ) as Promise<ImMessageDeliveryResult>;
     } catch (error) {
       await this.#custody.releaseDeliveryDispatch(request, inputHash, "retry").catch(() => undefined);
@@ -627,6 +681,11 @@ export class RuntimeDomainOwner {
   }
 
   async resend(requestId: string): Promise<void> {
+    if (this.#closed) return;
+    return this.#track(this.#resendRequest(requestId));
+  }
+
+  async #resendRequest(requestId: string): Promise<void> {
     const pending = this.#pending.get(requestId);
     if (!pending) throw new RuntimeDomainRequestError("not_pending", "The runtime request is not pending");
     await this.#registry.send(pending.computerId, pending.instanceId, pending.request);
@@ -651,6 +710,14 @@ export class RuntimeDomainOwner {
   }
 
   async handle(
+    frame: DomainBusinessFrame,
+    context: RuntimeBusinessContext,
+  ): Promise<TurnReportResult | TurnActivityResult | RuntimeImCredentialGrantResult | undefined> {
+    if (this.#closed) return undefined;
+    return this.#track(this.#handleFrame(frame, context));
+  }
+
+  async #handleFrame(
     frame: DomainBusinessFrame,
     context: RuntimeBusinessContext,
   ): Promise<TurnReportResult | TurnActivityResult | RuntimeImCredentialGrantResult | undefined> {
@@ -816,6 +883,7 @@ export class RuntimeDomainOwner {
     signal?: AbortSignal,
     onReconcileResult?: PreparedSessionReconcile["onResult"],
   ): Promise<SessionReconcileResult | ImMessageDeliveryResult | RuntimeImSteerResult | SessionMessageDeliveryResult> {
+    this.#assertRunning();
     const existing = this.#pending.get(request.requestId);
     if (existing) {
       if (
@@ -880,11 +948,13 @@ export class RuntimeDomainOwner {
       this.#pending.delete(request.requestId);
       if (pending.kind === "delivery") this.#rememberExpiredDelivery(pending);
       if (pending.kind === "steer") {
-        void this.#custody.releaseSteerDispatch(pending.request, pending.inputHash, "uncertain").catch(() => undefined);
+        void this.#track(
+          this.#custody.releaseSteerDispatch(pending.request, pending.inputHash, "uncertain").catch(() => undefined),
+        );
       } else if (pending.kind === "delivery") {
-        void this.#custody
-          .releaseDeliveryDispatch(pending.request, pending.inputHash, "deferred")
-          .catch(() => undefined);
+        void this.#track(
+          this.#custody.releaseDeliveryDispatch(pending.request, pending.inputHash, "deferred").catch(() => undefined),
+        );
       }
       rejectPromise(new RuntimeDomainRequestError("timeout", "The runtime domain request timed out"));
     }, this.#options.requestTimeoutMs);
@@ -902,41 +972,45 @@ export class RuntimeDomainOwner {
     const pending = createPendingRequest(kind, base, inputHash, semanticHash, onReconcileResult);
     this.#pending.set(request.requestId, pending);
     const dispatch = this.#registry.send(computerId, instanceId, request);
-    void dispatch
-      .then(() => onDispatched?.())
-      .catch((error: unknown) => {
-        if (this.#pending.get(request.requestId) !== pending) return;
-        this.#pending.delete(request.requestId);
-        clearTimeout(timer);
-        try {
-          this.#logger?.warn(
-            {
-              code: error instanceof RuntimeDomainRequestError ? error.code : "send_failed",
-              computerId,
-              instanceId,
-              requestId: request.requestId,
-            },
-            "Runtime domain request failed",
+    void this.#track(
+      dispatch
+        .then(() => onDispatched?.())
+        .catch((error: unknown) => {
+          if (this.#pending.get(request.requestId) !== pending) return;
+          this.#pending.delete(request.requestId);
+          clearTimeout(timer);
+          try {
+            this.#logger?.warn(
+              {
+                code: error instanceof RuntimeDomainRequestError ? error.code : "send_failed",
+                computerId,
+                instanceId,
+                requestId: request.requestId,
+              },
+              "Runtime domain request failed",
+            );
+          } catch {
+            // Logging must never replace the request failure.
+          }
+          if (pending.kind === "delivery") this.#rememberExpiredDelivery(pending);
+          if (pending.kind === "steer") {
+            void this.#track(
+              this.#custody
+                .releaseSteerDispatch(pending.request, pending.inputHash, "uncertain")
+                .catch(() => undefined),
+            );
+          } else if (pending.kind === "delivery") {
+            void this.#track(
+              this.#custody.releaseDeliveryDispatch(pending.request, pending.inputHash, "retry").catch(() => undefined),
+            );
+          }
+          pending.reject(
+            error instanceof Error
+              ? error
+              : new RuntimeDomainRequestError("send_unavailable", "The runtime request could not be sent"),
           );
-        } catch {
-          // Logging must never replace the request failure.
-        }
-        if (pending.kind === "delivery") this.#rememberExpiredDelivery(pending);
-        if (pending.kind === "steer") {
-          void this.#custody
-            .releaseSteerDispatch(pending.request, pending.inputHash, "uncertain")
-            .catch(() => undefined);
-        } else if (pending.kind === "delivery") {
-          void this.#custody
-            .releaseDeliveryDispatch(pending.request, pending.inputHash, "retry")
-            .catch(() => undefined);
-        }
-        pending.reject(
-          error instanceof Error
-            ? error
-            : new RuntimeDomainRequestError("send_unavailable", "The runtime request could not be sent"),
-        );
-      });
+        }),
+    );
     return promise;
   }
 
@@ -1164,9 +1238,31 @@ export class RuntimeDomainOwner {
       this.#expiredDeliveries.delete(oldest);
     }
   }
+
+  #track<T>(operation: Promise<T>): Promise<T> {
+    this.#work.add(operation);
+    void operation.then(
+      () => this.#work.delete(operation),
+      () => this.#work.delete(operation),
+    );
+    return operation;
+  }
+
+  #assertRunning(): void {
+    if (this.#closed) throw new RuntimeDomainRequestError("stopped", "The runtime domain owner stopped");
+  }
+
+  async #drain(): Promise<void> {
+    while (this.#work.size > 0) await Promise.allSettled([...this.#work]);
+    this.#startingDeliveries.clear();
+    this.#expiredDeliveries.clear();
+    this.#completed.clear();
+    this.#preparingReconciles.clear();
+  }
 }
 
 function runtimeDomainFailureAttrs(error: unknown): Record<string, unknown> {
+  if (error instanceof InboundReceiptPendingError) return outcomeAttrs("deferred", error.code);
   let code = "RUNTIME_REQUEST_FAILED";
   if (error instanceof RuntimeDomainConflictError) {
     code = "RUNTIME_REQUEST_CONFLICT";

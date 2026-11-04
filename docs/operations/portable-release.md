@@ -35,8 +35,11 @@ published SHA-256, extracts it, runs the new runtime once, and only then activat
 | `--force` | Reinstall even when the target version is already active |
 | `--no-path-edit` | Never edit shell startup files |
 | `--path-mode auto\|prompt\|off` | How the installer manages the `PATH` block |
-| `--quiet`, `-q` | Only print the final result and errors; also `OPENTAG_QUIET` set to any non-empty value (e.g. `1`) |
+| `--quiet`, `-q` | Print one result line (`openTag <version> installed.` or `… is already installed.`) and errors; also `OPENTAG_QUIET` set to any non-empty value (e.g. `1`). The Computer connect command runs the installer this way |
 | `--no-color` | Disable colored output; also `NO_COLOR` or `OPENTAG_NO_COLOR` set to any non-empty value (e.g. `1`) |
+
+Before downloading anything, the installer checks that the install root and shim directory can be created, and that
+`curl` or `wget` exists; a failure prints a reason line and a `Next:` line.
 
 **Reinstalling is cheap.** After reading `latest.json`, the installer checks whether the requested version is already
 the live install: the `current` symlink must resolve to a payload whose `INSTALL.json` matches the target version,
@@ -96,7 +99,8 @@ channel, no cohorts or canaries. The daemon reads its configured channel's `late
 capability incompatibility, and every five minutes after a successful read. A failed read uses bounded exponential
 backoff, doubling up to thirty minutes. The Server's v2 heartbeat advertisement (`runtime.channelTarget`; see
 [runtime-protocol.md](../system/runtime/runtime-protocol.md)) remains an optimization while the connection is healthy, not the only
-way to discover a release.
+way to discover a release. The Server bounds streamed pointer JSON to 256 KiB and keeps its
+last good target after non-OK, malformed or oversized responses.
 
 An already-stopped old Client cannot run this discovery loop. Run `opentag upgrade` once from that installation (or
 reinstall the portable channel) so that it reaches a version with independent discovery; later releases can then be
@@ -249,6 +253,9 @@ Step 7 makes publication monotonic and step 8 makes it single-writer. `install.s
 channel-pinned and version-independent, so a failure between the two writes leaves an installer that is at least as new
 as the pointer.
 
+After upload, the channel smoke test installs the advertised version and runs the installer again. The second run
+must succeed and report that the same version is already installed without downloading it again.
+
 ## Channel heads
 
 A release channel has two heads that must agree: the npm dist-tag and the portable `latest.json`. `npm publish --tag
@@ -305,6 +312,11 @@ channel pointers are deliberately left untouched.
 
 - The installer needs `curl` or `wget`, `tar`, and `sha256sum` or `shasum`. Linux and macOS on x64 and arm64 are
   supported; Windows is not.
+- The connect command never waits for input: it runs unattended in an Agent's shell, where a prompt would hang
+  with no one to answer it. Every choice it needs is decided by flags or defaults.
+- The connect command fetches the installer with `curl`; a machine without `curl` fails at that step with the shell's
+  own error. Supporting a fallback inside a one-line command would make it longer and harder to read for everyone,
+  and machines that can run Agents almost always have `curl`.
 - The installer only installs or upgrades openTag. The onboarding command runs `opentag connect`, which exchanges the
   one-time Computer code, binds its explicit Agent/Computer target, and then installs or restarts the daemon service.
   Provider CLI detection and installation belongs to that active daemon, never to `install.sh`.

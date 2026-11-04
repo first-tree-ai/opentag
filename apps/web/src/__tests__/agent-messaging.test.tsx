@@ -79,10 +79,8 @@ describe("OpenTag Web App Shell", () => {
 
     expect(await screen.findByRole("button", { name: "Connect Slack" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Connect Lark" })).toBeTruthy();
-    // Nothing is connected yet, so the page's own sentence stands alone with no heading restating it.
-    expect(
-      screen.getByText("Reach this Agent in a chat app, where it works as a digital coworker on the team."),
-    ).toBeTruthy();
+    // Nothing is connected yet; the page carries no subtitle restating its title.
+    expect(screen.queryByText(/digital coworker/)).toBeNull();
     expect(screen.queryByRole("heading", { name: "Messaging app" })).toBeNull();
   });
 
@@ -210,10 +208,7 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Messaging app" })).toBeTruthy();
-    // One sentence describes the page in either state, so a connected reader still reads it.
-    expect(
-      screen.getByText("Reach this Agent in a chat app, where it works as a digital coworker on the team."),
-    ).toBeTruthy();
+    expect(screen.queryByText(/digital coworker/)).toBeNull();
     const identity = document.querySelector('[data-ui="messaging-app-identity"]') as HTMLElement;
     expect(identity).toBeTruthy();
     // The mark and the bot name already say which channel this is, and the state reads under the name.
@@ -364,16 +359,24 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("heading", { level: 1, name: "Reviewer" })).toBeNull();
   });
 
-  it("marks retained Agent rows unconfirmed after a transient primary refresh failure", async () => {
+  it("keeps retained Agent rows on their last settled status through a transient primary refresh failure", async () => {
     let agentListStatus: number | undefined;
     installApi({ agentListStatus: () => agentListStatus, bound: true });
     window.history.replaceState({}, "", "/agents");
     render(<App />);
     expect(await screen.findByText("Ready")).toBeTruthy();
+    const listReads = () =>
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(([input, init]) => String(input) === "/api/v1/agents" && (init?.method ?? "GET") === "GET")
+        .length;
+    const readsBefore = listReads();
 
     agentListStatus = 503;
     fireEvent(window, new Event("focus"));
-    expect(await screen.findByText("Status unavailable")).toBeTruthy();
+    await waitFor(() => expect(listReads()).toBeGreaterThan(readsBefore));
+    await waitFor(() => expect(screen.getByText("Ready")).toBeTruthy());
+    expect(screen.queryByText("Status unavailable")).toBeNull();
     expect(screen.getByText("Reviewer")).toBeTruthy();
     expect(screen.queryByRole("alert")).toBeNull();
   });
@@ -512,7 +515,7 @@ describe("OpenTag Web App Shell", () => {
     installApi({ bindingReauth: true, bound: true });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
-    expect(await screen.findByText("Permissions required")).toBeTruthy();
+    expect(await screen.findByText("Messaging permissions need updating")).toBeTruthy();
     expect(screen.queryByText(/Online/)).toBeNull();
     expect(screen.getByRole("button", { name: /Update permissions$/ })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Change bot" }));
@@ -576,30 +579,67 @@ describe("OpenTag Web App Shell", () => {
     });
   });
 
-  it("opens dedicated Slack setup without starting official OAuth", async () => {
-    installApi({ bound: false });
-    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
-    render(<App />);
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Connect Slack" })).not.toHaveProperty("disabled", true),
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Connect Slack" }));
-    expect(await screen.findByLabelText("Code")).toBeTruthy();
-    expect(
-      vi
-        .mocked(fetch)
-        .mock.calls.filter(
-          ([input, init]) => String(input).endsWith("/im-binding/slack/oauth/start") && init?.method === "POST",
-        ),
-    ).toHaveLength(0);
-    expect(
-      vi
-        .mocked(fetch)
-        .mock.calls.filter(
-          ([input, init]) => String(input).endsWith("/im-binding/slack/configuration/auto") && init?.method === "POST",
-        ),
-    ).toHaveLength(1);
-  });
+  it.each(["local", "cloud"] as const)(
+    "opens dedicated Slack setup without starting official OAuth (%s)",
+    async (computerKind) => {
+      installApi({
+        bound: false,
+        ...(computerKind === "cloud"
+          ? {
+              computers: [
+                {
+                  id: computerId,
+                  kind: "cloud",
+                  displayName: "openTag Cloud",
+                  platform: "linux",
+                  connectionStatus: "offline",
+                  providerReadiness: [],
+                  connectedAt: null,
+                  lastSeenAt: null,
+                },
+              ],
+            }
+          : {}),
+      });
+      window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+      render(<App />);
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Connect Slack" })).not.toHaveProperty("disabled", true),
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Connect Slack" }));
+      if (computerKind === "cloud") {
+        expect(await screen.findByRole("link", { name: "View Apps" })).toHaveProperty(
+          "href",
+          "https://api.slack.com/apps",
+        );
+        expect(
+          vi
+            .mocked(fetch)
+            .mock.calls.filter(
+              ([input, init]) =>
+                String(input).endsWith("/im-binding/slack/configuration/auto") && init?.method === "POST",
+            ),
+        ).toHaveLength(0);
+        fireEvent.click(screen.getByRole("button", { name: "Create App" }));
+      }
+      expect(await screen.findByLabelText("Code")).toBeTruthy();
+      expect(
+        vi
+          .mocked(fetch)
+          .mock.calls.filter(
+            ([input, init]) => String(input).endsWith("/im-binding/slack/oauth/start") && init?.method === "POST",
+          ),
+      ).toHaveLength(0);
+      expect(
+        vi
+          .mocked(fetch)
+          .mock.calls.filter(
+            ([input, init]) =>
+              String(input).endsWith("/im-binding/slack/configuration/auto") && init?.method === "POST",
+          ),
+      ).toHaveLength(1);
+    },
+  );
 });
 
 /**

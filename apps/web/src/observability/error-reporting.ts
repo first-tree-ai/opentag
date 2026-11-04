@@ -7,6 +7,8 @@ export type ErrorReportInput = {
   readonly stack?: string;
   /** Overrides the code-and-message pair as the cooldown key, for failures whose message varies per occurrence. */
   readonly dedupeKey?: string;
+  readonly requestId?: string;
+  readonly traceId?: string;
 };
 
 export type ErrorReportSink = (input: ErrorReportInput) => void;
@@ -66,6 +68,8 @@ export function createErrorReportSink(options: ErrorReportSinkOptions = {}): Err
         userId: context.userId,
         route: context.route,
         reportId: (options.reportId ?? randomReportId)(),
+        requestId: input.requestId,
+        traceId: input.traceId,
       });
       const fetchImpl = options.fetchImpl ?? fetch;
       void Promise.resolve()

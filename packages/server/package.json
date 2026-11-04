@@ -25,15 +25,15 @@
     "dev": "tsx watch src/index.ts",
     "start": "node dist/index.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --maxWorkers=1 --exclude 'src/__tests__/integration/**'",
-    "test:integration": "vitest run src/__tests__/integration --maxWorkers=2",
+    "test": "vitest run --maxWorkers=1 --exclude '**/integration/**'",
+    "test:integration": "vitest run src/__tests__/integration scripts/__tests__/integration --maxWorkers=2",
     "mcp:rollout-status": "node dist/admin/mcp-rollout-status-cli.mjs"
   },
   "dependencies": {
     "@autotelic/fastify-opentelemetry": "^0.23.0",
     "@fastify/static": "^10.1.3",
     "@fastify/websocket": "^11.3.0",
-    "@first-tree-ai/context-tree": "1.0.1",
+    "@first-tree-ai/context-tree": "1.0.2-alpha.202611020650",
     "@google-cloud/error-reporting": "^4.0.1",
     "@larksuiteoapi/node-sdk": "^1.73.3",
     "@opentag/mcp-presets": "workspace:*",

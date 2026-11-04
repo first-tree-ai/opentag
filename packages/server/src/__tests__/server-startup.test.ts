@@ -1,5 +1,7 @@
 import Fastify from "fastify";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ImFeedbackActionsService } from "../services/im/im-feedback-actions.js";
+import { closeServerResources, startClosingServerResources } from "../shutdown.js";
 
 const state = vi.hoisted(() => ({
   events: [] as string[],
@@ -30,6 +32,7 @@ const state = vi.hoisted(() => ({
   machineAuthOptions: undefined as unknown,
   agentOptions: undefined as unknown,
   domainRequestReconcile: vi.fn(),
+  stopSignal: undefined as AbortSignal | undefined,
   sessionCliPrepareReconcile: vi.fn(),
   imBindingOptions: undefined as unknown,
   imBindingGetAgentComputerId: vi.fn(),
@@ -138,7 +141,7 @@ vi.mock("../runtime/im-delivery-worker.js", () => ({
     }
     stop() {
       state.events.push("worker:stop");
-      state.workerStop();
+      return state.workerStop();
     }
   },
 }));
@@ -154,8 +157,8 @@ vi.mock("../runtime/provider-cli-reconcile-owner.js", () => ({
   },
 }));
 vi.mock("../runtime/runtime-custody-store.js", () => ({ PostgresRuntimeCustodyStore: class {} }));
-vi.mock("../runtime/agent-session-stopper.js", () => ({
-  stopAgentSessions: vi.fn(
+vi.mock("../runtime/agent-session-stopper.js", () => {
+  const stopAgentSessions = vi.fn(
     async (
       _database: unknown,
       targets: { agentId: string; computerId: string; placementGeneration: number; sessionId: string }[],
@@ -166,27 +169,55 @@ vi.mock("../runtime/agent-session-stopper.js", () => ({
           instanceId: string | undefined,
           request: unknown,
           onDispatched?: () => void,
+          admission?: unknown,
+          signal?: AbortSignal,
         ): Promise<unknown>;
       },
     ) => {
+      state.stopSignal = new AbortController().signal;
       for (const target of targets) {
         const instanceId = dependencies.currentInstanceId(target.computerId);
-        await dependencies.requestReconcile(target.computerId, instanceId, {
-          type: "session:reconcile",
-          desired: "stopped",
-        });
+        await dependencies.requestReconcile(
+          target.computerId,
+          instanceId,
+          {
+            type: "session:reconcile",
+            desired: "stopped",
+          },
+          undefined,
+          undefined,
+          state.stopSignal,
+        );
       }
     },
-  ),
-}));
+  );
+  return {
+    stopAgentSessions,
+    stopCloudThenLocalAgentSessions: vi.fn(
+      async (
+        database: unknown,
+        targets: Parameters<typeof stopAgentSessions>[1],
+        _cloud: unknown,
+        dependencies: Parameters<typeof stopAgentSessions>[2],
+      ) => stopAgentSessions(database, targets, dependencies),
+    ),
+  };
+});
 vi.mock("../runtime/runtime-domain-owner.js", () => ({
   RuntimeDomainConflictError: class extends Error {},
   RuntimeDomainOwner: class {
     constructor(_registry: unknown, _store: unknown, options: unknown) {
       state.domainOptions = options;
     }
-    requestReconcile(computerId: string, instanceId: string | undefined, request: unknown, onDispatched?: () => void) {
-      return state.domainRequestReconcile(computerId, instanceId, request, onDispatched);
+    requestReconcile(
+      computerId: string,
+      instanceId: string | undefined,
+      request: unknown,
+      onDispatched?: () => void,
+      admission?: unknown,
+      signal?: AbortSignal,
+    ) {
+      return state.domainRequestReconcile(computerId, instanceId, request, onDispatched, admission, signal);
     }
   },
   RuntimeDomainRequestError: class extends Error {},
@@ -224,7 +255,6 @@ vi.mock("../services/auth/index.js", async () => ({
     }
   },
   formatStartupError: (await import("../services/auth/security.js")).formatStartupError,
-  PostAuthenticationService: class {},
 }));
 vi.mock("../services/channel-target/index.js", () => ({
   createChannelTargetPoller: () => ({
@@ -244,7 +274,11 @@ vi.mock("../services/computers/index.js", () => ({
 }));
 vi.mock("../services/crypto.js", () => ({ ApplicationCipher: class {} }));
 vi.mock("../services/im/index.js", () => ({
-  ImMessageInbox: class {},
+  ImMessageInbox: class {
+    close() {
+      state.events.push("inbox:close");
+    }
+  },
   ImResourceService: class {},
 }));
 vi.mock("../services/im-bindings/feishu/index.js", () => ({
@@ -384,6 +418,7 @@ function defaultConfig() {
 beforeEach(() => {
   vi.clearAllMocks();
   state.schedulerStop.mockReset();
+  state.workerStop.mockReset();
   state.loadCloudBilling.mockReset().mockResolvedValue(undefined);
   state.shutdownTelemetry.mockReset().mockResolvedValue(undefined);
   state.events.length = 0;
@@ -428,9 +463,11 @@ beforeEach(() => {
     code: "binding_inactive",
   });
   const log = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+  const closeHooks: (() => unknown)[] = [];
+  state.onClose = () => closeServerResources(closeHooks.map((hook) => ["application hook", hook] as const));
   state.app = {
-    addHook: vi.fn((_name: string, hook: () => Promise<void>) => {
-      state.onClose = hook;
+    addHook: vi.fn((name: string, hook: () => Promise<void>) => {
+      if (name === "onClose") closeHooks.unshift(hook);
     }),
     listen: vi.fn(async () => state.events.push("listen")),
     close: vi.fn(async () => {
@@ -439,10 +476,33 @@ beforeEach(() => {
     }),
     log,
   };
-  state.createApp.mockImplementation((options: unknown) => {
-    state.appOptions = options;
-    return state.app;
-  });
+  state.createApp.mockImplementation(
+    (options: {
+      beginShutdown?: () => unknown;
+      closeResources?: () => unknown;
+      cloudBilling?: { close(): Promise<void> };
+    }) => {
+      state.appOptions = options;
+      const app = state.app as ReturnType<typeof Fastify>;
+      let stopping: Promise<void> | undefined;
+      const begin = () => {
+        stopping ??= startClosingServerResources([["server producers", () => options.beginShutdown?.()]]);
+        void stopping.catch(() => undefined);
+        return stopping;
+      };
+      app.addHook("preClose", async () => {
+        void begin();
+      });
+      app.addHook("onClose", () =>
+        closeServerResources([
+          ["server producers", begin],
+          ["cloud billing", () => options.cloudBilling?.close()],
+          ["shared resources", () => options.closeResources?.()],
+        ]),
+      );
+      return app;
+    },
+  );
   process.env.OPENTAG_DATABASE_URL = "postgres://db-user:db-password@localhost/opentag";
   process.env.OPENTAG_JWT_SECRET = "jwt-secret";
   process.env.OPENTAG_GOOGLE_CLIENT_SECRET = "google-secret";
@@ -606,7 +666,7 @@ describe("Server startup", () => {
 
     (state.workerOptions as { onDiagnostic(code: string): void }).onDiagnostic("IM_DELIVERY_FAILED");
     expect((state.app as { log: { error: ReturnType<typeof vi.fn> } }).log.error).toHaveBeenCalledWith(
-      { code: "IM_DELIVERY_FAILED" },
+      { code: "IM_DELIVERY_FAILED", errorCode: "IM_DELIVERY_FAILED" },
       "Server diagnostic",
     );
 
@@ -615,10 +675,11 @@ describe("Server startup", () => {
     await app.close();
     // The schedule scanner stops first: no new claims and no late hand-off frames once the
     // Runtime and the database begin their own shutdown.
-    expect(state.events.slice(-7)).toEqual([
+    expect(state.events.slice(-8)).toEqual([
       "app:close",
       "scheduler:stop",
       "worker:stop",
+      "inbox:close",
       "platform:close",
       "feishu-setup:stop",
       "feishu-connections:stop",
@@ -664,6 +725,8 @@ describe("Server startup", () => {
       "instance-3",
       expect.objectContaining({ desired: "stopped" }),
       undefined,
+      undefined,
+      state.stopSignal,
     );
   });
 
@@ -785,13 +848,13 @@ describe("Server startup", () => {
     expect(state.events).not.toContain("prewarm:start");
     expect(state.events.slice(-9)).toEqual([
       "app:close",
-      "prewarm:stop",
       "scheduler:stop",
       "worker:stop",
+      "inbox:close",
       "platform:close",
       "feishu-setup:stop",
       "feishu-connections:stop",
-      "sql:end",
+      "prewarm:stop",
       "sql:end",
     ]);
     const logged = JSON.stringify(app.log.error.mock.calls);
@@ -841,9 +904,9 @@ describe("Server startup", () => {
       expect(process.exitCode).toBe(1);
       expect(state.events).not.toContain("ready:listen");
       expect(state.events.indexOf("sql:end")).toBeGreaterThan(state.events.indexOf("scheduler:stop"));
-      expect(state.events.indexOf("billing:close")).toBeGreaterThan(state.events.indexOf("sql:end"));
+      expect(state.events.indexOf("billing:close")).toBeLessThan(state.events.indexOf("sql:end"));
       expect(state.events.slice(-3)).toEqual(["billing:close", "sql:end", "telemetry:close"]);
-      expect(state.shutdownTelemetry).toHaveBeenCalledTimes(2);
+      expect(state.shutdownTelemetry).toHaveBeenCalledOnce();
       expect(report).toHaveBeenCalledOnce();
       const logged = JSON.stringify(report.mock.calls);
       expect(logged).toContain("Server startup and resource cleanup failed");
@@ -918,4 +981,75 @@ describe("Server startup", () => {
       stderr.mockRestore();
     }
   });
+});
+
+it.each([false, true])("joins pending listen before signal cleanup (stop failure=%s)", async (stopFails) => {
+  state.prewarmEnabled = true;
+  let markEntered!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    markEntered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const app = state.app as { listen: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> };
+  app.listen.mockImplementation(async () => {
+    markEntered();
+    await gate;
+    state.events.push("listen");
+  });
+  if (stopFails) {
+    state.schedulerStop.mockRejectedValue(new Error("Controlled stop error jwt-secret"));
+    state.workerStop.mockRejectedValue(new Error("Worker stop error google-secret"));
+    state.sql.end.mockRejectedValue(new Error("Database close error encryption-secret"));
+  }
+  const starting = startServer();
+  try {
+    await entered;
+    process.listeners("SIGTERM").at(-1)?.("SIGTERM");
+    expect((state.appOptions as { shutdownSignal: AbortSignal }).shutdownSignal.aborted).toBe(true);
+    expect(state.events).toContain("scheduler:stop");
+    expect(state.events).toContain("inbox:close");
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(app.close).not.toHaveBeenCalled();
+    expect(state.sql.end).not.toHaveBeenCalled();
+    release();
+    await starting;
+    await vi.waitFor(() => expect(state.sql.end).toHaveBeenCalledOnce());
+    expect(state.events).not.toContain("ready:listen");
+    expect(state.events).not.toContain("prewarm:start");
+    expect(app.close).toHaveBeenCalledOnce();
+    if (stopFails) {
+      await vi.waitFor(() => expect(process.exitCode).toBe(1));
+      const logged = JSON.stringify((state.app as { log: { error: ReturnType<typeof vi.fn> } }).log.error.mock.calls);
+      expect(logged).toContain("Failed to close schedule scheduler");
+      expect(logged).toContain("Controlled stop error");
+      expect(logged).toContain("Worker stop error");
+      expect(logged).toContain("Database close error");
+      expect(state.shutdownTelemetry).toHaveBeenCalledOnce();
+      for (const secret of ["jwt-secret", "google-secret", "encryption-secret"]) expect(logged).not.toContain(secret);
+    }
+  } finally {
+    release();
+    await starting;
+  }
+});
+
+it("joins feedback actions after producer shutdown and before the pool", async () => {
+  const feedbackClose = vi.spyOn(ImFeedbackActionsService.prototype, "close").mockImplementation(async () => {
+    state.events.push("feedback:close");
+  });
+  try {
+    await startServer();
+    const options = state.appOptions as { beginShutdown(): Promise<void> };
+    await options.beginShutdown();
+    expect(feedbackClose).not.toHaveBeenCalled();
+    await (state.app as { close(): Promise<void> }).close();
+    expect(feedbackClose).toHaveBeenCalledOnce();
+    expect(state.events.indexOf("feedback:close")).toBeGreaterThan(state.events.indexOf("feishu-connections:stop"));
+    expect(state.events.indexOf("sql:end")).toBeGreaterThan(state.events.indexOf("feedback:close"));
+  } finally {
+    feedbackClose.mockRestore();
+  }
 });

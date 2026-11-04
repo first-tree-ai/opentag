@@ -89,6 +89,16 @@ The Server uses `agent_runtime_configs.revision` for both Agent and Session snap
 An owner change to `selfConfigurationEnabled` advances that runtime revision in the same transaction
 as the Agent row, just as a runtime configuration change does. Repeating the same switch value or
 editing only the display name or receive mode does not advance it. Agent names are immutable.
+An Agent name is also its slug (`OpenTag Agent slug:` in the platform layer and `members/<slug>/` in a Context Tree).
+It may use ASCII letters in either case, digits, CJK unified ideographs (not radicals), and hyphens, must not start
+with a hyphen, and is at most 64 UTF-8 bytes (21 Chinese characters), so the reserved platform instruction budget stays
+exact. The Server stores it trimmed and NFC-normalized, keeps its case, and enforces uniqueness within an Account
+case-insensitively, including under concurrent creation. Clients older than this rule do not recognize a slug with uppercase or Han characters and
+fall back to the generic member-directory guidance.
+Why: people name Agents the way they name teammates, often in Chinese or with capitals, and one name field is simpler
+than a separate display name and handle. Length is counted in bytes because the name is part of the platform
+instructions, whose reserved budget is in bytes; about 21 Chinese characters is enough for a name. Only unambiguous
+characters are allowed, and uniqueness ignores case, so two Agents never look alike.
 Agent and Session revision IDs identify their respective content; the sequences order updates.
 
 When preparing a Local Session within the same placement, the Client verifies its saved snapshot
@@ -107,6 +117,44 @@ replayed. An unresolved Turn must settle before a configuration switch.
 The Client writes the new snapshot before atomically updating the binding. A missing snapshot
 can be reconstructed from a request with the exact saved hash and identity; a different request
 cannot replace it without the original snapshot needed to validate the prior configuration.
+
+## Context composition and token interpretation
+
+`renderManagedSystemPrompt` builds the OpenTag-managed system instructions separately from
+`buildAgentInput`, which appends each IM delivery's Session/revision facts, processing-time UTC,
+provider reference, attention and reply-role facts, Session instructions, message text, bounded IM
+history, and attachment context. The Platform and Agent instructions are not copied into every
+new message. Session instructions currently appear in both the managed system prompt and the
+per-delivery context. Session collaboration uses `buildSessionMessageInput` and has its own envelope.
+
+Local Claude Code starts a process for each Run with the native Session ID and `--resume` after
+initialization. Local Pi also starts a process per Run, restoring the exact Pi Session. Codex keeps
+an App Server per prepared Session and starts native Turns on its thread; execution-service
+attachment may reload that same thread. `excludeTurns: true` suppresses history returned in the
+resume RPC response; it does not remove the model's conversation history. Local configuration
+replacement follows the binding rules above, rather than replaying the old history.
+
+Cloud execution uses Pi only. Its worker restores the binding and Pi history under
+`.opentag/pi-session` and appends the current input. The Cloud model transport is Chat Completions,
+not a provider-side Responses conversation ID. Pi serializes its active native conversation for
+model calls. Cloud disables ambient context files, Skills, extensions, templates, and themes, then
+adds the packaged resources explicitly. Local production Pi enables native resources; Claude and
+Codex likewise retain their native project configuration.
+
+Context Tree preparation supplies tree location, availability, and guidance, not every tree page.
+Selected pages and Skill bodies enter context when the Agent reads them. Native Skill catalogs and
+MCP tool descriptions/schema can add input independently of the managed prompt. Local Claude's
+private plugin and MCP names remain stable within one runtime; Codex's private MCP name also lives
+for one runtime;
+Cloud Pi uses the fixed `opentag-mcp` adapter entry. These are distinct from rotating credentials.
+
+Native continuity does not guarantee a prompt-cache hit. Request input, cache reads/writes,
+billable cost, and the active context window are different measurements. Changes in an appended
+message do not themselves rewrite an earlier prefix. A changed tool catalog, managed system
+prompt, native configuration, model, or compaction can change it. The
+[Agent usage accounting](../agent-usage.md) provider rules define reported totals; they are not
+an invoice or a measurement of unique context. Cloud billing uses the model-call ledger rather
+than the Runner's Turn report.
 
 ## Provider and Product Support
 
@@ -127,7 +175,7 @@ advertised only after explicit readiness v2 negotiation. See
 [Runtime protocol compatibility](runtime-protocol.md).
 
 Local Pi keeps enabled network and always runs without approvals or a permission
-extension. Claude Code uses `auto` with its native permission callback; Codex uses
+extension. Claude Code uses `acceptEdits` with its native permission callback; Codex uses
 `workspace-write` and `on-request` approvals. Cloud runs always use full permissions.
 See [Agent permissions](agent-permissions.md) for allowed-command settings and the
 Slack/Feishu approval flow. Pi's read-only adapter mode limits exposed tools without
@@ -153,11 +201,15 @@ platform bearers, not to user-managed native credentials. Native configuration r
 does not become Server plugin state or a platform-managed MCP registration. User-wide configuration
 keeps its native effect across projects; an Agent cwd does not isolate global settings.
 
-OpenTag adds its own MCP services through a supplementary temporary MCP configuration with fresh
-service names for each Run. The gateway name stays at 11 characters, preserving its existing
+OpenTag adds its own MCP services through a supplementary temporary MCP configuration with private
+service names generated once per runtime and reused across its Runs. The gateway name stays at
+11 characters, preserving its existing
 model-facing tool-name budget. External packaged Skills use a private plugin with an explicit,
-randomly generated name per Run. A native user plugin named `opentag` remains loadable alongside
-platform resources. Tool grants use that Run's exact service names; Skill names come from the
+randomly generated name per runtime. A native user plugin named `opentag` remains loadable alongside
+platform resources. Every Run still receives fresh configuration, ports, and execution credentials;
+cleanup removes only that Run's resources. Names are not persisted in the Session binding, so a resumed
+binding in a new runtime receives a new private identity. Tool grants use the runtime's exact
+service names; Skill names come from the
 current native catalog. Existing cwd, Provider Home, login, and conversation
 history locations do not change. Codex, Pi, and Cloud resource policies retain their own rules.
 

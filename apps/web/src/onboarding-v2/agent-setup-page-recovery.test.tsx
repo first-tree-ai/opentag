@@ -399,13 +399,10 @@ describe("AgentSetupPage messaging recovery", () => {
   it.each([
     [{ phase: "preparing_cli" }, "Confirming the computer can connect to Slack…"],
     [{ phase: "checking_credentials" }, "Checking credentials"],
-    [
-      { phase: "needs_attention" },
-      "Repair the Slack connection in your coding assistant on this computer, then check again.",
-    ],
+    [{ phase: "needs_attention" }, "Repair the Slack connection in your Agent on this computer, then check again."],
     [
       { phase: "needs_attention", reason: "upgrade_required" },
-      "Repair the Slack connection in your coding assistant on this computer, then check again.",
+      "Repair the Slack connection in your Agent on this computer, then check again.",
     ],
     [
       { phase: "needs_attention", reason: "credential_rejected" },
@@ -521,7 +518,7 @@ describe("AgentSetupPage messaging recovery", () => {
     await settle();
     continueFromPreparation();
 
-    expect(screen.getByText("Pick the app your team already works in.")).toBeTruthy();
+    expect(screen.queryByText("Pick the app your team already works in.")).toBeNull();
     expect(document.querySelector('[data-ui="agent-setup-messaging-choices"]')).toBeNull();
   });
 });
@@ -547,9 +544,9 @@ describe("AgentSetupPage with the Lab Computer adapters", () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
     renderSetup(memory.adapter, { computerAdapter: memory.computerAdapter });
     await settle();
-    expect(screen.getByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
     expect(memory.inspect().computerConnectState).toBe("pending");
-    expect(screen.queryByText("Waiting for Review Mac to reconnect…")).toBeNull();
+    expect(screen.getByText("Waiting for Review Mac to reconnect…")).toBeTruthy();
 
     act(() => memory.controls.completeComputerConnection());
     await advance(1_600);

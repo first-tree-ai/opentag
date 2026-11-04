@@ -123,13 +123,17 @@ export function topicCtes(input: TopicQueryInput): SQL {
           topic_key,
           anchor_at,
           has_thread,
+          resolved_chat_mode as chat_mode,
+          resolved_group_message_type as group_message_type,
           id as anchor_id,
           external_message_id as anchor_external_id
         from (
           select
             tm.*,
             min(tm.occurred_at) over w as anchor_at,
-            bool_or(tm.thread_key is not null) over w as has_thread
+            bool_or(tm.thread_key is not null) over w as has_thread,
+            coalesce(tm.chat_mode, max(tm.chat_mode) over w) as resolved_chat_mode,
+            coalesce(tm.group_message_type, max(tm.group_message_type) over w) as resolved_group_message_type
           from topic_messages tm
           window w as (partition by tm.im_binding_id, tm.channel_id, tm.topic_key)
         ) ranked
@@ -190,6 +194,16 @@ export function topicCtes(input: TopicQueryInput): SQL {
         m.provider_revision_key,
         m.occurred_at,
         m.thread_key,
+        case
+          when m.provider_context ->> 'chatMode' in ('group', 'topic', 'p2p')
+            then m.provider_context ->> 'chatMode'
+          else null
+        end as chat_mode,
+        case
+          when m.provider_context ->> 'groupMessageType' in ('chat', 'thread')
+            then m.provider_context ->> 'groupMessageType'
+          else null
+        end as group_message_type,
         case
           when ch.conversation_kind = 'dm' then null
           else coalesce(tr.root_external_id, m.thread_key, m.external_message_id)
@@ -332,6 +346,8 @@ export function topicPageCtes(input: {
       mt.im_binding_id,
       mt.channel_id,
       mt.topic_key,
+      mt.chat_mode,
+      mt.group_message_type,
       t.has_running,
       t.has_pending,
       t.latest_execution_id,

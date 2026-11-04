@@ -160,7 +160,7 @@ describe("onboarding flow layout", () => {
     expect(declarationValue(".otv2-readiness", "flex-direction")).toBe("column");
     expect(declarationValue(".otv2-readiness", "gap")).toBe("0");
     expect(declarationValue(".otv2-readiness", "overflow")).toBe("hidden");
-    expect(declarationValue(".otv2-readiness__line", "align-items")).toBe("center");
+    expect(declarationValue(".otv2-readiness__line", "align-items")).toBe("flex-start");
     expect(declarationValue(".otv2-readiness__line", "padding")).toBe("1rem");
     expect(declarationValue(".otv2-readiness__line", "box-sizing")).toBe("border-box");
     expect(declarationValue(".otv2-readiness__line", "border-top")).toBe("1px solid var(--color-kumo-line)");

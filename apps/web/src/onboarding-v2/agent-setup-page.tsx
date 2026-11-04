@@ -56,11 +56,11 @@ import {
   type StatusTone,
   Text,
 } from "../ui/design-system.js";
-import { OpenTagLogo } from "../ui/opentag-logo.js";
 import { ProviderIcon } from "../ui/provider-icon.js";
 import { BrandMark } from "./brand-mark.js";
 import type { FlowState } from "./flow.js";
 import { providerCliWaitingCopy } from "./messaging-readiness-copy.js";
+import { SetupLogo } from "./setup-logo.js";
 import "./onboarding-v2.css";
 import { preparationIsTransitional, preparationSummaryRows } from "./preparation-readiness.js";
 import { CheckLine } from "./readiness-list.js";
@@ -182,8 +182,10 @@ export interface AgentSetupPageProps {
   readonly previewInitialView?: AgentSetupPreviewView;
   /** Reports the screen the production surface is actually showing to its Review Lab controls. */
   readonly onPreviewViewChange?: (view: AgentSetupPreviewView) => void;
-  /** Returns to this exact Agent; Setup presents it as Back before ready and Open after ready. */
+  /** Opens this exact Agent; offered as the completion action once setup is ready. */
   readonly onOpenAgent?: () => void;
+  /** Leaves setup for the Agent list. Offered in the header at every stage; the list resumes unfinished setup. */
+  readonly onBackToAgents?: () => void;
   /** Rendered in the header; the caller supplies it because only the route knows an Account session exists. */
   readonly accountControl?: ReactNode;
   /** The route supplies brand navigation after Account admission. */
@@ -707,6 +709,7 @@ export function AgentSetupPage({
   brandControl,
   adapter,
   computerAdapter,
+  onBackToAgents,
   onExternalNavigation,
   onOpenAgent,
   onPreviewViewChange,
@@ -731,6 +734,7 @@ export function AgentSetupPage({
       brandControl={brandControl}
       computerAdapter={computerAdapter}
       key={agentId}
+      onBackToAgents={onBackToAgents}
       onExternalNavigation={onExternalNavigation}
       onOpenAgent={onOpenAgent}
       onPreviewViewChange={onPreviewViewChange}
@@ -750,6 +754,7 @@ function AgentSetupPageContent({
   brandControl,
   adapter,
   computerAdapter,
+  onBackToAgents,
   onExternalNavigation,
   onOpenAgent,
   onPreviewViewChange,
@@ -776,7 +781,6 @@ function AgentSetupPageContent({
   const [oauthError] = useState(() => (slackOAuthError ? slackSetupErrorMessage(slackOAuthError) : undefined));
   const snapshot = controller.phase.kind === "ready" ? controller.phase.snapshot : undefined;
   const report = useReadyReport(snapshot, agentId, onReady, reviewMode);
-  const ready = snapshot?.stage === "ready";
   // The stages between a connected Computer and a usable Agent, which is where a reader who never
   // holds a conversation actually stops. Reported per stage, not per re-read.
   useAgentSetupStageReport(agentId, snapshot?.stage);
@@ -816,12 +820,12 @@ function AgentSetupPageContent({
       data-ui="agent-setup"
     >
       {!embedded && (
-        <header className="flex flex-wrap items-center justify-between gap-3 p-6">
-          {brandControl ?? <OpenTagLogo label={m.onboarding_v2_brand_name()} />}
+        <header className="flex items-center justify-between gap-2 p-6">
+          {brandControl ?? <SetupLogo label={m.onboarding_v2_brand_name()} />}
           <div className="ml-auto flex items-center gap-2">
-            {onOpenAgent && !ready ? (
-              <Button onClick={onOpenAgent} variant="ghost">
-                {setupExitLabel(snapshot)}
+            {onBackToAgents ? (
+              <Button onClick={onBackToAgents} variant="ghost">
+                {m.onboarding_v2_back_to_agents()}
               </Button>
             ) : null}
             {accountControl}
@@ -1096,8 +1100,16 @@ function SetupStageNavigation({
   readonly showingPreparation: boolean;
   readonly snapshot: AgentSetupSnapshot;
 }) {
+  // The repair command window polls the computer every few seconds and advances on its own, so a
+  // manual "Check again" next to it would only duplicate that.
+  const connectWindowShown =
+    snapshot.stage === "needs-computer" &&
+    snapshot.computer.kind === "bound" &&
+    snapshot.computer.connectionStatus === "offline";
   if (!showingPreparation) {
-    return computerObservationFailed || snapshot.messaging.kind === "waiting-handoff" ? null : refreshAction;
+    return computerObservationFailed || connectWindowShown || snapshot.messaging.kind === "waiting-handoff"
+      ? null
+      : refreshAction;
   }
   const pollClass = snapshotPollClass(snapshot);
   const observingAutomatically = pollClass === "bounded" && !controller.pollExhausted;
@@ -1105,7 +1117,9 @@ function SetupStageNavigation({
   // Hide Check again only while a real waiting/checking observation is in flight. Settled
   // install/sign-in/unavailable rows keep the immediate retry while background GETs continue.
   const preparationRefreshAction =
-    !computerObservationFailed && !(observingAutomatically && genuineChecking) ? refreshAction : undefined;
+    !computerObservationFailed && !connectWindowShown && !(observingAutomatically && genuineChecking)
+      ? refreshAction
+      : undefined;
   return (
     <PreparationNavigation
       checking={observingAutomatically && genuineChecking}
@@ -1160,6 +1174,11 @@ function PreparationNavigation({
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const hintId = useId();
+  // While a computer is being connected or repaired, the command window is the page's only status
+  // and the step advances on its own once the computer is online: no hint and no disabled Continue.
+  if (snapshot.stage === "needs-computer" && !ready) {
+    return refreshAction ? <div className="otv2-step-footer__actions">{refreshAction}</div> : null;
+  }
   const rows = snapshot.computer.kind === "cloud" ? undefined : preparationSummaryRows(snapshot);
   const checkingItem = rows ? preparationCheckingItem(rows) : "";
   const hint = preparationHint({
@@ -1337,7 +1356,6 @@ function ComputerSetupSection({
         agentId={agentId}
         computerConnectAdapter={computerConnectAdapter}
         inventoryAdapter={computerAdapter?.inventory}
-        name={snapshot.agent.displayName}
         onChanged={afterBind}
         snapshot={snapshot}
       />
@@ -1347,7 +1365,7 @@ function ComputerSetupSection({
     const canBind = snapshot.actions.some((action) => action.kind === "bind-computer");
     return (
       <section className="otv2-computer-step flex flex-col" data-state={computer.kind} data-ui="agent-setup-computer">
-        <ComputerStepHeader name={snapshot.agent.displayName} />
+        <ComputerStepHeader />
         <div className="otv2-computer-step__body">
           <ComputerSummary
             metadata={platformLabel(computer.platform)}
@@ -1376,7 +1394,7 @@ function ComputerSetupSection({
   if (computer.kind === "observation-failed") {
     return (
       <section className="otv2-computer-step flex flex-col" data-state={computer.kind} data-ui="agent-setup-computer">
-        <ComputerStepHeader name={snapshot.agent.displayName} />
+        <ComputerStepHeader />
         <div className="otv2-computer-step__body">
           <ComputerSummary
             metadata={platformLabel(computer.platform)}
@@ -1403,18 +1421,12 @@ function ComputerSetupSection({
   );
 }
 
-function ComputerStepHeader({ name, title }: { readonly name: string; readonly title?: string }) {
+function ComputerStepHeader({ title }: { readonly title?: string }) {
   return (
     <header className="grid gap-1" data-ui="agent-setup-computer-header">
       <Text as="h1" size="lg" variant="heading">
         {title ?? m.onboarding_v2_connect_title()}
       </Text>
-      <p className="flex items-start gap-2 text-sm text-kumo-subtle m-0">
-        <span aria-hidden="true" className="shrink-0 text-kumo-brand">
-          <Icon name="shield" />
-        </span>
-        {m.onboarding_v2_connect_privacy({ name })}
-      </p>
     </header>
   );
 }
@@ -1426,7 +1438,8 @@ function ComputerSummary({
   tone,
 }: {
   readonly metadata?: string;
-  readonly status: string;
+  /** Omitted while a command window below owns the status. */
+  readonly status?: string;
   readonly title: string;
   readonly tone: StatusTone;
 }) {
@@ -1441,13 +1454,14 @@ function ComputerSummary({
       >
         <Icon name="laptop" />
       </span>
-      <span className="flex min-w-0 items-baseline gap-x-1.5 overflow-hidden">
-        <strong className="truncate text-sm font-medium text-kumo-strong" title={title}>
+      {/* At phone width the platform moves to its own line, so the computer name is not cut short. */}
+      <span className="flex min-w-0 flex-col gap-x-1.5 overflow-hidden sm:flex-row sm:items-baseline">
+        <strong className="wrap-anywhere text-sm font-medium text-kumo-strong sm:truncate" title={title}>
           {title}
         </strong>
         {metadata ? <span className="shrink-0 text-sm text-kumo-subtle">{metadata}</span> : null}
       </span>
-      <StatusIndicator className="justify-self-end" label={status} tone={tone} />
+      {status ? <StatusIndicator className="justify-self-end" label={status} tone={tone} /> : null}
     </div>
   );
 }
@@ -1456,31 +1470,22 @@ function NotBoundComputerSection({
   agentId,
   computerConnectAdapter,
   inventoryAdapter,
-  name,
   onChanged,
   snapshot,
 }: {
   readonly agentId: string;
   readonly computerConnectAdapter: ComputerConnectAdapter;
   readonly inventoryAdapter?: AgentComputerInventoryAdapter;
-  readonly name: string;
   readonly onChanged: () => void;
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const canBind = snapshot.actions.some((action) => action.kind === "bind-computer");
+  // The heading names the step and the choice or command window below reports status; a "no
+  // computer / not connected" summary row on top would only repeat both.
   const renderChoice = (choice: ReactNode, multiple = false) => (
     <>
-      <ComputerStepHeader name={name} title={multiple ? m.agents_computer_choice_existing_heading() : undefined} />
-      <div className="otv2-computer-step__body">
-        <ComputerSummary
-          status={
-            multiple ? m.onboarding_v2_connect_not_selected_status() : m.onboarding_v2_connect_no_computer_status()
-          }
-          title={multiple ? m.onboarding_v2_connect_not_selected_title() : m.onboarding_v2_connect_no_computer_title()}
-          tone="neutral"
-        />
-        {choice}
-      </div>
+      <ComputerStepHeader title={multiple ? m.agents_computer_choice_existing_heading() : undefined} />
+      <div className="otv2-computer-step__body">{choice}</div>
     </>
   );
   return (
@@ -1519,11 +1524,18 @@ function BoundComputerSection({
   const offline = computer.kind === "bound" && computer.connectionStatus === "offline";
   return (
     <section className="otv2-computer-step flex flex-col" data-state={computer.kind} data-ui="agent-setup-computer">
-      <ComputerStepHeader name={snapshot.agent.displayName} />
+      <ComputerStepHeader />
       <div className="otv2-computer-step__body">
         <ComputerSummary
           metadata={platformLabel(computer.platform)}
-          status={offline ? m.onboarding_v2_connect_offline() : m.onboarding_v2_connect_online()}
+          // While the repair command window is shown it owns the status.
+          status={
+            offline && repair
+              ? undefined
+              : offline
+                ? m.onboarding_v2_connect_offline()
+                : m.onboarding_v2_connect_online()
+          }
           title={computer.displayName}
           tone={offline ? "warning" : "success"}
         />
@@ -1545,7 +1557,6 @@ function PreparationSummarySection({ snapshot }: { readonly snapshot: AgentSetup
         <Text as="h1" size="lg" variant="heading">
           {m.onboarding_v2_prep_title()}
         </Text>
-        <p className={HINT}>{m.onboarding_v2_prep_intro()}</p>
       </header>
       <div className="otv2-preparation__checks">
         <ComputerSummary
@@ -1621,12 +1632,6 @@ function MessagingSetupSection({
   );
 }
 
-function setupExitLabel(snapshot: AgentSetupSnapshot | undefined): string {
-  return snapshot?.stage === "needs-messaging" && snapshot.messaging.kind === "not-configured"
-    ? m.onboarding_v2_setup_later()
-    : m.onboarding_v2_back_to_agent();
-}
-
 /** Custom App setup remains available independently of the official OAuth actions. */
 function SlackSetupConfiguration({
   slackApi,
@@ -1655,7 +1660,7 @@ function SlackSetupConfiguration({
       agentId={snapshot.agent.id}
       bindingId={"bindingId" in messaging ? messaging.bindingId : undefined}
       onSaved={controller.reload}
-      manualOnly={snapshot.computer.kind === "cloud"}
+      cloud={snapshot.computer.kind === "cloud"}
       onOAuth={reauthorize ? () => void controller.act(reauthorize) : undefined}
       renderTrigger={renderTrigger}
     />
@@ -1692,54 +1697,51 @@ function MessagingConnections({
   const feishu = startActions.find((action) => action.provider === "feishu");
   if (!choosing && "provider" in snapshot.messaging && snapshot.messaging.provider !== "slack") return null;
   return (
-    <>
-      {choosing ? <p className={HINT}>{m.onboarding_v2_messaging_description()}</p> : null}
-      <ul
-        className={choosing && startActions.length ? CHOICE_GRID : "m-0 flex list-none flex-wrap gap-3 p-0"}
-        data-ui={
-          choosing && startActions.length ? "agent-setup-messaging-choices" : "agent-setup-messaging-configuration"
-        }
-      >
-        <li key="slack">
-          <SlackSetupConfiguration
-            onSetupOpenChange={onSetupOpenChange}
-            controller={controller}
-            snapshot={snapshot}
-            slackApi={slackApi}
-            renderTrigger={
-              choosing && slack
-                ? ({ onClick, disabled, ref }) => (
-                    <Button
-                      ref={ref}
-                      className={CARD}
-                      disabled={disabled || controller.busyKey !== undefined}
-                      onClick={() => {
-                        if (!starting.current) onClick();
-                      }}
-                      variant="ghost"
-                    >
-                      <MessagingChoiceCopy provider="slack" />
-                    </Button>
-                  )
-                : undefined
-            }
-          />
+    <ul
+      className={choosing && startActions.length ? CHOICE_GRID : "m-0 flex list-none flex-wrap gap-3 p-0"}
+      data-ui={
+        choosing && startActions.length ? "agent-setup-messaging-choices" : "agent-setup-messaging-configuration"
+      }
+    >
+      <li key="slack">
+        <SlackSetupConfiguration
+          onSetupOpenChange={onSetupOpenChange}
+          controller={controller}
+          snapshot={snapshot}
+          slackApi={slackApi}
+          renderTrigger={
+            choosing && slack
+              ? ({ onClick, disabled, ref }) => (
+                  <Button
+                    ref={ref}
+                    className={CARD}
+                    disabled={disabled || controller.busyKey !== undefined}
+                    onClick={() => {
+                      if (!starting.current) onClick();
+                    }}
+                    variant="ghost"
+                  >
+                    <MessagingChoiceCopy provider="slack" />
+                  </Button>
+                )
+              : undefined
+          }
+        />
+      </li>
+      {choosing && feishu ? (
+        <li key="feishu">
+          <Button
+            className={CARD}
+            disabled={controller.busyKey !== undefined}
+            loading={controller.busyKey?.kind === "start-messaging" && controller.busyKey.provider === "feishu"}
+            onClick={() => void start(feishu)}
+            variant="ghost"
+          >
+            <MessagingChoiceCopy provider="feishu" />
+          </Button>
         </li>
-        {choosing && feishu ? (
-          <li key="feishu">
-            <Button
-              className={CARD}
-              disabled={controller.busyKey !== undefined}
-              loading={controller.busyKey?.kind === "start-messaging" && controller.busyKey.provider === "feishu"}
-              onClick={() => void start(feishu)}
-              variant="ghost"
-            >
-              <MessagingChoiceCopy provider="feishu" />
-            </Button>
-          </li>
-        ) : null}
-      </ul>
-    </>
+      ) : null}
+    </ul>
   );
 }
 

@@ -302,6 +302,7 @@ export function useMcpDiscoverState(props: DiscoverProps) {
       cause,
       setup?.binding.authorization?.kind ?? catalog.defaultAuthKind,
       setup ? undefined : m.mcp_add_failed(),
+      true,
     );
     if (token) setError(label);
     else

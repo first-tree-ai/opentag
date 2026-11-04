@@ -22,8 +22,13 @@ rows are topics, not Sessions.
 - In a private chat, the whole conversation is one Task.
 - A topic becomes a Task only once somebody addressed the Agent directly. Messages the Agent only
   overheard (`ambient` attention) are conversation context, not Tasks, and are not counted.
-- The Task id is the id of the topic's earliest stored message. The detail endpoint accepts the id
-  of any message in the topic and reports the canonical id. `createdAt` is the root message's time.
+- The Task id is the id of the topic's earliest stored message. The detail and reply endpoints
+  accept the id of any message in the topic or the id of a 1:1 Session (a thread Session or a
+  private-chat channel Session) and report the canonical id; outbound IM replies sent through the
+  Server provider proxy append a clickable `Session <shortId>` footer linking to
+  `/agents/:agentId/tasks/:taskAnchorId` (anchored on the execution's own `deliveryId` message or
+  the 1:1 Session id, or rendered as plain `Session <shortId>` when a group channel execution has no
+  delivery anchor). `createdAt` is the root message's time.
 
 The Account's channel Session for a group is therefore never listed as a Task; a top-level request
 that nobody replied to is a topic of one message. A Task reports `sessionKind: "thread"` and its
@@ -46,7 +51,9 @@ alone. Each section returns at most 100 rows and 20 by default. Naming a subset 
 contract: the Web conversation renders the summary and the Turns, asks for `sections=turns`, and
 never reads the Internal Session or collaboration history it would discard. Reading any of them
 resolves the topic and serves the requested sections from one read-only Repeatable Read transaction,
-so an authorized topic is read from a single snapshot and no wait spans external I/O.
+so an authorized topic is read from a single snapshot and no wait spans external I/O. The captured-replies
+subresource also resolves its stored-message scope and reads replies in one read-only snapshot;
+it does not depend on a Runtime Session existing.
 
 Every section cursor is the exact ordering key of the last row it returned: the timestamp at the
 microsecond precision PostgreSQL compares, not the millisecond a browser `Date` would keep, plus the
@@ -57,7 +64,9 @@ strictly, and a cursor that does not match the expected shape is a `400`.
 ## Executions and status
 
 The Task detail flattens the topic's messages and captured Agent replies into one oldest-to-newest
-conversation, including private chats, group chats, and channel topics. User follow-ups appear between
+conversation, including private chats, group chats, and channel topics. In a group, the messages of every member
+that the Agent received in the topic are shown, not only the requester's, because the Agent acted on that whole
+context. User follow-ups appear between
 replies according to their timestamps. Replies without a usable timestamp retain their captured
 position beside neighbouring replies, or at report time when none have timestamps; no send time is
 invented for display. Repeated delivery and reply identities across loaded pages appear once, while
@@ -72,9 +81,20 @@ thread Session owns, and a delivery expired because a newer revision of its mess
 A message steered into a running Turn gets a small annotation on the input; it does not create a
 second Agent response or report.
 
-Execution summaries, when reported, remain visible as separate execution records in the conversation.
-They never substitute for captured sent replies. Execution failures, unavailable or incomplete reply
-history, and truncated content remain visible. On Local Computers supporting detailed reports,
+The Task detail exists to diagnose how the Agent ran, so the conversation keeps only what helps that:
+each reply once, failures, and gaps in the record. The message list is secondary to the Agent's status
+and may shrink as that status becomes more explicit.
+
+The runtime's final text (`finalText`) is not shown: it repeats the reply the Agent already sent, and it
+never substitutes for captured sent replies. A Turn report appears in the conversation only when it adds
+something the sent replies cannot show — an execution failure or an unavailable or incomplete reply
+history; a completed report with nothing else to say leaves no entry, and a Turn that finished without
+a reply gets no placeholder text. A Turn still running gets no Agent entry until it sends a real reply.
+A repeated reply, an empty-state line or a "work in progress" line adds reading without telling the
+reader anything new about the run; the Task's status already says whether it is running or completed. Sent reply bodies, captured
+replies and legacy Lark text or rich-text receipts alike, render as chat Markdown: Markdown formatting
+applies, a single newline stays a line break, and typed HTML stays literal text, as the IM displays it.
+Truncated content remains visible. On Local Computers supporting detailed reports,
 recognized provider failures explain authentication,
 model access, credit or quota, rate limits, service availability, connection loss, context limits,
 execution limits, rejected requests, or unexpected process exits. Unrecognized failures keep the
@@ -97,6 +117,11 @@ The status is the topic's latest execution situation, read by precedence:
 4. Otherwise the outcome of the latest execution: `completed`, `failed` (including rejected
    deliveries), `cancelled` (a queued delivery the Account withdrew before it ran), or `expired` (a
    delivery that expired unprocessed, or an unreported Turn whose deadline has passed).
+
+The Web reads these in four groups (Queued, Running, Completed, Failed) for filtering: `ended` and
+`cancelled` filter with Completed, and `expired` with Failed. A `cancelled` Task still shows its own
+neutral **Cancelled** label rather than Completed. Why: the Account withdrew it before it ran, and
+"Completed" would claim work that never happened.
 
 Each detail Turn exposes `delivery.isRunning` from the same effective predicate as the list. The Web
 shows progress only when that value is true; persisted `accepted` alone does not prove liveness.
@@ -123,16 +148,33 @@ containers, with the full stored title available in the link's title attribute a
 
 The detail title remains the page's `h1` and uses 16px medium text with a 24px line height and natural
 wrapping. It displays the complete stored title without an additional clamp. Task facts retain their
-order in two, three or five columns according to the content container width. The start time spans both columns in the narrow layout so the complete
-date and time can wrap without squeezing the other facts.
+order in two, three or five columns according to the content container width. On an Agent's own Task
+page the facts leave out the Agent, because the page around them already names it, and use two, three
+or four columns. The Agent fact appears where Tasks from several Agents mix, and on an Agent's page
+that shows another Agent's Task (a stale or mistyped link), where it is the only fact naming the Agent. Where the Agent fact
+is shown, the start time spans both columns in the narrow layout so the complete date and time can wrap
+without squeezing the other facts.
+
+A running Task reads "运行中" ("Running") in Chinese everywhere, the same word the Agent list uses for its
+running-Task count, so one state never has two names.
 
 The conversation follows the facts without a visible Activity heading; its existing Activity heading
-remains available to assistive technology. Requests, sent replies and execution summaries use 14px
+remains available to assistive technology. Requests and sent replies use 14px
 regular text with a 21px line height. Authors use 14px medium text and timestamps use 12px regular
-text. Operational notices stay at 14px. Message headings, emphasis and monospace code retain their
+text. A message header carries no per-message status: a request shows its sender and its time — whether the
+conversation is a private or group chat is the Task's source fact, not a per-message label; an Agent message shows the Agent and its time, plus the message
+kind only for kinds other than plain or rich text, such as a card or an image. Execution outcomes are left to
+the Task's status fact, failures to their explanation in the message body, and an unreported message
+explains its state (pending, expired, cancelled or not processed) once, in the body; a message that
+could not be processed reads in the failure colour, because the reader may need to act on it. Per-message status,
+direct or ambient delivery, and plain-text kind labels repeated facts the page already shows once or did
+not help diagnose the run, so they were noise on every line. Operational notices stay at 14px. Message headings, emphasis and monospace code retain their
 content formatting. Wide code, native message payloads and message tables scroll locally, with named,
-keyboard-focusable regions. The conversation's 768px reading width, message order, paging and scroll
-anchoring are unchanged.
+keyboard-focusable regions. The detail page uses the same content width as the other Agent pages: the
+title, the horizontal row of Task facts and the conversation all span the full content frame, so the
+page reads as one surface for diagnosing the run, with its status on one line above the record, instead
+of a narrow chat column beside empty space. Message
+order, paging and scroll anchoring are unchanged.
 
 ## Cancelling a queued Task
 
@@ -185,14 +227,14 @@ message or Session is never repeated across pages.
 ## Boundaries
 
 - Task reply history uses captured successful Lark outbound receipts from the originating Turn
-  report when that snapshot is present. `finalText` is only an execution summary, never a substitute
+  report when that snapshot is present. `finalText` is never displayed and never a substitute
   sent reply. A complete capture with no recorded send, or a legacy report without a snapshot, has an accurate
   empty or unavailable state rather than “in progress.” Slack is not collected as Lark. Send receipts
   are not read receipts. Partial capture is labelled independently of the number of replies; content
   truncation and native post/card details remain visible. Replies become available with the terminal
   report and are not backfilled from old runtime transcripts.
-- The unavailable Lark-reply notice is limited to Feishu/Lark Tasks. Slack Tasks retain their execution
-  summaries without a permanent notice about a capture feature they do not support.
+- The unavailable Lark-reply notice is limited to Feishu/Lark Tasks. Slack Tasks carry no permanent
+  notice about a capture feature they do not support.
 - Reply snapshots require `runtime.turnReport` v2 or later on the current connection. A report created on v2
   remains durable during a v1 reconnect and resumes unchanged after v2 or later is negotiated again. The
   server rejects an unnegotiated snapshot with a nonfatal `unsupported_capability` report result.

@@ -9,7 +9,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../../../__tests__/support/router.js";
-import { browserApi } from "../../../api.js";
+import { ApiError, browserApi } from "../../../api.js";
 import { queryKeys } from "../../../query/keys.js";
 import type { AgentDetailView } from "../agent-model.js";
 import { projectAgentAvailability } from "../agent-model.js";
@@ -201,6 +201,69 @@ describe("Deleting an Agent", () => {
     // them dropped, coming back to the Agent has nothing to show while it re-reads — rather than
     // painting the deleted Agent from the cache first.
     await waitFor(() => expect(screen.getByTestId("agent-detail").textContent).toBe("loading"));
+  });
+});
+
+describe("Deleting a running Agent", () => {
+  it("pauses it first and then deletes it in one confirmation", async () => {
+    stubEvidence();
+    const calls: string[] = [];
+    vi.spyOn(browserApi, "suspendAgent").mockImplementation(async () => {
+      calls.push("suspend");
+      return config;
+    });
+    vi.spyOn(browserApi, "deleteAgent").mockImplementation(async () => {
+      calls.push("delete");
+    });
+    await renderInRouter(
+      <AgentManageSettings agent={activeAgent} initialConfig={activeConfig} onAgentChanged={vi.fn()} />,
+    );
+
+    expect(screen.getByRole("button", { name: "Delete Agent" }).hasAttribute("disabled")).toBe(false);
+    await confirmDelete();
+    await waitFor(() => expect(calls).toEqual(["suspend", "delete"]));
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("says nothing was deleted when the pause fails", async () => {
+    vi.spyOn(browserApi, "suspendAgent").mockRejectedValue(new Error("pause conflict"));
+    const remove = vi.spyOn(browserApi, "deleteAgent").mockResolvedValue(undefined);
+    await renderInRouter(
+      <AgentManageSettings agent={activeAgent} initialConfig={activeConfig} onAgentChanged={vi.fn()} />,
+    );
+
+    await confirmDelete();
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "Couldn’t pause this Agent first, so it wasn’t deleted. Try again.",
+    );
+    expect(remove).not.toHaveBeenCalled();
+  });
+
+  it("says the Agent is paused when the delete after the pause fails, and retries only the delete", async () => {
+    const suspend = vi.spyOn(browserApi, "suspendAgent").mockResolvedValue(config);
+    const remove = vi.spyOn(browserApi, "deleteAgent").mockRejectedValueOnce(new Error("delete failed"));
+    remove.mockResolvedValueOnce(undefined);
+    const onAgentChanged = vi.fn();
+    await renderInRouter(
+      <AgentManageSettings agent={activeAgent} initialConfig={activeConfig} onAgentChanged={onAgentChanged} />,
+    );
+
+    await confirmDelete();
+    expect((await screen.findByRole("alert")).textContent).toBe("The Agent is paused but wasn’t deleted. Try again.");
+    expect(onAgentChanged).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Delete permanently" }));
+    await waitFor(() => expect(remove).toHaveBeenCalledTimes(2));
+    expect(suspend).toHaveBeenCalledTimes(1);
+  });
+
+  it("names a missing permission", async () => {
+    vi.spyOn(browserApi, "suspendAgent").mockRejectedValue(new ApiError(403, "Forbidden", "FORBIDDEN"));
+    await renderInRouter(
+      <AgentManageSettings agent={activeAgent} initialConfig={activeConfig} onAgentChanged={vi.fn()} />,
+    );
+
+    await confirmDelete();
+    expect((await screen.findByRole("alert")).textContent).toBe("You don’t have permission to delete this Agent.");
   });
 });
 

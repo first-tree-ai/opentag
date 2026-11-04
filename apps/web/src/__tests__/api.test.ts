@@ -1,5 +1,6 @@
 import {
   AGENT_SETUP_REQUIRED_IM_CLI_PROVIDERS,
+  type AgentListItem,
   type AgentSetupComputerState,
   type AgentSetupMessagingState,
   type AgentSetupRuntimeState,
@@ -9,6 +10,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, BrowserApi } from "../api.js";
 import { DiagnosticReporter } from "../observability/diagnostics.js";
+import { createErrorReportSink, setErrorReportSink } from "../observability/error-reporting.js";
 
 const userId = "53e2babe-e4ac-4e2c-b7d1-d092d5a4568e";
 const taskSummary = {
@@ -108,6 +110,18 @@ describe("BrowserApi", () => {
       taskSummary,
     );
     setDocumentCookie("opentag_csrf=; Path=/; Max-Age=0");
+  });
+
+  it("asks for the running Task count on the Agent list and detail reads", async () => {
+    const seen: string[] = [];
+    const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+      seen.push(`${String(input)} ${new Headers(init?.headers).get("x-opentag-agent-activity-task-count")}`);
+      return jsonResponse({ agents: [] });
+    });
+    const api = new BrowserApi(fetchImpl);
+    await api.agents();
+    await api.agent(taskSummary.agent.id).catch(() => undefined);
+    expect(seen).toEqual(["/api/v1/agents 1", `/api/v1/agents/${taskSummary.agent.id} 1`]);
   });
 
   it("updates the current user profile with PATCH, response parsing, and browser CSRF", async () => {
@@ -542,7 +556,7 @@ describe("BrowserApi", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
 
-  it("rejects extra runtime-test response fields and forwards abort without retry", async () => {
+  it("strips extra runtime-test response fields, rejects unapproved failure codes, and forwards abort without retry", async () => {
     const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
     const extraFieldFetch = vi.fn<typeof fetch>(async () =>
       jsonResponse({ status: "passed", output: "secret-model-text" }),
@@ -552,12 +566,23 @@ describe("BrowserApi", () => {
         expectedRevision: 1,
         expectedRuntimeConfigRevision: 1,
       }),
+    ).resolves.toEqual({ status: "passed" });
+    expect(extraFieldFetch).toHaveBeenCalledOnce();
+
+    const invalidCodeFetch = vi.fn<typeof fetch>(async () =>
+      jsonResponse({ status: "failed", code: "secret-model-text" }),
+    );
+    await expect(
+      new BrowserApi(invalidCodeFetch).testAgentRuntime(agentId, {
+        expectedRevision: 1,
+        expectedRuntimeConfigRevision: 1,
+      }),
     ).rejects.toMatchObject({
       name: "ResponseSchemaError",
       code: "invalid_response_schema",
       message: "The server returned an invalid response",
     });
-    expect(extraFieldFetch).toHaveBeenCalledOnce();
+    expect(invalidCodeFetch).toHaveBeenCalledOnce();
 
     const abortFetch = vi.fn<typeof fetch>(async (_input, init) => {
       expect(init?.signal?.aborted).toBe(true);
@@ -650,11 +675,11 @@ describe("BrowserApi", () => {
 
   it("records schema issue paths and codes without response detail", async () => {
     setDocumentCookie("opentag_csrf=schema-csrf; Path=/");
-    const warn = vi.fn();
-    const reporter = new DiagnosticReporter({ warn });
+    const error = vi.fn();
+    const reporter = new DiagnosticReporter({ error });
     const fetchImpl = vi.fn<typeof fetch>(
       async () =>
-        new Response(JSON.stringify({ status: "passed", output: "secret-model-text" }), {
+        new Response(JSON.stringify({ status: "failed", code: "secret-model-text" }), {
           status: 200,
           headers: { "content-type": "application/json" },
         }),
@@ -667,12 +692,12 @@ describe("BrowserApi", () => {
       }),
     ).rejects.toMatchObject({ code: "invalid_response_schema" });
 
-    expect(warn).toHaveBeenCalledOnce();
-    const diagnostic = warn.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(error).toHaveBeenCalledOnce();
+    const diagnostic = error.mock.calls[0]?.[1] as Record<string, unknown>;
     expect(diagnostic).toMatchObject({
       code: "invalid_response_schema",
       routeTemplate: "/api/v1/agents/:id/runtime-test",
-      issues: [{ path: [], code: "unrecognized_keys" }],
+      issues: [{ path: ["code"], code: "invalid_value" }],
     });
     expect(JSON.stringify(diagnostic)).not.toContain("secret-model-text");
     expect(JSON.stringify(diagnostic)).not.toContain("message");
@@ -717,6 +742,205 @@ describe("BrowserApi", () => {
       ),
     ).rejects.toMatchObject({ name: "AbortError", code: "cancelled" });
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("preserves requestId and traceId through the real error relay on 500 response", async () => {
+    const relayPosts: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const relayFetch = vi.fn<typeof fetch>(async (input, init) => {
+      relayPosts.push({
+        url: String(input),
+        body: JSON.parse(String(init?.body)),
+      });
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+
+    const sink = createErrorReportSink({
+      fetchImpl: relayFetch,
+      cooldownMs: 0,
+      reportId: () => "rep-test-123",
+    });
+    setErrorReportSink(sink);
+
+    try {
+      const fetchImpl = vi.fn<typeof fetch>(async (_input, init) => {
+        const headers = new Headers(init?.headers);
+        const outgoingRequestId = headers.get("x-request-id") ?? "req-fallback";
+        return new Response(JSON.stringify({ error: { message: "Internal server error" } }), {
+          status: 500,
+          headers: {
+            "content-type": "application/json",
+            "x-request-id": outgoingRequestId,
+            "x-trace-id": "trace-test-456",
+          },
+        });
+      });
+
+      const api = new BrowserApi(fetchImpl, new DiagnosticReporter());
+      await expect(api.me()).rejects.toThrow("Request failed");
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(relayPosts).toHaveLength(1);
+      const [relayPost] = relayPosts;
+      expect(relayPost?.url).toBe("/api/v1/error-reports");
+      expect(relayPost?.body).toMatchObject({
+        source: "web",
+        code: "http_500",
+        message: "http_500: /api/v1/me",
+        traceId: "trace-test-456",
+      });
+      expect(typeof relayPost?.body.requestId).toBe("string");
+      expect(relayPost?.body.requestId).toMatch(/^[0-9a-f-]{36}$/);
+    } finally {
+      setErrorReportSink(undefined);
+    }
+  });
+
+  it("threads requestId and traceId through error relay on invalid_response_schema", async () => {
+    const relayPosts: Array<{ url: string; body: Record<string, unknown> }> = [];
+    const relayFetch = vi.fn<typeof fetch>(async (input, init) => {
+      relayPosts.push({
+        url: String(input),
+        body: JSON.parse(String(init?.body)),
+      });
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+
+    const sink = createErrorReportSink({
+      fetchImpl: relayFetch,
+      cooldownMs: 0,
+      reportId: () => "rep-test-456",
+    });
+    setErrorReportSink(sink);
+
+    try {
+      const fetchImpl = vi.fn<typeof fetch>(async () => {
+        return new Response(JSON.stringify({ invalid: "data" }), {
+          status: 200,
+          headers: {
+            "content-type": "application/json",
+            "x-request-id": "req-schema-789",
+            traceparent: "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+          },
+        });
+      });
+
+      const api = new BrowserApi(fetchImpl, new DiagnosticReporter());
+      await expect(api.me()).rejects.toMatchObject({ code: "invalid_response_schema" });
+
+      await new Promise((resolve) => setTimeout(resolve, 10));
+
+      expect(relayPosts).toHaveLength(1);
+      const [relayPost] = relayPosts;
+      expect(relayPost?.url).toBe("/api/v1/error-reports");
+      expect(relayPost?.body).toMatchObject({
+        source: "web",
+        code: "invalid_response_schema",
+        message:
+          "invalid_response_schema: /api/v1/me (user:invalid_type, setupCompletedAt:invalid_type, <root>:unrecognized_keys)",
+        requestId: "req-schema-789",
+        traceId: "4bf92f3577b34da6a3ce929d0e0e4736",
+      });
+    } finally {
+      setErrorReportSink(undefined);
+    }
+  });
+
+  it("ignores additive Server response fields across polled endpoints without reporting invalid_response_schema", async () => {
+    const error = vi.fn();
+    const warn = vi.fn();
+    const reporter = new DiagnosticReporter({ error, warn });
+    const knownAgent: AgentListItem = {
+      id: taskSummary.agent.id,
+      name: taskSummary.agent.name,
+      displayName: taskSummary.agent.displayName,
+      runtimeProvider: taskSummary.agent.runtimeProvider,
+      receiveMode: "mention_only",
+      status: "active",
+      createdAt: "2030-01-01T00:00:00.000Z",
+      updatedAt: "2030-01-01T00:01:00.000Z",
+      createdBy: { userId, displayName: "Owner" },
+      computer: { computerId: userId, displayName: "workstation", platform: "linux" },
+      activity: { state: "working", startedAt: "2030-01-01T00:00:30.000Z", runningTaskCount: 1 },
+      usage: {
+        windowDays: 30,
+        tasks: 1,
+        failed: 0,
+        tokens: 100,
+      },
+    };
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      if (String(input) === "/api/v1/sessions") {
+        return jsonResponse({
+          serverFutureFlag: true,
+          tasks: [
+            {
+              ...taskSummary,
+              futureTaskField: "ignored",
+              agent: { ...taskSummary.agent, futureAgentBadge: "beta" },
+              source: { ...taskSummary.source, futureSourceField: "topic" },
+            },
+          ],
+          nextCursor: null,
+        });
+      }
+      if (String(input) === "/api/v1/agents") {
+        return jsonResponse({
+          futureListMeta: { rev: 2 },
+          agents: [
+            {
+              ...knownAgent,
+              futureAgentField: 42,
+              computer: { ...knownAgent.computer, region: "ap-east" },
+              activity: { ...knownAgent.activity, queueDepth: 3 },
+            },
+          ],
+        });
+      }
+      throw new Error(`Unexpected path: ${String(input)}`);
+    });
+
+    const api = new BrowserApi(fetchImpl, reporter);
+    await expect(api.tasks()).resolves.toEqual({ tasks: [taskSummary], nextCursor: null });
+    await expect(api.agents()).resolves.toEqual({ agents: [knownAgent] });
+    expect(error).not.toHaveBeenCalled();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("still throws ResponseSchemaError and reports invalid_response_schema when known fields are invalid next to unknown keys", async () => {
+    const error = vi.fn();
+    const reporter = new DiagnosticReporter({ error, cooldownMs: 0 });
+    const badPayloads = [
+      {
+        tasks: [
+          {
+            ...taskSummary,
+            status: "unknown_future_status",
+            source: { ...taskSummary.source, chatMode: "topic" },
+          },
+        ],
+        nextCursor: null,
+      },
+      {
+        tasks: [{ ...taskSummary, title: 12345, extraField: true }],
+        nextCursor: null,
+      },
+      {
+        tasks: [{ id: taskSummary.id, extraField: true }],
+        nextCursor: null,
+      },
+    ];
+    const fetchImpl = vi.fn<typeof fetch>(async () => jsonResponse(badPayloads.shift()));
+    const api = new BrowserApi(fetchImpl, reporter);
+
+    for (let i = 0; i < 3; i += 1) {
+      await expect(api.tasks()).rejects.toMatchObject({
+        name: "ResponseSchemaError",
+        code: "invalid_response_schema",
+        routeTemplate: "/api/v1/sessions",
+      });
+    }
+    expect(error).toHaveBeenCalledTimes(3);
   });
 });
 

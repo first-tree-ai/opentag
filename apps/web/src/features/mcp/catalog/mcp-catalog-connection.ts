@@ -8,7 +8,7 @@ import {
   requiresOAuth,
   useMcpConnectionOperation,
 } from "../mcp-connection.js";
-import { connectionAuthKind } from "../mcp-connection-model.js";
+import { connectionAuthKind, connectionPreset } from "../mcp-connection-model.js";
 import type { McpOAuthSession } from "../mcp-oauth-session.js";
 import { closeMcpOAuthWindow, prepareMcpOAuthWindow } from "../mcp-oauth-window.js";
 
@@ -55,7 +55,12 @@ export function useMcpCatalogConnection(agentId: string, sessionFor: (id: string
     if (!alive.current) return "busy" as const;
     setFailure({
       binding,
-      message: connectionFailure(cause, connectionAuthKind(binding.effective.url, binding, definition)),
+      message: connectionFailure(
+        cause,
+        connectionAuthKind(binding.effective.url, binding, definition),
+        undefined,
+        Boolean(connectionPreset(binding.effective.url)),
+      ),
     });
     return isKeyFailure(cause) ? ("key" as const) : ("failed" as const);
   }

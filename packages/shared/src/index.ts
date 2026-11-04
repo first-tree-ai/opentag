@@ -18,8 +18,12 @@ export {
   ListAccountComputersResponseSchema,
 } from "./account.js";
 export {
+  AGENT_ACTIVITY_TASK_COUNT_HEADER,
+  AGENT_ACTIVITY_TASK_COUNT_VERSION,
+  AGENT_NAME_PATTERN,
   AGENT_RUNTIME_PROVIDERS,
   AGENT_RUNTIME_TEST_FAILURE_CODES,
+  AGENT_SLUG_CHARACTERS,
   AGENT_USAGE_WINDOW_DAYS,
   AGENT_USAGE_WINDOW_OPTIONS,
   type AgentAdminConfig,
@@ -63,10 +67,12 @@ export {
   CreateAgentRuntimeConfigSchema,
   type ListAgentsResponse,
   ListAgentsResponseSchema,
+  projectAgentActivityForClient,
   type RebindAgentComputerRequest,
   RebindAgentComputerRequestSchema,
   type ReceiveMode,
   ReceiveModeSchema,
+  requestsAgentActivityTaskCount,
   type UpdateAgentRequest,
   UpdateAgentRequestSchema,
   type UpdateAgentRuntimeConfig,
@@ -122,6 +128,15 @@ export {
   ServiceIdSchema,
 } from "./channel.js";
 export * from "./cloud-billing.js";
+export {
+  type CloudLatencyCorrelation,
+  type CloudLatencyPhase,
+  CloudLatencyPhaseSchema,
+  type CloudLatencyRecord,
+  CloudLatencyRecorder,
+  CloudLatencyRecordSchema,
+  cloudLatencySessions,
+} from "./cloud-latency.js";
 export * from "./cloud-product.js";
 export * from "./cloud-runner.js";
 export {
@@ -148,6 +163,8 @@ export {
   ComputerConnectCodeStatusSchema,
   type ComputerConnectionStatus,
   ComputerConnectionStatusSchema,
+  type ComputerConnectOutcome,
+  ComputerConnectOutcomeSchema,
   type ComputerImCliReadiness,
   type ComputerImCliReadinessCollection,
   ComputerImCliReadinessCollectionSchema,
@@ -266,6 +283,7 @@ export {
   AGENT_IM_BINDING_HANDOFF_TEMPLATE,
   AGENT_IM_BINDING_TEMPLATE,
   AGENT_IM_BINDING_UNBIND_TEMPLATE,
+  AGENT_IM_FEEDBACK_TEMPLATE,
   AGENT_MCP_AUTHORIZATION_OAUTH_TEMPLATE,
   AGENT_MCP_AUTHORIZATION_TEMPLATE,
   AGENT_MCP_PROBE_TEMPLATE,
@@ -315,6 +333,7 @@ export {
   agentImBindingHandoffPath,
   agentImBindingPath,
   agentImBindingUnbindPath,
+  agentImFeedbackPath,
   agentMcpAuthorizationOAuthPath,
   agentMcpAuthorizationPath,
   agentMcpProbePath,
@@ -366,8 +385,13 @@ export {
   HTTP_PATHS,
   IM_BINDING_BY_ID_TEMPLATE,
   IM_BINDING_DIAGNOSTICS_TEMPLATE,
+  IM_FEEDBACK_ACTIONS_TEMPLATE,
+  IM_FEEDBACK_PATH,
+  IM_FEEDBACK_TEMPLATE,
   imBindingDiagnosticsPath,
   imBindingDisablePath,
+  imFeedbackActionsPath,
+  imFeedbackPath,
   MCP_CATALOG_ENDPOINTS_PATH,
   MCP_CLIENT_METADATA_PATH,
   MCP_OAUTH_CALLBACK_PATH,
@@ -434,11 +458,26 @@ export {
 } from "./http-paths.js";
 export * from "./im-binding.js";
 export { renderImContentText, truncateImText } from "./im-content-text.js";
+export type { ImFeedbackActionKind, ImFeedbackActionRequest, ImFeedbackView } from "./im-feedback.js";
+export {
+  ImFeedbackActionKindSchema,
+  ImFeedbackActionRequestSchema,
+  type ImFeedbackList,
+  ImFeedbackListSchema,
+  ImFeedbackStateSchema,
+  ImFeedbackViewSchema,
+} from "./im-feedback.js";
 export * from "./im-message.js";
 export * from "./mcp.js";
 export * from "./mcp-gateway.js";
 export * from "./mcp-outbound-url.js";
 export * from "./public-catalog.js";
+export {
+  MAX_UNKNOWN_KEY_PASSES,
+  type ParseIssue,
+  parseResponseIgnoringUnknownKeys,
+  type ResponseParseResult,
+} from "./response-parse.js";
 export * from "./runner-workspace.js";
 export {
   type AgentRuntimeOptions,

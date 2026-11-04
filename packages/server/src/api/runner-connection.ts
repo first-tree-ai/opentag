@@ -18,6 +18,7 @@ import {
 } from "@opentag/shared";
 import type { FastifyRequest } from "fastify";
 import type { WebSocket } from "ws";
+import { type PerformanceLogger, updateCurrentPerformanceContext } from "../observability/performance-logger.js";
 import type { CloudDeliveryOwner } from "../services/sandboxes/cloud-delivery-owner.js";
 import type { CloudConnectionRecord } from "../services/sandboxes/cloud-runtime-fence.js";
 import type {
@@ -62,14 +63,15 @@ export interface RunnerWebSocketRouteOptions {
   /** Override the token-service derived renewal cadence (tests only). */
   credentialRenewalIntervalMs?: number;
   now?: () => number;
+  performanceLogger?: PerformanceLogger;
 }
 
 /** The narrow collaboration surface RunnerConnection routes inbound frames and teardown to. */
 export interface RunnerCloudSessionPort {
   handleReceived(connection: CloudConnectionRecord, frame: RunnerCloudSessionMessageReceivedFrame): Promise<void>;
   handleSettled(connection: CloudConnectionRecord, frame: RunnerCloudSessionMessageSettledFrame): Promise<void>;
-  /** Synchronously fails pending dispatches; async durable cleanup is handled internally. */
-  detachConnection(connectionId: string): void;
+  /** Synchronously fails pending dispatches and returns any durable cleanup. */
+  detachConnection(connectionId: string): void | Promise<void>;
 }
 
 const DEFAULT_AUTH_TIMEOUT_MS = 5_000;
@@ -158,6 +160,9 @@ export class RunnerConnection {
   #credentialTimer: ReturnType<typeof setInterval> | undefined;
   #queued = 0;
   #chain: Promise<void> = Promise.resolve();
+  #renewal: Promise<void> | undefined;
+  #cleanup: Promise<void> | undefined;
+  #closing: Promise<void> | undefined;
 
   constructor(input: {
     socket: WebSocket;
@@ -175,6 +180,13 @@ export class RunnerConnection {
     this.#heartbeatTimeoutMs = input.options.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS;
     this.#credentialRenewalIntervalMs =
       input.options.credentialRenewalIntervalMs ?? Math.max(1_000, Math.floor(input.options.tokens.ttlMs / 2));
+  }
+
+  close(): Promise<void> {
+    if (this.#closing) return this.#closing;
+    this.#closeWith(1001, "Server shutting down");
+    this.#closing = Promise.allSettled([this.#chain, this.#renewal, this.#cleanup]).then(() => undefined);
+    return this.#closing;
   }
 
   start(): void {
@@ -238,13 +250,15 @@ export class RunnerConnection {
    * Teardown order is significant: Cloud delivery first closes the credential executions (the
    * registry close synchronously invalidates every Session proof correlated with them), then the
    * collaboration owner synchronously fails its pending dispatches and schedules its durable
-   * revocation cleanup. Both are idempotent, so either close path is safe.
+   * revocation cleanup. Clearing the retained connection makes both close paths share one cleanup.
    */
   #detachCloudConnection(): void {
     const connection = this.#cloudConnection;
     if (!connection) return;
+    this.#cloudConnection = undefined;
     this.#options.cloudDelivery?.detachConnection(connection.connectionId);
-    this.#options.cloudSession?.detachConnection(connection.connectionId);
+    this.#cleanup = Promise.resolve(this.#options.cloudSession?.detachConnection(connection.connectionId));
+    void this.#cleanup.catch(() => undefined);
   }
 
   #sendAuthResult(ok: boolean, requestId: string | undefined): void {
@@ -515,6 +529,12 @@ export class RunnerConnection {
     this.#reportOnly = reportOnly;
     this.#cloudNegotiated = cloudNegotiated;
     this.#workspaceNegotiated = workspaceNegotiated;
+    updateCurrentPerformanceContext({
+      sandboxId: validated.sandboxId,
+      sessionId: validated.sessionId,
+      environmentGeneration: validated.environmentGeneration,
+      computerId: fence?.computerId,
+    });
     if (this.#authTimer) clearTimeout(this.#authTimer);
     this.#authTimer = undefined;
     if (fence) {
@@ -678,7 +698,15 @@ export class RunnerConnection {
     });
   }
 
-  async #renewCredential(): Promise<void> {
+  #renewCredential(): Promise<void> {
+    if (this.#closed) return Promise.resolve();
+    this.#renewal ??= this.#performCredentialRenewal().finally(() => {
+      this.#renewal = undefined;
+    });
+    return this.#renewal;
+  }
+
+  async #performCredentialRenewal(): Promise<void> {
     const current = this.#scope;
     if (!current || this.#closed || !this.#options.hub.isCurrent(current.sandboxId, this.#adapter)) return;
     // Revalidate the database allocation before minting anything; a stale connection must never
@@ -1116,16 +1144,31 @@ export class RunnerConnection {
     this.#wantsImInput = data.imInputVersion === 1;
     this.#wantsGithubUserTask = data.githubUserTaskVersion === 1;
     this.#wantsContextTreeExecution = data.contextTreeExecutionVersion === 1;
-    await this.#handleAuth(
-      data.token,
-      data.requestId,
-      data.cloudDeliveryVersion === RUNNER_CLOUD_DELIVERY_VERSION,
-      data.workspaceVersion === RUNNER_WORKSPACE_VERSION,
-      data.renewExpired === true,
-      data.controlToken,
-      data.reuseVersion,
-      data.sessionCollaborationVersion,
-    );
+    const runAuth = () =>
+      this.#handleAuth(
+        data.token,
+        data.requestId,
+        data.cloudDeliveryVersion === RUNNER_CLOUD_DELIVERY_VERSION,
+        data.workspaceVersion === RUNNER_WORKSPACE_VERSION,
+        data.renewExpired === true,
+        data.controlToken,
+        data.reuseVersion,
+        data.sessionCollaborationVersion,
+      );
+    const perfLogger = this.#options.performanceLogger;
+    if (perfLogger) {
+      await perfLogger.traceAsync(
+        {
+          module: "ws",
+          category: "ws",
+          operation: "ws.runner.frame.auth",
+          ...(data.requestId ? { requestId: data.requestId } : {}),
+        },
+        runAuth,
+      );
+      return;
+    }
+    await runAuth();
   }
 
   async #handleAuthenticatedFrame(current: RunnerScope, data: RunnerClientFrame): Promise<void> {
@@ -1135,6 +1178,24 @@ export class RunnerConnection {
     }
     if (!this.#options.hub.isCurrent(current.sandboxId, this.#adapter)) {
       this.#closeWith(RUNNER_WS_CLOSE.staleScope, "this Runner connection was replaced");
+      return;
+    }
+    const perfLogger = this.#options.performanceLogger;
+    if (perfLogger && data.type !== "heartbeat") {
+      await perfLogger.traceAsync(
+        {
+          module: "ws",
+          category: "ws",
+          operation: `ws.runner.frame.${data.type}`,
+          sandboxId: current.sandboxId,
+          sessionId: current.sessionId,
+          environmentGeneration: current.environmentGeneration,
+          ...(this.#cloudConnection ? { computerId: this.#cloudConnection.computerId } : {}),
+          ...("deliveryId" in data && typeof data.deliveryId === "string" ? { deliveryId: data.deliveryId } : {}),
+          ...("requestId" in data && typeof data.requestId === "string" ? { requestId: data.requestId } : {}),
+        },
+        () => this.#dispatchAuthenticatedFrame(current, data),
+      );
       return;
     }
     await this.#dispatchAuthenticatedFrame(current, data);

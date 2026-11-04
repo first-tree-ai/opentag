@@ -33,10 +33,37 @@ export interface McpAuthorizationServerMetadata {
   tokenEndpoint: string;
   registrationEndpoint?: string;
   scopesSupported: string[];
+  codeChallengeMethodsSupported?: string[];
+  grantTypesSupported?: string[];
   clientIdMetadataDocumentSupported: boolean;
   authorizationResponseIssParameterSupported: boolean;
   tokenEndpointAuthMethodsSupported: string[];
 }
+
+export const FEISHU_MCP_ISSUER = "https://open.feishu.cn";
+export const FEISHU_AUTHORIZATION_ENDPOINT = "https://accounts.feishu.cn/open-apis/authen/v1/authorize";
+export const FEISHU_TOKEN_ENDPOINT = "https://open.feishu.cn/open-apis/authen/v2/oauth/token";
+export const FEISHU_DEFAULT_OAUTH_SCOPES = [
+  "docx:document:readonly",
+  "drive:drive:readonly",
+  "wiki:wiki:readonly",
+  "im:chat:readonly",
+  "im:message:readonly",
+  "search:message",
+  "offline_access",
+] as const;
+
+export const FEISHU_OAUTH_METADATA: McpAuthorizationServerMetadata = {
+  issuer: FEISHU_MCP_ISSUER,
+  authorizationEndpoint: FEISHU_AUTHORIZATION_ENDPOINT,
+  tokenEndpoint: FEISHU_TOKEN_ENDPOINT,
+  scopesSupported: [...FEISHU_DEFAULT_OAUTH_SCOPES],
+  codeChallengeMethodsSupported: ["S256"],
+  grantTypesSupported: ["authorization_code", "refresh_token"],
+  clientIdMetadataDocumentSupported: false,
+  authorizationResponseIssParameterSupported: false,
+  tokenEndpointAuthMethodsSupported: ["client_secret_post", "client_secret_basic"],
+};
 
 /**
  * Try each candidate URL in order and return the first document the reader accepts, or `undefined`
@@ -383,12 +410,13 @@ export class McpOAuthClient {
     accountId: string,
     mcpEndpoint: string,
     resourceMetadataUrl?: string,
+    signal?: AbortSignal,
   ): Promise<{ metadata: McpProtectedResourceMetadata; challengeScope?: string }> {
     const candidates = resourceMetadataUrl ? [resourceMetadataUrl] : protectedResourceMetadataUrls(mcpEndpoint);
     const result = await firstPublishedDocument(
       candidates,
       async (candidate) => {
-        const document = await this.#readJsonDocument(accountId, candidate);
+        const document = await this.#readJsonDocument(accountId, candidate, signal);
         if (document === undefined) return undefined;
         const authorizationServers = stringArray(document, "authorization_servers");
         if (authorizationServers.length === 0) return undefined;
@@ -427,8 +455,15 @@ export class McpOAuthClient {
    * published. Only a 2xx JSON object counts as published; a miss is not an error, and a non-2xx is
    * reported by the caller as a candidate that did not work.
    */
-  async #readJsonDocument(accountId: string, url: string): Promise<Record<string, unknown> | undefined> {
-    const response = await this.#fetcher.fetchOutbound(accountId, url, { headers: { accept: "application/json" } });
+  async #readJsonDocument(
+    accountId: string,
+    url: string,
+    signal?: AbortSignal,
+  ): Promise<Record<string, unknown> | undefined> {
+    const response = await this.#fetcher.fetchOutbound(accountId, url, {
+      headers: { accept: "application/json" },
+      ...(signal ? { signal } : {}),
+    });
     if (response.status < 200 || response.status >= 300) return undefined;
     return json(response);
   }
@@ -438,14 +473,27 @@ export class McpOAuthClient {
    * the well-known URL was built from — a mismatch is a mix-up attack and is refused outright rather
    * than normalized (no case folding, no default-port or trailing-slash tolerance).
    */
-  async authorizationServerMetadata(accountId: string, issuer: string): Promise<McpAuthorizationServerMetadata> {
+  async authorizationServerMetadata(
+    accountId: string,
+    issuer: string,
+    signal?: AbortSignal,
+  ): Promise<McpAuthorizationServerMetadata> {
+    if (issuer === FEISHU_MCP_ISSUER) {
+      return {
+        ...FEISHU_OAUTH_METADATA,
+        scopesSupported: [...FEISHU_OAUTH_METADATA.scopesSupported],
+        codeChallengeMethodsSupported: [...(FEISHU_OAUTH_METADATA.codeChallengeMethodsSupported ?? [])],
+        grantTypesSupported: [...(FEISHU_OAUTH_METADATA.grantTypesSupported ?? [])],
+        tokenEndpointAuthMethodsSupported: [...FEISHU_OAUTH_METADATA.tokenEndpointAuthMethodsSupported],
+      };
+    }
     // The same opt-in the outbound gate enforces, so a loopback endpoint is only usable where the
     // deployment already permits dialing one.
     const allowLoopback = this.#fetcher.policy.allowLoopback;
     const result = await firstPublishedDocument(
       authorizationServerMetadataUrls(issuer),
       async (candidate) => {
-        const document = await this.#readJsonDocument(accountId, candidate);
+        const document = await this.#readJsonDocument(accountId, candidate, signal);
         if (document === undefined) return undefined;
         /*
          * The document's `issuer` must equal the issuer string its well-known URL was built from,
@@ -485,6 +533,7 @@ export class McpOAuthClient {
   async registerDynamically(
     accountId: string,
     metadata: McpAuthorizationServerMetadata,
+    signal?: AbortSignal,
   ): Promise<McpClientCredentials> {
     const endpoint = metadata.registrationEndpoint;
     if (!endpoint) {
@@ -495,6 +544,7 @@ export class McpOAuthClient {
     }
     const response = await this.#fetcher.fetchOutbound(accountId, endpoint, {
       method: "POST",
+      ...(signal ? { signal } : {}),
       headers: { accept: "application/json", "content-type": "application/json" },
       body: JSON.stringify({
         application_type: "web",
@@ -621,6 +671,9 @@ export class McpOAuthClient {
     metadata: McpAuthorizationServerMetadata,
     requested: readonly string[] = [],
   ): string[] {
+    if (metadata.issuer === FEISHU_MCP_ISSUER && requested.length === 0) {
+      return [...FEISHU_DEFAULT_OAUTH_SCOPES];
+    }
     const base =
       requested.length > 0 ? requested : challengeScope ? challengeScope.split(/\s+/).filter(Boolean) : [...prmScopes];
     const scopes = new Set(base);
@@ -705,26 +758,67 @@ export class McpOAuthClient {
       headers,
       body: body.toString(),
     });
-    const document = response.text.trim().length > 0 ? json(response) : {};
     if (response.status < 200 || response.status >= 300) {
+      let document: Record<string, unknown> = {};
+      if (response.text.trim().length > 0) {
+        try {
+          document = json(response);
+        } catch {
+          document = {};
+        }
+      }
       throw tokenRequestFailure(response.status, document);
     }
-    const accessToken = stringField(document, "access_token");
-    if (!accessToken) throw upstream("The token response carried no access token");
-    const expiresIn = typeof document.expires_in === "number" ? document.expires_in : undefined;
-    return {
-      accessToken,
-      ...(stringField(document, "refresh_token") ? { refreshToken: stringField(document, "refresh_token") } : {}),
-      ...(expiresIn === undefined ? {} : { expiresIn }),
-      ...(stringField(document, "scope") ? { scope: stringField(document, "scope") } : {}),
-      ...(stringField(document, "token_type") ? { tokenType: stringField(document, "token_type") } : {}),
-    };
+    const document = response.text.trim().length > 0 ? json(response) : {};
+    return parseTokenResponse(document, response.status);
   }
+}
+
+const FEISHU_INVALID_GRANT_CODES = new Set([20003, 20004, 20024, 20025, 20026, 20037, 20063, 20064, 20073, 20074]);
+const FEISHU_INVALID_CLIENT_CODES = new Set([20014, 20015, 20027]);
+
+function normalizeTokenErrorCode(document: Record<string, unknown>): string | undefined {
+  const rawError = typeof document.error === "string" && document.error.length > 0 ? document.error : undefined;
+  if (rawError === "invalid_refresh_token" || rawError === "refresh_token_expired" || rawError === "expired_token") {
+    return "invalid_grant";
+  }
+  if (rawError) return rawError;
+  const code = typeof document.code === "number" ? document.code : undefined;
+  if (code !== undefined && code !== 0) {
+    if (FEISHU_INVALID_GRANT_CODES.has(code)) return "invalid_grant";
+    if (FEISHU_INVALID_CLIENT_CODES.has(code)) return "invalid_client";
+    return `code_${code}`;
+  }
+  return undefined;
+}
+
+export function parseTokenResponse(document: Record<string, unknown>, status = 200): McpTokenSet {
+  if (typeof document.error === "string" || (typeof document.code === "number" && document.code !== 0)) {
+    throw tokenRequestFailure(status, document);
+  }
+  const nested =
+    typeof document.data === "object" && document.data !== null && !Array.isArray(document.data)
+      ? (document.data as Record<string, unknown>)
+      : undefined;
+  const source = stringField(document, "access_token") ? document : (nested ?? document);
+  const accessToken = stringField(source, "access_token");
+  if (!accessToken) throw upstream("The token response carried no access token");
+  const expiresIn = typeof source.expires_in === "number" ? source.expires_in : undefined;
+  const refreshToken = stringField(source, "refresh_token");
+  const scope = stringField(source, "scope");
+  const tokenType = stringField(source, "token_type");
+  return {
+    accessToken,
+    ...(refreshToken ? { refreshToken } : {}),
+    ...(expiresIn === undefined ? {} : { expiresIn }),
+    ...(scope ? { scope } : {}),
+    ...(tokenType ? { tokenType } : {}),
+  };
 }
 
 /** The RFC 6749 error code an AS returns, bounded and never the free-form description. */
 export function tokenRequestFailure(status: number, document: Record<string, unknown>): McpServiceError {
-  const errorCode = typeof document.error === "string" ? document.error : undefined;
+  const errorCode = normalizeTokenErrorCode(document);
   return new McpServiceError(
     MCP_ERROR_CODES.OAUTH_FAILED,
     boundedMcpSummary(`The token endpoint refused the request${errorCode ? ` (${errorCode})` : ""}`),

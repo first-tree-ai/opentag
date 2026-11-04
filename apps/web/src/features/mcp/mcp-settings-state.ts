@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import * as m from "../../paraglide/messages.js";
 import { useMcpCatalogEntries } from "./catalog/mcp-catalog-entries.js";
 import { useMcpAuthorization, validAuth } from "./mcp-authorization.js";
+import { connectionFailure } from "./mcp-connection.js";
 import { connectionAuthKind, presetAuthConfig, presetAuthKinds, settingsPreset } from "./mcp-connection-model.js";
 import { connectorFeedback } from "./mcp-feedback.js";
 import {
@@ -123,8 +124,11 @@ export function useMcpSettings({
     setConfiguration({ baseline: saved, draft: settingsDraft(saved) });
     onClose();
   };
-  const reportFailure = (authenticate: boolean) => {
-    const label = authenticate && draft.kind === "oauth" ? m.mcp_authorization_issue() : m.mcp_save_failed();
+  const reportFailure = (authenticate: boolean, cause: unknown) => {
+    const label =
+      authenticate && draft.kind === "oauth"
+        ? connectionFailure(cause, "oauth", m.mcp_authorization_issue())
+        : m.mcp_save_failed();
     setFailure({ label, authentication: authenticate });
     if (authenticate && draft.kind === "oauth") onAuthenticationFeedback?.(label);
   };
@@ -141,8 +145,8 @@ export function useMcpSettings({
     try {
       if (authenticate) await submitAuthentication();
       else await saveConfiguration();
-    } catch {
-      reportFailure(authenticate);
+    } catch (cause) {
+      reportFailure(authenticate, cause);
     } finally {
       inFlight.current = false;
       setBusy(false);

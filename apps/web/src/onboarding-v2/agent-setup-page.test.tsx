@@ -72,6 +72,7 @@ function renderSetup(
   props: {
     agentId?: string;
     computerAdapter?: AgentSetupPageProps["computerAdapter"];
+    onBackToAgents?: () => void;
     onExternalNavigation?: (url: string) => void;
     onOpenAgent?: () => void;
     onReady?: (agentId: string) => Promise<void> | void;
@@ -86,6 +87,7 @@ function renderSetup(
         adapter={adapter}
         agentId={props.agentId ?? SETUP_AGENT_ID}
         computerAdapter={props.computerAdapter}
+        onBackToAgents={props.onBackToAgents}
         onExternalNavigation={props.onExternalNavigation}
         onOpenAgent={props.onOpenAgent}
         onReady={props.onReady}
@@ -135,11 +137,11 @@ function expectCompactReadinessRows(): void {
 
 function expectComputerStepLayoutState(state: string): HTMLElement {
   const computerStep = document.querySelector('[data-ui="agent-setup-computer"]');
-  const summary = document.querySelector('[data-ui="agent-setup-computer-summary"]');
+  const body = computerStep?.querySelector(".otv2-computer-step__body");
   expect(computerStep?.getAttribute("data-state")).toBe(state);
   expect(computerStep?.classList).toContain("otv2-computer-step");
-  expect(summary?.parentElement?.classList).toContain("otv2-computer-step__body");
-  return summary?.parentElement as HTMLElement;
+  expect(body).toBeTruthy();
+  return body as HTMLElement;
 }
 
 function continueFromPreparation(): void {
@@ -231,7 +233,7 @@ describe("AgentSetupPage stages", () => {
       const issue = vi.spyOn(memory.computerAdapter.connect, "issue");
       renderSetup(memory.adapter, { computerAdapter: memory.computerAdapter });
       await settle(12);
-      expect(screen.getByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
       expect(screen.queryByRole("button", { name: /Use this computer:/ })).toBeNull();
       expect(issue).toHaveBeenCalledOnce();
       expect(issue.mock.calls[0]?.[0]).toMatchObject({ mode: "repair", target: { computerId: SETUP_COMPUTER_ID } });
@@ -245,7 +247,7 @@ describe("AgentSetupPage stages", () => {
       });
       expect((await memory.computerAdapter.inventory.computers()).computers).toHaveLength(1);
       expect(issue).toHaveBeenCalledOnce();
-      expect(screen.queryByRole("button", { name: "Copy for AI assistant" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
     },
   );
 
@@ -266,8 +268,9 @@ describe("AgentSetupPage stages", () => {
     await settle();
     expect(screen.getByRole("heading", { name: "Choose a computer for this Agent", level: 1 })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Connect your computer" })).toBeNull();
-    expect(screen.getByText("No computer selected for this Agent")).toBeTruthy();
-    expect(screen.getByText("Not selected")).toBeTruthy();
+    // The heading already says a choice is needed; no "not selected" summary pill repeats it.
+    expect(screen.queryByText("No computer selected for this Agent")).toBeNull();
+    expect(screen.queryByText("Not selected")).toBeNull();
     expect(screen.queryByText("No computer connected")).toBeNull();
     expect(screen.getAllByRole("button", { name: /Use this computer:/ })).toHaveLength(2);
     expect(bind).not.toHaveBeenCalled();
@@ -286,14 +289,14 @@ describe("AgentSetupPage stages", () => {
     await advance(1);
 
     expect(screen.getByRole("heading", { name: "Connect your computer" })).toBeTruthy();
-    expect(screen.getByText("Reviewer runs on your computer; messages and results pass through openTag.")).toBeTruthy();
-    const summary = document.querySelector('[data-ui="agent-setup-computer-summary"]');
-    expect(summary?.textContent).toContain("No computer connected");
-    expect(summary?.textContent).toContain("Not connected");
-    expect(summary?.classList).not.toContain("border-y");
+    expect(screen.queryByText("Reviewer runs on your computer; messages and results pass through openTag.")).toBeNull();
+    // One status on the page: the connect flow's own line. No "not connected" summary row, no
+    // footer hint, and no disabled Continue (the step advances once the computer is online).
+    expect(document.querySelector('[data-ui="agent-setup-computer-summary"]')).toBeNull();
+    expect(screen.queryByText("Not connected")).toBeNull();
     expectComputerStepLayoutState("not-bound");
-    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
-    expect(screen.getByText("You can continue when this computer is ready.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+    expect(screen.queryByText("You can continue when this computer is ready.")).toBeNull();
     expect(issue).toHaveBeenCalledWith({ mode: "create", targetAgentId: SETUP_AGENT_ID });
   });
 
@@ -320,15 +323,18 @@ describe("AgentSetupPage stages", () => {
     const summary = document.querySelector('[data-ui="agent-setup-computer-summary"]');
     expect(summary?.textContent).toContain("Review Mac");
     expect(summary?.textContent).toContain("macOS");
-    expect(summary?.textContent).toContain("Offline");
+    // The repair command window owns the status; the summary row names the computer only.
+    expect(summary?.textContent).not.toContain("Offline");
+    expect(document.querySelector('[data-ui="computer-recovery"] [data-ui="computer-connect"]')).not.toBeNull();
     expectComputerStepLayoutState("bound");
-    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
+    // The window polls the computer itself, so there is no manual Check again beside it.
+    expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
     expect(reads).toHaveBeenCalledTimes(1);
 
-    expect(screen.getByText("Preparing recovery instructions…")).toBeTruthy();
+    expect(screen.getByText("Preparing connection command…")).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Get connection help" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();
-    expect(screen.getByText("You can continue when this computer is ready.")).toBeTruthy();
+    expect(screen.queryByText("You can continue when this computer is ready.")).toBeNull();
     expect(screen.queryByText("Complete the action above, then check again.")).toBeNull();
 
     // An offline Computer is expected to come back without the page being touched, so it is polled.
@@ -354,12 +360,13 @@ describe("AgentSetupPage stages", () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
     renderSetup(memory.adapter);
     await settle();
-    expect(screen.getByRole("button", { name: "Copy for AI assistant" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Get connection help" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Assistant requested a repair?" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();
-    expect(screen.queryByText(/Waiting for|Expires in/)).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Show full instructions" }));
+    expect(screen.getByText("Waiting for Review Mac to reconnect…")).toBeTruthy();
+    // The code-expiry hint stays beside the recovery command (C5).
+    expect(screen.getByText(/^Expires in /)).toBeTruthy();
     expect(screen.getByRole("region", { name: "Restore connection" }).textContent).toContain("repair-code");
     expect(issue).toHaveBeenCalledExactlyOnceWith({
       mode: "repair",
@@ -473,7 +480,7 @@ describe("AgentSetupPage stages", () => {
     expect(readinessRow("messaging-support").getAttribute("data-status")).toBe("install-required");
     expect(rowTitle("messaging-support")).toContain("Messaging support");
     expect(rowTitle("messaging-support")).toContain("Installation required");
-    expect(rowDetail("messaging-support")).toContain("Continue messaging setup in your coding assistant on Review Mac");
+    expect(rowDetail("messaging-support")).toContain("Continue messaging setup in your Agent on Review Mac");
     expect(`${rowTitle("messaging-support")} ${rowDetail("messaging-support")}`).not.toMatch(/Lark|Slack/);
     expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
   });
@@ -1313,21 +1320,16 @@ describe("AgentSetupPage transitions", () => {
     expect(screen.getByText("Waiting for scan and authorization…")).toBeTruthy();
   });
 
-  it("checks again on demand and shows the new state", async () => {
+  it("advances on its own when the offline computer comes back", async () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
     renderSetup(memory.adapter);
     await settle();
-    expect(document.querySelector('[data-ui="agent-setup-computer-summary"]')?.textContent).toContain("Offline");
+    expect(document.querySelector('[data-ui="computer-recovery"] [data-ui="computer-connect"]')).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "Check again" })).toBeNull();
 
     memory.controls.setComputerOnline(true);
-    const reads = vi.spyOn(memory.adapter, "readSnapshot");
-    const refreshes = vi.spyOn(memory.adapter, "refreshPreparation");
-    fireEvent.click(screen.getByRole("button", { name: "Check again" }));
-    await settle();
+    await advance(POLL_MS + 10);
 
-    expect(refreshes).toHaveBeenCalledWith(SETUP_AGENT_ID);
-    expect(refreshes.mock.invocationCallOrder[0]).toBeLessThan(reads.mock.invocationCallOrder.at(-1) ?? 0);
-    expect(reads).toHaveBeenCalled();
     expect(screen.getByRole("heading", { name: "Prepare this computer" })).toBeTruthy();
     continueFromPreparation();
     expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
@@ -1549,7 +1551,8 @@ describe("AgentSetupPage preparation rows across stages", () => {
     const allReady = expected.every(([, , status]) => status === "ready");
     if (!computerReady) {
       expect(document.querySelector('[data-ui="readiness-list"]')).toBeNull();
-      expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
+      // Until the computer is ready the connect step owns the page: no (disabled) Continue.
+      expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
       return;
     }
 
@@ -1599,6 +1602,20 @@ describe("AgentSetupPage preparation rows across stages", () => {
     // the page and only the Messaging surface remains.
     expect(document.querySelector('[data-ui="readiness-list"]')).toBeNull();
     expect(screen.getByText("Waiting for scan and authorization…")).toBeTruthy();
+  });
+});
+
+describe("AgentSetupPage runtime sign-in", () => {
+  it("offers Sign in with the terminal steps on the runtime row", async () => {
+    const memory = createMemorySetupAdapter({ agent: setupAgent(), runtimeStatus: "sign-in" });
+    renderSetup(memory.adapter);
+    await settle();
+
+    const row = document.querySelector('[data-component="runtime"]') as HTMLElement;
+    const toggle = within(row).getByRole("button", { name: "Sign in" });
+    fireEvent.click(toggle);
+    expect(within(row).getByText("codex login")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Check again" })).toBeTruthy();
   });
 });
 
@@ -2037,7 +2054,7 @@ describe("AgentSetupPage hung-read recovery", () => {
     await settle();
     await advance(POLL_MS + 10);
     expect(calls).toBe(3);
-    expect(screen.getByText("Offline")).toBeTruthy();
+    expect(document.querySelector('[data-ui="computer-recovery"] [data-ui="computer-connect"]')).not.toBeNull();
   });
 
   it("does not apply a late error after a hung read has been superseded", async () => {
@@ -2117,8 +2134,8 @@ describe("AgentSetupPage hung-read recovery", () => {
     const adapter = createHttpSetupAdapter(new BrowserApi(fetchImpl));
     renderSetup(adapter);
     await settle();
-    expect(screen.getByText("Offline")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Continue" }).hasAttribute("disabled")).toBe(true);
+    expect(document.querySelector('[data-ui="computer-recovery"] [data-ui="computer-connect"]')).not.toBeNull();
+    expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
 
     phase = "checking";
     await advance(POLL_MS + 10);
@@ -2355,19 +2372,49 @@ describe("AgentSetupPage request fencing", () => {
 });
 
 describe("AgentSetupPage closed failures and review", () => {
-  it("replaces the return action with View agent when setup becomes ready", async () => {
+  it("keeps Back to Agents in the header and adds View agent once setup is ready", async () => {
+    const onBackToAgents = vi.fn();
     const onOpenAgent = vi.fn();
     const memory = createMemorySetupAdapter({
       agent: setupAgent(),
       messaging: { kind: "bound", provider: "slack", reachable: true },
     });
-    renderSetup(memory.adapter, { onOpenAgent });
+    renderSetup(memory.adapter, { onBackToAgents, onOpenAgent });
     await settle();
 
-    expect(screen.queryByRole("button", { name: "Back to agent" })).toBeNull();
+    expect(document.querySelector('[data-ui="agent-setup-ready"]')).not.toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "View agent" }));
     expect(onOpenAgent).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Back to Agents" }));
+    expect(onBackToAgents).toHaveBeenCalledTimes(1);
+    expect(onOpenAgent).toHaveBeenCalledTimes(1);
   });
+
+  it.each([
+    ["Connect your computer", { agent: setupAgent({ computer: null }) }, false],
+    ["Prepare this computer", { agent: setupAgent() }, false],
+    ["Connect your messaging app", { agent: setupAgent() }, true],
+  ] as const)(
+    "offers Back to Agents, and no other way back, on the %s step",
+    async (heading, seed, continueToMessaging) => {
+      mockComputerInventory();
+      const onBackToAgents = vi.fn();
+      const onOpenAgent = vi.fn();
+      const memory = createMemorySetupAdapter(seed);
+      renderSetup(memory.adapter, { onBackToAgents, onOpenAgent });
+      await settle();
+      await advance(1);
+      if (continueToMessaging) fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+
+      expect(screen.getByRole("heading", { name: heading })).toBeTruthy();
+      expect(screen.queryByRole("button", { name: "Back" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Back to agent" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Set up later" })).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Back to Agents" }));
+      expect(onBackToAgents).toHaveBeenCalledTimes(1);
+      expect(onOpenAgent).not.toHaveBeenCalled();
+    },
+  );
 
   it("fails closed on a terminal answer instead of offering any creation path", async () => {
     const adapter = scriptedAdapter(async () => {
@@ -2484,7 +2531,13 @@ describe("AgentSetupPage manual Slack verification", () => {
     await settle();
     fireEvent.click(messagingChoice(/Slack/));
     await settle();
-    if (kind === "local") fireEvent.click(screen.getByRole("button", { name: "Manual setup" }));
+    if (kind === "cloud") {
+      expect(screen.getByRole("link", { name: "View Apps" })).toHaveProperty("href", "https://api.slack.com/apps");
+      fireEvent.click(screen.getByRole("button", { name: "Create App" }));
+      await settle();
+    }
+    expect(screen.getByLabelText("Paste into Slack")).toHaveProperty("value", "/slackauthticket test-ticket");
+    fireEvent.click(screen.getByRole("button", { name: "Manual setup" }));
     fireEvent.change(screen.getByLabelText("Bot Token"), { target: { value: "test-token" } });
     fireEvent.change(screen.getByLabelText("Signing Secret"), { target: { value: "test-secret" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));

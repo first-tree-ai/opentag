@@ -1,7 +1,7 @@
 import type { ListTasksResponse, TaskSummary } from "@opentag/shared/browser";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, type Ref, useMemo, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
 import { compareText, foldCase, formatDateTime, formatRelativeTime } from "../i18n/format.js";
@@ -39,7 +39,8 @@ import {
   type TaskStatusGroup,
   taskStatusGroup,
   taskStatusGroupLabel,
-  taskStatusGroupTone,
+  taskStatusLabel,
+  taskStatusTone,
 } from "./task-status.js";
 
 type TaskFilter = "all" | TaskStatusGroup;
@@ -101,6 +102,8 @@ export function TasksPage({ agentId, showExamples = false }: { agentId?: string;
           task.source.provider,
           task.source.channelId,
           task.source.threadKey,
+          task.source.chatMode,
+          task.source.groupMessageType,
         ]
           .map((value) => foldCase(value ?? ""))
           .join(" ")
@@ -116,7 +119,7 @@ export function TasksPage({ agentId, showExamples = false }: { agentId?: string;
 
   return (
     <section className="grid gap-6" aria-labelledby="tasks-page-title" data-ui="tasks-page">
-      <PageHeader description={m.tasks_page_description()} title={m.tasks_title()} titleId="tasks-page-title" />
+      <PageHeader title={m.tasks_title()} titleId="tasks-page-title" />
 
       {/*
        * The toolbar is built out of the rows themselves — the Agent options are the Agents named by
@@ -412,7 +415,6 @@ export function TaskDetailPage({
   }
 
   const task = first.task;
-  const status = taskStatusGroup(task.status);
   const repliesStatus = <TaskRepliesStatus query={repliesQuery} />;
   const pagination = (
     <TaskActivityPagination loadMoreError={loadMoreError} repliesQuery={repliesQuery} taskQuery={taskQuery} />
@@ -435,38 +437,7 @@ export function TaskDetailPage({
             {task.title}
           </Text>
         </div>
-        <dl
-          className="grid grid-cols-2 gap-x-8 gap-y-4 border-y border-kumo-line py-4 @min-[36rem]/content:grid-cols-3 @min-[60rem]/content:grid-cols-5"
-          aria-label={m.tasks_details()}
-        >
-          <TaskDetailFact label={m.tasks_agent_label()}>
-            <span className="flex min-w-0 items-center gap-2">
-              <AgentAvatar
-                displayName={task.agent.displayName}
-                avatarPath={task.agent.avatarPath}
-                className="size-7 text-xs font-medium text-kumo-strong"
-              />
-              <span className="min-w-0 wrap-anywhere">{task.agent.displayName}</span>
-            </span>
-          </TaskDetailFact>
-          <TaskDetailFact label={m.tasks_source_label()}>
-            <span className="inline-flex items-center gap-1.5">
-              <ProviderIcon className="size-5" provider={task.source.provider} />
-              {sourceLabel(task)}
-            </span>
-          </TaskDetailFact>
-          <TaskDetailFact className="col-span-2 @min-[36rem]/content:col-span-1" label={m.tasks_started_label()}>
-            <time dateTime={task.createdAt}>{formatDateTime(task.createdAt)}</time>
-          </TaskDetailFact>
-          <TaskDetailFact label={m.tasks_last_activity_label()}>
-            <time dateTime={task.lastActivityAt} title={formatDateTime(task.lastActivityAt)}>
-              {formatRelativeTime(task.lastActivityAt)}
-            </time>
-          </TaskDetailFact>
-          <TaskDetailFact label={m.tasks_status_label()}>
-            <StatusIndicator label={taskStatusGroupLabel(status)} tone={taskStatusGroupTone(status)} />
-          </TaskDetailFact>
-        </dl>
+        <TaskDetailFacts agentScoped={agentId === task.agent.id} task={task} />
         <TaskCancelControl detailKey={detailKey} enabled={!showExamples} task={task} />
       </header>
 
@@ -474,6 +445,7 @@ export function TaskDetailPage({
 
       <TaskActivity
         task={task}
+        internalSessions={first.internalSessions}
         replies={repliesQuery.supplied ? repliesQuery.replies : undefined}
         repliesStatus={repliesStatus}
         turns={turns}
@@ -694,6 +666,12 @@ function TaskBackLink({ agentId, showExamples }: { agentId: string; showExamples
   );
 }
 
+/*
+ * Compact tables sit inside a titled card. Pulling the region out by the cells' own inset (px-3)
+ * lines cell text up with the card title on both edges, while row hover keeps its padding.
+ */
+const COMPACT_TABLE_INSET = "-mx-3";
+
 function TaskTable({
   compact = false,
   showAgent = true,
@@ -708,7 +686,7 @@ function TaskTable({
   const table = (
     <section
       aria-label={m.tasks_table_region()}
-      className="min-w-0 overflow-hidden rounded-lg @min-[40rem]/content:overflow-x-auto @min-[40rem]/content:focus:outline-none @min-[40rem]/content:focus-visible:ring-2 @min-[40rem]/content:focus-visible:ring-kumo-brand @min-[40rem]/content:focus-visible:ring-inset"
+      className={`min-w-0 overflow-hidden rounded-lg ${compact ? COMPACT_TABLE_INSET : ""} @min-[40rem]/content:overflow-x-auto @min-[40rem]/content:focus:outline-none @min-[40rem]/content:focus-visible:ring-2 @min-[40rem]/content:focus-visible:ring-kumo-brand @min-[40rem]/content:focus-visible:ring-inset`}
       // biome-ignore lint/a11y/noNoninteractiveTabindex: The same region remains keyboard-scrollable in wider content areas.
       tabIndex={0}
     >
@@ -762,14 +740,25 @@ function TaskRow({
   showExamples?: boolean;
   task: TaskSummary;
 }) {
-  const status = taskStatusGroup(task.status);
+  const linkRef = useRef<HTMLAnchorElement>(null);
   return (
     <Table.Row
-      className="grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 border-b border-kumo-line last:border-b-0 @min-[40rem]/content:table-row @min-[40rem]/content:border-b-0"
+      className="cursor-pointer transition-colors hover:bg-kumo-tint/50 grid grid-cols-[minmax(0,1fr)_auto] gap-x-3 gap-y-1 border-b border-kumo-line last:border-b-0 @min-[40rem]/content:table-row @min-[40rem]/content:border-b-0"
       data-ui="task-table-row"
+      data-chat-mode={task.source.chatMode ?? undefined}
+      data-group-message-type={task.source.groupMessageType ?? undefined}
+      onClick={(event) => {
+        if (
+          event.defaultPrevented ||
+          (event.target instanceof Element && event.target.closest('a, button, input, [role="button"]'))
+        ) {
+          return;
+        }
+        (linkRef.current ?? event.currentTarget.querySelector<HTMLAnchorElement>("a"))?.click();
+      }}
     >
       <Table.Cell className="col-start-1 row-start-1 min-w-0" data-label={m.tasks_task_label()}>
-        <TaskTitleLink showExamples={showExamples} task={task} />
+        <TaskTitleLink linkRef={linkRef} showExamples={showExamples} task={task} />
       </Table.Cell>
       {showAgent ? (
         <Table.Cell className="col-span-2 row-start-3" data-label={m.tasks_agent_label()}>
@@ -783,14 +772,19 @@ function TaskRow({
           </span>
         </Table.Cell>
       ) : null}
-      <Table.Cell className="col-start-1 row-start-2 min-w-0" data-label={m.tasks_source_label()}>
+      <Table.Cell
+        className="col-start-1 row-start-2 min-w-0"
+        data-chat-mode={task.source.chatMode ?? undefined}
+        data-group-message-type={task.source.groupMessageType ?? undefined}
+        data-label={m.tasks_source_label()}
+      >
         <span className={"inline-flex min-w-0 items-center gap-2 @min-[40rem]/content:whitespace-nowrap"}>
           <ProviderIcon className="size-5" provider={task.source.provider} />
           <span>{sourceLabel(task)}</span>
         </span>
       </Table.Cell>
       <Table.Cell className="col-start-2 row-start-1 justify-self-end" data-label={m.tasks_status_label()}>
-        <StatusIndicator label={taskStatusGroupLabel(status)} tone={taskStatusGroupTone(status)} />
+        <StatusIndicator label={taskStatusLabel(task.status)} tone={taskStatusTone(task.status)} />
       </Table.Cell>
       <Table.Cell
         className="col-start-2 row-start-2 justify-self-end self-center"
@@ -808,7 +802,15 @@ function TaskRow({
   );
 }
 
-function TaskTitleLink({ showExamples, task }: { showExamples: boolean; task: TaskSummary }) {
+function TaskTitleLink({
+  linkRef,
+  showExamples,
+  task,
+}: {
+  linkRef?: Ref<HTMLAnchorElement>;
+  showExamples: boolean;
+  task: TaskSummary;
+}) {
   const className =
     "line-clamp-2 max-w-[40rem] wrap-anywhere text-sm font-normal text-kumo-default hover:text-kumo-link @min-[40rem]/content:line-clamp-1";
   if (showExamples) {
@@ -816,6 +818,7 @@ function TaskTitleLink({ showExamples, task }: { showExamples: boolean; task: Ta
       <Link
         className={className}
         params={{ taskId: task.id }}
+        ref={linkRef}
         search={{ examples: true }}
         title={task.title}
         to="/tasks/$taskId"
@@ -825,9 +828,62 @@ function TaskTitleLink({ showExamples, task }: { showExamples: boolean; task: Ta
     );
   }
   return (
-    <Link className={className} {...agentTaskDetailLink(task.agent.id, task.id)} title={task.title}>
+    <Link className={className} {...agentTaskDetailLink(task.agent.id, task.id)} ref={linkRef} title={task.title}>
       {task.title}
     </Link>
+  );
+}
+
+/**
+ * On an Agent's own Task page the Agent is already named by the page around it, so the facts start
+ * with the source. The Agent fact stays where Tasks from several Agents mix, and on an Agent's page
+ * that shows another Agent's Task (a stale or mistyped link), where it is the only thing naming it.
+ */
+function TaskDetailFacts({ agentScoped, task }: { agentScoped: boolean; task: TaskSummary }) {
+  return (
+    <dl
+      className={`grid grid-cols-2 gap-x-8 gap-y-4 border-y border-kumo-line py-4 @min-[36rem]/content:grid-cols-3 ${
+        agentScoped ? "@min-[48rem]/content:grid-cols-4" : "@min-[60rem]/content:grid-cols-5"
+      }`}
+      aria-label={m.tasks_details()}
+    >
+      {agentScoped ? null : (
+        <TaskDetailFact label={m.tasks_agent_label()}>
+          <span className="flex min-w-0 items-center gap-2">
+            <AgentAvatar
+              displayName={task.agent.displayName}
+              avatarPath={task.agent.avatarPath}
+              className="size-7 text-xs font-medium text-kumo-strong"
+            />
+            <span className="min-w-0 wrap-anywhere">{task.agent.displayName}</span>
+          </span>
+        </TaskDetailFact>
+      )}
+      <TaskDetailFact label={m.tasks_source_label()}>
+        <span
+          className="inline-flex items-center gap-1.5"
+          data-chat-mode={task.source.chatMode ?? undefined}
+          data-group-message-type={task.source.groupMessageType ?? undefined}
+        >
+          <ProviderIcon className="size-5" provider={task.source.provider} />
+          {sourceLabel(task)}
+        </span>
+      </TaskDetailFact>
+      <TaskDetailFact
+        className={agentScoped ? undefined : "col-span-2 @min-[36rem]/content:col-span-1"}
+        label={m.tasks_started_label()}
+      >
+        <time dateTime={task.createdAt}>{formatDateTime(task.createdAt)}</time>
+      </TaskDetailFact>
+      <TaskDetailFact label={m.tasks_last_activity_label()}>
+        <time dateTime={task.lastActivityAt} title={formatDateTime(task.lastActivityAt)}>
+          {formatRelativeTime(task.lastActivityAt)}
+        </time>
+      </TaskDetailFact>
+      <TaskDetailFact label={m.tasks_status_label()}>
+        <StatusIndicator label={taskStatusLabel(task.status)} tone={taskStatusTone(task.status)} />
+      </TaskDetailFact>
+    </dl>
   );
 }
 
@@ -948,6 +1004,7 @@ async function readTaskDetail(
   return {
     task: page.task,
     turns: page.turns?.items ?? [],
+    internalSessions: page.internalSessions?.items ?? [],
     nextCursor: page.turns?.nextCursor ?? null,
   };
 }

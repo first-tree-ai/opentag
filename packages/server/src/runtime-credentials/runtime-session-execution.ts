@@ -36,6 +36,7 @@ type ExecutionOpenFrame = Extract<RuntimeCredentialClientFrame, { type: "runtime
 type CandidateProvider = "github" | "slack" | "feishu";
 
 export interface RuntimeSessionExecutionDeps {
+  signal?: AbortSignal;
   registry: RuntimeControlAuthority;
   executions: RuntimeExecutionRegistry;
   authority: RuntimeExecutionAuthority;
@@ -71,9 +72,11 @@ export async function openRuntimeSessionExecution(
     status: "rejected",
     code,
   });
+  deps.signal?.throwIfAborted();
   const connectionId = context.connectionId;
   if (!connectionId) return rejected("capability_unsupported");
   const checked = checkSessionOpen(frame, context, await deps.scopeResolver.load(frame.sessionId));
+  deps.signal?.throwIfAborted();
   if (!checked.ok) return rejected(checked.code);
   const snapshot = checked.snapshot;
   const internal = checked.internal;
@@ -82,6 +85,7 @@ export async function openRuntimeSessionExecution(
   if (snapshot.computer.kind === "cloud" && !(await cloudControlActive(deps, context.computerId))) {
     return rejected("execution_authority_denied");
   }
+  deps.signal?.throwIfAborted();
   const decision = await deps.authority.authorize(frame.source, {
     sessionId: frame.sessionId,
     agentId: frame.agentId,
@@ -89,6 +93,7 @@ export async function openRuntimeSessionExecution(
     instanceId: context.instanceId,
     placementGeneration: frame.placementGeneration,
   });
+  deps.signal?.throwIfAborted();
   if (decision.status === "not_ready") return rejected("execution_not_ready");
   if (decision.status === "invalid") return rejected("execution_source_invalid");
   if (!contextTreeCapabilityAllowed(frame, context, !!decision.validation)) return rejected("capability_unsupported");
@@ -101,6 +106,7 @@ export async function openRuntimeSessionExecution(
     internal,
     frame.contextTree !== undefined,
   );
+  deps.signal?.throwIfAborted();
   const services = frame.contextTree ? [] : await describeSessionServices(deps, frame, context, snapshot);
   /*
    * An internal Cloud collaboration child can legitimately run with no provider and no platform
@@ -108,6 +114,7 @@ export async function openRuntimeSessionExecution(
    * message, and its Session CLI proof is the actual capability it needs. It still never receives
    * a provider binding — an internal child must not inherit the parent/visible IM credential.
    */
+  deps.signal?.throwIfAborted();
   if (!hasOpenAuthority(candidates.length, services, internal)) {
     return rejected("execution_authority_denied");
   }
@@ -120,7 +127,15 @@ export async function openRuntimeSessionExecution(
     deps.executions.close(record.executionId, "execution_closed");
     return rejected("execution_authority_denied");
   }
-  const providers = await describeSessionCandidates(deps, record, candidates);
+  const providers = await describeSessionCandidates(deps, record, candidates)
+    .then((providers) => {
+      deps.signal?.throwIfAborted();
+      return providers;
+    })
+    .catch((error) => {
+      deps.executions.close(record.executionId, "execution_closed");
+      throw error;
+    });
   if (!hasOpenAuthority(providers.size, services, internal)) {
     deps.executions.close(record.executionId, "execution_closed");
     return rejected("execution_authority_denied");
@@ -323,6 +338,7 @@ async function describeSessionServices(
     if (scopes && scopes.length > 0) services.push({ service: "web", scopes: [...scopes] });
   }
   const mcp = await describeMcpService(deps, frame, context, snapshot);
+  deps.signal?.throwIfAborted();
   if (mcp) services.push(mcp);
   if (
     negotiated(context, "context-tree") &&
@@ -335,6 +351,7 @@ async function describeSessionServices(
         agentId: snapshot.agent.id,
         sessionId: snapshot.sessionId,
         source: frame.source,
+        signal: deps.signal,
       })
       .catch(() => undefined);
     if (admission) services.push({ service: "context-tree", scopes: ["context-tree:git"] });
@@ -367,6 +384,7 @@ async function describeMcpService(
     );
     return undefined;
   };
+  deps.signal?.throwIfAborted();
   if (!negotiated(context, "mcp")) return withheld("capability_not_negotiated");
   // A Client in legacy credential mode opens no execution through the relay at all; one that does
   // open an execution without naming the service has the capability but did not opt in.
@@ -388,6 +406,7 @@ async function describeSessionCandidates(
 ): Promise<Map<string, RuntimeExecutionProviderBinding>> {
   const providers = new Map<string, RuntimeExecutionProviderBinding>();
   for (const candidate of candidates) {
+    deps.signal?.throwIfAborted();
     const described = await describeProvider(deps, record, candidate.provider, candidate.bindingId);
     if (!described) continue;
     providers.set(
@@ -424,6 +443,7 @@ async function candidateProviders(
       agentId: snapshot.agent.id,
       sessionId: snapshot.sessionId,
       source,
+      signal: deps.signal,
     })
     .catch(() => undefined);
   if (admission) candidates.push({ provider: "github", bindingId: admission.connectionId });
@@ -437,7 +457,7 @@ async function describeProvider(
   bindingId: string,
 ): Promise<RuntimeScopeMaterial | undefined> {
   try {
-    return await deps.broker.describeProvider({ execution: record, provider, bindingId });
+    return await deps.broker.describeProvider({ execution: record, provider, bindingId, signal: deps.signal });
   } catch (error) {
     if (error instanceof RuntimeCredentialError) return undefined;
     throw error;

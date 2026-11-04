@@ -71,3 +71,29 @@ export function formatPreparationResultLines(result: LocalComputerPreparationRes
   }
   return lines;
 }
+
+/** Where an unfinished preparation leaves the reader when no check names a concrete action. */
+export const PREPARATION_FALLBACK_NEXT = "Return to openTag to finish setting up this computer.";
+
+/**
+ * The single next step for an unfinished preparation: the first blocking row's own action (the same
+ * one `--verbose` prints under it), or a return to openTag, which shows everything that is left.
+ */
+export function preparationNextStep(result: LocalComputerPreparationResult): string {
+  const blocking = result.components
+    .filter((component) => component.status !== "ready")
+    .flatMap((component) => [...(component.checks ?? []), component])
+    .find((check) => check.status !== "ready" && (check.blocking || check.required) && actionLine(check));
+  return blocking ? actionLine(blocking) : PREPARATION_FALLBACK_NEXT;
+}
+
+/**
+ * One row's next action as a single line. An instruction that defers to "the verify command" carries
+ * that command on the same line, because the per-row `verify:` line is printed only with --verbose.
+ */
+function actionLine(check: LocalPreparationCheck): string {
+  const action = check.nextAction ? actionText(check.nextAction) : "";
+  if (!action) return "";
+  const verify = check.verifyAction ? actionText(check.verifyAction) : "";
+  return verify && /verify command/.test(action) ? `${action} Verify: ${verify}` : action;
+}

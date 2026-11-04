@@ -23,7 +23,7 @@ import {
   type UpdateAgentRequest,
   UpdateAgentRequestSchema,
 } from "@opentag/shared";
-import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { and, asc, eq, gte, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
@@ -108,6 +108,14 @@ interface AgentSafeRow {
 }
 
 /**
+ * Advisory lock key for one Account's Agent name. Uniqueness is on `lower(name)`, so case variants
+ * of a name must take the same lock; otherwise both pass the name check and one hits the index.
+ */
+function agentNameLockKey(accountId: string, name: string): string {
+  return `agent-name:${accountId}:${name.toLowerCase()}`;
+}
+
+/**
  * Separates the two ways a joined Computer can be absent. `agentComputerId` is null while the Agent
  * has no Computer, which is a normal state the reader must see; a bound Agent whose Computer row did
  * not join is a broken record and stays an error rather than being reported as unbound.
@@ -132,31 +140,23 @@ function toAgentComputer(row: {
 }
 
 interface AgentActivityEvidence {
-  acceptedAt: Date | null;
   agentId: string;
-  reportedAt: Date | null;
-  state: string;
+  runningTaskCount: number;
+  startedAt: Date;
 }
 
 function projectActivityByAgent(rows: readonly AgentActivityEvidence[]): Map<string, AgentListActivity> {
-  const workingStartedAt = new Map<string, Date>();
-  for (const row of rows) {
-    if (row.state !== "accepted" || row.reportedAt !== null || !row.acceptedAt) {
-      continue;
-    }
-    const current = workingStartedAt.get(row.agentId);
-    if (!current || row.acceptedAt > current) workingStartedAt.set(row.agentId, row.acceptedAt);
-  }
   return new Map(
-    [...workingStartedAt].map(([agentId, startedAt]) => [
-      agentId,
-      { state: "working", startedAt: startedAt.toISOString() },
+    rows.map((row) => [
+      row.agentId,
+      { state: "working", startedAt: row.startedAt.toISOString(), runningTaskCount: row.runningTaskCount },
     ]),
   );
 }
 
 export interface AgentSessionStopTarget {
   agentId: string;
+  agentRevision: number;
   computerId: string;
   installationId: string;
   placementGeneration: number;
@@ -442,7 +442,7 @@ export class AgentService {
         assertCloudAgentBinding(this.#cloudIdentitiesEnabled, input.runtimeProvider, computer?.kind);
         assertLocalPermissions(computer?.kind, input.runtimeProvider, input.runtimeConfig?.permissions);
         await transaction.execute(
-          sql`select pg_advisory_xact_lock(hashtextextended(${`agent-name:${callerUserId}:${input.name}`}, 0))`,
+          sql`select pg_advisory_xact_lock(hashtextextended(${agentNameLockKey(callerUserId, input.name)}, 0))`,
         );
         if (input.creationIntentId && intentFingerprint) {
           const replay = await this.#findCreationIntent(
@@ -457,7 +457,11 @@ export class AgentService {
           .select({ id: agents.id })
           .from(agents)
           .where(
-            and(eq(agents.createdByUserId, callerUserId), eq(agents.name, input.name), ne(agents.status, "deleted")),
+            and(
+              eq(agents.createdByUserId, callerUserId),
+              sql`lower(${agents.name}) = ${input.name.toLowerCase()}`,
+              ne(agents.status, "deleted"),
+            ),
           )
           .limit(1);
         if (nameConflict) {
@@ -495,14 +499,15 @@ export class AgentService {
     } catch (error) {
       const constraintName = uniqueConstraintName(error);
       if (constraintName && input.creationIntentId) {
-        const replay = await this.#replayCreationIntent(
+        const replay = await this.#findCreationIntent(
+          this.#database,
           callerUserId,
           input.creationIntentId,
           creationIntentFingerprint(input),
         );
         if (replay) return replay;
       }
-      if (constraintName === "agents_workspace_name_active_unique") {
+      if (constraintName === "agents_account_name_active_unique") {
         throw new AgentServiceError(
           "AGENT_NAME_CONFLICT",
           "deterministic",
@@ -520,16 +525,6 @@ export class AgentService {
       });
     }
     return result.config;
-  }
-
-  async #replayCreationIntent(
-    callerUserId: string,
-    creationIntentId: string,
-    intentFingerprint: string,
-  ): Promise<AgentAdminConfig | undefined> {
-    return this.#database.transaction(async (transaction) => {
-      return this.#findCreationIntent(transaction, callerUserId, creationIntentId, intentFingerprint);
-    });
   }
 
   async #findCreationIntent(
@@ -565,12 +560,12 @@ export class AgentService {
     agentIds: readonly string[],
     recoveryStartedAt: Date,
   ): Promise<Map<string, AgentListActivity>> {
+    // One row per working Agent: its open Tasks (Sessions) and the latest accepted Turn among them.
     const activityRows = await executor
-      .selectDistinctOn([imBindings.agentId], {
-        acceptedAt: imMessageDeliveries.acceptedAt,
+      .select({
         agentId: imBindings.agentId,
-        reportedAt: imMessageDeliveries.reportedAt,
-        state: imMessageDeliveries.state,
+        runningTaskCount: sql<number>`count(distinct ${imMessageDeliveries.sessionId})::int`,
+        startedAt: sql<Date>`max(${imMessageDeliveries.acceptedAt})`.mapWith(imMessageDeliveries.acceptedAt),
       })
       .from(imMessageDeliveries)
       .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
@@ -585,7 +580,7 @@ export class AgentService {
           gte(imMessageDeliveries.acceptedAt, recoveryStartedAt),
         ),
       )
-      .orderBy(imBindings.agentId, desc(imMessageDeliveries.acceptedAt), desc(imMessageDeliveries.id));
+      .groupBy(imBindings.agentId);
 
     const staleActivityRows = await executor
       .selectDistinct({ agentId: imBindings.agentId })
@@ -719,9 +714,13 @@ export class AgentService {
     };
   }
 
-  async getById(callerUserId: string, agentId: string): Promise<AgentDetail> {
+  getSummaryById(callerUserId: string, agentId: string): Promise<AgentSummary> {
+    return this.#readAgentSummary(this.#database, callerUserId, agentId);
+  }
+
+  async #readAgentSummary(executor: QueryExecutor, callerUserId: string, agentId: string): Promise<AgentSummary> {
     const creator = alias(users, "agent_creator");
-    const [row] = await this.#database
+    const [row] = await executor
       .select({
         id: agents.id,
         createdByUserId: agents.createdByUserId,
@@ -746,13 +745,20 @@ export class AgentService {
       .leftJoin(computers, eq(computers.id, agents.computerId))
       .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
       .limit(1);
-    if (!row || row.createdByUserId !== callerUserId) throw resourceNotFound();
-    const recoveryStartedAt = new Date(this.#now().getTime() - AGENT_ACTIVITY_RECOVERY_WINDOW_MS);
-    const activityByAgent = await this.#readActivityByAgent(this.#database, [agentId], recoveryStartedAt);
-    return {
-      ...toAgentSummary({ ...row, computer: toAgentComputer(row) }),
-      activity: activityByAgent.get(agentId) ?? { state: "idle" },
-    };
+    if (!row) throw resourceNotFound();
+    return toAgentSummary({ ...row, computer: toAgentComputer(row) });
+  }
+
+  async getById(callerUserId: string, agentId: string): Promise<AgentDetail> {
+    return this.#database.transaction(
+      async (transaction) => {
+        const agent = await this.#readAgentSummary(transaction, callerUserId, agentId);
+        const recoveryStartedAt = new Date(this.#now().getTime() - AGENT_ACTIVITY_RECOVERY_WINDOW_MS);
+        const activityByAgent = await this.#readActivityByAgent(transaction, [agentId], recoveryStartedAt);
+        return { ...agent, activity: activityByAgent.get(agentId) ?? { state: "idle" } };
+      },
+      { isolationLevel: "repeatable read", accessMode: "read only" },
+    );
   }
 
   async getUsageById(
@@ -851,7 +857,12 @@ export class AgentService {
     return toAgentAdminConfig(scope.agent, scope.runtimeConfig, scope.computerId);
   }
 
-  async updateById(callerUserId: string, agentId: string, rawInput: UpdateAgentRequest): Promise<AgentAdminConfig> {
+  async updateById(
+    callerUserId: string,
+    agentId: string,
+    rawInput: UpdateAgentRequest,
+    source: "account" | "agent-self" = "account",
+  ): Promise<AgentAdminConfig> {
     const input = UpdateAgentRequestSchema.parse(rawInput);
     // Validate an explicit Cloud model choice BEFORE the mutation transaction: no Agent row lock is
     // held across the catalog's network read, and a rejected choice leaves no revision writes.
@@ -864,6 +875,14 @@ export class AgentService {
     const result = await this.#database.transaction(async (transaction) => {
       const scope = await this.#lockAgentScopeForMutation(transaction, callerUserId, agentId);
       this.#requireManagePermission(scope);
+      if (source === "agent-self" && !scope.agent.selfConfigurationEnabled) {
+        throw new AgentServiceError(
+          "AGENT_SELF_CONFIGURATION_DISABLED",
+          "deterministic",
+          "The Account has disabled self-configuration for this Agent",
+          403,
+        );
+      }
       if (scope.agent.revision !== input.expectedRevision) {
         throw new AgentServiceError(
           "AGENT_REVISION_CONFLICT",
@@ -1325,7 +1344,7 @@ export class AgentService {
     // Same key as creation, so a concurrent create of this name under the target Account serializes
     // instead of both passing their own name check.
     await transaction.execute(
-      sql`select pg_advisory_xact_lock(hashtextextended(${`agent-name:${target.id}:${agent.name}`}, 0))`,
+      sql`select pg_advisory_xact_lock(hashtextextended(${agentNameLockKey(target.id, agent.name)}, 0))`,
     );
     const [nameConflict] = await transaction
       .select({ id: agents.id })
@@ -1561,7 +1580,7 @@ export class AgentService {
       permissions: input?.permissions ?? projection.permissions,
       model: input?.model !== undefined ? input.model : projection.model,
       reasoningEffort: input?.reasoningEffort !== undefined ? input.reasoningEffort : projection.reasoningEffort,
-      instructions: input?.instructions ?? projection.instructions,
+      instructions: input?.instructions !== undefined ? (input.instructions ?? "") : projection.instructions,
       maxDurationMs: input?.maxDurationMs !== undefined ? input.maxDurationMs : projection.maxDurationMs,
     });
     if (!selfConfigurationChanged && runtimeConfigsEqual(current, next)) return current;
@@ -1681,6 +1700,7 @@ export class AgentService {
     return transaction
       .select({
         agentId: imBindings.agentId,
+        agentRevision: sql<number>`${agents.revision} + 1`,
         installationId: computers.currentInstallationId,
         computerId: sessionPlacements.computerId,
         placementGeneration: sessionPlacements.generation,

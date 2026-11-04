@@ -7,6 +7,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocketServer, type WebSocket as WsSocket } from "ws";
+import type { RunnerShutdownRecord } from "../runner/shutdown-observer.js";
 
 /**
  * Real-child regression for the production `runner/bin.ts` signal lifecycle.
@@ -70,6 +71,7 @@ export class NativeSandbox {
   async destroy() {
     await sleep(destroyMs);
     appendFileSync(marker, "destroy\n");
+    if (process.env.FAKE_SANDBOX_DESTROY_FAIL === "true") throw new Error("private-destroy-failure");
   }
 }
 `;
@@ -136,6 +138,7 @@ async function spawnRunnerBin(options: {
   backendUrl: string;
   launchMs: number;
   destroyMs: number;
+  destroyFail?: boolean;
 }): Promise<RunnerChild> {
   const directory = await mkdtemp(join(tmpdir(), "opentag-runner-bin-"));
   directories.push(directory);
@@ -163,11 +166,15 @@ async function spawnRunnerBin(options: {
         OPENTAG_RUNNER_BOOTSTRAP_TOKEN: "bin-signal-bootstrap-token",
         OPENTAG_RUNNER_SANDBOX_NAME: SANDBOX_NAME,
         OPENTAG_RUNNER_WORKSPACE: join(directory, "workspace"),
+        OPENTAG_ENV: "staging",
+        OPENTAG_CLOUD_LATENCY_DIAGNOSTICS: "true",
+        OPENTAG_CLOUD_LATENCY_SESSION_IDS: "22222222-2222-4222-8222-222222222222",
         FAKE_SANDBOX_MARKER: marker,
         FAKE_SANDBOX_EXECS: execs,
         FAKE_SANDBOX_ABORTS: aborts,
         FAKE_SANDBOX_LAUNCH_MS: String(options.launchMs),
         FAKE_SANDBOX_DESTROY_MS: String(options.destroyMs),
+        FAKE_SANDBOX_DESTROY_FAIL: String(options.destroyFail ?? false),
       },
       stdio: ["ignore", "pipe", "pipe"],
     },
@@ -200,6 +207,7 @@ interface ControlServer {
   readonly url: string;
   readonly frames: Record<string, unknown>[];
   send(frame: unknown): void;
+  releaseScope(): Promise<void>;
   waitFor(type: string, timeoutMs?: number): Promise<Record<string, unknown>>;
 }
 
@@ -212,7 +220,29 @@ async function startControlServer(): Promise<ControlServer> {
   });
   const frames: Record<string, unknown>[] = [];
   const sockets: WsSocket[] = [];
+  let released = false;
   const waiters: { type: string; resolve: (frame: Record<string, unknown>) => void }[] = [];
+  const authenticate = (socket: WsSocket, frame: Record<string, unknown>) => {
+    if (released) {
+      socket.send(JSON.stringify({ type: "auth:result", ok: false }));
+      return;
+    }
+    socket.send(
+      JSON.stringify({ type: "auth:result", ok: true, ...(frame.requestId ? { requestId: frame.requestId } : {}) }),
+    );
+    socket.send(
+      JSON.stringify({
+        type: "server:welcome",
+        protocolVersion: 1,
+        sandboxId: "11111111-1111-4111-8111-111111111111",
+        sessionId: "22222222-2222-4222-8222-222222222222",
+        environmentGeneration: 1,
+        resourceName: `projects/p/locations/r/instances/${SANDBOX_NAME}`,
+        heartbeatIntervalMs: 50,
+        heartbeatTimeoutMs: 300_000,
+      }),
+    );
+  };
   wss.on("connection", (socket) => {
     sockets.push(socket);
     socket.on("message", (raw) => {
@@ -223,23 +253,7 @@ async function startControlServer(): Promise<ControlServer> {
         const [waiter] = waiters.splice(index, 1);
         waiter?.resolve(frame);
       }
-      if (frame.type === "auth") {
-        socket.send(
-          JSON.stringify({ type: "auth:result", ok: true, ...(frame.requestId ? { requestId: frame.requestId } : {}) }),
-        );
-        socket.send(
-          JSON.stringify({
-            type: "server:welcome",
-            protocolVersion: 1,
-            sandboxId: "11111111-1111-4111-8111-111111111111",
-            sessionId: "22222222-2222-4222-8222-222222222222",
-            environmentGeneration: 1,
-            resourceName: `projects/p/locations/r/instances/${SANDBOX_NAME}`,
-            heartbeatIntervalMs: 50,
-            heartbeatTimeoutMs: 300_000,
-          }),
-        );
-      }
+      if (frame.type === "auth") authenticate(socket, frame);
       if (frame.type === "heartbeat") socket.send(JSON.stringify({ type: "server:heartbeat" }));
     });
   });
@@ -248,6 +262,20 @@ async function startControlServer(): Promise<ControlServer> {
     frames,
     send(frame) {
       for (const socket of sockets) if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(frame));
+    },
+    async releaseScope() {
+      released = true;
+      await Promise.all(
+        sockets
+          .filter((socket) => socket.readyState === socket.OPEN)
+          .map(
+            (socket) =>
+              new Promise<void>((resolveClose) => {
+                socket.once("close", () => resolveClose());
+                socket.close(4409, "environment released");
+              }),
+          ),
+      );
     },
     waitFor(type, timeoutMs = 15_000) {
       const existing = frames.find((frame) => frame.type === type);
@@ -266,6 +294,27 @@ async function startControlServer(): Promise<ControlServer> {
   };
 }
 
+function shutdownRecords(fixture: RunnerChild): RunnerShutdownRecord[] {
+  return fixture
+    .diagnostics()
+    .split("\n")
+    .filter((line) => line.startsWith("{"))
+    .map((line) => JSON.parse(line))
+    .filter((record) => record.operation === "shutdown.diagnostic");
+}
+
+function expectCompleteShutdown(fixture: RunnerChild, delayedNativeCleanup = true): void {
+  const records = shutdownRecords(fixture);
+  expect(records.map((record) => record.seq)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+  expect(records.filter((record) => record.event === "request")).toHaveLength(1);
+  if (delayedNativeCleanup)
+    expect(
+      records.find((record) => record.phase === "native_cleanup" && record.event === "end")?.durationMs,
+    ).toBeGreaterThanOrEqual(200);
+  expect(records.at(-1)?.elapsedMs, fixture.diagnostics()).toBeGreaterThanOrEqual(200);
+  expect(records.at(-1)).toMatchObject({ event: "summary", outcome: "completed", diagnosticIncomplete: false });
+}
+
 describe("runner bin signal lifecycle (real child)", () => {
   it("SIGTERM during startup waits for the delayed destroy and exits 143", async () => {
     const fixture = await spawnRunnerBin({ backendUrl: "ws://127.0.0.1:1/ws", launchMs: 400, destroyMs: 250 });
@@ -277,6 +326,62 @@ describe("runner bin signal lifecycle (real child)", () => {
     expect(exit.signal, fixture.diagnostics()).toBeNull();
     expect(exit.code, fixture.diagnostics()).toBe(143);
     expect(await readFile(fixture.marker, "utf8")).toContain("destroy");
+    expect(shutdownRecords(fixture)).toEqual([]);
+  }, 30_000);
+
+  it("SIGTERM after authenticated readiness records cleanup only after the delayed destroy", async () => {
+    const control = await startControlServer();
+    const fixture = await spawnRunnerBin({ backendUrl: control.url, launchMs: 0, destroyMs: 250 });
+    await control.waitFor("runner:ready");
+    fixture.child.kill("SIGTERM");
+    const exit = await fixture.exited;
+    expect(exit.signal, fixture.diagnostics()).toBeNull();
+    expect(exit.code, fixture.diagnostics()).toBe(143);
+    expect(await readFile(fixture.marker, "utf8")).toContain("destroy");
+    expectCompleteShutdown(fixture);
+  }, 30_000);
+
+  it("reports native cleanup failure without changing the global SIGTERM exit policy", async () => {
+    const control = await startControlServer();
+    const fixture = await spawnRunnerBin({ backendUrl: control.url, launchMs: 0, destroyMs: 250, destroyFail: true });
+    await control.waitFor("runner:ready");
+    fixture.child.kill("SIGTERM");
+    const exit = await fixture.exited;
+    expect(exit.signal, fixture.diagnostics()).toBeNull();
+    expect(exit.code, fixture.diagnostics()).toBe(143);
+    const records = shutdownRecords(fixture);
+    expect(records.find((record) => record.event === "failure")).toMatchObject({ phase: "native_cleanup" });
+    expect(records.at(-1)).toMatchObject({ outcome: "failed", diagnosticIncomplete: false });
+    expect(fixture.diagnostics()).not.toContain("private-destroy-failure");
+  }, 30_000);
+
+  it("retains authenticated correlation when Server releases the channel before SIGTERM", async () => {
+    const control = await startControlServer();
+    const fixture = await spawnRunnerBin({ backendUrl: control.url, launchMs: 0, destroyMs: 250 });
+    await control.waitFor("runner:ready");
+    await control.releaseScope();
+    await new Promise((resolveDelay) => setTimeout(resolveDelay, 300));
+    fixture.child.kill("SIGTERM");
+    const exit = await fixture.exited;
+    expect(exit.signal, fixture.diagnostics()).toBeNull();
+    expect(exit.code, fixture.diagnostics()).toBe(143);
+    expectCompleteShutdown(fixture);
+    expect(shutdownRecords(fixture)[0]).toMatchObject({
+      sessionId: "22222222-2222-4222-8222-222222222222",
+      trigger: "request",
+    });
+  }, 30_000);
+
+  it("attributes non-signal cleanup after channel release and rejected reattachment", async () => {
+    const control = await startControlServer();
+    const fixture = await spawnRunnerBin({ backendUrl: control.url, launchMs: 0, destroyMs: 250 });
+    await control.waitFor("runner:ready");
+    await control.releaseScope();
+    const exit = await fixture.exited;
+    expect(exit.signal, fixture.diagnostics()).toBeNull();
+    expect(exit.code, fixture.diagnostics()).toBe(1);
+    expectCompleteShutdown(fixture);
+    expect(shutdownRecords(fixture)[0]?.trigger).toBe("exit");
   }, 30_000);
 
   it("SIGINT during an active acceptance aborts exactly once and waits for destroy before exiting 130", async () => {
@@ -302,5 +407,6 @@ describe("runner bin signal lifecycle (real child)", () => {
     expect(exit.code, fixture.diagnostics()).toBe(130);
     expect(await readFile(fixture.marker, "utf8")).toContain("destroy");
     expect((await readIfExists(fixture.aborts)).match(/abort/g)?.length).toBe(1);
+    expectCompleteShutdown(fixture, false);
   }, 30_000);
 });

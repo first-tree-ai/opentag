@@ -3,7 +3,7 @@ import { count, eq, type SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
-import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
+import { createDatabaseClient, type DatabaseClient, type DatabaseTransaction } from "../../db/client.js";
 import {
   agents,
   computers,
@@ -140,18 +140,27 @@ const RUNTIME_TABLE_READ =
 function tracedService(database: DatabaseClient) {
   const statements: string[] = [];
   const dialect = new PgDialect();
-  const traced = new Proxy(database, {
-    get(target, property, receiver) {
-      if (property === "execute") {
-        return (query: SQL) => {
-          statements.push(dialect.sqlToQuery(query).sql);
-          return target.execute(query);
-        };
-      }
-      return Reflect.get(target, property, receiver);
-    },
-  }) as DatabaseClient;
-  return { service: new TaskService(traced), statements };
+  const traced = (executor: DatabaseClient | DatabaseTransaction): DatabaseClient | DatabaseTransaction =>
+    new Proxy(executor, {
+      get(target, property) {
+        if (property === "execute") {
+          return (query: SQL) => {
+            statements.push(dialect.sqlToQuery(query).sql);
+            return target.execute(query);
+          };
+        }
+        const value = Reflect.get(target, property);
+        if (property === "transaction") {
+          return (read: (transaction: DatabaseTransaction) => Promise<unknown>, options: unknown) =>
+            Reflect.apply(value, target, [
+              (transaction: DatabaseTransaction) => read(traced(transaction) as DatabaseTransaction),
+              options,
+            ]);
+        }
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  return { service: new TaskService(traced(database) as DatabaseClient), statements };
 }
 
 describe("ImOutboundCapture persistence", () => {

@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { constants, createReadStream } from "node:fs";
 import { chmod, lstat, mkdir, open, readdir, rename, rm, rmdir, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
+import { performance } from "node:perf_hooks";
 import { createLogger } from "../../observability/logger.js";
 import { ensurePrivateDirectory, syncDurableDirectory } from "../../storage/durable-file.js";
 import {
@@ -39,8 +40,22 @@ export class ProviderCliInstallError extends Error {
   }
 }
 
-/** Bounded artifact download; the default implementation follows redirects off the reviewed URL. */
-export type ProviderCliFetcher = (options: { url: string; maxBytes: number; timeoutMs: number }) => Promise<Uint8Array>;
+/**
+ * Bounded artifact download; the default implementation follows redirects off the reviewed URL.
+ * `signal` cancels it (daemon shutdown): the promise then rejects with the signal's reason, never
+ * with a ProviderCliInstallError, so cancellation is not reported as a broken artifact.
+ */
+export type ProviderCliFetcher = (options: {
+  url: string;
+  maxBytes: number;
+  timeoutMs: number;
+  signal?: AbortSignal;
+}) => Promise<Uint8Array>;
+
+/** Rethrow the caller's cancellation as itself instead of as a download failure. */
+function throwIfCancelled(cancel: AbortSignal | undefined): void {
+  if (cancel?.aborted) throw cancel.reason ?? new DOMException("The operation was aborted", "AbortError");
+}
 
 const DOWNLOAD_TIMEOUT_MS = 120_000;
 const MAX_REDIRECT_HOPS = 8;
@@ -70,10 +85,12 @@ async function requestProviderCliArtifact(
   fetchImpl: typeof fetch,
   url: string,
   signal: AbortSignal,
+  cancel: AbortSignal | undefined,
 ): Promise<Response> {
   try {
     return await fetchImpl(url, { redirect: "manual", signal });
   } catch (error) {
+    throwIfCancelled(cancel);
     logger.debug({ code: "artifact_download_failed", error: String(error) }, "Provider CLI artifact download failed");
     throw new ProviderCliInstallError(
       "install_incomplete",
@@ -102,11 +119,13 @@ async function fetchProviderCliArtifactResponse(
   fetchImpl: typeof fetch,
   url: string,
   timeoutMs: number,
+  cancel: AbortSignal | undefined,
 ): Promise<Response> {
   let current = resolveProviderCliArtifactUrl(url);
-  const signal = AbortSignal.timeout(timeoutMs);
+  const timeout = AbortSignal.timeout(timeoutMs);
+  const signal = cancel ? AbortSignal.any([timeout, cancel]) : timeout;
   for (let redirects = 0; ; redirects += 1) {
-    const response = await requestProviderCliArtifact(fetchImpl, current, signal);
+    const response = await requestProviderCliArtifact(fetchImpl, current, signal, cancel);
     if (!REDIRECT_STATUSES.has(response.status)) return response;
 
     const location = response.headers.get("location");
@@ -131,7 +150,11 @@ function concatenateProviderCliArtifactChunks(chunks: readonly Uint8Array[], rec
   return body;
 }
 
-async function readProviderCliArtifactBody(response: Response, maxBytes: number): Promise<Uint8Array> {
+async function readProviderCliArtifactBody(
+  response: Response,
+  maxBytes: number,
+  cancel: AbortSignal | undefined,
+): Promise<Uint8Array> {
   if (!response.ok) {
     throw new ProviderCliInstallError("install_incomplete", `Artifact download failed with HTTP ${response.status}`);
   }
@@ -142,10 +165,35 @@ async function readProviderCliArtifactBody(response: Response, maxBytes: number)
   if (!response.body) return new Uint8Array(await response.arrayBuffer());
 
   const reader = response.body.getReader();
+  // The fetch signal already aborts the body; also cancel the reader so a stream that ignores the
+  // signal cannot keep the socket (and the daemon process) alive after cancellation.
+  const onCancel = () => void reader.cancel(cancel?.reason).catch(() => undefined);
+  cancel?.addEventListener("abort", onCancel, { once: true });
+  try {
+    return await readProviderCliArtifactChunks(reader, maxBytes, cancel);
+  } finally {
+    cancel?.removeEventListener("abort", onCancel);
+  }
+}
+
+async function readProviderCliArtifactChunks(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  maxBytes: number,
+  cancel: AbortSignal | undefined,
+): Promise<Uint8Array> {
   const chunks: Uint8Array[] = [];
   let received = 0;
   for (;;) {
-    const { done, value } = await reader.read();
+    throwIfCancelled(cancel);
+    let next: Awaited<ReturnType<typeof reader.read>>;
+    try {
+      next = await reader.read();
+    } catch (error) {
+      throwIfCancelled(cancel);
+      throw error;
+    }
+    throwIfCancelled(cancel);
+    const { done, value } = next;
     if (done) break;
     received += value.byteLength;
     if (received > maxBytes) {
@@ -163,9 +211,10 @@ async function readProviderCliArtifactBody(response: Response, maxBytes: number)
  * the global fetch with manual redirect handling.
  */
 export function createProviderCliFetcher(fetchImpl: typeof fetch = fetch): ProviderCliFetcher {
-  return async ({ url, maxBytes, timeoutMs }) => {
-    const response = await fetchProviderCliArtifactResponse(fetchImpl, url, timeoutMs);
-    return readProviderCliArtifactBody(response, maxBytes);
+  return async ({ url, maxBytes, timeoutMs, signal }) => {
+    throwIfCancelled(signal);
+    const response = await fetchProviderCliArtifactResponse(fetchImpl, url, timeoutMs, signal);
+    return readProviderCliArtifactBody(response, maxBytes, signal);
   };
 }
 
@@ -226,9 +275,15 @@ export class ProviderCliInstaller {
   /**
    * Publish the reviewed catalog artifact for this platform. Callers must hold the
    * account/provider lock. On any failure before publication, no version directory is
-   * created or modified.
+   * created or modified. `signal` cancels the operation up to the publishing rename; the
+   * staging directory is removed either way and the cancellation reason is rethrown.
    */
-  async install(entry: ProviderCliCatalogEntry, provider: ProviderCliProvider): Promise<ProviderCliManagedInstall> {
+  async install(
+    entry: ProviderCliCatalogEntry,
+    provider: ProviderCliProvider,
+    signal?: AbortSignal,
+  ): Promise<ProviderCliManagedInstall> {
+    throwIfCancelled(signal);
     const artifact = entry.artifacts.find(
       (candidate) => candidate.platform === this.#platform && candidate.arch === this.#arch,
     );
@@ -257,15 +312,20 @@ export class ProviderCliInstaller {
     }
 
     await this.recoverStaging(provider);
+    const installStartedAt = performance.now();
     const operationId = randomUUID();
     const stagingDir = providerCliStagingDirPath(this.#layout, provider, operationId);
     try {
       await ensurePrivateDirectory(this.#layout.root, stagingDir);
+      const downloadStartedAt = performance.now();
       const archive = await this.#fetcher({
         url: artifact.url,
         maxBytes: artifact.archiveBytes,
         timeoutMs: DOWNLOAD_TIMEOUT_MS,
+        ...(signal ? { signal } : {}),
       });
+      throwIfCancelled(signal);
+      const downloadDurationMs = Math.max(0, Math.round(performance.now() - downloadStartedAt));
       if (archive.byteLength !== artifact.archiveBytes) {
         throw new ProviderCliInstallError("integrity_failed", "Artifact size disagrees with the reviewed catalog");
       }
@@ -274,7 +334,9 @@ export class ProviderCliInstaller {
         throw new ProviderCliInstallError("integrity_failed", "Artifact digest disagrees with the reviewed catalog");
       }
 
+      const extractStartedAt = performance.now();
       const extracted = await extractSafely(archive, artifact);
+      const extractDurationMs = Math.max(0, Math.round(performance.now() - extractStartedAt));
       const executableDigest = createHash("sha256").update(extracted.content).digest("hex");
       if (executableDigest !== artifact.executableSha256 || extracted.content.byteLength !== artifact.executableBytes) {
         throw new ProviderCliInstallError(
@@ -291,6 +353,8 @@ export class ProviderCliInstaller {
       await writeStagedExecutable(payloadExecutable, extracted.content);
       await syncDurableDirectory(dirname(payloadExecutable));
       if (dirname(payloadExecutable) !== payloadDir) await syncDurableDirectory(payloadDir);
+      // Last cancellation point: after the rename the publication completes as one unit.
+      throwIfCancelled(signal);
       await ensurePrivateDirectory(this.#layout.root, dirname(versionDir));
       try {
         await rename(payloadDir, versionDir);
@@ -310,7 +374,21 @@ export class ProviderCliInstaller {
 
       // Probe every published or reused artifact. A prior failed publication must never
       // become selectable merely because its digest-addressed directory now exists.
+      const probeStartedAt = performance.now();
       await verifyPublishedExecutable(executablePath, artifact, entry, this.#execFile);
+      const probeDurationMs = Math.max(0, Math.round(performance.now() - probeStartedAt));
+      logger.info(
+        {
+          provider,
+          version: entry.version,
+          archiveBytes: artifact.archiveBytes,
+          downloadDurationMs,
+          extractDurationMs,
+          probeDurationMs,
+          durationMs: Math.max(0, Math.round(performance.now() - installStartedAt)),
+        },
+        "Provider CLI artifact installed",
+      );
       return { artifactId, version: entry.version, executablePath, archiveSha256: artifact.sha256, reused: false };
     } finally {
       await rm(stagingDir, { force: true, recursive: true }).catch((error: unknown) => {

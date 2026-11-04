@@ -1135,6 +1135,23 @@ describe("MCP token requests", () => {
     expect((error as Error).message).not.toContain("expired");
   });
 
+  it("maps numeric-only Feishu refresh-token invalid/expired/revoked codes to invalid_grant", async () => {
+    for (const code of [20003, 20026, 20037, 20064, 20073]) {
+      const { client } = stubRoutes({
+        [`${AS}/token`]: { status: 400, body: JSON.stringify({ code, msg: "refresh_token revoked or expired" }) },
+      });
+      const error = await client
+        .refreshAccessToken(ACCOUNT, AS_METADATA, {
+          refreshToken: "rt_1",
+          client: publicClient,
+          resource: "https://mcp.example.com/mcp",
+        })
+        .catch((caught: unknown) => caught);
+      expect((error as { code?: string }).code, String(code)).toBe(MCP_ERROR_CODES.OAUTH_FAILED);
+      expect((error as { detail?: unknown }).detail, String(code)).toEqual({ status: 400, error: "invalid_grant" });
+    }
+  });
+
   it("reports a refusal whose body carries no bounded error code", async () => {
     /*
      * The code is what the caller may show; a body that spells it as anything other than a string is

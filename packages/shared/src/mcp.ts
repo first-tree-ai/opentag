@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { AgentDisplayNameSchema } from "./agent.js";
+import { AgentDisplayNameSchema, AgentNameSchema } from "./agent.js";
 
 /**
  * MCP (Model Context Protocol) management contract.
@@ -475,7 +475,8 @@ export type ListAgentMCPServersResponse = z.infer<typeof ListAgentMCPServersResp
 export const MCPServerAgentSchema = z
   .object({
     agentId: UuidSchema,
-    agentName: MCPServerNameSchema,
+    // Agent names follow the Agent name rule, not the lowercase Server name rule.
+    agentName: AgentNameSchema,
     agentDisplayName: AgentDisplayNameSchema,
     enabled: z.boolean(),
     effective: MCPEffectiveConfigSchema,
@@ -840,7 +841,7 @@ export function isCanvaDeveloperPortalMcpEndpoint(url: string): boolean {
  * `tokenEndpointAuthMethod` is what the provider's authorization server accepts; presenting the
  * other method is rejected by it, so it is data here, not a default.
  */
-export const MCP_STATIC_OAUTH_BRANDS = ["canva", "hubspot", "asana", "zoom", "github"] as const;
+export const MCP_STATIC_OAUTH_BRANDS = ["canva", "hubspot", "asana", "zoom", "github", "feishu"] as const;
 
 export type McpStaticOAuthBrand = (typeof MCP_STATIC_OAUTH_BRANDS)[number];
 
@@ -884,6 +885,12 @@ export const MCP_STATIC_OAUTH_PROVIDERS: readonly McpStaticOAuthProvider[] = [
     brand: "github",
     origins: ["https://api.githubcopilot.com"],
     issuer: "https://github.com/login/oauth",
+    tokenEndpointAuthMethod: "client_secret_post",
+  },
+  {
+    brand: "feishu",
+    origins: ["https://mcp.feishu.cn"],
+    issuer: "https://open.feishu.cn",
     tokenEndpointAuthMethod: "client_secret_post",
   },
 ];

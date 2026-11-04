@@ -1,3 +1,4 @@
+import { cloudLatencySessions } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { CloudRunAdmin } from "../services/cloud-run/cloud-run-admin.js";
 import { CloudRunAdminError } from "../services/cloud-run/errors.js";
@@ -12,7 +13,7 @@ const CONFIG = {
   project: "opentag-test",
   region: "us-west1",
   serviceAccount: "runner-sa@opentag-test.iam.gserviceaccount.com",
-  image: "us-west1-docker.pkg.dev/opentag-test/runners/opentag-runner@sha256:" + "a".repeat(64),
+  image: `us-west1-docker.pkg.dev/opentag-test/runners/opentag-runner@sha256:${"a".repeat(64)}`,
   vpc: { network: "opentag-net", subnetwork: "opentag-subnet", executionTag: "opentag-runner" },
   apiTimeoutMs: 5_000,
 };
@@ -88,11 +89,15 @@ function instanceBody(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function admin(fetchImpl: typeof fetch, options: { sleep?: (ms: number) => Promise<void> } = {}) {
+function admin(
+  fetchImpl: typeof fetch,
+  options: { sleep?: (ms: number) => Promise<void>; diagnosticSessionIds?: readonly string[] } = {},
+) {
   return new CloudRunAdmin(CONFIG, {
     fetchImpl,
     tokenProvider: createStaticTokenProvider("unit-access-token"),
     sleep: options.sleep ?? (() => Promise.resolve()),
+    diagnosticSessionIds: options.diagnosticSessionIds,
   });
 }
 
@@ -183,6 +188,92 @@ describe("CloudRunAdmin create", () => {
     expect(labels["managed-by"]).toBe("opentag");
   });
 
+  it("adds only the three diagnostic variables to selected Staging births", async () => {
+    const { calls, fetchImpl } = fakeFetch((call) =>
+      call.method === "POST"
+        ? { status: 200, body: { name: "projects/opentag-test/locations/us-west1/operations/op-1" } }
+        : { status: 200, body: instanceBody() },
+    );
+    const spec = { ...SPEC, controlToken: "unit-control-token", workspacePersistence: true };
+    await admin(fetchImpl).createInstance(spec);
+    const ids = [IDENTITY.sessionId, "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"];
+    await admin(fetchImpl, { diagnosticSessionIds: ids }).createInstance(spec);
+    const [before, after] = calls
+      .filter((call) => call.method === "POST")
+      .map(
+        (call) =>
+          call.body as {
+            containers: { env: { name: string; value: string }[] }[];
+          },
+      );
+    if (!before || !after || !before.containers[0] || !after.containers[0]) throw new Error("Missing create body");
+    expect(after.containers[0]).toEqual({
+      ...before.containers[0],
+      env: [
+        ...before.containers[0].env,
+        { name: "OPENTAG_ENV", value: "staging" },
+        { name: "OPENTAG_CLOUD_LATENCY_DIAGNOSTICS", value: "true" },
+        { name: "OPENTAG_CLOUD_LATENCY_SESSION_IDS", value: ids.join(",") },
+      ],
+    });
+    expect({ ...after, containers: before.containers }).toEqual(before);
+    expect([
+      ...cloudLatencySessions(Object.fromEntries(after.containers[0].env.map(({ name, value }) => [name, value]))),
+    ]).toEqual(ids);
+    expect(calls.map((call) => call.method)).toEqual(["POST", "GET", "POST", "GET"]);
+  });
+
+  it.each([
+    { name: "default", ids: undefined, environment: "staging" as const },
+    { name: "empty", ids: [], environment: "staging" as const },
+    { name: "invalid", ids: ["invalid"], environment: "staging" as const },
+    {
+      name: "comma injection",
+      ids: [`${IDENTITY.sessionId},aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa`],
+      environment: "staging" as const,
+    },
+    { name: "over limit", ids: Array(17).fill(IDENTITY.sessionId) as string[], environment: "staging" as const },
+    { name: "not selected", ids: ["aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa"], environment: "staging" as const },
+    { name: "production", ids: [IDENTITY.sessionId], environment: "prod" as const },
+    { name: "development", ids: [IDENTITY.sessionId], environment: "dev" as const },
+  ])("keeps the creation environment unchanged when diagnostics are $name", async ({ ids, environment }) => {
+    const spec = { ...SPEC, environment };
+    const { calls, fetchImpl } = fakeFetch((call) =>
+      call.method === "POST"
+        ? { status: 200, body: { name: "projects/opentag-test/locations/us-west1/operations/op-1" } }
+        : {
+            status: 200,
+            body: instanceBody({
+              name: runnerInstanceResourceName(CONFIG.project, CONFIG.region, runnerInstanceId(spec)),
+              labels: runnerInstanceLabels(spec),
+            }),
+          },
+    );
+    await admin(fetchImpl, { diagnosticSessionIds: ids }).createInstance(spec);
+    const body = calls[0]?.body as { containers: { env: { name: string; value: string }[] }[] };
+    expect(body.containers[0]?.env).toEqual([
+      { name: "OPENTAG_RUNNER_BACKEND_URL", value: SPEC.backendUrl },
+      { name: "OPENTAG_RUNNER_BOOTSTRAP_TOKEN", value: SPEC.bootstrapToken },
+      { name: "OPENTAG_RUNNER_SANDBOX_NAME", value: runnerInstanceId(spec) },
+    ]);
+  });
+
+  it("snapshots validated diagnostic selection instead of retaining a mutable caller list", async () => {
+    const { calls, fetchImpl } = fakeFetch((call) =>
+      call.method === "POST"
+        ? { status: 200, body: { name: "projects/opentag-test/locations/us-west1/operations/op-1" } }
+        : { status: 200, body: instanceBody() },
+    );
+    const ids = [IDENTITY.sessionId];
+    const service = admin(fetchImpl, { diagnosticSessionIds: ids });
+    ids[0] = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
+    await service.createInstance(SPEC);
+    const body = calls[0]?.body as { containers: { env: { name: string; value: string }[] }[] };
+    expect(body.containers[0]?.env.find((entry) => entry.name === "OPENTAG_CLOUD_LATENCY_SESSION_IDS")?.value).toBe(
+      IDENTITY.sessionId,
+    );
+  });
+
   it("sets the workspace persistence env flag only for workspace-enabled allocations", async () => {
     const { calls, fetchImpl } = fakeFetch((call) => {
       if (call.method === "POST")
@@ -214,16 +305,19 @@ describe("CloudRunAdmin create", () => {
     expect(env.OPENTAG_RUNNER_BACKEND_URL).toBe(SPEC.backendUrl);
   });
 
-  it("adopts the existing owned resource on 409 instead of duplicating", async () => {
+  it.each([false, true])("adopts the existing owned resource without patching it: diagnostics=%s", async (enabled) => {
     const { calls, fetchImpl } = fakeFetch((call) =>
       call.method === "POST"
         ? { status: 409, body: { error: { message: "already exists" } } }
         : { status: 200, body: instanceBody() },
     );
-    const result = await admin(fetchImpl).createInstance(SPEC);
+    const result = await admin(fetchImpl, {
+      diagnosticSessionIds: enabled ? [IDENTITY.sessionId] : undefined,
+    }).createInstance(SPEC);
     expect(result.outcome).toBe("adopted");
     expect(result.instance.uid).toBe("uid-1234-5678");
     expect(calls.filter((call) => call.method === "POST")).toHaveLength(1);
+    expect(calls.map((call) => call.method)).toEqual(["POST", "GET"]);
   });
 
   it("refuses to adopt a resource without this sandbox's ownership labels", async () => {
@@ -235,47 +329,65 @@ describe("CloudRunAdmin create", () => {
     await expect(admin(fetchImpl).createInstance(SPEC)).rejects.toMatchObject({ kind: "ownership_mismatch" });
   });
 
-  it("uses the narrow documented v1 compatibility create only for the networkInterfaces rejection", async () => {
-    const { calls, fetchImpl } = fakeFetch((call) => {
-      if (call.method === "POST" && call.url.includes("/v2/")) {
-        return {
-          status: 400,
-          body: {
-            error: {
-              message:
-                "metadata.annotations[run.googleapis.com/vpc-access-egress]: The run.googleapis.com/vpc-access-egress annotation cannot be set without also setting the run.googleapis.com/vpc-access-connector annotation or the run.googleapis.com/network-interfaces annotation.",
+  it.each([false, true])(
+    "uses the narrow v1 compatibility create with the same diagnostic selection: %s",
+    async (enabled) => {
+      const { calls, fetchImpl } = fakeFetch((call) => {
+        if (call.method === "POST" && call.url.includes("/v2/")) {
+          return {
+            status: 400,
+            body: {
+              error: {
+                message:
+                  "metadata.annotations[run.googleapis.com/vpc-access-egress]: The run.googleapis.com/vpc-access-egress annotation cannot be set without also setting the run.googleapis.com/vpc-access-connector annotation or the run.googleapis.com/network-interfaces annotation.",
+              },
             },
-          },
-        };
-      }
-      if (call.method === "POST" && call.url.includes("/apis/run.googleapis.com/v1/")) {
-        return { status: 200, body: { metadata: { uid: "uid-1234-5678" } } };
-      }
-      return { status: 200, body: instanceBody() };
-    });
-    const result = await admin(fetchImpl).createInstance(SPEC);
-    expect(result.outcome).toBe("created");
-    const v1 = calls.find((call) => call.url.includes("/apis/run.googleapis.com/v1/"));
-    expect(v1?.url).toBe(
-      "https://us-west1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/opentag-test/instances",
-    );
-    const body = v1?.body as {
-      metadata: { annotations: Record<string, string>; name: string };
-      spec: { serviceAccountName: string; containers: Record<string, unknown>[] };
-    };
-    expect(body.metadata.name).toBe(runnerInstanceId(IDENTITY));
-    expect(JSON.parse(body.metadata.annotations["run.googleapis.com/network-interfaces"] as string)).toEqual([
-      { network: "opentag-net", subnetwork: "opentag-subnet", tags: ["opentag-runner"] },
-    ]);
-    expect(body.metadata.annotations["run.googleapis.com/vpc-access-egress"]).toBe("all-traffic");
-    expect(body.metadata.annotations["run.googleapis.com/cpu-throttling"]).toBe("false");
-    expect(result.operationName).toBeUndefined(); // v1 returns an Instance, not an LRO
-    expect(body.spec.containers[0]).toMatchObject({
-      sandboxLauncher: true,
-      image: CONFIG.image,
-      ports: [{ containerPort: 8080 }],
-    });
-  });
+          };
+        }
+        if (call.method === "POST" && call.url.includes("/apis/run.googleapis.com/v1/")) {
+          return { status: 200, body: { metadata: { uid: "uid-1234-5678" } } };
+        }
+        return { status: 200, body: instanceBody() };
+      });
+      const result = await admin(fetchImpl, {
+        diagnosticSessionIds: enabled ? [IDENTITY.sessionId] : undefined,
+      }).createInstance(SPEC);
+      expect(result.outcome).toBe("created");
+      const v1 = calls.find((call) => call.url.includes("/apis/run.googleapis.com/v1/"));
+      expect(v1?.url).toBe(
+        "https://us-west1-run.googleapis.com/apis/run.googleapis.com/v1/namespaces/opentag-test/instances",
+      );
+      const body = v1?.body as {
+        metadata: { annotations: Record<string, string>; name: string };
+        spec: { serviceAccountName: string; containers: Record<string, unknown>[] };
+      };
+      expect(body.metadata.name).toBe(runnerInstanceId(IDENTITY));
+      expect(JSON.parse(body.metadata.annotations["run.googleapis.com/network-interfaces"] as string)).toEqual([
+        { network: "opentag-net", subnetwork: "opentag-subnet", tags: ["opentag-runner"] },
+      ]);
+      expect(body.metadata.annotations["run.googleapis.com/vpc-access-egress"]).toBe("all-traffic");
+      expect(body.metadata.annotations["run.googleapis.com/cpu-throttling"]).toBe("false");
+      expect(result.operationName).toBeUndefined(); // v1 returns an Instance, not an LRO
+      const env = body.spec.containers[0]?.env as { name: string; value: string }[];
+      expect(
+        env.filter((entry) => entry.name === "OPENTAG_ENV" || entry.name.startsWith("OPENTAG_CLOUD_LATENCY_")),
+      ).toEqual(
+        enabled
+          ? [
+              { name: "OPENTAG_ENV", value: "staging" },
+              { name: "OPENTAG_CLOUD_LATENCY_DIAGNOSTICS", value: "true" },
+              { name: "OPENTAG_CLOUD_LATENCY_SESSION_IDS", value: IDENTITY.sessionId },
+            ]
+          : [],
+      );
+      expect(calls.every((call) => call.method === "POST" || call.method === "GET")).toBe(true);
+      expect(body.spec.containers[0]).toMatchObject({
+        sandboxLauncher: true,
+        image: CONFIG.image,
+        ports: [{ containerPort: 8080 }],
+      });
+    },
+  );
 
   it("never falls back to default egress for other 400 rejections", async () => {
     const { calls, fetchImpl } = fakeFetch(() => ({

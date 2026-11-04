@@ -2,6 +2,43 @@
 
 Test and acceptance material for [Cloud workspace persistence](../../docs/system/cloud/cloud-workspace-persistence.md).
 
+## Local checkpoint diagnostics
+
+- `cloud-workspace.test.ts` checks that hard links and an oversized Context Tree cache retained
+  for an active write session preserve their specific archive error codes, the last saved object,
+  and unsaved local files. Verified read-only caches follow the existing omission rules. A repeated
+  terminal failure performs no new transfer.
+- `cloud-turns.test.ts` and `cloud-turns-session.test.ts` check that deterministic save failures
+  are logged without filenames and keep the report/control channel available. IM execution
+  effects remain truthful and reconciliation never reruns the completed worker.
+- `context-tree-commands.test.ts` uses a real local managed HTTP request to verify that aborting
+  a sync returns `TIMEOUT`, rather than rejecting before the offline recovery path.
+  `cloud-context-tree.test.ts` verifies that a timed-out managed HTTP refresh then reads its
+  cached snapshot within a fresh recovery budget.
+- `native-provider-bridge.test.ts` verifies that a Context Tree caller's TCP FIN cancels the
+  parent HTTP response while the other bridge entries retain their large-response and half-close
+  behavior. This local test does not establish how an incident's native processes terminated.
+
+These checks establish reproducible failure handling. They do not identify the exact archive
+violation from an incident without its original error or prove real GCS/native recovery.
+
+## Web recovery
+
+- `cloud-workspace-recovery.test.tsx` checks access without a release-failure marker, generation
+  capture, duplicate-click prevention, discard confirmation/cancellation, a replacement during
+  confirmation, status-read failures, uncertain mutations without automatic resubmission,
+  pagination and revoked access. Running, queued and unknown work requires an interruption
+  confirmation before save/release. Save/release and discard/release both refresh the separate
+  progress-notice query: two regression cases fail before that refresh is added and pass after it,
+  so a successful recovery removes the previously visible save-failure banner without polling.
+- `api-cloud-workspace.test.ts` checks the existing Account status/stop paths, exact generation and
+  discard bodies, CSRF, denial and response deadlines without a second mutation.
+- [Browser evidence](../web-ui/cloud-workspace-recovery/README.md) covers responsive layout,
+  both locales, keyboard confirmation behavior and accessibility with mocked Account APIs.
+
+These checks do not establish real GCS, Instance deletion, or same-Session restoration. The live
+acceptance below remains separate and requires authorization for its owned disposable resources.
+
 ## Live acceptance before rollout
 
 Use a disposable Account/Session and an owned GCS prefix in staging (us-west1). The existing

@@ -121,7 +121,7 @@ process.stdout.write(latest.version);
         OPENTAG_HOME="$tmp_dir/home" \
         sh "$installer" --prefix "$tmp_dir/prefix" --bin-dir "$tmp_dir/bin" --no-path-edit 2>&1
     )"
-    [[ "$repeat_output" == *"already installed and up to date"* ]] ||
+    [[ "$repeat_output" == *"openTag ${published_version} is already installed; nothing was downloaded."* ]] ||
       die "reinstalling the published release did not short-circuit: $repeat_output"
 
     log "public install smoke test passed for $CHANNEL $published_version"

@@ -73,7 +73,7 @@ describe("Soul template catalog", () => {
     expect(items).toHaveLength(6);
     fireEvent.click(within(dialog).getByRole("button", { name: locale === "en" ? "Use template" : "使用模板" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    const editor = screen.getByRole("textbox", { name: "Soul" });
+    const editor = screen.getByRole("textbox", { name: locale === "en" ? "Soul" : "指令" });
     expect(readSoul(editor)).toBe(template.body);
     expect(
       within(editor)
@@ -109,7 +109,7 @@ describe("Soul template catalog", () => {
     const view = render(<SoulConfigurationSection {...props} />);
     overwriteGetLocale(() => "zh");
     view.rerender(<SoulConfigurationSection {...props} />);
-    expect(readSoul(screen.getByRole("textbox", { name: "Soul" }))).toBe(props.value);
+    expect(readSoul(screen.getByRole("textbox", { name: "指令" }))).toBe(props.value);
     expect(screen.getByRole("button", { name: "取消" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "保存更改" })).toBeTruthy();
     expect(onValueChange).not.toHaveBeenCalled();

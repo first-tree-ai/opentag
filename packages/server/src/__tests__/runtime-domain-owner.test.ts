@@ -30,6 +30,7 @@ import {
   type RuntimeDomainOwnerOptions,
 } from "../runtime/runtime-domain-owner.js";
 import type { RuntimeBusinessContext } from "../runtime/runtime-session.js";
+import { deferred } from "./support/deferred.js";
 
 describe("RuntimeDomainOwner", () => {
   it.each(["0.1.0", "0.1.1-staging.43.1"])(
@@ -207,6 +208,30 @@ describe("RuntimeDomainOwner", () => {
     await expect(first).resolves.toMatchObject({ status: "ready" });
     await expect(second).resolves.toMatchObject({ code: "capacity" });
   });
+
+  it.each(["delivery", "steer"] as const)(
+    "defers %s before sending when accepted receipt work is pending",
+    async (kind) => {
+      const f = await ownerFixture();
+      const custody = new MemoryRuntimeCustodyStore();
+      vi.spyOn(custody, kind === "delivery" ? "beginDeliveryDispatch" : "beginSteerDispatch").mockResolvedValue(
+        "inbound_pending",
+      );
+      const release = vi.spyOn(custody, kind === "delivery" ? "releaseDeliveryDispatch" : "releaseSteerDispatch");
+      const owner = new RuntimeDomainOwner(f.registry, custody);
+      const dispatched = vi.fn();
+      const request = deliveryRequest();
+      const operation =
+        kind === "delivery"
+          ? owner.requestDelivery(f.computerId, f.instanceId, request, dispatched)
+          : owner.requestSteer(f.computerId, f.instanceId, steerRequest(request), dispatched);
+      await expect(operation).rejects.toMatchObject({ code: "IM_DELIVERY_INBOUND_PENDING" });
+      expect(f.frames).not.toContainEqual(expect.objectContaining({ type: "im:deliver" }));
+      expect(f.frames).not.toContainEqual(expect.objectContaining({ type: "im:steer" }));
+      expect(dispatched).not.toHaveBeenCalled();
+      expect(release).not.toHaveBeenCalled();
+    },
+  );
 
   it("maps custody and resend failures to request errors", async () => {
     const fixture = await ownerFixture();
@@ -1756,3 +1781,179 @@ class MemoryRuntimeCustodyStore implements RuntimeCustodyStore {
     return "recorded";
   }
 }
+
+it("close joins preparation and prevents a late reconcile admission", async () => {
+  const entered = deferred(),
+    release = deferred();
+  const prepareReconcile = vi.fn(async (_computerId: string, _instanceId: string, request: SessionReconcileRequest) => {
+    entered.resolve();
+    await release.promise;
+    return { request };
+  });
+  const f = await ownerFixture(1000, { prepareReconcile });
+  const request = reconcileRequest(f.computerId);
+  const pending = f.owner.requestReconcile(f.computerId, f.instanceId, request).catch((error: unknown) => error);
+  try {
+    await entered.promise;
+    let drained = false;
+    const closing = f.owner.close().then(() => {
+      drained = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(drained).toBe(false);
+    release.resolve();
+    await closing;
+    expect(await pending).toMatchObject({ code: "stopped" });
+    expect(f.frames).toEqual([]);
+    await expect(f.owner.requestReconcile(f.computerId, f.instanceId, request)).rejects.toMatchObject({
+      code: "stopped",
+    });
+  } finally {
+    release.resolve();
+    await pending;
+    await f.owner.close();
+  }
+});
+
+it("close waits for an original send callback after rejecting its pending caller", async () => {
+  const f = await ownerFixture();
+  const entered = deferred(),
+    release = deferred();
+  vi.spyOn(f.registry, "send").mockImplementation(async () => {
+    entered.resolve();
+    await release.promise;
+  });
+  const pending = f.owner
+    .requestDelivery(f.computerId, f.instanceId, deliveryRequest())
+    .catch((error: unknown) => error);
+  try {
+    await entered.promise;
+    let drained = false;
+    const closing = f.owner.close().then(() => {
+      drained = true;
+    });
+    expect(await pending).toMatchObject({ code: "stopped" });
+    expect(drained).toBe(false);
+    release.resolve();
+    await closing;
+    expect(drained).toBe(true);
+  } finally {
+    release.resolve();
+    await pending;
+    await f.owner.close();
+  }
+});
+
+it("close joins an already-admitted completion callback", async () => {
+  const entered = deferred(),
+    release = deferred();
+  const onTurnActivity = async (frame: TurnActivityRequest) => {
+    entered.resolve();
+    await release.promise;
+    return {
+      type: "turn:activity:result" as const,
+      requestId: frame.requestId,
+      turnId: frame.turnId,
+      sequence: frame.sequence,
+      status: "recorded" as const,
+    };
+  };
+  const f = await ownerFixture(1000, { onTurnActivity });
+  const frame: TurnActivityRequest = {
+    type: "turn:activity",
+    requestId: randomUUID(),
+    deliveryId: randomUUID(),
+    sessionId: randomUUID(),
+    agentId: randomUUID(),
+    turnId: randomUUID(),
+    placementGeneration: 1,
+    sequence: 1,
+    phase: "running",
+  };
+  const result = f.owner.handle(frame, {
+    ...f.context,
+    negotiatedCapabilities: { [RUNTIME_CAPABILITY.turnActivity]: 1 },
+  });
+  try {
+    await entered.promise;
+    let drained = false;
+    const closing = f.owner.close().then(() => {
+      drained = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(drained).toBe(false);
+    release.resolve();
+    expect(await result).toMatchObject({ status: "recorded" });
+    await closing;
+    expect(drained).toBe(true);
+  } finally {
+    release.resolve();
+    await result;
+    await f.owner.close();
+  }
+});
+
+it.each(["getDelivery", "getTurn"] as const)("close joins an admitted %s custody read", async (method) => {
+  const f = await ownerFixture();
+  const entered = deferred(),
+    release = deferred();
+  vi.spyOn(f.custody, method).mockImplementation(async () => {
+    entered.resolve();
+    await release.promise;
+    return undefined;
+  });
+  const result = f.owner[method](randomUUID());
+  try {
+    await entered.promise;
+    let drained = false;
+    const closing = f.owner.close().then(() => {
+      drained = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(drained).toBe(false);
+    release.resolve();
+    expect(await result).toBeUndefined();
+    await closing;
+    await expect(f.owner[method](randomUUID())).rejects.toMatchObject({ code: "stopped" });
+  } finally {
+    release.resolve();
+    await result;
+    await f.owner.close();
+  }
+});
+
+it("close joins complete Session-message admission before it creates a pending request", async () => {
+  const f = await ownerFixture();
+  const entered = deferred(),
+    release = deferred();
+  const result = f.owner
+    .requestSessionMessageDelivery(
+      f.computerId,
+      f.instanceId,
+      sessionMessageDelivery(),
+      undefined,
+      async (operation) => {
+        entered.resolve();
+        await release.promise;
+        return { admitted: true, result: operation(() => undefined) };
+      },
+    )
+    .catch((error: unknown) => error);
+  try {
+    await entered.promise;
+    let drained = false;
+    const closing = f.owner.close().then(() => {
+      drained = true;
+    });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(drained).toBe(false);
+    release.resolve();
+    await closing;
+    expect(await result).toMatchObject({ code: "stopped" });
+    expect(f.frames).toEqual([]);
+  } finally {
+    release.resolve();
+    await result;
+    await f.owner.close();
+  }
+});

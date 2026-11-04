@@ -51,6 +51,15 @@ describe("Slack operation registry boundaries", () => {
 });
 
 describe("Feishu operation registry boundaries", () => {
+  it("keeps validation limited to bot identity rather than optional CLI metadata", () => {
+    expect(
+      FEISHU_OPERATIONS.filter((operation) => operation.validationAllowed).map((operation) => operation.operationId),
+    ).toEqual(["feishu.bot.info"]);
+    expect(
+      feishu.match("GET", "/api/tools/open/api_definition?protocol=meta&client_version=1.0.92")?.operation,
+    ).toMatchObject({ operationId: "feishu.metadata.api_definition", kind: "read" });
+  });
+
   it("registers the tenant token, identity, IM, and document domains", () => {
     expect(feishu.match("POST", "/open-apis/auth/v3/tenant_access_token/internal")).toBeDefined();
     expect(feishu.match("GET", "/open-apis/bot/v3/info")?.operation.validationAllowed).toBe(true);

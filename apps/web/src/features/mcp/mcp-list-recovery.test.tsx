@@ -15,6 +15,30 @@ const ready = {
 };
 afterEach(() => vi.restoreAllMocks());
 describe("connector list recovery", () => {
+  it("offers reauthorization for an OAuth credential rejected by the probe", async () => {
+    stub([
+      entry({
+        authorization: {
+          ...authorization(),
+          kind: "oauth",
+          probeState: "failed",
+          probeError: `${MCP_ERROR_CODES.UPSTREAM_ERROR}: ${MCP_AUTH_REJECTION_SUMMARY}`,
+        },
+      }),
+    ]);
+    vi.spyOn(window, "open").mockReturnValue(null);
+    const start = vi.spyOn(browserApi, "startMcpOAuth").mockRejectedValue(new ApiError(503, "Unavailable"));
+    const probe = vi.spyOn(browserApi, "probeMcpServer");
+    wrap(<McpPage agentId={AGENT_ID} />);
+
+    expect(await screen.findByText("Authorization didn't finish. Try again.")).toBeTruthy();
+    expect(screen.queryByText("Couldn't load tools. Try again.")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Retry: linear" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Reauthorize: linear" }));
+    await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
+    expect(probe).not.toHaveBeenCalled();
+  });
+
   it("offers authorization directly when no credential has been configured", async () => {
     stub([entry({ authorization: null })]);
     wrap(<McpPage agentId={AGENT_ID} />);
@@ -30,7 +54,7 @@ describe("connector list recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Reauthorize: linear" }));
     await waitFor(() => expect(start).toHaveBeenCalledTimes(1));
     expect(screen.queryByRole("dialog")).toBeNull();
-    expect(await screen.findByText("Authorization failed")).toBeTruthy();
+    expect(await screen.findByText("Authorization didn't finish. Try again.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Reauthorize: linear" })).toBeTruthy();
   });
   it("opens the credential editor from a rejected key without making a request", async () => {
@@ -45,10 +69,30 @@ describe("connector list recovery", () => {
     ]);
     const save = vi.spyOn(browserApi, "setMcpAuthorization");
     wrap(<McpPage agentId={AGENT_ID} />);
-    fireEvent.click(await screen.findByRole("button", { name: "Update credentials: linear" }));
+    expect(await screen.findByText("The key was rejected. Update it.")).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Update key: linear" }));
     const dialog = within(await screen.findByRole("dialog", { name: "linear" }));
     expect(await dialog.findByLabelText("API key or token", { selector: "input[type=password]" })).toBeTruthy();
     expect(save).not.toHaveBeenCalled();
+  });
+  it("offers to edit a typed address the Server cannot reach, instead of a retry", async () => {
+    stub([
+      entry({
+        authorization: {
+          ...authorization(),
+          probeState: "failed",
+          probeError: `${MCP_ERROR_CODES.URL_BLOCKED}: resolves to a non-public address`,
+        },
+      }),
+    ]);
+    wrap(<McpPage agentId={AGENT_ID} />);
+    expect(await screen.findByText("Can't reach this address. Check the connector address.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Retry: linear" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Edit address: linear" }));
+    const dialog = within(await screen.findByRole("dialog", { name: "linear" }));
+    expect(dialog.getByRole("textbox", { name: "Connector address" })).toBeTruthy();
+    expect(dialog.getByText("Can't reach this address. Check the connector address.")).toBeTruthy();
+    expect(dialog.queryByRole("button", { name: "Retry" })).toBeNull();
   });
   it("retries with the existing credential, showing only a disabled trash button while checking", async () => {
     stub([
@@ -172,7 +216,7 @@ describe("connector list recovery", () => {
     );
     wrap(<McpPage agentId={AGENT_ID} />);
     fireEvent.click(await screen.findByRole("button", { name: "Retry: linear" }));
-    expect(await screen.findByText("Authorization failed")).toBeTruthy();
+    expect(await screen.findByText("Authorization didn't finish. Try again.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Reauthorize: linear" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Retry: linear" })).toBeNull();
   });

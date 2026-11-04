@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
 import { Button, Icon } from "../ui/design-system.js";
 import "./setup.css";
 
@@ -42,6 +42,8 @@ type CommandBlockProps = CommandBlockSharedProps &
     | {
         comment: string;
         command: string;
+        /** The block's accessible name; defaults to the comment line. */
+        label?: string;
         /**
          * Shown across the block once its contents are dead. It speaks from the block itself rather
          * than from a line underneath, because the block is the thing that expired.
@@ -74,10 +76,12 @@ function CommandActionBlock({ actionNotice }: { readonly actionNotice: ReactNode
 function CopyableCommandBlock({
   comment,
   command,
+  label,
   ...props
 }: CommandBlockSharedProps & {
   readonly comment: string;
   readonly command: string;
+  readonly label?: string;
   /**
    * Shown across the block once its contents are dead. It speaks from the block itself rather than
    * from a line underneath, because the block is the thing that expired.
@@ -91,62 +95,13 @@ function CopyableCommandBlock({
   const lead = command.slice(0, split);
   const token = command.slice(split);
   return (
-    <CopyableTextBlock {...props} label={comment} payload={`${commentLine}\n${command}`}>
+    <CopyableTextBlock {...props} label={label ?? comment} payload={`${commentLine}\n${command}`}>
       <span className="ots-command__comment">{commentLine}</span>
       {"\n"}
       {lead}
       {/* Break only the opaque token by character, keeping command words readable. */}
       <span className="ots-command__token">{token}</span>
     </CopyableTextBlock>
-  );
-}
-
-/** The same setup surface for a task given to an assistant, without shell quoting or token markup. */
-export function InstructionBlock({
-  instructions,
-  preview,
-  expansion,
-  ...props
-}: CommandBlockSharedProps & {
-  readonly instructions: string;
-  /** A readable summary; copying always includes the complete inspectable instructions. */
-  readonly preview?: string;
-  readonly label: string;
-  readonly expansion?: { readonly show: string; readonly hide: string };
-}) {
-  const [expanded, setExpanded] = useState(false);
-  const id = useId();
-  const visible = expansion && !expanded && preview ? preview : instructions;
-  const paragraphEnd = visible.indexOf("\n\n");
-  const split = paragraphEnd === -1 ? visible.length : paragraphEnd;
-  return (
-    <div className="grid min-w-0 gap-2">
-      <div id={id}>
-        <CopyableTextBlock
-          {...props}
-          payload={instructions}
-          plainText
-          expanded={expanded}
-          flowing={Boolean(preview && expansion)}
-          onCopyFailed={preview && expansion ? () => setExpanded(true) : undefined}
-        >
-          <span className="ots-command__comment">{visible.slice(0, split)}</span>
-          {visible.slice(split)}
-        </CopyableTextBlock>
-      </div>
-      {expansion ? (
-        <Button
-          className="w-fit"
-          variant="ghost"
-          size="compact"
-          aria-controls={id}
-          aria-expanded={expanded}
-          onClick={() => setExpanded(!expanded)}
-        >
-          {expanded ? expansion.hide : expansion.show}
-        </Button>
-      ) : null}
-    </div>
   );
 }
 

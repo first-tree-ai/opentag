@@ -12,7 +12,6 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { drizzle } from "drizzle-orm/postgres-js";
-import postgres from "postgres";
 import { createDatabaseClient } from "../src/db/client.js";
 import { migrateDatabase } from "../src/db/migrate.js";
 import * as schema from "../src/db/schema/index.js";
@@ -138,9 +137,9 @@ export type AdminDriver = {
 export type AdminConnect = (databaseUrl: string) => AdminDriver;
 
 const connectWithPostgres: AdminConnect = (databaseUrl) => {
-  const admin = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+  const admin = createDatabaseClient(databaseUrl, { max: 1 }).sql;
   return {
-    end: () => admin.end(),
+    end: () => admin.end({ timeout: 5 }),
     probe: () => admin`select 1`,
     query: (sql, params) => admin.unsafe(sql, params as never[]) as Promise<unknown[]>,
   };
@@ -179,7 +178,7 @@ export async function openAdmin(
 /** The service client and module loading of a measurement; injectable for the same reason. */
 export type SeamDependencies = {
   createClient(databaseUrl: string): {
-    sql: { end(): Promise<void>; unsafe(sql: string, params: never[]): Promise<unknown[]> };
+    sql: { end(options: { timeout: number }): Promise<void>; unsafe(sql: string, params: never[]): Promise<unknown[]> };
     timeouts: unknown;
   };
   createDatabase(sql: unknown, logger: { logQuery(query: string, params: unknown[]): void }): unknown;
@@ -209,7 +208,7 @@ export async function openSeam(
   return {
     after: new CloudDeliveryOwner(options),
     before: new PreChangeOwner(options),
-    close: () => client.sql.end(),
+    close: () => client.sql.end({ timeout: 5 }),
     explain: (sql, params) =>
       explainPlan(
         async (statement, values) =>

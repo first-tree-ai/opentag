@@ -59,7 +59,7 @@ export interface AgentSetupServiceOptions {
  * consulted, so an unbound Agent is a legal answer rather than a fallback to a list.
  */
 export class AgentSetupService {
-  readonly #agents: Pick<AgentService, "getById">;
+  readonly #agents: Pick<AgentService, "getSummaryById">;
   readonly #database: DatabaseClient;
   readonly #messaging: AgentSetupMessagingSource;
   readonly #now: () => Date;
@@ -71,7 +71,7 @@ export class AgentSetupService {
 
   constructor(
     database: DatabaseClient,
-    agents: Pick<AgentService, "getById">,
+    agents: Pick<AgentService, "getSummaryById">,
     messaging: AgentSetupMessagingSource,
     options: AgentSetupServiceOptions = {},
   ) {
@@ -87,8 +87,8 @@ export class AgentSetupService {
   }
 
   async getSetupById(callerUserId: string, agentId: string): Promise<AgentSetupSnapshot> {
-    const detail = await this.#agents.getById(callerUserId, agentId);
-    if (detail.status !== "active") {
+    const agent = await this.#agents.getSummaryById(callerUserId, agentId);
+    if (agent.status !== "active") {
       throw new AgentServiceError(
         "AGENT_LIFECYCLE_CONFLICT",
         "deterministic",
@@ -96,7 +96,6 @@ export class AgentSetupService {
         409,
       );
     }
-    const { activity: _activity, ...agent } = detail;
     const observedAt = this.#now();
     const computer = await this.#observeComputer(agent, observedAt);
     const runtime = this.#observeRuntime(agent.runtimeProvider, computer, observedAt);
@@ -105,7 +104,7 @@ export class AgentSetupService {
     // reads are in flight. Revalidate the exact target after the last observation: a stale tab
     // must never receive an actionable snapshot for an Agent that is no longer active, and a
     // concurrent Agent mutation must be retried rather than projected as one mixed revision.
-    const current = await this.#agents.getById(callerUserId, agentId);
+    const current = await this.#agents.getSummaryById(callerUserId, agentId);
     if (current.status !== "active") {
       throw new AgentServiceError(
         "AGENT_LIFECYCLE_CONFLICT",
@@ -115,9 +114,9 @@ export class AgentSetupService {
       );
     }
     if (
-      current.updatedAt !== detail.updatedAt ||
-      current.runtimeProvider !== detail.runtimeProvider ||
-      current.computer?.computerId !== detail.computer?.computerId
+      current.updatedAt !== agent.updatedAt ||
+      current.runtimeProvider !== agent.runtimeProvider ||
+      current.computer?.computerId !== agent.computer?.computerId
     ) {
       throw new AgentServiceError(
         "AGENT_REVISION_CONFLICT",
@@ -154,7 +153,7 @@ export class AgentSetupService {
    * daemon observations, so it never calls this method while the Agent remains unbound.
    */
   async refreshPreparationById(callerUserId: string, agentId: string): Promise<void> {
-    const detail = await this.#agents.getById(callerUserId, agentId);
+    const detail = await this.#agents.getSummaryById(callerUserId, agentId);
     if (detail.status !== "active") {
       throw new AgentServiceError(
         "AGENT_LIFECYCLE_CONFLICT",

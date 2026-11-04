@@ -58,31 +58,23 @@ export function StepRail({ steps }: { steps: FlowState["steps"] }) {
   );
 }
 
+/*
+ * Steps move forward only. Leaving setup is the header's job (the Agent list, or the logo), so the
+ * flow carries no second, step-by-step way back.
+ */
 function StepNav({
-  back,
-  backDisabled = false,
   label = m.onboarding_v2_nav_next(),
   nextDisabled = false,
   onNext,
   submit = false,
 }: {
-  back?: () => void;
-  backDisabled?: boolean;
   label?: string;
   nextDisabled?: boolean;
   onNext?: () => void;
   submit?: boolean;
 }) {
   return (
-    <div className="flex items-center justify-between gap-3" data-ui="onboarding-v2-nav">
-      <div data-ui="onboarding-v2-nav-back">
-        {back ? (
-          <Button disabled={backDisabled} onClick={back} variant="ghost">
-            <Icon name="arrow-left" />
-            <span>{m.onboarding_v2_nav_back()}</span>
-          </Button>
-        ) : null}
-      </div>
+    <div className="flex items-center justify-end gap-3" data-ui="onboarding-v2-nav">
       <div data-ui="onboarding-v2-nav-next">
         <Button disabled={nextDisabled} onClick={onNext} type={submit ? "submit" : "button"}>
           {label}
@@ -250,7 +242,10 @@ function AgentNameField({
   const nameId = useId();
   const hintId = `${nameId}-hint`;
   const errorId = `${nameId}-error`;
-  const error = showError ? validateAgentName(draft.name) : undefined;
+  const problem = validateAgentName(draft.name);
+  // A name past the limit can't become valid by typing more, so say so while typing. Other
+  // problems wait for blur or Create, so an empty field isn't flagged before anyone types.
+  const error = showError || problem === "too-long" ? problem : undefined;
   const errorText =
     error === "empty"
       ? m.onboarding_v2_agent_name_empty_error()
@@ -320,8 +315,7 @@ function RuntimePicker({
   if (draft.destination === "cloud") return null;
   return (
     <fieldset className={FIELDSET}>
-      <legend className="font-medium text-kumo-strong">{m.onboarding_v2_agent_runtime_label()}</legend>
-      <p className={HINT}>{m.onboarding_v2_agent_runtime_hint()}</p>
+      <legend className="mb-2 font-medium text-kumo-strong">{m.onboarding_v2_agent_runtime_label()}</legend>
       <ul className={CHOICE_GRID} data-ui="onboarding-v2-choices">
         {RUNTIMES.map((runtime) => (
           <li key={runtime}>
@@ -338,21 +332,18 @@ function RuntimePicker({
           </li>
         ))}
       </ul>
-      <p className="text-xs text-kumo-subtle m-0">{m.onboarding_v2_agent_runtime_footnote()}</p>
     </fieldset>
   );
 }
 
 export function AgentStep({
   draft,
-  onBack,
   onChange,
   onSubmit,
   submitLabel,
   submitting = false,
 }: {
   draft: AgentDraft;
-  onBack?: () => void;
   onChange: (draft: AgentDraft) => void;
   onSubmit: () => void;
   submitLabel?: string;
@@ -384,8 +375,6 @@ export function AgentStep({
         />
         <RuntimePicker disabled={submitting} draft={draft} onChange={change} />
         <StepNav
-          back={onBack}
-          backDisabled={submitting}
           label={submitLabel}
           nextDisabled={submitting || (draft.destination !== "cloud" && draft.runtime === undefined)}
           submit

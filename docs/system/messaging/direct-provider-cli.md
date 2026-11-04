@@ -25,6 +25,13 @@ current Turn's provider reference selects which one applies. Git/GitHub guidance
 also live in the managed system prompt. Internal Sessions receive Git/GitHub guidance without IM
 outbox manuals.
 
+Visible Sessions keep routine progress out of IM: they do not send intermediate status cards,
+steps, todo lists, or progress messages, or change the working reaction mid-task. Questions needed
+to proceed and required approval requests remain available. The final result uses the normal
+provider CLI reply path. The Server owns working/error reactions and their cleanup; the Agent must not
+change these reactions itself. [System task feedback](im-feedback.md) supplies terminal error cards and
+Account-owned recovery operations.
+
 Each IM or visible collaboration input retains a short adjacent reminder that ordinary output is the
 OpenTag runtime console and only the provider CLI delivers human-visible messages. Per-Turn facts,
 provider targets, attention and reply-role restrictions remain beside the message. Empty Session
@@ -38,6 +45,10 @@ restart rules. Previously recorded Turn text is left in the conversation history
 
 ## Provider CLI lifecycle
 
+Retiring a requirement removes its local authority and enqueues its exact cancel notification
+without awaiting the socket callback. A delayed best-effort notification cannot block the later
+Session stop. Active replacement/retry sends retain their request gates and ordering checks.
+
 The targeted first-setup `opentag connect` command is the only installer for both official Provider CLIs during
 onboarding. It is non-interactive, returns bounded next actions, and can be run by a person or an Agent. The daemon
 independently inspects and reports both CLIs while setup is incomplete; it does not race the foreground installer.
@@ -46,7 +57,10 @@ After a Feishu/Lark or Slack binding becomes active, the daemon may repair only 
 openTag-managed artifact and validates the exact CLI with the real bound credential before reporting it ready; it never
 replaces an external installation or foreign shim. Automatic install/repair and credential validation are bounded: the
 Server keeps the terminal observation on the same connection, readiness GETs never refill the budget, and a replacement
-request or grant id cannot start a new episode. Manual failures such as `unsupported_platform`, `global_bin_unavailable`,
+request or grant id cannot start a new episode. Client shutdown cancels an in-flight daemon ensure: waiting for the provider lock and the managed download stop at once,
+the staging directory is removed, the lock is released, and no readiness verdict is published, so a stopping daemon never
+waits for a download. Publication itself is one rename and is not interrupted. Manual failures such as
+`unsupported_platform`, `global_bin_unavailable`,
 `integrity_failed`, and a final ensure `version_incompatible` settle immediately. Web and Agent diagnostics map those
 allowlisted reasons to the next step. An inspection `version_incompatible` may still be repaired with a supported
 managed artifact. Periodic Client inspection stays read-only, keeps the visible failure, and can recover after a real
@@ -56,8 +70,22 @@ new episode; a repeated identical placement notification must not. Public reason
 reconcile capability v2; older peers keep exact v1 frames and a generic stable diagnostic after a bounded unknown
 episode. HTTP responses keep the pre-#490 shape unless the caller opts in with `x-opentag-provider-cli-reason: 2`.
 
+Preparation uses one existing five-minute operation budget from admission, covering eligibility/requirement
+SQL and socket dispatch waiting as well as the readiness fallback. Close or deadline rejects the admitted
+refresh wait and clears its exact single-flight entry; it never reports an unknown dispatch as successful.
+A ready result completes its readiness fence but does not disarm the budget for a remaining dispatch wait.
+Different Agents on one Computer may prepare concurrently; duplicate requests for one Agent coalesce.
+A replaced Computer cancels only its own old preparation work. Already-issued SQL or socket writes retain
+their existing owners and bounds; late continuations recheck cancellation before starting another stage.
+The five-minute preparation limit does not change the short Server startup migration budget.
+
 `opentag doctor` and the portable installer only report static account-global installation state. They do not install,
 repair, validate credentials, or infer login/subscription state.
+
+Feishu credential validation runs only the native bot-info identity probe and sets
+`LARKSUITE_CLI_REMOTE_META=off` for that process. The CLI's optional background API-definition
+refresh is unnecessary for identity validation. Validation-purpose proxy capabilities permit bot
+info only; API-definition metadata remains available to normal execution-purpose capabilities.
 
 For every valid visible Session Turn that may write to IM, including an IM delivery or an internal-collaboration callback,
 the Client creates a private `0600` environment file and passes only its path as `OPENTAG_PROVIDER_ENV_FILE`. The Agent

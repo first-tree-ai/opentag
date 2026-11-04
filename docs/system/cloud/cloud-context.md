@@ -51,6 +51,8 @@ saves the current authorized selection in an OpenTag-owned project configuration
 selections do not delete cached content or unpublished work. One sync refreshes the selected
 sources; a separate recovery budget permits offline cached reads after a timeout. Modified
 snapshots are unavailable. Partial results remain independent and no tree takes precedence.
+Managed command timeouts return a `TIMEOUT` status so preparation can attempt its bounded offline
+recovery; a transport failure returns `CLI_FAILED` instead of escaping the optional preparation.
 
 The [Context Tree integration](../capabilities/context-tree-integration.md) uses the current
 execution's managed GitHub environment. It never falls back to ambient host credentials.
@@ -97,6 +99,10 @@ task under a new ID and assume the old attempt never ran.
 The Session CLI proof is issued when actual execution opens, after reaching the shared queue head.
 A queued message cannot replace an active Turn's proof. Runner terminal results remain journaled
 until the Server acknowledges their durable commit. Credential closure alone is not completion.
+Terminal results and allocation retirement compare-and-set the exact record already validated or
+scanned, using the existing durable-work transaction. A conflicting update is neither overwritten
+nor acknowledged; an identical terminal replay remains acknowledgeable. Busy/grant cleanup follows
+a successful or identical commit and names that exact Turn, preserving newer work.
 
 Cloud delivery still uses one Server owner. E8 adds no cross-Server routing or independent task queue.
 Local Session collaboration keeps its current behavior and trust boundary.

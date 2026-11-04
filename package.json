@@ -14,7 +14,7 @@
     "build": "turbo run build && pnpm --silent bundle:report",
     "bundle:report": "node scripts/report-bundle-sizes.mjs",
     "dev": "turbo run dev",
-    "check": "biome check . && node scripts/generate-web-theme.mjs --check && tsx scripts/generate-mcp-catalog.mjs --check && tsx --tsconfig scripts/tsconfig.scripts.json scripts/generate-skill-presets.mjs --check && tsx --tsconfig scripts/tsconfig.scripts.json scripts/check-skill-bundles.mjs && node scripts/third-party-notices.mjs --check && node scripts/check-workspace-contract.mjs && node scripts/check-migration-drift.mjs && node scripts/check-ownership-policy.mjs && node scripts/check-complexity-ratchet.mjs && pnpm run check:docs-tree",
+    "check": "biome check . && node scripts/generate-web-theme.mjs --check && tsx scripts/generate-mcp-catalog.mjs --check && tsx --tsconfig scripts/tsconfig.scripts.json scripts/generate-skill-presets.mjs --check && tsx --tsconfig scripts/tsconfig.scripts.json scripts/check-skill-bundles.mjs && node scripts/third-party-notices.mjs --check && node scripts/check-workspace-contract.mjs && node scripts/check-migration-drift.mjs && node scripts/check-container-postgres-tcp.mjs && node scripts/check-ownership-policy.mjs && node scripts/check-complexity-ratchet.mjs && pnpm run check:docs-tree",
     "check:docs-tree": "pnpm --filter @opentag/client exec context-tree verify --tree-path ../../docs",
     "lint": "biome lint .",
     "format": "biome format --write .",
@@ -37,6 +37,7 @@
     "skills:check": "tsx --tsconfig scripts/tsconfig.scripts.json scripts/check-skill-bundles.mjs"
   },
   "devDependencies": {
+    "@babel/parser": "8.0.5",
     "@biomejs/biome": "^2.5.14",
     "@types/node": "^26.6.1",
     "@vitest/coverage-v8": "5.0.1",
@@ -62,7 +63,8 @@
     },
     "patchedDependencies": {
       "@cloudflare/kumo@2.13.1": "patches/@cloudflare__kumo@2.13.1.patch",
-      "postgres@3.4.9": "patches/postgres@3.4.9.patch"
+      "postgres@3.4.9": "patches/postgres@3.4.9.patch",
+      "@better-auth/core@1.7.2": "patches/@better-auth__core@1.7.2.patch"
     }
   }
 }

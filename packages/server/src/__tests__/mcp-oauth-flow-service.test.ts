@@ -21,7 +21,7 @@ import { ApplicationCipher } from "../services/crypto.js";
 import { MCP_ERROR_CODES } from "../services/mcp/errors.js";
 import { McpAuthorizationService } from "../services/mcp/mcp-authorization-service.js";
 import { McpCredentialCipher } from "../services/mcp/mcp-credential-cipher.js";
-import { MCP_OAUTH_STATE_TTL_MS, McpOAuthClient } from "../services/mcp/mcp-oauth.js";
+import { FEISHU_DEFAULT_OAUTH_SCOPES, MCP_OAUTH_STATE_TTL_MS, McpOAuthClient } from "../services/mcp/mcp-oauth.js";
 import { McpOAuthFlowService, orderIssuers } from "../services/mcp/mcp-oauth-flow-service.js";
 import type { McpProbe } from "../services/mcp/mcp-probe.js";
 import { McpServerService } from "../services/mcp/mcp-server-service.js";
@@ -118,6 +118,7 @@ function oauthNode(routes: RouteMap) {
 function build(
   routes: RouteMap,
   options: {
+    discoveryTimeoutMs?: number;
     now?: () => Date;
     googleMcpClient?: { clientId: string; clientSecret: string };
     staticMcpClients?: Partial<Record<McpStaticOAuthBrand, { clientId: string; clientSecret: string }>>;
@@ -750,6 +751,236 @@ describe("McpOAuthFlowService.start", () => {
       await expect(flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET)).rejects.toMatchObject({
         code: MCP_ERROR_CODES.OAUTH_FAILED,
       });
+    });
+  });
+
+  describe("the deployment feishu client", () => {
+    const feishuMcpUrl = "https://mcp.feishu.cn/mcp";
+    const feishuPrmUrl = "https://mcp.feishu.cn/.well-known/oauth-protected-resource/mcp";
+    const feishuIssuer = "https://open.feishu.cn";
+    const feishuAuthorizeUrl = "https://accounts.feishu.cn/open-apis/authen/v1/authorize";
+    const feishuTokenUrl = "https://open.feishu.cn/open-apis/authen/v2/oauth/token";
+    const feishuClient = { clientId: "feishu-app-id", clientSecret: "feishu-app-secret" };
+
+    it("bypasses accounts.feishu.cn/mcp blocked DCR, exchanges code, and rotates tokens with X-Lark-MCP-UAT header", async () => {
+      const ids = await seed(feishuMcpUrl);
+      await unit.database
+        .update(mcpServers)
+        .set({
+          authHeader: "x-lark-mcp-uat",
+          authScheme: "",
+          extraHeaders: {
+            "x-lark-mcp-allowed-tools": "search-user,fetch-file,search-doc,create-doc,fetch-doc,update-doc",
+          },
+        })
+        .where(eq(mcpServers.id, ids.mcpServerId));
+
+      let tokenCallCount = 0;
+      const { calls, cipher, flows, servers } = build(
+        {
+          [feishuPrmUrl]: doc({
+            resource: feishuMcpUrl,
+            authorization_servers: ["https://accounts.feishu.cn/mcp"],
+            scopes_supported: [
+              "mcp-tool:common:fetch-file-v2",
+              "mcp-tool:common:get-user",
+              "mcp-tool:common:search-user",
+              "mcp-tool:docs:search-doc",
+              "mcp-tool:docs:create-doc",
+              "mcp-tool:docs:fetch-doc",
+              "mcp-tool:docs:update-doc",
+              "mcp-tool:docs:get-comments",
+              "mcp-tool:docs:add-comments",
+              "mcp-tool:docs:list-docs-v2",
+              "mcp-tool:im:search-groups",
+              "offline_access",
+            ],
+          }),
+          [feishuTokenUrl]: (init) => {
+            tokenCallCount += 1;
+            const form = new URLSearchParams(String(init.body));
+            expect(form.get("client_id")).toBe(feishuClient.clientId);
+            expect(form.get("client_secret")).toBe(feishuClient.clientSecret);
+            if (tokenCallCount === 1) {
+              expect(form.get("grant_type")).toBe("authorization_code");
+              return doc({
+                code: 0,
+                access_token: "u-feishu-at-1",
+                refresh_token: "ur-feishu-rt-1",
+                token_type: "Bearer",
+                expires_in: 7200,
+                scope: FEISHU_DEFAULT_OAUTH_SCOPES.join(" "),
+              });
+            }
+            expect(form.get("grant_type")).toBe("refresh_token");
+            expect(form.get("refresh_token")).toBe("ur-feishu-rt-1");
+            return doc({
+              code: 0,
+              data: {
+                access_token: "u-feishu-at-2",
+                refresh_token: "ur-feishu-rt-2",
+                token_type: "Bearer",
+                expires_in: 7200,
+                scope: FEISHU_DEFAULT_OAUTH_SCOPES.join(" "),
+              },
+            });
+          },
+        },
+        { staticMcpClients: { feishu: feishuClient } },
+      );
+
+      const started = await flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET);
+      const authUrl = new URL(started.authorizationUrl);
+      expect(`${authUrl.origin}${authUrl.pathname}`).toBe(feishuAuthorizeUrl);
+      expect(authUrl.searchParams.get("client_id")).toBe(feishuClient.clientId);
+      expect(authUrl.searchParams.get("code_challenge_method")).toBe("S256");
+      expect(authUrl.searchParams.get("scope")).toBe(FEISHU_DEFAULT_OAUTH_SCOPES.join(" "));
+      expect(authUrl.searchParams.get("scope")).not.toContain("mcp-tool:");
+      expect(calls.some((call) => call.url.includes("accounts.feishu.cn"))).toBe(false);
+
+      await flows.callback({ code: "feishu-code-1", state: stateOf(started.authorizationUrl) }, FLOW_SECRET);
+      const afterCallback = await readAuthorization(ids);
+      expect(afterCallback).toMatchObject({
+        status: "active",
+        authorizationServer: feishuIssuer,
+        scopes: [...FEISHU_DEFAULT_OAUTH_SCOPES],
+      });
+
+      const authorizationService = new McpAuthorizationService({
+        database: unit.database,
+        cipher,
+        servers,
+        probe: { probe: vi.fn() } as unknown as McpProbe,
+      });
+      expect(await authorizationService.buildHeaders(ids.accountId, ids.agentId, ids.mcpServerId)).toEqual({
+        "x-lark-mcp-uat": "u-feishu-at-1",
+        "x-lark-mcp-allowed-tools": "search-user,fetch-file,search-doc,create-doc,fetch-doc,update-doc",
+      });
+
+      await flows.refreshAuthorization(afterCallback?.id as string);
+      const afterRefresh = await readAuthorization(ids);
+      expect(afterRefresh).toMatchObject({
+        status: "active",
+        failureCode: null,
+        refreshGeneration: 2,
+      });
+      expect(
+        cipher.decryptAuthorizationCredential(
+          { mcpServerId: ids.mcpServerId, agentId: ids.agentId, authorizationServer: feishuIssuer },
+          { ciphertext: afterRefresh?.ciphertext as string, keyId: afterRefresh?.keyId as string },
+        ),
+      ).toEqual({
+        accessToken: "u-feishu-at-2",
+        refreshToken: "ur-feishu-rt-2",
+        tokenType: "Bearer",
+      });
+      expect(await authorizationService.buildHeaders(ids.accountId, ids.agentId, ids.mcpServerId)).toEqual({
+        "x-lark-mcp-uat": "u-feishu-at-2",
+        "x-lark-mcp-allowed-tools": "search-user,fetch-file,search-doc,create-doc,fetch-doc,update-doc",
+      });
+    });
+
+    it.each([
+      {
+        label: "with error field (20003)",
+        payload: { code: 20003, error: "invalid_grant", error_description: "expired" },
+        status: 200,
+      },
+      { label: "numeric-only 20026", payload: { code: 20026, msg: "refresh_token invalid" }, status: 400 },
+      { label: "numeric-only 20037", payload: { code: 20037, msg: "refresh_token expired" }, status: 400 },
+      { label: "numeric-only 20064 (revoked)", payload: { code: 20064, msg: "refresh_token revoked" }, status: 400 },
+      { label: "numeric-only 20073", payload: { code: 20073, msg: "refresh_token consumed" }, status: 400 },
+    ])(
+      "transitions a Feishu authorization to revoked when refresh_token is terminally rejected ($label)",
+      async ({ payload, status }) => {
+        const ids = await seed(feishuMcpUrl);
+        const { row } = await authorizedRow(
+          ids,
+          { accessToken: "u-feishu-at-1", refreshToken: "ur-expired" },
+          { authorizationServer: feishuIssuer, flowAuthorizationServer: feishuIssuer, oauthResource: feishuMcpUrl },
+        );
+        const cipher = new McpCredentialCipher(new ApplicationCipher(new Uint8Array(32).fill(7)));
+        const sealed = cipher.encryptAuthorizationCredential(
+          { mcpServerId: ids.mcpServerId, agentId: ids.agentId, authorizationServer: feishuIssuer },
+          { accessToken: "u-feishu-at-1", refreshToken: "ur-expired" },
+        );
+        await unit.database
+          .update(mcpServerAuthorizations)
+          .set({ ciphertext: sealed.ciphertext, keyId: sealed.keyId })
+          .where(eq(mcpServerAuthorizations.id, row?.id as string));
+
+        const { flows } = build(
+          {
+            [feishuTokenUrl]: doc(payload, status),
+          },
+          { staticMcpClients: { feishu: feishuClient } },
+        );
+        await flows.refreshAuthorization(row?.id as string);
+        expect(await readAuthorization(ids)).toMatchObject({
+          status: "revoked",
+          failureCode: null,
+          ciphertext: null,
+          keyId: null,
+          accessTokenExpiresAt: null,
+          refreshClaimId: null,
+        });
+      },
+    );
+
+    it("clears potentially consumed Feishu refresh credentials on 5xx or transport failure without blind reuse", async () => {
+      const ids = await seed(feishuMcpUrl);
+      const cipher = new McpCredentialCipher(new ApplicationCipher(new Uint8Array(32).fill(7)));
+      const sealed = cipher.encryptAuthorizationCredential(
+        { mcpServerId: ids.mcpServerId, agentId: ids.agentId, authorizationServer: feishuIssuer },
+        { accessToken: "u-feishu-at-1", refreshToken: "ur-feishu-rt-1" },
+      );
+      const [row] = await unit.database
+        .insert(mcpServerAuthorizations)
+        .values({
+          agentId: ids.agentId,
+          mcpServerId: ids.mcpServerId,
+          kind: "oauth",
+          status: "active",
+          authorizationServer: feishuIssuer,
+          oauthResource: feishuMcpUrl,
+          ciphertext: sealed.ciphertext,
+          keyId: sealed.keyId,
+          probeState: "succeeded",
+        })
+        .returning();
+
+      const { flows } = build(
+        {
+          [feishuTokenUrl]: { status: 502, body: "<html>502 Bad Gateway</html>" },
+        },
+        { staticMcpClients: { feishu: feishuClient } },
+      );
+      await flows.refreshAuthorization(row?.id as string);
+      expect(await readAuthorization(ids)).toMatchObject({
+        status: "error",
+        failureCode: MCP_ERROR_CODES.REFRESH_OUTCOME_UNKNOWN,
+        ciphertext: null,
+        keyId: null,
+        refreshClaimId: null,
+      });
+    });
+
+    it("does not offer the Feishu client to a Lark origin or rewrite Lark authorization servers", async () => {
+      const larkMcpUrl = "https://mcp.larksuite.com/mcp";
+      const ids = await seed(larkMcpUrl);
+      const { calls, flows } = build(
+        {
+          "https://mcp.larksuite.com/.well-known/oauth-protected-resource/mcp": doc({
+            resource: larkMcpUrl,
+            authorization_servers: ["https://accounts.larksuite.com/mcp"],
+          }),
+        },
+        { staticMcpClients: { feishu: feishuClient } },
+      );
+      await expect(flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET)).rejects.toMatchObject({
+        code: MCP_ERROR_CODES.OAUTH_FAILED,
+      });
+      expect(JSON.stringify(calls)).not.toContain(feishuClient.clientSecret);
     });
   });
 
@@ -1506,7 +1737,7 @@ describe("McpOAuthFlowService.callback", () => {
     expect(row).toMatchObject({ status: "revoked", ciphertext: null });
   });
 
-  it("keeps a transient exchange failure retryable and a terminal one recorded", async () => {
+  it("ends a failed one-time exchange while allowing a new authorization", async () => {
     const ids = await seed();
     let transient = false;
     const { flows } = build({
@@ -1534,9 +1765,12 @@ describe("McpOAuthFlowService.callback", () => {
       flows.callback({ code: "c2", state: stateOf(restarted.authorizationUrl) }, FLOW_SECRET),
     ).rejects.toMatchObject({ code: MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE });
     const row = await readAuthorization(ids);
-    // Nothing was sent that could have rotated the token, so the flow is simply cleared for a retry.
     expect(row?.state).toBeNull();
-    expect(row?.failureCode).toBeNull();
+    expect(row?.status).toBe("error");
+    expect(row?.failureCode).toBe(MCP_ERROR_CODES.OAUTH_FAILED);
+    await expect(
+      flows.callback({ code: "c2", state: stateOf(restarted.authorizationUrl) }, FLOW_SECRET),
+    ).rejects.toMatchObject({ code: MCP_ERROR_CODES.OAUTH_FLOW_INVALID });
   });
 
   it("builds the fixed local return surface, with and without a bounded outcome", async () => {
@@ -1865,8 +2099,8 @@ describe("McpOAuthFlowService.refreshAuthorization", () => {
     });
     await flows.refreshAuthorization(row?.id as string);
     expect(await readAuthorization(ids)).toMatchObject({
-      status: "error",
-      failureCode: MCP_ERROR_CODES.UPSTREAM_ERROR,
+      status: "active",
+      failureCode: null,
       ciphertext: row?.ciphertext,
     });
   });
@@ -2324,7 +2558,8 @@ async function expectUnpublishedAuthorization(ids: { agentId: string; mcpServerI
       agentId: ids.agentId,
       mcpServerId: ids.mcpServerId,
       kind: "oauth",
-      status: "pending",
+      status: "error",
+      failureCode: MCP_ERROR_CODES.OAUTH_FAILED,
       state: null,
       pkceCiphertext: null,
       ciphertext: null,
@@ -2334,3 +2569,146 @@ async function expectUnpublishedAuthorization(ids: { agentId: string; mcpServerI
     },
   ]);
 }
+
+describe("bounded start discovery", () => {
+  it("deduplicates issuers before preferring the recorded one", () => {
+    expect(orderIssuers(["https://a", "https://b", "https://a", "https://b"], "https://b")).toEqual([
+      "https://b",
+      "https://a",
+    ]);
+  });
+
+  it("tries duplicate advertised issuers only once", async () => {
+    const ids = await seed();
+    const { flows, calls } = build({
+      [PRM_URL]: doc({ resource: MCP_URL, authorization_servers: Array(16).fill(ISSUER) }),
+      [AS_URL]: doc({ issuer: "https://wrong.example" }),
+    });
+    await expect(flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET)).rejects.toMatchObject({
+      code: MCP_ERROR_CODES.OAUTH_FAILED,
+    });
+    expect(calls.filter((c) => c.url === AS_URL)).toHaveLength(1);
+  });
+
+  it("refuses more than four distinct candidates before requesting any issuer", async () => {
+    const ids = await seed();
+    const { flows, calls } = build({
+      [PRM_URL]: doc({
+        resource: MCP_URL,
+        authorization_servers: Array.from({ length: 16 }, (_, n) => `https://issuer${n}.example`),
+      }),
+    });
+    await expect(flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET)).rejects.toMatchObject({
+      code: MCP_ERROR_CODES.OAUTH_FAILED,
+      detail: { maxCandidates: 4 },
+    });
+    expect(calls).toHaveLength(1);
+    await expectUnpublishedAuthorization(ids);
+  });
+
+  it("honors an already-aborted start without outbound work", async () => {
+    const ids = await seed();
+    const { flows, calls } = build(discoverableAs());
+    await expect(
+      flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET, "account", AbortSignal.abort()),
+    ).rejects.toMatchObject({ code: MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE, detail: { cause: "aborted" } });
+    expect(calls).toHaveLength(0);
+    await expectUnpublishedAuthorization(ids);
+  });
+
+  it.each(["metadata", "registration", "caller-abort"] as const)(
+    "shares the deadline through %s and fences a late response",
+    async (stage) => {
+      const ids = await seed();
+      let release!: () => void, enter!: () => void;
+      const gate = new Promise<void>((r) => {
+        release = r;
+      });
+      const entered = new Promise<void>((r) => {
+        enter = r;
+      });
+      let signal: AbortSignal | null | undefined;
+      const held = stage === "registration" ? REGISTER_URL : AS_URL;
+      const routes: RouteMap = {
+        ...discoverableAs({ registration_endpoint: REGISTER_URL }),
+        [REGISTER_URL]: doc({ client_id: "late-client", client_secret: "late-secret" }),
+      };
+      const reply = routes[held];
+      routes[held] = async (init) => {
+        signal = init.signal;
+        enter();
+        await gate;
+        return typeof reply === "function" ? reply(init) : (reply as StubResponse);
+      };
+      const { flows, calls } = build(routes, { discoveryTimeoutMs: 80 });
+      const controller = new AbortController();
+      const running = flows.start(
+        ids.accountId,
+        ids.agentId,
+        ids.mcpServerId,
+        [],
+        FLOW_SECRET,
+        "account",
+        controller.signal,
+      );
+      const rejected = expect(running).rejects.toMatchObject({
+        code: MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE,
+        detail: { cause: stage === "caller-abort" ? "aborted" : "deadline" },
+      });
+      try {
+        await entered;
+        if (stage === "caller-abort") controller.abort();
+        await rejected;
+        expect(signal?.aborted).toBe(true);
+        await expectUnpublishedAuthorization(ids);
+        const before = await readAuthorization(ids);
+        release();
+        await new Promise((r) => setImmediate(r));
+        expect(await readAuthorization(ids)).toEqual(before);
+        expect(calls.filter((c) => c.url === REGISTER_URL)).toHaveLength(stage === "registration" ? 1 : 0);
+        expect(await unit.database.select().from(mcpClientRegistrations)).toHaveLength(0);
+      } finally {
+        release();
+        await rejected;
+      }
+    },
+  );
+
+  it("uses one budget across resource and issuer metadata", async () => {
+    const ids = await seed();
+    let release!: () => void, enter!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const entered = new Promise<void>((r) => {
+      enter = r;
+    });
+    const { flows, calls } = build(
+      {
+        [PRM_URL]: async () => {
+          await new Promise((r) => setTimeout(r, 40));
+          return doc({ resource: MCP_URL, authorization_servers: [ISSUER] });
+        },
+        [AS_URL]: async () => {
+          enter();
+          await gate;
+          return asMetadata({ registration_endpoint: REGISTER_URL });
+        },
+        [REGISTER_URL]: doc({ client_id: "unused" }),
+      },
+      { discoveryTimeoutMs: 80 },
+    );
+    const rejected = expect(
+      flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET),
+    ).rejects.toMatchObject({ code: MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE });
+    try {
+      await entered;
+      setTimeout(release, 60);
+      await rejected;
+      expect(calls).toHaveLength(2);
+    } finally {
+      release();
+      await rejected;
+    }
+  });
+});

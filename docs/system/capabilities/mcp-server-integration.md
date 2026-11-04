@@ -157,7 +157,9 @@ acquires a bearer over the existing credential control tunnel, and passes the Se
 to the disposable Sandbox worker through its stdin document. The Sandbox uses its existing public
 egress to call the Server's `/api/v1/mcp` endpoint. The Server checks the live execution, Agent
 scope, Sandbox generation, current control connection and custody on every call. Closing the
-execution revokes the bearer. Cloud's current topology requires one Server process while Runner
+execution revokes the bearer. Registry close events also reclaim child execution capabilities,
+proxy tickets and MCP/Web bearers immediately on cascading close, expiry or connection loss.
+Cloud's current topology requires one Server process while Runner
 control state is process-local; this path adds no separate WebSocket proxy or multi-Server promise.
 No Account MCP schema, upstream credential flow, or management UI changes are needed.
 
@@ -231,8 +233,14 @@ probe would otherwise record a Server that answered nothing as a healthy one wit
 gateway `tools/call` would answer with an envelope that carries no `result`. A `202` or `204` answers
 a notification only: `tools/call`, `tools/list`, and `initialize` each require a result, so an
 acknowledgement of one is `MCP_UPSTREAM_ERROR` as well. A present but unreadable `error` member —
-`null`, a scalar, an array, or a wrong-typed `code` or `message` — is also `MCP_UPSTREAM_ERROR`, with
-the real HTTP status and a fixed message, never a raw type error. Valid answers still pass: an
+`null`, a scalar, an array, or a wrong-typed `code` or `message` — on a 2xx response is also
+`MCP_UPSTREAM_ERROR`, with the real HTTP status and a fixed message, never a raw type error.
+On non-2xx responses, an unreadable error member keeps the HTTP failure classification. In JSON
+and SSE, OAuth-shaped `401` and `403` errors such as `{"error":"invalid_token"}` and
+`{"error":"insufficient_scope"}` therefore use `MCP_AUTH_REJECTION_SUMMARY`, so Web offers
+authorization recovery. Upstream error descriptions are not exposed. Readable JSON-RPC errors
+retain their code, message, and data at any status, including version-negotiation refusals.
+Valid answers still pass: an
 explicit `"result": null`, a `202`/`204` notification acknowledgement, and a JSON-RPC error whose
 `code` the caller branches on.
 
@@ -440,7 +448,7 @@ immediately.
 | --- | --- |
 | `none` | No authorization header. Extra headers still apply |
 | `bearer` | `<auth_header>: <auth_scheme> <key>`, where an **empty scheme sends the key verbatim** (`X-API-Key: <key>`) |
-| `oauth` | `Authorization: Bearer <access token>` — fixed, because the specification requires the token in that header and forbids it in the query string |
+| `oauth` | `Authorization: Bearer <access token>` by default; when `auth_header` is `x-lark-mcp-uat`, `X-Lark-MCP-UAT: <auth_scheme> <access token>` (or `<access token>` when `auth_scheme` is empty) |
 
 `extra_headers` are additional static headers sent for all three kinds, since they are configuration
 rather than credentials.
@@ -641,8 +649,15 @@ the first that can complete discovery, client resolution, and authorization-URL 
 recorded on the authorization row. An issuer that fails is reported and the next one is tried; only
 when all of them fail does the attempt error, naming the issuers it tried.
 
-Once an issuer is recorded it is reused for both refresh and reauthorization. Only a terminal failure
-sends the flow back through discovery to pick another.
+Each start revalidates metadata and prefers the recorded issuer when it is still advertised.
+Advertised issuers are deduplicated, preserving order; more than four distinct candidates fails
+explicitly before any issuer request. Discovery and client resolution share a 30-second outbound
+deadline, budgeted for the normal resource metadata, authorization metadata and registration stages
+at the existing 10-second request bound. Fallbacks share the remaining budget. The same signal
+reaches metadata and registration requests; deadline/cancellation stops candidate fallback and
+prevents late SQL preparation from starting registration or publishing a flow. SQL statements retain
+the infrastructure timeouts. A timed-out registration is not automatically replayed.
+Refresh uses the credential's recorded issuer rather than running this selection again.
 
 Users never choose an issuer — it is not a user-facing concept. The detail view shows which one is
 currently selected.
@@ -736,7 +751,7 @@ of the entry and continue working through their own client. A new Web installati
 preferred endpoint and creates an independent definition, with name-conflict handling if an older
 installation already holds the catalog name.
 
-#### The deployment HubSpot, Asana, Zoom, and GitHub clients
+#### The deployment HubSpot, Asana, Zoom, GitHub, and Feishu clients
 
 These providers offer neither dynamic registration nor a client metadata document, so a deployment
 that wants its Agents to use them registers its own OAuth app with each provider and configures
@@ -753,13 +768,33 @@ also derives the variable names; the Canva client above is a row of the same tab
 | Asana | `OPENTAG_MCP_ASANA_CLIENT_*` | `https://mcp.asana.com` | `https://app.asana.com` | `client_secret_basic` |
 | Zoom | `OPENTAG_MCP_ZOOM_CLIENT_*` | `https://mcp.zoom.us` | `https://zoom.us` | `client_secret_basic` |
 | GitHub | `OPENTAG_MCP_GITHUB_CLIENT_*` | `https://api.githubcopilot.com` | `https://github.com/login/oauth` | `client_secret_post` |
+| Feishu | `OPENTAG_MCP_FEISHU_CLIENT_*` | `https://mcp.feishu.cn` | `https://open.feishu.cn` | `client_secret_post` |
 
 Operator setup, for every brand: register `<OPENTAG_PUBLIC_URL>/api/v1/mcp-servers/oauth/callback` as
 the redirect URL. Create a HubSpot **MCP Auth App** (Development > MCP Auth Apps), an Asana app of
-type **MCP app**, and a Zoom **General app** with user-level OAuth. HubSpot assigns scopes at
+type **MCP app**, a Zoom **General app** with user-level OAuth, and a Feishu self-built application
+with OAuth 2.0 redirect URLs and `FEISHU_DEFAULT_OAUTH_SCOPES` (`docx:document:readonly`,
+`drive:drive:readonly`, `wiki:wiki:readonly`, `im:chat:readonly`, `im:message:readonly`,
+`search:message`, and `offline_access`) enabled. HubSpot assigns scopes at
 installation and advertises none in its metadata. Zoom's challenge carries no `scope`, so the flow
 requests every `scopes_supported` entry its protected resource metadata advertises; a Zoom app grants
 only the scopes listed on its **Scopes** page, so add the full advertised list there.
+
+Feishu's hosted MCP endpoint (`https://mcp.feishu.cn/mcp`) requires the user access token in
+`X-Lark-MCP-UAT: <access token>` (`authHeader: "x-lark-mcp-uat"`, `authScheme: ""`) on `kind = "oauth"`.
+When `OPENTAG_MCP_FEISHU_CLIENT_ID` and `OPENTAG_MCP_FEISHU_CLIENT_SECRET` are configured (or when
+refreshing an existing row whose `authorization_server` is `https://open.feishu.cn`), the OAuth service
+resolves Feishu's OAuth v2 metadata directly (`authorization_endpoint`:
+`https://accounts.feishu.cn/open-apis/authen/v1/authorize`, `token_endpoint`:
+`https://open.feishu.cn/open-apis/authen/v2/oauth/token`) instead of failing on
+`https://accounts.feishu.cn/mcp`'s blocked dynamic client registration. When no explicit scopes are
+supplied on start, the Feishu flow requests its default ordinary read-only scope set plus
+`offline_access` (`docx:document:readonly`, `drive:drive:readonly`, `wiki:wiki:readonly`,
+`im:chat:readonly`, `im:message:readonly`, `search:message`, `offline_access`) rather than the hosted
+MCP `mcp-tool:*` scopes advertised in the PRM or challenge. Refresh rotates both the access
+token and refresh token inside `mcp_server_authorizations`, maps invalid or expired Feishu refresh
+tokens to `invalid_grant` (terminal reauthorization required), and clears potentially consumed refresh
+material on unknown transport or 5xx outcomes. Broader application grants are not advertised as read-only credentials; tool restrictions declared in `X-Lark-MCP-Allowed-Tools` are enforced by the gateway at both catalog and call time.
 
 GitHub uses the [official remote MCP server](https://github.com/github/github-mcp-server/blob/main/docs/host-integration.md).
 An existing GitHub OAuth App can supply the MCP client pair: add the MCP callback alongside its
@@ -807,6 +842,9 @@ so those Agents must authorize again.
   write, so the previous callback URL is immediately unusable. The callback then validates the
   browser binding, then existence, then expiry, and expiry. A state CAS admits one code exchange, and final settlement clears the flow.
   Starting a newer flow or disconnecting fences late results; no provider I/O holds a transaction.
+  Failed discovery marks only its still-unpublished, credentialless pending root as failed. A failed
+  one-time code exchange clears that attempt and records `MCP_OAUTH_FAILED`; an existing usable
+  credential stays usable. Neither failure can overwrite a newer flow, and codes are never replayed.
 - **The client is the one `start` selected.** Shared-format flows seal client ID, registration, scopes,
   initiating Account/Agent and configuration in the existing PKCE envelope; live credential metadata
   remains separate. Starting consent preserves an existing access credential and refresh claim. The
@@ -876,7 +914,8 @@ has an unknown outcome; it fails closed instead of being taken over and replayed
 | Token endpoint 2xx | Success | New envelope, `refresh_generation += 1`, claim cleared; retain snapshots for token rotation alone, invalidate all member snapshots if resource scopes change |
 | `invalid_grant` | **Terminal** | `revoked`; the user must authorize again |
 | `invalid_client` | **Terminal** | `revoked`; the user must re-register the client |
-| Transport failure, timeout, 5xx, unparseable | **Outcome unknown** | `error` with `failure_code = MCP_REFRESH_OUTCOME_UNKNOWN`, clear potentially consumed credential material, require reauthorization, **never** auto-retry |
+| Preparation SQL/transport failure before the exchange | Nothing was sent | Release only the matching claim, preserve the credential, retry on a later pass |
+| Transport failure, timeout, 5xx, unparseable after dispatch | **Outcome unknown** | `error` with `failure_code = MCP_REFRESH_OUTCOME_UNKNOWN`, clear potentially consumed credential material, require reauthorization, **never** auto-retry |
 | Recorded resource no longer matches the effective endpoint | No call made | `error` with `failure_code = MCP_AUTHORIZATION_REQUIRED`, credential kept for a deliberate reauthorization |
 | Local envelope decryption failure | Nothing was sent | Release the claim, leave the state, retry next pass |
 | MCP Server returns 401/403 | Not evidence the credential is dead | Never clear the refresh token |
@@ -885,7 +924,11 @@ A row that has no refresh token at all simply lapses to `expired` at its deadlin
 to spend and retrying forever would achieve nothing.
 
 The scan joins `agents` and excludes deleted ones, so a soft-deleted Agent's credential is not
-renewed.
+renewed. The worker keeps one current pass Promise. Stop closes scan/probe/refresh admission and
+waits for that actual pass; an already-issued token exchange still finishes and persists under
+its existing generation/claim fences. Stop checks between rows avoid draining the rest of the
+100-row batch. SQL disposal follows that drain. Repeated stop calls join the same work; manual
+passes after stop return zero and start cannot reopen a stopped worker. A new instance restarts it.
 
 ## Probing
 
@@ -1080,17 +1123,26 @@ the endpoint URL against the Server origin it already pinned; only the fixed pat
 
 Local Claude reads its native user, project, local, and plugin MCP configuration. OpenTag supplements
 it through a private temporary `--mcp-config`, without `--strict-mcp-config`. The file supplements
-native discovery; it does not replace user configuration. Each Run generates fresh 11-character
-service names: `g<10 hex characters>` for the gateway and `h<10 hex characters>` for hosted tools.
+native discovery; it does not replace user configuration. Each runtime generates private 11-character
+service names, stable across its Runs: `g<10 hex characters>` for the gateway and
+`h<10 hex characters>` for hosted tools.
 Grant rules use those exact names. Keeping the gateway name no longer than its original
 `opentag-mcp` name preserves the model-facing name budget: the 18-character `mcp__<server>__`
 prefix leaves 110 characters within Claude's 128-character tool-name limit. Longer gateway names
 were already outside that native budget; this does not add a general tool aliasing layer.
 Both a user server named `opentag-mcp` and a user plugin named `opentag` keep their own endpoints
-and never inherit the platform's grant rules. The separately loaded private Skill plugin has a
-fresh explicit `opentag-<random-id>` manifest name, avoiding a fixed plugin-name collision.
+and never inherit the platform's grant rules. If project `.mcp.json` registers a previously observed
+runtime `g<id>` or `h<id>` name before a later Run, the explicit supplementary `--mcp-config` entry
+takes precedence: only the platform server's tools occupy that bare name and receive its grants.
+The native fixture guards this required precedence with project MCP servers enabled. Plugin MCP
+names are qualified by their plugin namespace and do not occupy the bare runtime server name.
+Native plugin code still has the trust boundary described in the Runtime contract.
+The separately loaded private Skill plugin has a
+runtime-scoped explicit `opentag-<random-id>` manifest name, avoiding a fixed plugin-name collision.
 
-Each Run receives a fresh private MCP configuration with that execution's bearer. Cleanup removes
+Each Run receives a fresh private MCP configuration with that execution's bearer, new loopback
+credentials and ports, and separate temporary paths. Names are not persisted in the Session binding.
+Cleanup removes
 only that temporary configuration and Skill plugin; it never rewrites user MCP files. Upstream credentials and Server-side
 authorization still use the existing gateway. Native local MCP services use their own configuration
 and credentials, without being registered in the platform catalog or sent to the Server.
@@ -1184,6 +1236,10 @@ discover through another call first.
 - The catalogue is served from the stored probe snapshots rather than fanned out live. `tools/list`
   runs at the start of every turn; a live fan-out would add a round trip per Server to each one and
   contend for the same four outbound slots a real tool call needs.
+- When a mount's effective `extra_headers` includes `X-Lark-MCP-Allowed-Tools` (matched
+  case-insensitively), its comma-separated upstream tool names restrict the mount's usable tool
+  snapshot at both `catalog()` and `callTool()` time. Any tool not in the allowed set is omitted from
+  discovery and rejected at call time with `MCP_BINDING_NOT_FOUND`.
 
 ### Failures
 
@@ -1371,6 +1427,16 @@ Select. OAuth offers **Authorize** or **Reauthorize**. A saved API key or token 
 until submission. There is no tool browser, credential-clearing action, advanced configuration, delete
 action, or global save footer in preset Details. Custom Details retains editable connection settings
 and collapsed Advanced settings.
+
+Every connector failure the reader sees is one short line that names the next step, chosen from the
+code the Server reports: an unreachable or blocked address asks to check the connector address, a
+service that explicitly does not support account sign-in suggests an API key (a failed registration is
+retried by authorizing again), a rejected key asks for an update, an
+unfinished authorization asks to try again, and an unreachable service asks to try again later.
+Upstream details stay private. The row's action matches the line: an address the reader typed opens
+**Edit address**, a rejected key offers **Update key**, and **Retry** remains only for transient causes
+and catalog connectors. Why: a bare "failed" gives an admin nothing to act on, while the Server
+already knows which of these happened, and an action that does not fix the stated cause is a dead end.
 
 Authentication feedback sits directly below its controls. **Retry** and **Open window** follow the
 reason and wrap together on narrow screens. Controls keep their positions while authorization,

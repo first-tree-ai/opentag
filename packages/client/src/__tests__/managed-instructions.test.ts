@@ -333,13 +333,12 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
       expect(prompt).toContain("Session kind: visible");
       expect(prompt).toContain("When you speak, be warm and natural");
       expect(prompt).not.toContain("lively");
+      expect(prompt).toContain("OpenTag manages the working and error reactions on incoming messages.");
+      expect(prompt).toContain("Do not add, change, or remove these status reactions yourself");
       expect(prompt).toContain(
-        'When you take on a lengthy task, first add one emoji reaction meaning "received, working on it" to the original message via the provider CLI before starting task work (for example, Feishu OnIt or the provider\'s equivalent).',
+        "While working, do not send intermediate progress messages, status cards, steps, or todo lists to IM, or change the working reaction mid-task.",
       );
-      expect(prompt).toContain("Do not use approval or completion reactions such as thumbs-up or check marks");
-      expect(prompt).toContain(
-        "Do not react to messages you are not acting on, duplicate acknowledgments, or observer deliveries",
-      );
+      expect(prompt).toContain("Questions needed to proceed and required approval requests are still allowed.");
       expect(prompt).not.toContain("optionally");
       expect(prompt).not.toContain("unnecessary");
       expect(prompt).toContain("OpenTag internal Sessions and Provider-native subagents are separate mechanisms");
@@ -364,6 +363,7 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
       expect(prompt).toContain("Creator Session: session-parent-1");
       expect(prompt).not.toContain("emoji");
       expect(prompt).not.toContain("be warm and natural");
+      expect(prompt).not.toContain("do not send intermediate progress messages");
       expect(prompt).not.toContain("## When to speak");
     }
   });

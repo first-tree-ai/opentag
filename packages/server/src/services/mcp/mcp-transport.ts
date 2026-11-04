@@ -428,7 +428,7 @@ export class McpTransport {
     /*
      * A JSON-RPC error body is preserved as-is: it is how a modern Server reports an unsupported
      * protocol version, and the caller branches on its code to retry rather than downgrade. A member
-     * that cannot be read is a protocol failure instead, so no caller has to defend against a body.
+     * that cannot be read uses the HTTP failure on non-2xx, or a protocol failure on 2xx.
      */
     throwErrorMember(split.member, response.status, method);
     /*
@@ -587,11 +587,13 @@ function errorMemberOf(payload: McpJsonRpcResult): ErrorMember {
 
 /**
  * Throw for an `error` member. A usable error keeps its own code and message so a caller can branch
- * on it — that is how a modern Server reports an unsupported protocol version — while a malformed
- * one is a protocol failure with a fixed message, never a `TypeError` and never a result.
+ * on it — that is how a modern Server reports an unsupported protocol version. A malformed member
+ * keeps the HTTP failure on non-2xx (including OAuth error bodies), or fails the protocol on 2xx.
  */
 function throwErrorMember(member: ErrorMember, status: number, method: string): void {
-  if (member.kind === "malformed") throw invalidResponse(method, status, "a malformed JSON-RPC error");
+  if (member.kind === "malformed") {
+    throw isSuccess(status) ? invalidResponse(method, status, "a malformed JSON-RPC error") : upstreamFailure(status);
+  }
   if (member.kind === "absent") return;
   throw new McpTransportError(
     MCP_ERROR_CODES.UPSTREAM_ERROR,

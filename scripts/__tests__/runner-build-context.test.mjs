@@ -45,6 +45,7 @@ test("the production allowlist stages scripts and dependency patches required by
     assert.ok(files.includes("scripts/prepare-cli-release.mjs"));
     assert.ok(files.includes("scripts/channel-config.mjs"));
     assert.ok(files.includes("scripts/runner/Dockerfile"));
+    assert.ok(files.includes("scripts/runner/build-pi-mcp-adapter.mjs"));
     assert.ok(files.includes("apps/cli/package.json"));
     assert.ok(files.includes("packages/mcp-presets/package.json"));
     const manifest = JSON.parse(await readFile(join(dest, "package.json"), "utf8"));

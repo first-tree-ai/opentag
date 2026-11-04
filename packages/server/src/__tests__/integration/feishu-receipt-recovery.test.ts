@@ -13,7 +13,7 @@ import {
 } from "../../services/im-bindings/feishu/adapter.js";
 import { FeishuConnectionManager } from "../../services/im-bindings/feishu/connection-manager.js";
 import { FeishuInboundReceiptStore } from "../../services/im-bindings/feishu/inbound-receipt-store.js";
-import { createInboundFixture } from "./inbound-receipt-recovery-fixture.js";
+import { createInboundFixture, recordInboundInputs } from "./inbound-receipt-recovery-fixture.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 let testDatabase: MigratedTestDatabase;
@@ -172,11 +172,45 @@ it("recovers through a new connection owner after receipt persistence and an Inb
   expect(messages[0]?.receivedAt).toEqual(receivedAt);
   expect(await f.client.database.select().from(imMessageDeliveries)).toHaveLength(1);
   await expect(first.handlers().message?.(f.message("ev_old_owner") as never)).rejects.toMatchObject({
-    code: "FEISHU_INBOUND_FENCE_STALE",
+    code: "FEISHU_SETUP_FENCE_STALE",
   });
   expect(await f.client.database.select().from(feishuInboundReceipts)).toHaveLength(1);
   await second.handlers().message?.(f.message() as never);
   expect(await f.client.database.select().from(imMessages)).toHaveLength(1);
+});
+
+it("keeps a newer callback behind failed receipt work through owner takeover and ordered delivery", async () => {
+  const f = await fixture();
+  const first = f.manager();
+  await f.connect(first);
+  const restore = await failNextIngress(f);
+  try {
+    await expect(first.handlers().message?.(f.message() as never)).rejects.toBeDefined();
+  } finally {
+    await restore();
+  }
+  await first.handlers().message?.({
+    ...f.message("ev_newer"),
+    messageId: "om_newer",
+    content: "newer",
+    createTime: f.clock.now.getTime() + 1,
+  } as never);
+  const second = f.manager();
+  await first.owner.stop();
+  await f.connect(second);
+  // Recovery remains in backoff; the newer Inbox row is already present.
+  expect(await f.client.database.select().from(imMessages)).toHaveLength(1);
+  expect(await recordInboundInputs(f, 0)).toEqual([]);
+  f.clock.now = new Date(f.clock.now.getTime() + 3000);
+  await second.owner.maintain();
+  await expect.poll(async () => (await f.receipt()).status).toBe("processed");
+  const messages = await f.client.database.select().from(imMessages);
+  const older = messages.find((row) => row.providerEventId === "ev_work");
+  const newer = messages.find((row) => row.providerEventId === "ev_newer");
+  assert(older && newer);
+  const recorded = await recordInboundInputs(f, 2);
+  expect(recorded.map((request) => request.imMessageId)).toEqual([older.id, newer.id]);
+  expect(recorded.every((request) => request.agentId === f.agent.id)).toBe(true);
 });
 
 it("does not claim recoverable input without the current Feishu connection fence", async () => {

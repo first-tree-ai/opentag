@@ -87,7 +87,7 @@ for (const locale of ["en", "zh"] as const) {
       await expect(rows).toHaveCount(3);
       const labels =
         locale === "en"
-          ? ["No computer assigned", "Codex sign-in required", "Messaging permissions required"]
+          ? ["No computer assigned", "Codex sign-in required", "Messaging permissions need updating"]
           : ["未指定电脑", "需要登录 Codex", "需要更新消息权限"];
       for (const [index, displayName] of names.entries()) {
         const row = rows.nth(index);
@@ -144,7 +144,7 @@ for (const locale of ["en", "zh"] as const) {
       await home.focus();
       await page.keyboard.press("Enter");
       await expect(page).toHaveURL(/\/agents$/);
-      const setup = rows.first().locator('[data-ui="agent-row-continue-setup"]');
+      const setup = rows.first().locator('[data-ui="agent-row-action"]');
       await setup.scrollIntoViewIfNeeded();
       await expectWithinViewport(setup);
       await setup.focus();

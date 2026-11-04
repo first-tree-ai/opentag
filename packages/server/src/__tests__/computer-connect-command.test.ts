@@ -25,7 +25,7 @@ describe("buildComputerConnectCommand", () => {
     const installerUrl = releasedInstallerUrl(channel.environment);
     expect(command).toBe(
       `opentag_installer="$(mktemp)" && curl -fsSL ${installerUrl} -o "$opentag_installer"` +
-        ` && sh "$opentag_installer"` +
+        ` && sh "$opentag_installer" --quiet` +
         ` && PATH="$HOME/.local/bin\${PATH:+:$PATH}" "$HOME/.local/bin/${channel.binName}" connect` +
         ` --server ${channel.publicUrl} -- ${CODE}`,
     );
@@ -47,6 +47,26 @@ describe("buildComputerConnectCommand", () => {
     expect(command).not.toContain("mktemp");
     expect(command).not.toContain("curl");
     expect(command).not.toMatch(/(?:^|[\s;|&])rm(?:\s|$)/);
+  });
+
+  it("names the Computer a repair command restores so the CLI can refuse another machine", () => {
+    const target = "6f1f6cde-3b9b-4c2e-9a37-0c5d5f0b8c11";
+    const command = buildComputerConnectCommand({
+      code: CODE,
+      downloadBaseUrl: DOWNLOAD_BASE_URL,
+      environment: "dev",
+      publicUrl: "http://127.0.0.1:8000",
+      targetComputerId: target,
+    });
+    expect(command.endsWith(`connect --server http://127.0.0.1:8000 --computer ${target} -- ${CODE}`)).toBe(true);
+    expect(
+      buildComputerConnectCommand({
+        code: CODE,
+        downloadBaseUrl: DOWNLOAD_BASE_URL,
+        environment: "dev",
+        publicUrl: "http://127.0.0.1:8000",
+      }),
+    ).not.toContain("--computer");
   });
 
   it("quotes an unsafe connect code without changing the install chain", () => {

@@ -54,6 +54,7 @@ function fixture() {
     }),
   };
   const turns = {
+    resumeAfterFailedRelease: vi.fn(() => true),
     waitForActive: vi.fn(async (): Promise<void> => undefined),
     drainForRelease: vi.fn(async () => {
       events.push("reports-acked");
@@ -260,5 +261,12 @@ describe("Runner workspace occupation", () => {
     expect(f.controller.ready).toBe(false);
     expect(f.workspace.initialize).toHaveBeenCalledTimes(restores);
     expect(f.workspace.rollback).not.toHaveBeenCalled();
+  });
+  it("does not publish readiness while Cloud release reports are still draining", async () => {
+    const f = fixture();
+    f.turns.resumeAfterFailedRelease.mockReturnValueOnce(false);
+    expect(await f.controller.prepare()).toBe(false);
+    expect(f.sandbox.launch).not.toHaveBeenCalled();
+    expect(f.controller.ready).toBe(false);
   });
 });

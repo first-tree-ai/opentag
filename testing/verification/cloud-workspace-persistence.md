@@ -26,6 +26,11 @@ violation from an incident without its original error or prove real GCS/native r
 
 - `serve-workspace.test.ts` verifies transient seal recovery, coalesced retries, terminal archive
   blocking, fatal native-stop handling and a committed seal that cannot relaunch execution.
+- `runner-workspace-wire.test.ts` rejects the final seal upload over real loopback HTTP/WS,
+  reconnects the same assignment, receives and executes a new Cloud input using the real Turn
+  controller, acknowledges its report, and seals successfully. Unpublished local files survive.
+  `cloud-turns.test.ts` verifies that unacknowledged release reports prevent resumption and permanent
+  shutdown remains irreversible.
 - `sandbox-idle-instance-reuse.test.ts` checks that repeated 15-second sweeps perform no new Cloud
   or seal I/O during cooldown, preserve the binding, and consume a committed seal proof after the
   delay. Delete failures survive restart without a same-pass retry; explicit stop remains available.

@@ -56,6 +56,7 @@ export class ServeWorkspace {
       await this.#quiesce();
       await this.#workspace.initialize();
       if (this.#workspace.sealed || this.#sealing || this.#state().stopping) return false;
+      if (!this.#turns.resumeAfterFailedRelease()) return false;
       await this.#launch();
       this.#blocked = false;
       return true;

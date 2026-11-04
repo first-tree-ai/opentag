@@ -42,7 +42,7 @@ const defaultDirectory = resolve(tmpdir(), "opentag-benchmarks/agent-session");
 const id = (kind: number, number: number) =>
   `${String(kind).padStart(8, "0")}-0000-4000-8000-${String(number).padStart(12, "0")}`;
 
-function benchmarkDependencies(): BenchmarkDeps {
+export function benchmarkDependencies(): BenchmarkDeps {
   return {
     docker: (args) => execFileSync("docker", args, { encoding: "utf8" }).trim(),
     // postgres.js is a template tag, not an object with a `query` method: the adapter is what makes the

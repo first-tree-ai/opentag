@@ -14,8 +14,8 @@ export function classifyRegistryLookup({ status, stdout, stderr, expectedGitHead
     } catch (error) {
       throw new Error("npm registry returned invalid JSON", { cause: error });
     }
-    if (expectedVersion !== undefined && metadata.version !== undefined && metadata.version !== expectedVersion) {
-      throw new Error(`published version is "${metadata.version}", expected "${expectedVersion}"`);
+    if (expectedVersion !== undefined && metadata.version !== expectedVersion) {
+      throw new Error(`published version is "${metadata.version ?? "missing"}", expected "${expectedVersion}"`);
     }
     if (metadata.gitHead !== expectedGitHead) {
       throw new Error(

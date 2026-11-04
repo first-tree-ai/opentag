@@ -268,6 +268,17 @@ test("classifies npm registry lookups without treating errors as absence", () =>
     /published version is "0\.0\.2-staging\.1\.1", expected "0\.0\.2-staging\.1\.2"/,
   );
   assert.throws(
+    () =>
+      classifyRegistryLookup({
+        status: 0,
+        stdout: '{"gitHead":"abc"}',
+        stderr: "",
+        expectedGitHead: "abc",
+        expectedVersion: "0.0.2-staging.1.2",
+      }),
+    /published version is "missing", expected "0\.0\.2-staging\.1\.2"/,
+  );
+  assert.throws(
     () => classifyRegistryLookup({ status: 1, stdout: "", stderr: "ECONNRESET", expectedGitHead: "abc" }),
     /registry lookup failed/,
   );
@@ -365,6 +376,10 @@ test("verifyPublishedCoordinate waits for async npm visibility and fails closed 
     [
       { status: 0, stdout: '{"version":"0.0.2-staging.50.1","gitHead":"abc"}', stderr: "" },
       /published version is "0\.0\.2-staging\.50\.1", expected "0\.0\.2-staging\.51\.1"/,
+    ],
+    [
+      { status: 0, stdout: '{"gitHead":"abc"}', stderr: "" },
+      /published version is "missing", expected "0\.0\.2-staging\.51\.1"/,
     ],
     [{ status: 1, stdout: "", stderr: "ECONNRESET" }, /registry lookup failed/],
   ]) {

@@ -158,6 +158,9 @@ export class RuntimeCredentialBroker {
     if (!binding) return { status: "rejected", code: "provider_mismatch" };
     try {
       const material = await this.#scopeMaterial(input.execution, input.provider, input.bindingId, input.signal);
+      input.signal?.throwIfAborted();
+      if (!this.#options.executions.get(input.execution.executionId))
+        throw new RuntimeCredentialError("execution_closed");
       const { record, token } = this.#options.capabilities.issue({
         executionId: input.execution.executionId,
         provider: input.provider,
@@ -208,6 +211,7 @@ export class RuntimeCredentialBroker {
     const execution = this.#options.executions.get(grant.executionId);
     if (!execution) throw new RuntimeCredentialError("execution_closed");
     const material = await this.#scopeMaterial(execution, grant.provider, grant.bindingId, input.signal);
+    input.signal?.throwIfAborted();
     if (material.scopeHash !== grant.scopeHash) throw new RuntimeCredentialError("credential_stale");
     const authorization: RuntimeProxyAuthorization = {
       executionId: execution.executionId,
@@ -235,6 +239,7 @@ export class RuntimeCredentialBroker {
           credentialGeneration: grant.credentialGeneration,
           signal,
         });
+        signal?.throwIfAborted();
         if (!resolved) throw new RuntimeCredentialError("credential_stale");
         return resolved;
       },
@@ -287,10 +292,13 @@ export class RuntimeCredentialBroker {
     signal?.throwIfAborted();
     this.#assertCurrentConnection(execution);
     await this.#assertCloudControl(execution);
+    signal?.throwIfAborted();
     await this.#assertAdmission(execution);
+    signal?.throwIfAborted();
     const fence = await (execution.purpose === "validation"
       ? this.#validationFence(execution)
       : this.#sessionFence(execution));
+    signal?.throwIfAborted();
     if (
       execution.purpose === "context-tree" &&
       (fence.kind !== "session" ||
@@ -366,6 +374,7 @@ export class RuntimeCredentialBroker {
     if (provider === "github" && execution.purpose !== "context-tree")
       throw new RuntimeCredentialError("credential_scope_denied");
     const fence = await this.#fence(execution, signal);
+    signal?.throwIfAborted();
     const permitted = await this.#options.policy.authorize({
       accountId: execution.accountId,
       agentId: execution.agentId,
@@ -373,9 +382,11 @@ export class RuntimeCredentialBroker {
       provider,
       bindingId,
       sessionBindingId: fence.snapshot.binding.id,
+      signal,
       source: execution.source,
       purpose: execution.purpose,
     });
+    signal?.throwIfAborted();
     if (permitted !== "permit") throw new RuntimeCredentialError("credential_scope_denied");
     if (provider === "github") return this.#gitHubScopeMaterial(execution, bindingId, signal);
     return this.#imScopeMaterial(execution, provider, bindingId, imMaterialFacts(fence));

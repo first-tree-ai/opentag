@@ -1,4 +1,5 @@
-import type { DatabaseClient } from "../../db/client.js";
+import type { PgTable } from "drizzle-orm/pg-core";
+import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { imBindings } from "../../db/schema/index.js";
 
 export function deferred<T>() {
@@ -9,48 +10,58 @@ export function deferred<T>() {
   return { promise, resolve };
 }
 
-/** Holds an actual SQL result after its snapshot was read, without holding a transaction open. */
+/** Holds an actual SQL result after its snapshot was read, preserving any existing transaction. */
 export function pausedBindingRead(client: DatabaseClient) {
+  return pausedTableRead(client, imBindings);
+}
+
+export function pausedTableRead(client: DatabaseClient, targetTable: PgTable) {
   const captured = deferred<void>();
   const released = deferred<void>();
   let armed = false;
-  const database = new Proxy(client, {
-    get(target, property) {
-      const value = Reflect.get(target, property);
-      if (property !== "select") return typeof value === "function" ? value.bind(target) : value;
-      return (...selection: unknown[]) => {
-        const builder: object = Reflect.apply(value, target, selection);
-        return new Proxy(builder, {
-          get(select, key) {
-            const method = Reflect.get(select, key);
-            if (key !== "from") return typeof method === "function" ? method.bind(select) : method;
-            return (table: unknown) => {
-              const query: object = Reflect.apply(method, select, [table]);
-              if (table === imBindings) {
-                const then = Reflect.get(query, "then").bind(query);
-                // biome-ignore lint/suspicious/noThenProperty: Drizzle is already thenable; hold its actual SQL result.
-                Object.defineProperty(query, "then", {
-                  configurable: true,
-                  value: (resolve: (rows: unknown) => unknown, reject: (error: unknown) => unknown) =>
-                    then(async (rows: unknown) => {
-                      if (armed) {
-                        armed = false;
-                        captured.resolve();
-                        await released.promise;
-                      }
-                      return rows;
-                    }).then(resolve, reject),
-                });
-              }
-              return query;
-            };
-          },
-        });
-      };
-    },
-  });
+  const wrap = <T extends DatabaseClient | DatabaseTransaction>(executor: T): T =>
+    new Proxy(executor, {
+      get(target, property) {
+        const value = Reflect.get(target, property);
+        if (typeof value !== "function") return value;
+        if (property === "transaction") {
+          return (read: (transaction: DatabaseTransaction) => Promise<unknown>, ...options: unknown[]) =>
+            Reflect.apply(value, target, [(transaction: DatabaseTransaction) => read(wrap(transaction)), ...options]);
+        }
+        if (property !== "select") return typeof value === "function" ? value.bind(target) : value;
+        return (...selection: unknown[]) => {
+          const builder: object = Reflect.apply(value, target, selection);
+          return new Proxy(builder, {
+            get(select, key) {
+              const method = Reflect.get(select, key);
+              if (key !== "from") return typeof method === "function" ? method.bind(select) : method;
+              return (table: unknown) => {
+                const query: object = Reflect.apply(method, select, [table]);
+                if (table === targetTable) {
+                  const then = Reflect.get(query, "then").bind(query);
+                  // biome-ignore lint/suspicious/noThenProperty: Drizzle is already thenable; hold its actual SQL result.
+                  Object.defineProperty(query, "then", {
+                    configurable: true,
+                    value: (resolve: (rows: unknown) => unknown, reject: (error: unknown) => unknown) =>
+                      then(async (rows: unknown) => {
+                        if (armed) {
+                          armed = false;
+                          captured.resolve();
+                          await released.promise;
+                        }
+                        return rows;
+                      }).then(resolve, reject),
+                  });
+                }
+                return query;
+              };
+            },
+          });
+        };
+      },
+    });
   return {
-    database,
+    database: wrap(client),
     captured: captured.promise,
     arm: () => {
       armed = true;

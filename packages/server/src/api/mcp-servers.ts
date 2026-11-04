@@ -74,6 +74,10 @@ export function registerMcpServerRoutes(
 ): void {
   const preHandler = createUserAuthPreHandler(authService, options.authOptions ?? {});
   const { authorization, flows, servers } = options;
+  app.addHook("preClose", async () => {
+    void authorization.closeProbes?.();
+  });
+  app.addHook("onClose", () => authorization.closeProbes?.());
 
   // ------------------------------------------------------------ Account pool
 

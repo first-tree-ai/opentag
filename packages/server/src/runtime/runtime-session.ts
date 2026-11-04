@@ -108,8 +108,10 @@ export class RuntimeSession {
   readonly #businessScheduler?: KeyedTaskScheduler;
   #state: "await-auth" | "await-register" | "registered" | "closing" | "closed" = "await-auth";
   #timer?: ReturnType<typeof setTimeout>;
-  #handshakeInFlight = false;
-  #heartbeatInFlight = false;
+  #handshake: Promise<void> | undefined;
+  #heartbeatWork: Promise<void> | undefined;
+  #registrationWork: Promise<void> | undefined;
+  #closing: Promise<void> | undefined;
   #authContext?: ComputerAuthContext;
   #installationId?: string;
   #computerId?: string;
@@ -204,7 +206,7 @@ export class RuntimeSession {
     }
 
     if (this.#state === "await-auth") {
-      if (this.#handshakeInFlight) {
+      if (this.#handshake) {
         this.#fail("PROTOCOL_ERROR", "A runtime handshake request is already in progress", 4400);
         return;
       }
@@ -232,15 +234,14 @@ export class RuntimeSession {
         return;
       }
       this.#protocolVersion = parsed.data.protocolVersion;
-      this.#handshakeInFlight = true;
-      void this.#authenticate(parsed.data).finally(() => {
-        this.#handshakeInFlight = false;
+      this.#handshake = this.#authenticate(parsed.data).finally(() => {
+        this.#handshake = undefined;
       });
       return;
     }
 
     if (this.#state === "await-register") {
-      if (this.#handshakeInFlight) {
+      if (this.#handshake) {
         this.#fail("PROTOCOL_ERROR", "A runtime handshake request is already in progress", 4400);
         return;
       }
@@ -257,9 +258,8 @@ export class RuntimeSession {
         this.#fail("PROTOCOL_ERROR", "Computer registration does not match the negotiated protocol", 4400);
         return;
       }
-      this.#handshakeInFlight = true;
-      void this.#register(parsed.data).finally(() => {
-        this.#handshakeInFlight = false;
+      this.#handshake = this.#register(parsed.data).finally(() => {
+        this.#handshake = undefined;
       });
       return;
     }
@@ -275,13 +275,12 @@ export class RuntimeSession {
         this.#fail("COMPUTER_NOT_REGISTERED", "The runtime connection fence is stale", 4409, parsed.data.requestId);
         return;
       }
-      if (this.#heartbeatInFlight) {
+      if (this.#heartbeatWork) {
         this.#fail("PROTOCOL_ERROR", "A heartbeat is already in progress", 4400, parsed.data.requestId);
         return;
       }
-      this.#heartbeatInFlight = true;
-      void this.#heartbeat(parsed.data).finally(() => {
-        this.#heartbeatInFlight = false;
+      this.#heartbeatWork = this.#heartbeat(parsed.data).finally(() => {
+        this.#heartbeatWork = undefined;
       });
       return;
     }
@@ -416,13 +415,16 @@ export class RuntimeSession {
             this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance was replaced during registration", 4409);
             return;
           }
-          void Promise.resolve(
-            this.#options.onRegistered?.({
-              computerId: authContext.computerId,
-              installationId: frame.installationId,
-              instanceId: frame.instanceId,
-            }),
-          ).catch(() => undefined);
+          this.#registrationWork = Promise.resolve()
+            .then(() => {
+              if (this.#isClosing()) return;
+              return this.#options.onRegistered?.({
+                computerId: authContext.computerId,
+                installationId: frame.installationId,
+                instanceId: frame.instanceId,
+              });
+            })
+            .catch(() => undefined);
         },
       );
       if (this.#isClosing()) {
@@ -627,20 +629,30 @@ export class RuntimeSession {
     this.#send(result, true);
   }
 
-  async #onClose(code?: number): Promise<void> {
-    if (this.#state === "closed") return;
+  close(): Promise<void> {
+    if (this.#closing) return this.#closing;
+    const closing = this.#onClose(1001);
+    this.#socket.close(1001, "Server shutting down");
+    return closing;
+  }
+
+  #onClose(code?: number): Promise<void> {
+    this.#closing ??= this.#finishClose(code);
+    return this.#closing;
+  }
+
+  async #finishClose(code?: number): Promise<void> {
     endRuntimeConnectionSpan(this.#socket, code);
     this.#state = "closed";
     this.#abort.abort();
-    this.#businessScheduler?.close();
+    const businessStopped = this.#businessScheduler?.close();
     this.#clearHandshakeTimer();
-    if (
-      this.#computerId &&
-      this.#instanceId &&
-      this.#registry.remove(this.#computerId, this.#instanceId, this.#socket)
-    ) {
-      await this.#computers.disconnect(this.#computerId, this.#instanceId, this.#connectionId).catch(() => undefined);
-    }
+    const disconnected =
+      this.#computerId && this.#instanceId && this.#registry.remove(this.#computerId, this.#instanceId, this.#socket)
+        ? this.#computers.disconnect(this.#computerId, this.#instanceId, this.#connectionId).catch(() => undefined)
+        : undefined;
+    await Promise.allSettled([this.#handshake, this.#heartbeatWork, businessStopped, disconnected]);
+    await this.#registrationWork;
   }
 
   #send(frame: unknown, business = false): void {

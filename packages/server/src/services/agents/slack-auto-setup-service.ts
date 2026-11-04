@@ -16,7 +16,7 @@ export class SlackAutoSetupService {
   constructor(
     readonly options: {
       agents: Pick<AgentService, "getConfigById">;
-      slack: Pick<SlackConfigurationService, "view" | "configureToken">;
+      slack: Pick<SlackConfigurationService, "view" | "configureToken" | "assertAutoSetupTarget">;
       owner: Pick<SlackAutoSetupOwner, "start">;
       cloud?: Pick<SlackAutoSetupOwner, "start">;
       computerKind?: (computerId: string) => Promise<"local" | "cloud" | undefined>;
@@ -48,17 +48,16 @@ export class SlackAutoSetupService {
       return publicResult(
         await this.#dispatch(computerId, agentId, { action: "authorize", ...(input.force ? { force: true } : {}) }),
       );
-    if (view.binding) return this.#callbacks(computerId, agentId, view, input.challenge);
+    if (view.binding) return this.#callbacks(accountId, computerId, agentId, view, input.challenge);
     const installed = await this.#dispatch(computerId, agentId, {
       action: "install",
       displayName: config.name,
       ...(input.challenge ? { challenge: input.challenge } : {}),
     });
     if (installed.status !== "installed") return installed;
-    await this.#checkPlacement(accountId, agentId, computerId);
-    await this.#bind(accountId, agentId, installed.credentials);
-    await this.#checkPlacement(accountId, agentId, computerId);
+    await this.#bind(accountId, agentId, computerId, installed.credentials);
     return this.#callbacks(
+      accountId,
       computerId,
       agentId,
       await this.options.slack.view(accountId, agentId, this.options.publicOrigin, this.options.officialSigningSecret),
@@ -83,16 +82,7 @@ export class SlackAutoSetupService {
         "Use OAuth to reconnect the official Slack App",
       );
   }
-  async #checkPlacement(accountId: string, agentId: string, computerId: string) {
-    const latest = await this.options.agents.getConfigById(accountId, agentId);
-    if (latest.computerId !== computerId)
-      throw new SlackConfigurationServiceError(
-        "SLACK_CONFIGURATION_CONFLICT",
-        409,
-        "The Agent moved to another Computer",
-      );
-  }
-  async #bind(accountId: string, agentId: string, credentials: SlackProvisionCredentials) {
+  async #bind(accountId: string, agentId: string, computerId: string, credentials: SlackProvisionCredentials) {
     const current = await this.options.slack.view(
       accountId,
       agentId,
@@ -124,9 +114,11 @@ export class SlackAutoSetupService {
         signingSecret: credentials.signingSecret,
       },
       credentials,
+      computerId,
     );
   }
   async #callbacks(
+    accountId: string,
     computerId: string,
     agentId: string,
     view: SlackConfigurationView,
@@ -140,18 +132,24 @@ export class SlackAutoSetupService {
         "Update Slack credentials manually",
       );
     const identity = view.binding.identity;
-    return publicResult(
-      await this.#dispatch(computerId, agentId, {
-        action: "callbacks",
-        ...(challenge ? { challenge } : {}),
-        appId: identity.appId,
-        teamId: identity.teamId,
-        botUserId: identity.botUserId,
-        enterpriseId: identity.enterpriseId,
-        eventsUrl: view.eventsUrl,
-        interactionsUrl: new URL(SLACK_INTERACTIONS_PATH, this.options.publicOrigin).toString(),
-      }),
-    );
+    const expected = {
+      computerId,
+      bindingId: view.binding.id,
+      credentialGeneration: view.binding.credentialGeneration,
+    };
+    await this.options.slack.assertAutoSetupTarget(accountId, agentId, expected);
+    const result = await this.#dispatch(computerId, agentId, {
+      action: "callbacks",
+      ...(challenge ? { challenge } : {}),
+      appId: identity.appId,
+      teamId: identity.teamId,
+      botUserId: identity.botUserId,
+      enterpriseId: identity.enterpriseId,
+      eventsUrl: view.eventsUrl,
+      interactionsUrl: new URL(SLACK_INTERACTIONS_PATH, this.options.publicOrigin).toString(),
+    });
+    if (result.status === "connected") await this.options.slack.assertAutoSetupTarget(accountId, agentId, expected);
+    return publicResult(result);
   }
 }
 function publicResult(result: SlackAutoSetupRuntimeResult["result"]): SlackAutoSetupResponse {

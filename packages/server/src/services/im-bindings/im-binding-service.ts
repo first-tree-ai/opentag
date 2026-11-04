@@ -693,9 +693,8 @@ export class ImBindingService {
   }
 
   /** Stops a binding Feishu keeps refusing; see `stopFeishuConnection`. */
-  async markFeishuConnectionFailed(imBindingId: string, credentialGeneration: number, errorCode: string) {
-    const input = { imBindingId, credentialGeneration, errorCode, now: this.#now() };
-    const agentId = await stopFeishuConnection(this.#database, input);
+  async markFeishuConnectionFailed(fence: Parameters<typeof stopFeishuConnection>[1], errorCode: string) {
+    const agentId = await stopFeishuConnection(this.#database, fence, errorCode, this.#now());
     if (agentId) await this.#notifyActiveBindingChanged(agentId).catch(() => undefined);
     return agentId !== undefined;
   }

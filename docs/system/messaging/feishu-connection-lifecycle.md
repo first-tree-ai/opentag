@@ -210,8 +210,8 @@ numeric codes, never from provider text:
 - **Transient.** Everything else: network failures, timeouts, rate limits, and the SDK's ambiguous
   `not_connected`.
 
-Ten consecutive refusals (about eight and a half minutes) stop the binding. The fenced update moves it
-from `active` to `error` for the generation the attempts used, stores the reason in
+Ten consecutive refusals stop the binding. The update moves it from `active` to `error`, stores the
+reason in
 `last_error_code` (`FEISHU_CREDENTIAL_INVALID`, `FEISHU_APP_UNAVAILABLE`,
 `FEISHU_CONNECTION_REJECTED`, or `FEISHU_BOT_IDENTITY_MISMATCH`), clears the lease, and advances the
 credential generation, as a Slack reauthorization requirement does. The scan reads only `active` rows,
@@ -229,8 +229,16 @@ while an outage on the path to Feishu resolves without anyone. Stopping still wa
 so a short-lived refusal, for example while an administrator republishes the App, does not stop a
 working Bot.
 
-The count lives in each instance's memory, so a restart or a lease moving to another instance starts
-it over and delays the stop rather than causing a wrong one. No column was added for it.
+The count lives in each instance's memory, so a restart starts it over and delays the stop rather
+than causing a wrong one. No column was added for it. Each attempt records the fencing epoch of its
+claim; when the next claim's epoch is not the one after it, another instance claimed the binding in
+between and may have connected it, so the run starts over.
+
+Every write a maintenance attempt makes, the stop and the stored reason alike, is conditional on the
+claim that made it: the binding is still `active` at the attempt's credential generation, and this
+instance still holds the lease at that epoch. A result that outlived its lease or a reauthorization
+updates no row and is dropped, so it cannot stop a binding another instance now holds, clear that
+instance's lease, or restore a reason that reauthorization cleared.
 
 
 

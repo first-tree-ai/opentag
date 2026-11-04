@@ -15,7 +15,11 @@ import {
 import { ExternalCallPolicy } from "../../im/external-call-policy.js";
 import type { InboundReceiptAttempt } from "../../im/inbound-receipt-work-store.js";
 import { classifyImInboundPersistenceError, type ImMessageInbox } from "../../im/index.js";
-import type { FeishuConnectionCandidate } from "../feishu-connection-rows.js";
+import {
+  type FeishuConnectionCandidate,
+  type FeishuConnectionFence,
+  recordFeishuConnectionFailure,
+} from "../feishu-connection-rows.js";
 import type { ImBindingService, VerifiedFeishuBinding } from "../im-binding-service.js";
 import { FeishuAdapter, type FeishuChannel, feishuEnvelopeEventId, feishuSenderOpenId } from "./adapter.js";
 import { classifyFeishuConnectionFailure, type FeishuConnectionFailure } from "./connection-failure.js";
@@ -34,7 +38,7 @@ const DEFAULT_MAINTENANCE_MS = 10_000;
 const CONNECTION_SCAN_PAGE_SIZE = 100;
 /*
  * Retry pacing for a binding whose connection keeps failing: 0.5 s doubling to 5 minutes. Ten
- * consecutive refusals from Feishu itself (about eight and a half minutes) stop the binding.
+ * consecutive refusals from Feishu itself stop the binding.
  */
 const DEFAULT_MAINTENANCE_BACKOFF_BASE_MS = 500;
 const DEFAULT_MAINTENANCE_BACKOFF_MAX_MS = 300_000;
@@ -59,13 +63,15 @@ interface OwnedChannel {
 
 interface MaintenanceBackoff {
   readonly generation: number;
+  /** The fencing epoch of this instance's last claim; the next uncontested claim gets the one after. */
+  readonly epoch: number | undefined;
   readonly failures: number;
   readonly permanentFailures: number;
   readonly nextAt: number;
 }
 
 function freshBackoff(generation: number): MaintenanceBackoff {
-  return { generation, failures: 0, permanentFailures: 0, nextAt: 0 };
+  return { generation, epoch: undefined, failures: 0, permanentFailures: 0, nextAt: 0 };
 }
 
 function diagnosticCode(error: unknown): string {
@@ -626,7 +632,8 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
         this.#maintenanceBackoff.delete(imBindingId);
       })
       .catch(async (error) => {
-        await this.#recordMaintenanceFailure(imBindingId, backoff, classifyFeishuConnectionFailure(error));
+        const fence = { imBindingId, credentialGeneration, epoch, ownerInstanceId: this.#instanceId };
+        await this.#recordMaintenanceFailure(fence, backoff, classifyFeishuConnectionFailure(error));
         await this.#release(imBindingId, epoch);
       })
       .finally(() => {
@@ -637,37 +644,41 @@ export class FeishuConnectionManager implements FeishuBindingActivation {
   /**
    * Paces the next attempt and decides whether to stop. Only a run of refusals from Feishu itself
    * stops a binding; a transient failure breaks the run, and an attempt the open circuit kept from
-   * reaching Feishu leaves it as it was.
+   * reaching Feishu leaves it as it was. A claim by anyone else between two of this instance's
+   * attempts (its epoch is not the one after ours) starts the run over: that claim may have connected.
+   *
+   * Every write here is fenced on the claim that made the attempt, so a result that outlived its lease
+   * or its credential generation changes nothing.
    */
   async #recordMaintenanceFailure(
-    imBindingId: string,
+    fence: FeishuConnectionFence,
     backoff: MaintenanceBackoff,
     failure: FeishuConnectionFailure,
   ): Promise<void> {
+    const { imBindingId } = fence;
+    const uncontested = backoff.epoch !== undefined && fence.epoch === backoff.epoch + 1;
+    const run = uncontested ? backoff.permanentFailures : 0;
     const failures = backoff.failures + 1;
-    const permanentFailures =
-      failure.kind === "permanent"
-        ? backoff.permanentFailures + 1
-        : failure.kind === "deferred"
-          ? backoff.permanentFailures
-          : 0;
+    const permanentFailures = failure.kind === "permanent" ? run + 1 : failure.kind === "deferred" ? run : 0;
     const delay = Math.min(this.#maintenanceBackoffMaxMs, this.#maintenanceBackoffBaseMs * 2 ** (failures - 1));
     this.#maintenanceBackoff.set(imBindingId, {
       generation: backoff.generation,
+      epoch: fence.epoch,
       failures,
       permanentFailures,
       nextAt: this.#now().getTime() + delay,
     });
     if (permanentFailures >= this.#permanentFailureLimit) {
       this.#maintenanceBackoff.delete(imBindingId);
-      const stopped = await this.#imBindings.markFeishuConnectionFailed(imBindingId, backoff.generation, failure.code);
+      const stopped = await this.#imBindings.markFeishuConnectionFailed(fence, failure.code);
       if (stopped) {
         this.#emitDisconnected(imBindingId, failure.code);
         return;
       }
     }
     // A deferred attempt keeps the last stored reason: the circuit is not a new fact about the App.
-    if (failure.kind !== "deferred") await this.#imBindings.recordDiagnosticError(imBindingId, failure.code);
+    if (failure.kind !== "deferred")
+      await recordFeishuConnectionFailure(this.#database, fence, failure.code, this.#now());
   }
 
   async #renewOwnedChannel(imBindingId: string, owned: OwnedChannel, expiresAt: Date, now: Date): Promise<void> {

@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { FEISHU_REQUIRED_TENANT_SCOPES } from "@opentag/shared";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it } from "vitest";
+import { createDatabaseClient, type DatabaseClient } from "../../db/client.js";
 import { imBindings } from "../../db/schema/index.js";
 import { ExternalCallPolicy } from "../../services/im/external-call-policy.js";
 import { ImMessageInbox } from "../../services/im/index.js";
@@ -49,43 +50,52 @@ const activation = {
   grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
 };
 
-async function deadBindingFixture() {
+interface ManagerOptions {
+  /** Called inside each probe, before it answers: a barrier for another connection's write. */
+  onProbe?: () => Promise<void>;
+  permanentFailureLimit?: number;
+  database?: DatabaseClient;
+  instanceId?: string;
+}
+
+async function deadBindingFixture(options: ManagerOptions = {}) {
   const f = await createInboundFixture(testDatabase.databaseUrl);
   cleanup.push(f.close);
   const bindingId = await f.service.activateFeishu({ agentId: f.agent.id, ...activation });
   let failure: (() => Error) | undefined = () => tokenRefusal(10015);
   let probes = 0;
   let attempts = 0;
-  const record = f.service.recordDiagnosticError.bind(f.service);
-  f.service.recordDiagnosticError = async (id: string, code: string) => {
-    attempts += 1;
-    return record(id, code);
-  };
-  const manager = new FeishuConnectionManager({
-    database: f.client.database,
-    imBindings: f.service,
-    inbox: new ImMessageInbox(f.client.database, { now: () => f.clock.now }),
-    instanceId: randomUUID(),
-    leaseMs: 120_000,
-    maintenanceMs: 60_000,
-    now: () => f.clock.now,
-    // The circuit follows the same clock, so an open circuit half-opens as it would in real time.
-    policy: new ExternalCallPolicy({ allowedHosts: ["open.feishu.cn"], clock: () => f.clock.now }),
-    createAdapter: () =>
-      ({
-        channel: { on: () => () => undefined, connect: async () => undefined, disconnect: async () => undefined },
-        validateBinding: async () => {
-          probes += 1;
-          const next = failure?.();
-          if (next) throw next;
-          return {
-            externalAppId: activation.appId,
-            externalTeamId: activation.teamId,
-            externalBotId: activation.botOpenId,
-          };
-        },
-      }) as unknown as FeishuAdapter,
-  });
+  const createManager = (managerOptions: ManagerOptions & { answer: () => Error | undefined }) =>
+    new FeishuConnectionManager({
+      database: managerOptions.database ?? f.client.database,
+      imBindings: f.service,
+      inbox: new ImMessageInbox(managerOptions.database ?? f.client.database, { now: () => f.clock.now }),
+      instanceId: managerOptions.instanceId ?? randomUUID(),
+      leaseMs: 120_000,
+      maintenanceMs: 60_000,
+      now: () => f.clock.now,
+      ...(managerOptions.permanentFailureLimit ? { permanentFailureLimit: managerOptions.permanentFailureLimit } : {}),
+      // The circuit follows the same clock, so an open circuit half-opens as it would in real time.
+      policy: new ExternalCallPolicy({ allowedHosts: ["open.feishu.cn"], clock: () => f.clock.now }),
+      createAdapter: () => {
+        attempts += 1;
+        return {
+          channel: { on: () => () => undefined, connect: async () => undefined, disconnect: async () => undefined },
+          validateBinding: async () => {
+            probes += 1;
+            await managerOptions.onProbe?.();
+            const next = managerOptions.answer();
+            if (next) throw next;
+            return {
+              externalAppId: activation.appId,
+              externalTeamId: activation.teamId,
+              externalBotId: activation.botOpenId,
+            };
+          },
+        } as unknown as FeishuAdapter;
+      },
+    });
+  const manager = createManager({ ...options, answer: () => failure?.() });
   cleanup.push(() => manager.stop());
   let started = false;
   /** One maintenance pass every 10 seconds of manager time, as the production timer runs. */
@@ -97,6 +107,14 @@ async function deadBindingFixture() {
       f.clock.now = new Date(f.clock.now.getTime() + 10_000);
     }
   };
+  /** Runs passes until this instance has made `count` more probes. */
+  const runProbes = async (count: number) => {
+    const target = probes + count;
+    for (let pass = 0; probes < target; pass += 1) {
+      if (pass > 500) throw new Error("probe target not reached");
+      await runFor(10_000);
+    }
+  };
   const binding = async () => {
     const [row] = await f.client.database.select().from(imBindings).where(eq(imBindings.id, bindingId));
     return row;
@@ -105,7 +123,9 @@ async function deadBindingFixture() {
     ...f,
     bindingId,
     manager,
+    createManager,
     runFor,
+    runProbes,
     binding,
     fail: (next: (() => Error) | undefined) => {
       failure = next;
@@ -179,4 +199,65 @@ it("resumes connecting once the stopped binding is reauthorized", async () => {
   await f.runFor(30_000);
   expect(f.probes()).toBe(probes + 1);
   expect((await f.binding())?.observedConnectedAt).not.toBeNull();
+}, 120_000);
+
+it("starts the refusal run over when another instance claimed the binding in between", async () => {
+  const f = await deadBindingFixture({ permanentFailureLimit: 3 });
+  await f.runProbes(2);
+  // A second instance on its own connection claims the released binding and connects it.
+  const other = createDatabaseClient(testDatabase.databaseUrl, { max: 2 });
+  cleanup.push(() => other.sql.end());
+  const second = f.createManager({ database: other.database, answer: () => undefined });
+  second.start();
+  await expect.poll(async () => (await f.binding())?.observedConnectedAt).not.toBeNull();
+  await second.stop();
+  // The first instance's next refusal is the first of a new run, not its third.
+  await f.runProbes(1);
+  expect(await f.binding()).toMatchObject({ status: "active", credentialGeneration: 1 });
+  await f.runProbes(2);
+  expect(await f.binding()).toMatchObject({ status: "error", lastErrorCode: "FEISHU_CREDENTIAL_INVALID" });
+}, 120_000);
+
+it("does not stop or overwrite a binding another instance took over before the terminal write", async () => {
+  const other = createDatabaseClient(testDatabase.databaseUrl, { max: 2 });
+  cleanup.push(() => other.sql.end());
+  const takeover = randomUUID();
+  let bindingId = "";
+  const f = await deadBindingFixture({
+    permanentFailureLimit: 1,
+    // The refusal arrives after this instance's lease lapsed and another instance claimed it.
+    onProbe: async () => {
+      await other.database
+        .update(imBindings)
+        .set({
+          connectionOwnerInstanceId: takeover,
+          connectionFencingEpoch: sql`${imBindings.connectionFencingEpoch} + 1`,
+          connectionLeaseExpiresAt: new Date(Date.now() + 120_000),
+        })
+        .where(eq(imBindings.id, bindingId));
+    },
+  });
+  bindingId = f.bindingId;
+  await f.runProbes(1);
+  expect(await f.binding()).toMatchObject({
+    status: "active",
+    credentialGeneration: 1,
+    connectionOwnerInstanceId: takeover,
+    lastErrorCode: null,
+  });
+  expect((await f.binding())?.connectionLeaseExpiresAt).not.toBeNull();
+}, 120_000);
+
+it("does not restore a failure reason that reauthorization cleared while the attempt ran", async () => {
+  let reauthorize: () => Promise<unknown> = async () => undefined;
+  const f = await deadBindingFixture({ onProbe: () => reauthorize().then(() => undefined) });
+  await f.runProbes(1);
+  expect((await f.binding())?.lastErrorCode).toBe("FEISHU_CREDENTIAL_INVALID");
+  // During the next attempt the owner reauthorizes; that attempt's late refusal must not land.
+  reauthorize = async () => {
+    reauthorize = async () => undefined;
+    await f.service.activateFeishu({ agentId: f.agent.id, ...activation });
+  };
+  await f.runProbes(1);
+  expect(await f.binding()).toMatchObject({ status: "active", credentialGeneration: 2, lastErrorCode: null });
 }, 120_000);

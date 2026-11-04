@@ -186,6 +186,7 @@ jobs:
         run: npm publish --tag "${{ steps.dist_tag.outputs.tag }}" --access public
 
       - name: Verify published staging package
+        timeout-minutes: 35
         run: >-
           node scripts/check-npm-version.mjs
           --package "${{ steps.version.outputs.package_name }}"
@@ -387,6 +388,7 @@ jobs:
         run: npm publish --tag "${{ steps.dist_tag.outputs.tag }}" --access public --provenance
 
       - name: Verify published production package
+        timeout-minutes: 35
         run: >-
           node scripts/check-npm-version.mjs
           --package "${{ steps.version.outputs.package_name }}"

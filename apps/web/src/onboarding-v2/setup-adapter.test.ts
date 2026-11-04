@@ -38,6 +38,14 @@ afterEach(() => {
 });
 
 describe("createHttpSetupAdapter", () => {
+  it("reads optional completion identity through the existing config endpoint", async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response(null, { status: 204 }));
+    const adapter = createHttpSetupAdapter(new BrowserApi(fetchImpl));
+    await expect(adapter.readMessagingBinding?.(SETUP_AGENT_ID)).resolves.toBeUndefined();
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    expect(String(fetchImpl.mock.calls[0]?.[0])).toContain(`/agents/${SETUP_AGENT_ID}/im-binding/config`);
+  });
+
   it("reads the canonical snapshot for the exact Agent", async () => {
     const { adapter: memory } = createMemorySetupAdapter({
       agent: setupAgent(),

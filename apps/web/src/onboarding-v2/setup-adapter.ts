@@ -1,7 +1,7 @@
 /**
  * The one seam the Agent Setup surface sits on. The surface renders the F0 `AgentSetupSnapshot`
  * exactly as it arrives and dispatches only the actions the snapshot lists; everything it needs
- * from outside itself — one read and a handful of writes — is behind this interface, so the HTTP
+ * from outside itself — readiness, optional completion identity, and setup writes — is behind this interface, so the HTTP
  * implementation and the in-memory one can be held to the same behavior in tests.
  *
  * The shape is written in the surface's vocabulary rather than the transport's: starting a Feishu
@@ -14,6 +14,7 @@ import type {
   AgentSetupSnapshot,
   FeishuSetupAttempt,
   FeishuSetupIntent,
+  ImBindingAdminDetail,
   ImBindingMessagingExpectation,
   ImProvider,
   SlackConfigurationIntent,
@@ -31,8 +32,10 @@ import { fetchSharedResource } from "../query/session-cache.js";
 export interface AgentSetupAdapter {
   /** Review Lab supplies an isolated Slack configuration transport. Production uses BrowserApi. */
   readonly slackSetup?: SlackSetupApi;
-  /** The canonical setup state of one exact Agent — the only read this surface makes. */
+  /** The canonical readiness state of one exact Agent. */
   readonly readSnapshot: (agentId: string) => Promise<AgentSetupSnapshot>;
+  /** Optional completion-only Bot identity; missing details never block setup or management. */
+  readonly readMessagingBinding?: (agentId: string) => Promise<ImBindingAdminDetail | undefined>;
   /** Starts a real preparation on an already-connected Computer; never aliases a snapshot read. */
   readonly refreshPreparation: (agentId: string) => Promise<void>;
   /**
@@ -61,6 +64,7 @@ export interface AgentSetupAdapter {
 
 interface AgentSetupBrowserApi {
   readonly agentSetup: (agentId: string) => Promise<AgentSetupSnapshot>;
+  readonly imBindingConfig: (agentId: string) => Promise<ImBindingAdminDetail | undefined>;
   readonly refreshAgentSetup: (agentId: string) => Promise<void>;
   readonly createFeishuSetupAttempt: (
     agentId: string,
@@ -94,6 +98,7 @@ export function createHttpSetupAdapter(
     });
   };
   return {
+    readMessagingBinding: (agentId) => api.imBindingConfig(agentId),
     readSnapshot: (agentId) =>
       queryClient
         ? fetchSharedResource(queryClient, {

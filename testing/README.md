@@ -7,6 +7,8 @@ contents, and machine-specific operational logs outside the repository.
 
 ## Plans and harnesses
 
+- [First Agent completion handoff](verification/first-agent-handoff.md)
+
 - [Exclusive local IM acceptance control](local-im-control/README.md)
 
 - [SQL caller remediation and progress](sql-caller-remediation.md)

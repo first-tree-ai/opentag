@@ -95,7 +95,7 @@ Accounts entering Agent Setup from the application keep the account-level naviga
 Computer preparation, messaging connection, and completion. The Agent-specific navigation does not appear inside
 setup. These embedded pages omit their own header, including the brand, Account menu, and Back to Agents
 action, and share the shell's single main landmark. The account rail provides the exit from unfinished setup;
-completion provides the central View agent action.
+completion hands off to the connected Bot and retains View agent for management.
 The account rail's brand mark links to the Agent list, preserving the logo's home action in either layout.
 On phones they follow the shell's existing compact navigation. The same shell and session-local page memory remain
 mounted when moving between the Agent list and setup. An unfinished creation draft, including its current step,
@@ -165,9 +165,23 @@ workspace styling. The steps say only what the rows and controls do not:
   reader is usually on the phone that would scan it, so the same authorization link opens in Lark instead, and the
   instruction and waiting line say to confirm in Lark rather than to scan.
 
-The completion screen stays visible until the user navigates away. Its primary action, **View agent**
-(**查看 Agent** in Chinese), opens that Agent's overview. Global navigation provides the return to the Agent list;
-the completion screen does not repeat that destination as a secondary action or redirect automatically.
+The completion screen stays visible until the user navigates away. Its primary action opens the
+connected Bot conversation using the current binding's provider identity. Slack reuses its App/Team
+redirect; a confirmed Feishu workspace uses the documented Bot AppLink. Lark and unknown workspace
+brands use the actual Bot name with search and copy guidance until their Bot link contract is confirmed.
+Direct entries also offer that search fallback and explain that the app administrator handles missing access.
+Identity is read through the existing Account-authorized binding configuration API only after readiness;
+an Agent, provider, binding or credential-generation mismatch never exposes the previous Bot's entry.
+Unavailable identity says to check the Agent's messaging settings and keeps management navigation usable.
+**View agent** (**查看 Agent** in Chinese) remains a secondary action opening the exact Agent overview.
+Global navigation provides the return to the Agent list; completion does not duplicate it or redirect automatically.
+
+Completion offers two editable text-only requests: making an action list and summarizing a short work
+update. Each uses only supplied input; missing owners or deadlines stay unconfirmed. Switching examples
+preserves edits. Copying reports success or explains manual copying when clipboard access fails. The
+person opens the Bot, pastes and sends the request themselves; setup never sends a message or executes
+an example. Guidance suggests a follow-up in the same conversation, where the person can return later.
+Authorization and readiness, actual message exchange, and a useful result remain separate facts.
 
 Cloud Agent home shows save-failure guidance without a recovery entry or workspace controls.
 The notice identifies the problem, directs the reader to their administrator and warns against

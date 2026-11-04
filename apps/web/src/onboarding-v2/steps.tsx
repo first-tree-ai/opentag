@@ -1,5 +1,5 @@
 import type { CloudAvailability, ImProvider } from "@opentag/shared/browser";
-import { type FormEvent, useId, useState } from "react";
+import { type FormEvent, type ReactNode, useId, useState } from "react";
 import { spaceScriptBoundary } from "../i18n/format.js";
 import { messagingProviderLabel } from "../im/provider-label.js";
 import * as m from "../paraglide/messages.js";
@@ -404,28 +404,23 @@ function deliveryCheckDescription(provider: ImProvider | undefined, fallback: st
 export function DoneStep({
   action,
   completion,
+  handoff,
   name,
   provider,
   presentation = "default",
 }: {
   action?: { label: string; onClick: () => void };
   completion?: { onFinish: () => void; state: "failed" | "pending" | "ready" };
+  handoff?: ReactNode;
   name: string;
   provider?: ImProvider;
   presentation?: "default" | "settings";
 }) {
   const description = doneDescription(name, provider);
-  const finishAction = completion ? (
-    <Button disabled={completion.state === "pending"} onClick={completion.onFinish}>
-      {completion.state === "ready"
-        ? m.onboarding_v2_done_finish_reboard()
-        : completion.state === "pending"
-          ? m.onboarding_v2_done_finishing()
-          : m.onboarding_v2_done_retry_finish()}
-    </Button>
-  ) : action ? (
-    <Button onClick={action.onClick}>{action.label}</Button>
-  ) : null;
+  const finishAction =
+    completion || action ? (
+      <CompletionAction completion={completion} action={action} secondary={Boolean(handoff)} />
+    ) : null;
 
   if (presentation === "settings") {
     return (
@@ -451,7 +446,7 @@ export function DoneStep({
             <p role="status" className={HINT}>
               {m.onboarding_v2_connection_ready_checks()}
             </p>
-            <p className={HINT}>{deliveryCheckDescription(provider, description)}</p>
+            {handoff ?? <p className={HINT}>{deliveryCheckDescription(provider, description)}</p>}
           </div>
           {finishAction ? (
             <div className="otv2-connection-card__footer otv2-connection-card__footer--finish">{finishAction}</div>
@@ -476,5 +471,31 @@ export function DoneStep({
       </header>
       {finishAction}
     </section>
+  );
+}
+
+function CompletionAction({
+  completion,
+  action,
+  secondary,
+}: {
+  completion?: { onFinish: () => void; state: "failed" | "pending" | "ready" };
+  action?: { label: string; onClick: () => void };
+  secondary: boolean;
+}) {
+  if (!completion)
+    return action ? (
+      <Button variant={secondary ? "secondary" : "primary"} onClick={action.onClick}>
+        {action.label}
+      </Button>
+    ) : null;
+  return (
+    <Button disabled={completion.state === "pending"} onClick={completion.onFinish}>
+      {completion.state === "ready"
+        ? m.onboarding_v2_done_finish_reboard()
+        : completion.state === "pending"
+          ? m.onboarding_v2_done_finishing()
+          : m.onboarding_v2_done_retry_finish()}
+    </Button>
   );
 }

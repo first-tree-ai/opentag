@@ -679,7 +679,11 @@ describe("AgentSetupPage stages", () => {
 
     expect(screen.getByRole("heading", { name: "reviewer is ready." })).toBeTruthy();
     // Provider identity reaches the done screen from the snapshot, not from page state.
-    expect(screen.getByText("Open the Bot’s chat in Slack, send “Hello” and confirm its reply.")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Edit an example, copy it, then send it yourself in Slack. These requests use only the text you provide.",
+      ),
+    ).toBeTruthy();
     expect(onReady).toHaveBeenCalledWith(SETUP_AGENT_ID);
     expect(onReady).toHaveBeenCalledTimes(1);
   });

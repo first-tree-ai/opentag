@@ -976,6 +976,53 @@ describe("TaskService", () => {
     }
   });
 
+  it("never lets a Session created later claim a message stored before it", async () => {
+    const { binding, bootstrap, service } = await fixture();
+    // Stored with no delivery while no Session existed in the channel.
+    const orphan = await createMessage(binding.id, { text: "Before any Session", occurredAt: minutes(0) });
+    const [stored] = await unitDatabase.database.select().from(imMessages).where(eq(imMessages.id, orphan.id));
+    if (!stored) throw new Error("The orphan message disappeared");
+    const later = await createSession(binding.id, {
+      channelId: GROUP,
+      createdAt: new Date(stored.receivedAt.getTime() + 5 * 60_000),
+    });
+    const request = await createMessage(binding.id, { text: "Later request", occurredAt: minutes(10) });
+    await createDelivery(later.id, request.id, { at: minutes(11), reported: true });
+
+    for (const read of [
+      () => service.detail(bootstrap.userId, orphan.id),
+      () => service.listReplies(bootstrap.userId, orphan.id, { limit: 10 }),
+      () => service.cancel(bootstrap.userId, orphan.id),
+    ]) {
+      await expect(read()).rejects.toMatchObject({ code: "RESOURCE_NOT_FOUND", statusCode: 404 });
+    }
+    expect((await service.detail(bootstrap.userId, request.id)).task.id).toBe(later.id);
+  });
+
+  it("does not list an ambient-only thread whose only direct root delivery was superseded", async () => {
+    const { binding, bootstrap, service } = await fixture();
+    const channel = await createSession(binding.id, { channelId: GROUP });
+    const thread = await createSession(binding.id, { channelId: GROUP, kind: "thread", threadKey: "om_root" });
+    const root = await createMessage(binding.id, { externalMessageId: "om_root", occurredAt: minutes(0) });
+    await createDelivery(channel.id, root.id, { state: "expired", reason: "superseded_revision" });
+    const reply = await createMessage(binding.id, { threadKey: "om_root", occurredAt: minutes(5) });
+    await createDelivery(thread.id, reply.id, { attention: "ambient", state: "pending" });
+    await expect(service.list(bootstrap.userId, { limit: 50 })).resolves.toEqual({ tasks: [], nextCursor: null });
+
+    // The root's current revision, delivered directly, makes the same thread a Task.
+    const revised = await createMessage(binding.id, {
+      externalMessageId: "om_root",
+      revisionKey: "2",
+      occurredAt: minutes(0),
+    });
+    await createDelivery(channel.id, revised.id, { at: minutes(1), reported: true });
+    const listed = await service.list(bootstrap.userId, { limit: 50 });
+    expect(listed.tasks.map((task) => [task.id, task.status])).toEqual([
+      [thread.id, "queued"],
+      [channel.id, "completed"],
+    ]);
+  });
+
   it("reports a thread Task as ended when its thread Session ended", async () => {
     const { binding, bootstrap, service } = await fixture();
     const channel = await createSession(binding.id, { channelId: GROUP });

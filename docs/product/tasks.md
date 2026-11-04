@@ -26,7 +26,7 @@ is one chat Session.
   the Agent only overheard (`ambient` attention) are conversation context, not Tasks, and are not
   counted. A thread Session is a Task once somebody addressed the Agent in the thread or in its
   root message, so a thread that continues a request without mentioning the Agent again is still
-  listed.
+  listed. A delivery a newer revision of its message superseded counts for neither.
 - A message belongs to the Session whose delivery executed it. The channel Session's `ambient`
   observer copy of a message a thread Session owns is not an execution of the channel Session.
 - The Task id is its Session's id: the channel or thread Session, or the Session a private chat is
@@ -68,8 +68,9 @@ Sessions and stored IM messages only, never runtime execution state.
 
 Captured outbound replies name no Session, so each one belongs to the Session that owned its thread
 or channel when it was stored. In a private chat that is the chat's Task. In a group it is the
-newest thread Session of the reply's thread that already existed, and otherwise the channel
-Session. A reply the channel Session sent into a new thread before anybody answered there
+newest thread Session of the reply's thread that already existed, and otherwise the newest channel
+Session that already existed. A Session created later never claims an earlier message, so a
+message stored before any Session existed belongs to no Task. A reply the channel Session sent into a new thread before anybody answered there
 therefore stays on the channel Session's Task. A Feishu quote reply carries no thread Session's key
 and stays there too.
 

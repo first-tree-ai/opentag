@@ -67,11 +67,12 @@ export function threadRootExternalId(sessionAlias: string): SQL {
 
 /**
  * The chat Session that owns a stored message which no execution names, such as a captured outbound
- * reply: in a private chat the Task's own Session; in a group the newest thread Session of the
- * message's thread that existed when the message was stored, otherwise the newest channel Session
- * that existed then. A reply the channel Session sent into a thread before anybody answered there
- * therefore stays with the channel Session, and a quote reply that carries no thread Session's key
- * stays in the channel. The outer query must expose `task_sessions`.
+ * reply: in a private chat the Task of a Session that existed when the message was stored; in a
+ * group the newest thread Session of the message's thread that existed then, otherwise the newest
+ * channel Session that existed then. A Session created later never claims the message, so a message
+ * stored before any Session has no Task. A reply the channel Session sent into a thread before
+ * anybody answered there therefore stays with the channel Session, and a quote reply that carries
+ * no thread Session's key stays in the channel. The outer query must expose `task_sessions`.
  */
 export function messageOwnerTaskId(messageAlias: string): SQL {
   const m = sql.raw(messageAlias);
@@ -81,11 +82,11 @@ export function messageOwnerTaskId(messageAlias: string): SQL {
     where ts.im_binding_id = ${m}.im_binding_id
       and ts.channel_id = ${m}.channel_id
       and (ts.kind = 'channel' or ts.conversation_kind = 'dm' or ts.thread_key = ${m}.thread_key)
+      -- Only a Session that already existed can own the message; a later one never claims it.
+      and ts.created_at <= ${m}.received_at
     order by
       (ts.conversation_kind = 'dm') desc,
-      (ts.kind = 'thread' and ts.created_at <= ${m}.received_at) desc,
-      (ts.kind = 'channel' and ts.created_at <= ${m}.received_at) desc,
-      (ts.kind = 'channel') desc,
+      (ts.kind = 'thread') desc,
       ts.created_at desc,
       ts.id desc
     limit 1
@@ -138,7 +139,11 @@ export function taskCtes(input: TaskQueryInput): SQL {
               and rm.channel_id = ts.channel_id
               and rm.external_message_id = ${threadRootExternalId("ts")}
               and rm.direction = 'inbound'
-            inner join im_message_deliveries rd on rd.message_id = rm.id and rd.attention = 'direct'
+            inner join im_message_deliveries rd
+              on rd.message_id = rm.id
+              and rd.attention = 'direct'
+              -- A superseded revision is not an execution here either.
+              and not (rd.state = 'expired' and rd.reason = 'superseded_revision')
             where ts.id = ranked.task_id
               and ts.kind = 'thread'
               and ts.conversation_kind <> 'dm'

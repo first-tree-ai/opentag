@@ -117,6 +117,7 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   computerConnectCodeStatus: [ID],
   rebindAgentComputer: [ID, ID],
   testAgentRuntime: [ID, { provider: "codex" }],
+  contextTreeAvailability: [ID],
   contextTreeOperation: [
     ID,
     {

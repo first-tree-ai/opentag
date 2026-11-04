@@ -4,9 +4,9 @@ import { type AgentAdminConfig, CONTEXT_TREES_MAX, type ContextTreeOperationResp
 import { createMemoryHistory, createRootRoute, createRouter, RouterContextProvider } from "@tanstack/react-router";
 import { act, cleanup, fireEvent, render as renderDom, screen, waitFor, within } from "@testing-library/react";
 import { type ReactElement, type ReactNode, useState } from "react";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../../../api.js";
-import { ContextTreeSettings } from "./context-tree-settings.js";
+import { ContextTreeSettings, repositoryFromUrl } from "./context-tree-settings.js";
 
 function TestRouter({ children }: { children: ReactNode }) {
   const [router] = useState(() =>
@@ -88,7 +88,7 @@ it("starts with two clear choices and opens only the chosen form, returning focu
   trigger.focus();
   const dialog = await openForm("create");
   expect(within(dialog).getByText(/new private repository/)).toBeTruthy();
-  expect(screen.queryByRole("textbox", { name: "Directory (leave empty for root)" })).toBeNull();
+  expect(screen.queryByRole("textbox", { name: "Directory (optional)" })).toBeNull();
   expect(screen.queryByRole("textbox", { name: "Branch" })).toBeNull();
   fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
@@ -104,7 +104,7 @@ it("connects a repository link and directory using the default branch, then refr
   await openForm();
   enter();
   expect(screen.queryByRole("textbox", { name: "Branch" })).toBeNull();
-  fireEvent.change(screen.getByRole("textbox", { name: "Directory (leave empty for root)" }), {
+  fireEvent.change(screen.getByRole("textbox", { name: "Directory (optional)" }), {
     target: { value: "docs/guide" },
   });
   submit();
@@ -125,14 +125,35 @@ it("accepts a clone URL and leaves the directory empty for the root", async () =
   fireEvent.change(screen.getByRole("textbox", { name: "GitHub repository link" }), {
     target: { value: "https://github.com/acme/memory.git" },
   });
-  expect((screen.getByRole("textbox", { name: "Directory (leave empty for root)" }) as HTMLInputElement).value).toBe(
-    "",
-  );
+  expect((screen.getByRole("textbox", { name: "Directory (optional)" }) as HTMLInputElement).value).toBe("");
   submit();
   await waitFor(() =>
     expect(operation).toHaveBeenCalledWith(
       "agent-a",
       expect.objectContaining({ repository: "acme/memory", path: ".", ref: "HEAD" }),
+    ),
+  );
+});
+
+it("connects a folder link on the branch and folder it names", async () => {
+  const operation = vi
+    .spyOn(browserApi, "contextTreeOperation")
+    .mockResolvedValue({ status: "completed", repository: "acme/memory" });
+  render(<ContextTreeSettings config={config()} online onChanged={vi.fn()} />);
+  await openForm();
+  fireEvent.change(screen.getByRole("textbox", { name: "GitHub repository link" }), {
+    target: { value: "https://github.com/acme/memory/tree/release/docs/guide" },
+  });
+  // The dialog says which branch it will use instead of claiming the default one.
+  expect(
+    screen.getByText("Paste a GitHub repository or folder link. We use the release branch from the link."),
+  ).toBeTruthy();
+  expect(screen.getByRole("textbox", { name: "Directory (optional)" }).getAttribute("placeholder")).toBe("docs/guide");
+  submit();
+  await waitFor(() =>
+    expect(operation).toHaveBeenCalledWith(
+      "agent-a",
+      expect.objectContaining({ action: "connect", repository: "acme/memory", path: "docs/guide", ref: "release" }),
     ),
   );
 });
@@ -286,11 +307,11 @@ it("validates the fields and focuses the first invalid input without contacting 
   submit();
   expect(link.getAttribute("aria-invalid")).toBe("true");
   enter();
-  fireEvent.change(screen.getByRole("textbox", { name: "Directory (leave empty for root)" }), {
+  fireEvent.change(screen.getByRole("textbox", { name: "Directory (optional)" }), {
     target: { value: "../outside" },
   });
   submit();
-  const directory = screen.getByRole("textbox", { name: "Directory (leave empty for root)" });
+  const directory = screen.getByRole("textbox", { name: "Directory (optional)" });
   expect(document.activeElement).toBe(directory);
   expect(directory.getAttribute("aria-invalid")).toBe("true");
   expect(directory.getAttribute("aria-describedby")).toContain("path-error");
@@ -490,9 +511,7 @@ it("focuses a recovered connection and clears the uncertain lock after it succee
   const repository = screen.getByRole("textbox", { name: "GitHub repository link" });
   expect((repository as HTMLInputElement).value).toBe("https://github.com/Acme/Memory");
   await waitFor(() => expect(document.activeElement).toBe(repository));
-  expect((screen.getByRole("textbox", { name: "Directory (leave empty for root)" }) as HTMLInputElement).value).toBe(
-    "",
-  );
+  expect((screen.getByRole("textbox", { name: "Directory (optional)" }) as HTMLInputElement).value).toBe("");
   submit();
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(operation).toHaveBeenCalledTimes(2);
@@ -639,4 +658,30 @@ it("still disconnects saved trees when GitHub is unavailable", async () => {
   fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
   await waitFor(() => expect(operation).toHaveBeenCalled());
   expect(availability).not.toHaveBeenCalled();
+});
+
+describe("GitHub links for an existing tree", () => {
+  it("takes the branch and folder from a tree link", () => {
+    expect(repositoryFromUrl("https://github.com/acme-robotics/team-tree")).toEqual({
+      repository: "acme-robotics/team-tree",
+    });
+    expect(repositoryFromUrl("https://github.com/acme-robotics/team-tree.git")).toEqual({
+      repository: "acme-robotics/team-tree",
+    });
+    expect(repositoryFromUrl("https://github.com/acme-robotics/team-tree/tree/main/docs/context")).toEqual({
+      repository: "acme-robotics/team-tree",
+      ref: "main",
+      path: "docs/context",
+    });
+    expect(repositoryFromUrl("https://github.com/acme-robotics/team-tree/tree/release")).toEqual({
+      repository: "acme-robotics/team-tree",
+      ref: "release",
+    });
+    expect(repositoryFromUrl("https://github.com/acme-robotics/team-tree/blob/main/README.md")).toBeUndefined();
+    // Typed live: a malformed escape or a bare /tree/ is just not a link yet, and never throws.
+    expect(repositoryFromUrl("https://github.com/acme/repo/tree/main/docs%")).toBeUndefined();
+    expect(repositoryFromUrl("https://github.com/acme/repo/tree/main%")).toBeUndefined();
+    expect(repositoryFromUrl("https://github.com/acme/repo/tree/")).toBeUndefined();
+    expect(repositoryFromUrl("https://gitlab.com/acme/team-tree")).toBeUndefined();
+  });
 });

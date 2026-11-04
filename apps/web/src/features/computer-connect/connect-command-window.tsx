@@ -1,6 +1,6 @@
 import { type RefObject, useEffect, useLayoutEffect, useRef } from "react";
 import * as m from "../../paraglide/messages.js";
-import { CommandBlock, formatRemaining, InstructionBlock, useRemaining } from "../../setup/index.js";
+import { CommandBlock, formatRemaining, useRemaining } from "../../setup/index.js";
 import { Button, Loader, StatusIndicator } from "../../ui/design-system.js";
 import type { ComputerConnectIntent, ComputerConnectLifecycle, ComputerConnectState } from "./computer-connect.js";
 
@@ -113,51 +113,47 @@ function CommandSurface({
     );
   }
   if (state.kind !== "issued" && state.kind !== "expired") return null;
-  const instructions = repair
-    ? m.computer_connect_recovery_instructions({
-        computerName: repair.displayName,
-        computerId: repair.computerId,
-        command: state.issued.command,
-      })
-    : m.computer_connect_create_instructions({ command: state.issued.command });
-  const preview = repair ? m.computer_connect_recovery_preview() : m.computer_connect_create_preview();
+  const comment = repair
+    ? m.computer_connect_repair_command_comment({ computerName: repair.displayName })
+    : m.computer_connect_create_command_comment();
   return (
     <IssuedCommand
+      comment={comment}
+      label={repair ? m.computer_connect_recovery_title() : m.computer_connect_create_title()}
+      command={state.issued.command}
       expired={state.kind === "expired"}
       expiresAt={state.issued.expiresAt}
-      instructions={instructions}
       issue={issue}
-      label={repair ? m.computer_connect_recovery_title() : m.computer_connect_create_title()}
       labels={labels}
-      preview={preview}
       returnFocusRef={returnFocusRef}
     />
   );
 }
 
 /**
- * The issued task. Past its deadline the command is masked at once: until the Server's verdict
- * arrives nothing new is issued (a late redemption must not race a replacement), and once it is
- * expired the single Refresh action replaces it in place.
+ * The issued command, shown exactly as it is copied: one inert line for an Agent and the command a
+ * person can paste into a terminal. Past its deadline the command is masked at once: until the
+ * Server's verdict arrives nothing new is issued (a late redemption must not race a replacement), and
+ * once it is expired the single Refresh action replaces it in place.
  */
 function IssuedCommand({
+  comment,
+  command,
+  label,
   expired,
   expiresAt,
-  instructions,
   issue,
-  label,
   labels,
-  preview,
   returnFocusRef,
 }: {
+  readonly comment: string;
+  readonly command: string;
+  readonly label: string;
   readonly returnFocusRef?: RefObject<HTMLElement | null>;
   readonly expired: boolean;
   readonly expiresAt: number;
-  readonly instructions: string;
   readonly issue: () => void;
-  readonly label: string;
   readonly labels: { copiedLabel: string; copyLabel: string; fallbackHint: string };
-  readonly preview: string;
 }) {
   const remaining = useRemaining(expiresAt);
   const dead = expired || remaining <= 0;
@@ -177,16 +173,15 @@ function IssuedCommand({
     const active = document.activeElement;
     if (active === document.body || blockRef.current?.contains(active)) refreshRef.current?.focus();
   }, [expired]);
-  // A dead command is masked and never kept in the page: only the readable summary stays under the mask.
-  const shown = dead ? preview : instructions;
+  // A dead command is masked and never kept in the page: only a placeholder stays under the mask.
+  const shown = dead ? COMPUTER_CONNECT_COMMAND_PLACEHOLDER : command;
   return (
     <div ref={blockRef} className="min-w-0">
-      <InstructionBlock
+      <CommandBlock
         {...labels}
         key={shown}
-        instructions={shown}
-        preview={preview}
-        expansion={dead ? undefined : { show: m.computer_instructions_show(), hide: m.computer_instructions_hide() }}
+        command={shown}
+        comment={comment}
         label={label}
         expiredNotice={
           expired ? (

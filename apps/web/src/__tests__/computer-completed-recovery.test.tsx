@@ -43,8 +43,8 @@ describe("completed Computer recovery", () => {
         props = { confirmed: true, adapter, onConnected, onDeleted: vi.fn() };
       const view = await renderInRouter(<ComputerManagement {...props} computer={computer} />);
       fireEvent.click(await screen.findByRole("button", { name: "Restore connection" }));
-      expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
-      screen.getByRole("button", { name: "Show full instructions" }).focus();
+      expect(await screen.findByRole("button", { name: "Copy" })).toBeTruthy();
+      screen.getByRole("button", { name: "Copy" }).focus();
       const card = document.querySelector('[data-ui="computer-management"]');
       await act(async () => {
         finish({ connectCodeId: "code", state: "redeemed", computerId, redeemedAt: connectedAt });
@@ -52,13 +52,13 @@ describe("completed Computer recovery", () => {
       await waitFor(() => expect(onConnected).toHaveBeenCalledOnce());
       expect(document.activeElement).toBe(card);
       view.rerender(<ComputerManagement {...props} computer={{ ...computer, connectionStatus: "online" }} />);
-      expect(screen.queryByRole("button", { name: "Copy for Agent" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
       adapter.computers.mockResolvedValue({ computers: [{ ...computer, connectionStatus }] });
       view.rerender(<ComputerManagement {...props} computer={{ ...computer, connectionStatus }} />);
       // Going offline again offers Restore; a new task is issued only when it is pressed.
       expect(adapter.issue).toHaveBeenCalledTimes(1);
       fireEvent.click(await screen.findByRole("button", { name: "Restore connection" }));
-      expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
+      expect(await screen.findByRole("button", { name: "Copy" })).toBeTruthy();
       expect(screen.queryByText("Connected")).toBeNull();
       expect(adapter.issue).toHaveBeenCalledTimes(2);
       expect(onConnected).toHaveBeenCalledOnce();

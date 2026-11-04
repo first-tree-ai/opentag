@@ -90,3 +90,25 @@ See the [synthetic readback](agent-status-task-contract/browser-check.json).
 The browser run caught a Node-only hash import entering the shared browser entry through the Cloud
 Runner module. Moving its public status schemas to a browser-safe module preserves existing public
 exports and leaves `node:crypto` in the Node entry only; the rebuilt browser starts successfully.
+
+## Coverage-job timing follow-up
+
+The original PR head's remote Server coverage job timed out while testing repeated delivery
+timeouts; the next case then failed because its timers were no longer mocked. The test
+advanced 1.1 seconds before awaiting `runOnce()`, even though claim/reconcile SQL could finish and
+arm the operation or grace timer after that advance had already ended.
+
+The three timeout-counter cases now wait for delivery dispatch (or a completed recovery), then
+yield the host event loop and advance the fake clock until the attempt settles. They retain all
+counter, terminal-state and deduplication assertions. No product code, deadline, test timeout,
+coverage threshold or worker-concurrency setting changed.
+
+The complete delivery-worker file passed all 61 tests under V8 coverage. A four-file coverage run
+at the configured four-worker concurrency passed all 171 cases. Existing remote coverage artifacts
+for the original head also give 1,172/1,240 changed lines (94.52%) when evaluated offline; the
+remote patch gate had stopped earlier because the Server measurement failed. This diagnostic is
+not a green gate for a newer head.
+
+After integrating `main@c48435a73` (product-regression documentation and messaging/notice UI
+changes), the affected eight-file Web subset passed all 163 cases. There were no package-manifest
+or lockfile changes. The next pushed head requires fresh CI and exact-head owner review.

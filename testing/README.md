@@ -9,6 +9,7 @@ contents, and machine-specific operational logs outside the repository.
 
 - [SQL caller remediation and progress](sql-caller-remediation.md)
 
+- [Web product regression catalogue](web-product-regression/README.md)
 - [Agent Runtime Provider test plan](agent-runtime-test-plan.md)
 - [Cloud Computer acceptance harness](cloud-computer.md)
 - [Managed CLI installation acceptance](managed-cli-entry/README.md)

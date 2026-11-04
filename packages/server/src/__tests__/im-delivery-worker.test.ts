@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { setImmediate as nextEventLoop } from "node:timers/promises";
 import {
   computeDirectInputHash,
   computeLegacyDirectInputHash,
@@ -36,6 +37,7 @@ import { runImDeliverySteerRecovery } from "../runtime/im-delivery-janitor.js";
 import { ImDeliveryWorker } from "../runtime/im-delivery-worker.js";
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
 import { EffectiveRuntimeSnapshotAssemblerError } from "../services/runtime-config/errors.js";
+import { deferred } from "./support/deferred.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 describe("ImDeliveryWorker diagnostics", () => {
@@ -2432,7 +2434,11 @@ describe("ImDeliveryWorker database workflow", () => {
     try {
       const fixture = await workerFixture(unit);
       const diagnostic = vi.fn();
-      const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture, { deliveryHang: true });
+      let deliveryStarted = deferred();
+      const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture, {
+        deliveryHang: true,
+        onDelivery: () => deliveryStarted.resolve(),
+      });
       const worker = new ImDeliveryWorker({
         database: unit.database,
         domain: domain as never,
@@ -2444,8 +2450,8 @@ describe("ImDeliveryWorker database workflow", () => {
       // One more iteration than the cap proves the settled row is never claimed again.
       for (let attempt = 0; attempt < 12; attempt += 1) {
         const running = worker.runOnce();
-        await vi.advanceTimersByTimeAsync(1_100);
-        await running;
+        await settleTimedOutDelivery(running, deliveryStarted.promise);
+        deliveryStarted = deferred();
         await vi.advanceTimersByTimeAsync(31_000);
       }
       const [row] = await unit.database
@@ -2607,7 +2613,11 @@ describe("ImDeliveryWorker database workflow", () => {
           nextAttemptAt: new Date(clock - 1),
         })
         .where(eq(imMessageDeliveries.id, fixture.deliveryId));
-      const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture, { deliveryHang: true });
+      let deliveryStarted = deferred();
+      const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture, {
+        deliveryHang: true,
+        onDelivery: () => deliveryStarted.resolve(),
+      });
       const diagnostic = vi.fn();
       const worker = new ImDeliveryWorker({
         database: unit.database,
@@ -2619,8 +2629,8 @@ describe("ImDeliveryWorker database workflow", () => {
       });
       const attempt = async () => {
         const running = worker.runOnce();
-        await vi.advanceTimersByTimeAsync(1_100);
-        await running;
+        await settleTimedOutDelivery(running, deliveryStarted.promise);
+        deliveryStarted = deferred();
         await vi.advanceTimersByTimeAsync(31_000);
         const [row] = await unit.database
           .select()
@@ -2656,7 +2666,11 @@ describe("ImDeliveryWorker database workflow", () => {
           nextAttemptAt: new Date(Date.now() - 1),
         })
         .where(eq(imMessageDeliveries.id, fixture.deliveryId));
-      const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture, { deliveryHang: true });
+      let deliveryStarted = deferred();
+      const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture, {
+        deliveryHang: true,
+        onDelivery: () => deliveryStarted.resolve(),
+      });
       const diagnostic = vi.fn();
       const worker = new ImDeliveryWorker({
         database: unit.database,
@@ -2668,8 +2682,8 @@ describe("ImDeliveryWorker database workflow", () => {
       });
       const attempt = async () => {
         const running = worker.runOnce();
-        await vi.advanceTimersByTimeAsync(1_100);
-        await running;
+        await settleTimedOutDelivery(running, deliveryStarted.promise);
+        deliveryStarted = deferred();
         await vi.advanceTimersByTimeAsync(31_000);
         const [row] = await unit.database
           .select({ state: imMessageDeliveries.state, code: imMessageDeliveries.lastErrorCode })
@@ -3361,6 +3375,20 @@ async function cloudFollowUpFixture(unit: UnitDatabase, userId: string) {
     },
   ]);
   return { agentId, computerId, sessionId, rootDeliveryId, followUpDeliveryId };
+}
+
+async function settleTimedOutDelivery(operation: Promise<void>, deliveryStarted: Promise<void>): Promise<void> {
+  await Promise.race([deliveryStarted, operation]);
+  let settled = false;
+  const markSettled = () => {
+    settled = true;
+  };
+  void operation.then(markSettled, markSettled);
+  while (!settled) {
+    await nextEventLoop();
+    if (!settled) await vi.advanceTimersByTimeAsync(100);
+  }
+  await operation;
 }
 
 function fakeDomain(

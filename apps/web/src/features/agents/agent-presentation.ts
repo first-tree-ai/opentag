@@ -78,7 +78,10 @@ function blockedAgentCardStatus(agent: AgentListItem): AgentCardStatus {
     return { label: m.agents_card_status_no_computer(), tone: "neutral" };
   }
   if (agent.availability.reason === "computer_offline") {
-    return { label: m.agents_card_status_computer_offline(), tone: "warning" };
+    // The same word the computer's own card uses, so one computer never reads as two states.
+    return agent.availability.dependencies.computer.disconnected
+      ? { label: m.agents_card_status_computer_disconnected(), tone: "warning" }
+      : { label: m.agents_card_status_computer_offline(), tone: "warning" };
   }
   if (agent.availability.reason === "runtime_unavailable") {
     return runtimeAgentCardStatus(agent);
@@ -208,7 +211,7 @@ function legacyAgentStatusPresentation(agent: AgentStatusSource): { label: strin
       ? { label: "Working", tone: "info" }
       : { label: "Ready", tone: "success" };
   }
-  if (availability.state === "suspended") return { label: "Suspended", tone: "neutral" };
+  if (availability.state === "suspended") return { label: m.agents_card_status_paused(), tone: "neutral" };
 
   /*
    * Unreadable evidence is one situation to a viewer -- nothing to act on, retried automatically --

@@ -101,12 +101,26 @@ function messagingBinding(bindingState: ImBindingSummary["bindingState"]): ImBin
 }
 
 function bound(
-  connectionStatus: "online" | "offline",
+  connectionStatus: "online" | "offline" | "disconnected",
   runtimeStatus: "ready" | "install" | "sign-in",
 ): AgentAvailability {
   const computer: AccountComputerSummary = { ...onlineComputer(runtimeStatus), connectionStatus };
   return projectAgentAvailability(boundAgent(), computer, undefined, undefined, true, true);
 }
+
+describe("A computer whose access was revoked, on the Agent list", () => {
+  it("uses the computer card's word, disconnected, rather than offline", () => {
+    const base = { ...boundAgent(), status: "active" as const };
+    const view = (connection: "offline" | "disconnected") =>
+      ({
+        ...base,
+        availability: bound(connection, "ready"),
+        messaging: { kind: "ready", value: undefined },
+      }) as unknown as AgentDetailView;
+    expect(agentCardStatus(listed(view("disconnected")))).toEqual({ label: "Computer disconnected", tone: "warning" });
+    expect(agentCardStatus(listed(view("offline")))).toEqual({ label: "Computer offline", tone: "warning" });
+  });
+});
 
 describe("Finishing setup, offered from the Agent list", () => {
   const setupLink = { label: "Continue setup", link: { search: { agentId }, to: "/agents/setup" } };

@@ -141,7 +141,9 @@ model calls. Cloud disables ambient context files, Skills, extensions, templates
 adds the packaged resources explicitly. Local production Pi enables native resources; Claude and
 Codex likewise retain their native project configuration.
 
-Context Tree preparation supplies tree location, availability, and guidance, not every tree page.
+Context Tree preparation supplies tree location, availability, and guidance, not every tree page. Where snapshot paths and
+commit SHAs are delivered is specified in
+[Context Tree integration](../capabilities/context-tree-integration.md#read-freshness-and-prompt-placement).
 Selected pages and Skill bodies enter context when the Agent reads them. Native Skill catalogs and
 MCP tool descriptions/schema can add input independently of the managed prompt. Local Claude's
 private plugin and MCP names remain stable within one runtime; Codex's private MCP name also lives

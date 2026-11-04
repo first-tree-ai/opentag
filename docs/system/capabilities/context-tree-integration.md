@@ -127,6 +127,26 @@ hide successful entries returned by the CLI. Configuration, repository caches, s
 and write sessions live below `.opentag/context-tree` and survive workspace save/restore.
 Credentials come from the current execution and are never stored there.
 
+## Read freshness and prompt placement
+
+> **Planned — not yet implemented.** Tracking: #1259
+
+This replaces the lifetime caching of ready results and the snapshot path in the managed system
+prompt described above. The cross-host sync contract and the CLI's fetch freshness window are
+recorded in the team Context Tree; OpenTag follows the same contract as Claude Code and Codex.
+
+- The managed system prompt names the connected trees (selector and project path) and the rule to
+  read Context through the `context-tree-read` skill. It carries no snapshot path or commit SHA,
+  because those change with every new revision and would invalidate the provider's prompt cache.
+- Agents obtain the current snapshot with `context-tree sync` at task boundaries, as the skill
+  states, and reuse one `treeRoot` within a task.
+- Each Turn runs `context-tree sync --offline` (about 0.2 seconds) to verify the snapshot and record
+  its use. When the last networked refresh of a workspace is older than five minutes, a networked
+  refresh starts in the background and does not delay the Turn; a later sync within the CLI's
+  freshness window returns that revision without network work.
+- A ready result is no longer reused for the client's lifetime. Stale and unavailable results keep
+  their current reporting and retry cooldown.
+
 ## Authorization and writes
 
 Server-side connection verification checks the selected directory and branch at an exact

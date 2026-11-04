@@ -42,6 +42,7 @@ import {
   type TaskScope,
   taskCtes,
   taskPageCtes,
+  taskQualifies,
   threadRootExternalId,
 } from "./task-sql.js";
 
@@ -353,10 +354,14 @@ export class TaskService {
    * Whether a Session's `Session <shortId>` footer may link to its Task, read for the Account that
    * owns the Session's Agent. The Session resolves to its Task exactly as the Task routes resolve
    * it (`#scopeOf`: a chat Session, or the chat Session at the root of an internal Session's creator
-   * chain), and the Task must then qualify in the same `tasks` rollup that list and detail read
-   * their summary from. A Session whose Task does not qualify, such as an ambient-only group channel
+   * chain), and the Task must then qualify under the same rule list and detail apply
+   * (`taskQualifies`). A Session whose Task does not qualify, such as an ambient-only group channel
    * Session or an internal Session rooted at one, therefore keeps a plain footer instead of linking
    * to a detail page that answers 404.
+   *
+   * This runs before every annotatable provider write, so it never reads the `tasks` rollup: the
+   * creator chain is walked once, and qualification is an existence probe that stops at the first
+   * qualifying delivery instead of deriving the Task's status over its whole history.
    */
   async hasLinkableTask(sessionId: string): Promise<boolean> {
     return this.database.transaction(
@@ -371,13 +376,13 @@ export class TaskService {
         `);
         const owner = [...owners][0];
         if (!owner) return false;
-        const scope = await this.#scopeOf(transaction, owner.accountId, sessionId);
+        const scope = await this.#scopeOfSession(transaction, owner.accountId, located);
         if (!scope) return false;
-        const rows = await transaction.execute(sql`
-          with ${taskCtes({ accountId: owner.accountId, scope, now: this.#now(), rollups: true })}
-          select 1 from tasks t where t.task_id = ${scope.taskId}::uuid limit 1
+        const rows = await transaction.execute<{ qualifies: boolean } & Record<string, unknown>>(sql`
+          with ${taskCtes({ accountId: owner.accountId, scope, now: this.#now() })}
+          select ${taskQualifies()} as "qualifies"
         `);
-        return [...rows].length > 0;
+        return [...rows][0]?.qualifies === true;
       },
       { isolationLevel: "repeatable read", accessMode: "read only" },
     );
@@ -416,17 +421,8 @@ export class TaskService {
    */
   async #scopeOf(executor: QueryExecutor, accountId: string, id: string): Promise<TaskScope | undefined> {
     const located = await this.#locateSession(executor, id);
+    if (located) return this.#scopeOfSession(executor, accountId, located);
     const now = this.#now();
-    if (located) {
-      const rows = await executor.execute<ScopeRow>(sql`
-        with ${taskCtes({ accountId, scope: { bindingId: located.bindingId, channelId: located.channelId }, now })}
-        select ts.im_binding_id as "bindingId", ts.channel_id as "channelId", ts.task_id as "taskId"
-        from task_sessions ts
-        where ts.id = ${located.sessionId}::uuid
-        limit 1
-      `);
-      return scopeFrom([...rows][0]);
-    }
     const messages = await executor.execute<ChannelScope & Record<string, unknown>>(sql`
       select m.im_binding_id as "bindingId", m.channel_id as "channelId"
       from im_messages m
@@ -440,6 +436,22 @@ export class TaskService {
       from im_messages m
       where m.id = ${id}::uuid
         and exists (select 1 from scoped_bindings sb where sb.binding_id = m.im_binding_id)
+      limit 1
+    `);
+    return scopeFrom([...rows][0]);
+  }
+
+  /** The Task of an already located chat Session, or undefined when it is outside the Account. */
+  async #scopeOfSession(
+    executor: QueryExecutor,
+    accountId: string,
+    located: LocatedSessionRow,
+  ): Promise<TaskScope | undefined> {
+    const rows = await executor.execute<ScopeRow>(sql`
+      with ${taskCtes({ accountId, scope: { bindingId: located.bindingId, channelId: located.channelId }, now: this.#now() })}
+      select ts.im_binding_id as "bindingId", ts.channel_id as "channelId", ts.task_id as "taskId"
+      from task_sessions ts
+      where ts.id = ${located.sessionId}::uuid
       limit 1
     `);
     return scopeFrom([...rows][0]);

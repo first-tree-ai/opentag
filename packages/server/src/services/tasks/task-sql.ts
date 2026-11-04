@@ -94,6 +94,83 @@ export function messageOwnerTaskId(messageAlias: string): SQL {
 }
 
 /**
+ * Whether a delivery to one of a Task's Sessions counts as one of its executions: a delivery a newer
+ * revision of its message superseded does not, and neither does the channel Session's ambient
+ * observer copy of a message a thread Session owns. `sessionAlias` is the delivery's Task Session.
+ */
+function isExecution(deliveryAlias: string, sessionAlias: string): SQL {
+  const d = sql.raw(deliveryAlias);
+  const ss = sql.raw(sessionAlias);
+  return sql`not (${d}.state = 'expired' and ${d}.reason = 'superseded_revision')
+    and not (
+      ${d}.attention = 'ambient'
+      and ${ss}.kind = 'channel'
+      and exists (
+        select 1
+        from im_message_deliveries owner
+        inner join sessions os on os.id = owner.session_id
+        where owner.message_id = ${d}.message_id
+          and os.kind = 'thread'
+      )
+    )`;
+}
+
+/**
+ * Whether a group thread Session's root message was addressed to the Agent: a thread Session nobody
+ * addressed directly is still a Task then, because the conversation continues the request that
+ * started it. A superseded revision of the root's delivery does not count.
+ */
+function threadRootAddressed(sessionAlias: string): SQL {
+  const ts = sql.raw(sessionAlias);
+  return sql`${ts}.kind = 'thread'
+    and ${ts}.conversation_kind <> 'dm'
+    and exists (
+      select 1
+      from im_messages rm
+      inner join im_message_deliveries rd
+        on rd.message_id = rm.id
+        and rd.attention = 'direct'
+        and not (rd.state = 'expired' and rd.reason = 'superseded_revision')
+      where rm.im_binding_id = ${ts}.im_binding_id
+        and rm.channel_id = ${ts}.channel_id
+        and rm.external_message_id = ${threadRootExternalId(sessionAlias)}
+        and rm.direction = 'inbound'
+    )`;
+}
+
+/**
+ * Whether the Task `scoped_sessions` holds qualifies, decided by existence instead of the
+ * `tasks` rollup: the rollup keeps a Task that has an execution and either a direct execution or
+ * an addressed thread root, and this asks exactly that without deriving status, activity or
+ * reports. Each probe stops at its first match through the deliveries' Session index, so a Task
+ * that qualifies costs a few index rows however long its history is. The outer query must expose
+ * `scoped_sessions` scoped to one Task, and reads it once so the planner keeps it inlined.
+ */
+export function taskQualifies(): SQL {
+  return sql`exists (
+    select 1
+    from scoped_sessions ss
+    where exists (
+        select 1
+        from im_message_deliveries d
+        where d.session_id = ss.id
+          and d.attention = 'direct'
+          and ${isExecution("d", "ss")}
+      )
+      or (
+        ss.id = ss.task_id
+        and ${threadRootAddressed("ss")}
+        and exists (
+          select 1
+          from im_message_deliveries d
+          where d.session_id = ss.id
+            and ${isExecution("d", "ss")}
+        )
+      )
+  )`;
+}
+
+/**
  * The CTE chain every Task read shares. Callers name the parts they select from; PostgreSQL does not
  * evaluate an unreferenced CTE, so the chain can stay whole without costing a read that does not use
  * a part of it.
@@ -127,26 +204,15 @@ export function taskCtes(input: TaskQueryInput): SQL {
           from executions e
           window w as (partition by e.task_id)
         ) ranked
+        -- The Task qualification rule (taskQualifies), evaluated over the rollup's own rows: a
+        -- direct execution, or a thread Session whose root message was addressed to the Agent.
         where case
           when has_direct then true
-          -- A thread Session nobody addressed directly is still a Task when its root message was
-          -- addressed to the Agent: the conversation continues the request that started it.
           else exists (
             select 1
             from task_sessions ts
-            inner join im_messages rm
-              on rm.im_binding_id = ts.im_binding_id
-              and rm.channel_id = ts.channel_id
-              and rm.external_message_id = ${threadRootExternalId("ts")}
-              and rm.direction = 'inbound'
-            inner join im_message_deliveries rd
-              on rd.message_id = rm.id
-              and rd.attention = 'direct'
-              -- A superseded revision is not an execution here either.
-              and not (rd.state = 'expired' and rd.reason = 'superseded_revision')
             where ts.id = ranked.task_id
-              and ts.kind = 'thread'
-              and ts.conversation_kind <> 'dm'
+              and ${threadRootAddressed("ts")}
           )
         end
         order by task_id, activity_at desc, id desc
@@ -280,18 +346,7 @@ export function taskCtes(input: TaskQueryInput): SQL {
       inner join im_message_deliveries d on d.session_id = ss.id
       inner join im_messages m on m.id = d.message_id
       left join im_message_deliveries root on root.id = d.steer_target_delivery_id
-      where not (d.state = 'expired' and d.reason = 'superseded_revision')
-        and not (
-          d.attention = 'ambient'
-          and ss.kind = 'channel'
-          and exists (
-            select 1
-            from im_message_deliveries owner
-            inner join sessions os on os.id = owner.session_id
-            where owner.message_id = d.message_id
-              and os.kind = 'thread'
-          )
-        )
+      where ${isExecution("d", "ss")}
     )
     ${rollups}
   `;

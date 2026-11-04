@@ -1023,6 +1023,139 @@ describe("TaskService", () => {
     ]);
   });
 
+  it("decides footer eligibility exactly as the list qualifies Tasks, without the rollup", async () => {
+    const { binding, bootstrap, service } = await fixture();
+    /** Every Session paired with the Task id the routes resolve it to. */
+    const cases: { name: string; sessionId: string; taskId: string }[] = [];
+    const track = (name: string, sessionId: string, taskId: string) => cases.push({ name, sessionId, taskId });
+    async function agreement() {
+      const listed = new Set((await service.list(bootstrap.userId, { limit: 100 })).tasks.map((task) => task.id));
+      const decided = new Map<string, boolean>();
+      for (const { name, sessionId, taskId } of cases) {
+        const linkable = await service.hasLinkableTask(sessionId);
+        expect({ name, linkable }).toEqual({ name, linkable: listed.has(taskId) });
+        decided.set(name, linkable);
+      }
+      return decided;
+    }
+
+    // An ambient-only group channel Session, and internal Sessions rooted at it.
+    const ambient = await createSession(binding.id, { channelId: "oc_ambient" });
+    const overheard = await createMessage(binding.id, { channelId: "oc_ambient", occurredAt: minutes(0) });
+    await createDelivery(ambient.id, overheard.id, { attention: "ambient", at: minutes(1), reported: true });
+    const ambientInternal = await createSession(binding.id, {
+      channelId: "oc_ambient",
+      kind: "internal",
+      createdBySessionId: ambient.id,
+    });
+    const ambientNested = await createSession(binding.id, {
+      channelId: "oc_ambient",
+      kind: "internal",
+      createdBySessionId: ambientInternal.id,
+    });
+    track("ambient channel", ambient.id, ambient.id);
+    track("internal under ambient channel", ambientInternal.id, ambient.id);
+    track("nested internal under ambient channel", ambientNested.id, ambient.id);
+
+    // A channel Session whose only direct delivery was superseded by a newer revision.
+    const superseded = await createSession(binding.id, { channelId: "oc_superseded" });
+    const old = await createMessage(binding.id, { channelId: "oc_superseded", occurredAt: minutes(0) });
+    await createDelivery(superseded.id, old.id, { state: "expired", reason: "superseded_revision" });
+    track("superseded-only channel", superseded.id, superseded.id);
+
+    // A thread whose root revision was superseded and whose only own delivery is ambient; a second
+    // thread whose root was addressed but which has no execution of its own; the channel Session
+    // that only holds the ambient observer copy of a thread reply.
+    const topicChannel = await createSession(binding.id, { channelId: "oc_topic" });
+    const thread = await createSession(binding.id, { channelId: "oc_topic", kind: "thread", threadKey: "om_t1" });
+    const root = await createMessage(binding.id, { channelId: "oc_topic", externalMessageId: "om_t1" });
+    await createDelivery(topicChannel.id, root.id, { state: "expired", reason: "superseded_revision" });
+    const reply = await createMessage(binding.id, {
+      channelId: "oc_topic",
+      threadKey: "om_t1",
+      occurredAt: minutes(5),
+    });
+    await createDelivery(thread.id, reply.id, { attention: "ambient", state: "pending" });
+    await createDelivery(topicChannel.id, reply.id, { attention: "ambient", at: minutes(6), reported: true });
+    const idle = await createSession(binding.id, { channelId: "oc_idle" });
+    const idleThread = await createSession(binding.id, { channelId: "oc_idle", kind: "thread", threadKey: "om_t2" });
+    const idleRoot = await createMessage(binding.id, { channelId: "oc_idle", externalMessageId: "om_t2" });
+    await createDelivery(idle.id, idleRoot.id, { at: minutes(1), reported: true });
+    const threadInternal = await createSession(binding.id, {
+      channelId: "oc_topic",
+      kind: "internal",
+      createdBySessionId: thread.id,
+    });
+    track("observer-copy channel", topicChannel.id, topicChannel.id);
+    track("thread with superseded root", thread.id, thread.id);
+    track("internal under that thread", threadInternal.id, thread.id);
+    track("channel with addressed root", idle.id, idle.id);
+    track("addressed-root thread without an execution", idleThread.id, idleThread.id);
+
+    // A private chat: the live thread is canonical; the ended channel Session and an internal
+    // Session it created resolve to it.
+    const dmChannel = await createSession(binding.id, {
+      channelId: DM,
+      conversationKind: "dm",
+      endedAt: minutes(2),
+    });
+    const dmThread = await createSession(binding.id, {
+      channelId: DM,
+      conversationKind: "dm",
+      kind: "thread",
+      threadKey: "om_dm",
+    });
+    const dmMessage = await createMessage(binding.id, { channelId: DM, occurredAt: minutes(1) });
+    await createDelivery(dmChannel.id, dmMessage.id, { at: minutes(1), reported: true });
+    const dmInternal = await createSession(binding.id, {
+      channelId: DM,
+      kind: "internal",
+      conversationKind: "dm",
+      createdBySessionId: dmChannel.id,
+    });
+    track("ended private-chat Session", dmChannel.id, dmThread.id);
+    track("canonical private-chat Session", dmThread.id, dmThread.id);
+    track("internal under the private chat", dmInternal.id, dmThread.id);
+
+    expect(Object.fromEntries(await agreement())).toEqual({
+      "ambient channel": false,
+      "internal under ambient channel": false,
+      "nested internal under ambient channel": false,
+      "superseded-only channel": false,
+      "observer-copy channel": false,
+      "thread with superseded root": false,
+      "internal under that thread": false,
+      "channel with addressed root": true,
+      "addressed-root thread without an execution": false,
+      "ended private-chat Session": true,
+      "canonical private-chat Session": true,
+      "internal under the private chat": true,
+    });
+
+    // The root's current revision, addressed to the Agent, makes the thread a Task through its root,
+    // and a direct message makes the ambient channel one.
+    const revised = await createMessage(binding.id, {
+      channelId: "oc_topic",
+      externalMessageId: "om_t1",
+      revisionKey: "2",
+    });
+    await createDelivery(topicChannel.id, revised.id, { at: minutes(7), reported: true });
+    const addressed = await createMessage(binding.id, { channelId: "oc_ambient", occurredAt: minutes(8) });
+    await createDelivery(ambient.id, addressed.id, { at: minutes(9) });
+    const after = await agreement();
+    for (const name of [
+      "ambient channel",
+      "internal under ambient channel",
+      "nested internal under ambient channel",
+      "observer-copy channel",
+      "thread with superseded root",
+      "internal under that thread",
+    ]) {
+      expect({ name, linkable: after.get(name) }).toEqual({ name, linkable: true });
+    }
+    expect(await service.hasLinkableTask(crypto.randomUUID())).toBe(false);
+  });
+
   it("reports a thread Task as ended when its thread Session ended", async () => {
     const { binding, bootstrap, service } = await fixture();
     const channel = await createSession(binding.id, { channelId: GROUP });

@@ -45,8 +45,10 @@ is one chat Session.
   their Task. A footer links only when that Task qualifies under the same rule the Task list and
   detail use, so an emitted link never opens a 404: an ambient-only group channel Session, an
   internal Session whose creator chain reaches one, or a Session that cannot be found gets plain
-  `Session <shortId>` text. Footers that older replies carry anchor on a request's message id and
-  keep resolving.
+  `Session <shortId>` text. The check runs before every annotated provider write, so it never reads
+  the Task's status rollup: it resolves the Session's Task once and asks whether a qualifying
+  delivery exists, which stops at the first index match however long the history is. Footers that
+  older replies carry anchor on a request's message id and keep resolving.
 - `createdAt` is the earlier of the Session's creation and its first addressed message.
 
 A Task reports `sessionKind: "thread"` and the Session's thread key for a group thread Session.

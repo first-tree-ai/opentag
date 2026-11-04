@@ -431,7 +431,7 @@ function resolveProviderFetch(
  * Resolves an execution's Session to the Task anchor its `Session <shortId>` footer links to. A
  * Task is one chat Session, and the Task routes resolve any Session id — a chat Session, or an
  * internal Session through its creator chain — to its Task, so a Session links by its own id. It
- * links only when that Task qualifies under the same rollup Task list and detail read
+ * links only when that Task qualifies under the same rule Task list and detail apply
  * (`TaskService.hasLinkableTask`): an ambient-only group channel Session, an internal Session rooted
  * at one, a missing Session, or a failed lookup returns `plain`, so the footer never links to a 404
  * route.

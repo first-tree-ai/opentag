@@ -26,7 +26,13 @@ Runtime collaboration creates Sessions, not new Agent identities:
   Session-to-Session collaboration. It cannot publish directly to IM.
 
 Channel and thread Sessions may create internal Sessions, and internal Sessions
-may delegate further. See [Internal Session collaboration](../system/messaging/internal-session-collaboration.md).
+may delegate further. By managed-instruction convention, a visible Session
+handles quick work directly and hands long work (roughly over 10 minutes, or
+work that should continue on its own) to an internal Session, replying that the
+work has started. While that work runs, the visible Session posts a short new
+message at each meaningful milestone instead of editing one message, and the
+final result stays one self-contained message. See
+[Internal Session collaboration](../system/messaging/internal-session-collaboration.md).
 
 ## Attention and when to speak
 

@@ -96,14 +96,14 @@ describe("ComputerConnect", () => {
     expect(skeleton?.classList.contains("ots-command-pending")).toBe(true);
     expect(skeleton?.textContent).toContain("[connection command pending]");
     expect(skeleton?.textContent).not.toContain("opentag.example.com");
-    expect(screen.queryByRole("button", { name: "Copy for Agent" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
     expect(screen.queryByRole("code")).toBeNull();
 
     issued.resolve({ connectCodeId: CONNECT_CODE_ID, bootstrapCommand: COMMAND, expiresIn: 900, issuedAt: NOW });
     await flushAsync();
     expect(expandedTaskIncludesCommand(COMMAND)).toBe(true);
-    expect(screen.getByRole("button", { name: "Copy for Agent" })).toBeTruthy();
-    expect(screen.getByText("Copy the task to your Agent on this computer.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
+    expect(screen.getByText("Run this in a terminal on this computer, or send it to your Agent there.")).toBeTruthy();
     expect(screen.getByRole("status").textContent).toContain("Waiting for your computer");
     const remaining = screen.getByText("Expires in 15:00");
     expect(remaining.closest('[role="status"]')).toBeNull();
@@ -150,21 +150,21 @@ describe("ComputerConnect", () => {
       expect(
         screen.getByText(
           executionLocation === "current"
-            ? "Copy the task to your Agent on this computer."
-            : "Copy the task to your Agent on the computer you want to connect.",
+            ? "Run this in a terminal on this computer, or send it to your Agent there."
+            : "Run this in a terminal on the computer you want to connect, or send it to your Agent there.",
         ),
       ).toBeTruthy();
+      // The window shows exactly what is copied: one inert Agent line, then the command a person can
+      // paste into a terminal. Nothing is hidden behind an expansion.
       const region = screen.getByRole("region", { name: "Connect computer" });
-      expect(region.textContent).not.toContain(COMMAND);
-      fireEvent.click(screen.getByRole("button", { name: "Copy for Agent" }));
+      fireEvent.click(screen.getByRole("button", { name: "Copy" }));
       await flushAsync();
       const payload = writeText.mock.calls[0]?.[0] as string;
-      expect(payload).toContain(COMMAND);
-      expect(payload).toContain("Preserve a working connection");
-      expect(payload).toContain("Do not redeem an already-used authorization");
-      expect(payload).not.toContain("target computer");
-      fireEvent.click(screen.getByRole("button", { name: "Show full instructions" }));
+      expect(payload).toBe(
+        `: 'openTag: connect this computer to my account. Run the next line as-is in a terminal on this computer and report its output.'\n${COMMAND}`,
+      );
       expect(region.textContent).toBe(payload);
+      expect(screen.queryByRole("button", { name: "Show full instructions" })).toBeNull();
       expect(issue).toHaveBeenCalledExactlyOnceWith({ mode: "create" });
     },
   );
@@ -216,13 +216,12 @@ describe("ComputerConnect", () => {
     await flushAsync();
 
     expect(issue).toHaveBeenCalledWith({ mode: "repair", targetComputerId: COMPUTER_ID });
-    expect(screen.getByText("Copy the task to your Agent on Ada's Mac.")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Show full instructions" }));
-    expect(screen.getByRole("region", { name: "Restore connection" }).textContent).toContain(COMPUTER_ID);
+    expect(screen.getByText("Run this in a terminal on Ada's Mac, or send it to your Agent there.")).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Restore connection" }).textContent).toContain(COMMAND);
     expect(screen.getByRole("status").textContent).toContain(`Waiting for ${computer.displayName} to reconnect`);
   });
 
-  it("copies the complete targeted recovery task before expansion", async () => {
+  it("copies the targeted recovery command with its Agent line", async () => {
     vi.spyOn(browserApi, "issueComputerConnectCode").mockResolvedValue({
       connectCodeId: CONNECT_CODE_ID,
       bootstrapCommand: COMMAND,
@@ -239,15 +238,14 @@ describe("ComputerConnect", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "Repair connection" }));
     await flushAsync();
-    fireEvent.click(screen.getByRole("button", { name: "Copy for Agent" }));
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
     await flushAsync();
 
     const payload = writeText.mock.calls[0]?.[0] as string;
-    expect(payload).toContain(`Computer: ${computer.displayName}`);
-    expect(payload).toContain(`Computer ID: ${COMPUTER_ID}`);
-    expect(payload).toContain(COMMAND);
-    expect(payload).toContain("Preserve the original Computer ID, Agent assignments, and user data");
-    fireEvent.click(screen.getByRole("button", { name: "Show full instructions" }));
+    // The command names the Computer itself (--computer); the line names it for the Agent.
+    expect(payload).toBe(
+      `: 'openTag: restore the connection of ${computer.displayName.replace("'", "'\\''")}. Run the next line as-is in a terminal on that computer and report its output.'\n${COMMAND}`,
+    );
     expect(screen.getByRole("region", { name: "Restore connection" }).textContent).toBe(payload);
   });
 
@@ -448,7 +446,7 @@ describe("ComputerConnect", () => {
     render(<ComputerConnect intent={{ mode: "create" }} onConnected={onConnected} />);
     await flushAsync();
     await vi.waitFor(() => {
-      expect(screen.queryByRole("button", { name: "Copy for Agent" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
     });
     expect(document.querySelector('[data-ui="computer-connect-expiry"]')).toBeNull();
     computers.mockResolvedValue({ computers: [computer] });
@@ -477,7 +475,7 @@ describe("ComputerConnect", () => {
     inventory.mockResolvedValue({ computers: [{ ...computer, connectionStatus: "disconnected", connectedAt: null }] });
     await act(async () => vi.advanceTimersByTimeAsync(1_500));
     expect(screen.getByRole("button", { name: "Refresh" })).toBeTruthy();
-    expect((screen.getByRole("button", { name: "Copy for Agent" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Copy" }) as HTMLButtonElement).disabled).toBe(true);
     expect(onConnected).not.toHaveBeenCalled();
     expect(browserApi.issueComputerConnectCode).toHaveBeenCalledOnce();
   });
@@ -504,7 +502,7 @@ describe("ComputerConnect", () => {
     expect(document.querySelector('.ots-command[data-expired="true"]')).not.toBeNull();
     expect(document.querySelector('[data-ui="computer-connect-expiry"]')?.textContent).toBe("Expired");
     expect(screen.getByRole("status").textContent).toBe("Your computer isn't connected yet");
-    expect((screen.getByRole("button", { name: "Copy for Agent" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Copy" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getAllByRole("button", { name: "Refresh" })).toHaveLength(1);
   });
 
@@ -537,7 +535,7 @@ describe("ComputerConnect", () => {
     expect(issue).toHaveBeenCalledTimes(2);
     expect(expandedTaskIncludesCommand(COMMAND)).toBe(false);
     expect(expandedTaskIncludesCommand(REPLACEMENT_COMMAND)).toBe(true);
-    expect((screen.getByRole("button", { name: "Copy for Agent" }) as HTMLButtonElement).disabled).toBe(false);
+    expect((screen.getByRole("button", { name: "Copy" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("waits for an in-flight deadline verdict before offering a replacement", async () => {
@@ -602,7 +600,7 @@ describe("ComputerConnect", () => {
 
     // The masked command keeps its single Refresh; the failure is reported in the status slot.
     expect(expandedTaskIncludesCommand(COMMAND)).toBe(false);
-    expect((screen.getByRole("button", { name: "Copy for Agent" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Copy" }) as HTMLButtonElement).disabled).toBe(true);
     const alert = screen.getByRole("alert");
     expect(alert.textContent).toContain("Couldn’t prepare the connection command.");
     expect(alert.textContent).not.toContain("Failed to fetch");
@@ -622,7 +620,7 @@ describe("ComputerConnect", () => {
     await flushAsync();
     expect(screen.getByRole("alert").textContent).toContain("Couldn’t prepare the connection command.");
     expect(screen.getByRole("alert").closest(".ots-command__body")).toBeNull();
-    expect(screen.queryByRole("button", { name: "Copy for Agent" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
     expect(screen.queryByText("opentag.example.com")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     await flushAsync();

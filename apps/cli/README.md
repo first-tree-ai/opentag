@@ -36,6 +36,8 @@ and Foundry remain under the Claude CLI's credential handling; openTag does not 
 ## Targeted Computer preparation
 
 `opentag connect <code>` (also `opentag computer connect <code>`) binds the Computer named by the one-time setup flow.
+A repair command also passes `--computer <id>`: when this home is connected to a different Computer on that Server,
+the command stops before using the code and says it restores a different computer.
 When the Server returns a target Agent, the foreground command checks only that Agent's selected Runtime CLI, including
 its required capabilities and credentials, and prepares both Lark and Slack through Provider CLI ensure. The operator
 must install and authenticate the selected Codex, Claude Code, or Pi CLI; openTag never installs a Runtime.

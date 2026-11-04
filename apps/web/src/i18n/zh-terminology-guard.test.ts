@@ -36,17 +36,7 @@ const DISALLOWED: ReadonlyArray<{ readonly pattern: RegExp; readonly use: string
 
 const SKIPPED_KEY_PREFIXES = ["onboarding_v2_lab_", "common_agent_setup_lab"];
 
-const ALLOWED_KEYS = new Map<string, string>([
-  [
-    "computer_connect_create_instructions",
-    "a task the reader copies to the AI assistant on their computer; it names the Computer ID the CLI prints",
-  ],
-  [
-    "computer_connect_recovery_instructions",
-    "a task the reader copies to the AI assistant on their computer; it names the Computer ID the CLI prints",
-  ],
-  ["computer_connect_recovery_preview", "preview of the copied recovery task; it names the Computer ID the CLI prints"],
-]);
+const ALLOWED_KEYS = new Map<string, string>([]);
 
 function zhCatalogue(): Array<{ area: string; key: string; value: string }> {
   return readdirSync(messagesRoot, { withFileTypes: true })

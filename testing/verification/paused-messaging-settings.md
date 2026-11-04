@@ -65,3 +65,8 @@ The smoke uses the existing harness with a distinct Compose project, loopback Po
 disposable database name. The initial default wildcard PostgreSQL publish could not serve host queries on this
 Docker Desktop host; explicit loopback publishing succeeded. No production environment, live authorization,
 message delivery, deployment, or post-deployment acceptance was exercised.
+
+The subsequent base `cbacb543f9289d2b2b9ba4fb7b86202d2ec20282` includes the settled paused-settings text and
+Computer connection-copy changes. The paused-settings section is consolidated as implemented, with its Planned
+marker removed; the Cloud type-step decision is preserved. Manifests and the lockfile are unchanged. This merge
+is checked with affected package type checks/builds and the focused messaging/presentation tests.

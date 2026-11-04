@@ -78,19 +78,6 @@ nothing is deleted and the dialog says so. If the delete fails after the pause, 
 and Try again retries only the delete. A missing permission is named as such. Why: the reader has already confirmed
 the delete, so a separate pause step adds nothing for them, and each failure has to say which state it left.
 
-### Paused Agent settings
-
-Pausing an Agent does not change which settings its current Account owner can read. Name, Model and Soul,
-Computer, Context Trees, Skills, MCP connectors, Messaging, and Pause/Delete remain accessible. Messaging
-shows the stored channel identity and binding state on the settings page, settings overview, and Agent status card.
-A failed read stays unavailable; it is never presented as a missing connection or a successful connection.
-
-Messaging settings are read-only while paused. Connection, replacement, reauthorization, credential updates,
-disconnection, activation checks, cancellation, and message-trigger changes are disabled with a localized reason.
-Saved Feishu attempts and Slack configuration details remain readable without starting setup or refreshing CLI
-credentials. Existing permissions for other settings are unchanged. Deleted Agents, other Accounts, and revoked
-Account sessions remain unauthorized; resuming the Agent is a separate explicit action.
-
 Every full-screen state that replaces the application shell must keep a way to sign out, because an Account that has
 not finished setup is shown nothing else. First-time creation and exact setup headers reuse the shared Account menu,
 aligned with their navigation action. Until Account setup is complete, that menu offers only Sign out; navigation links
@@ -129,6 +116,12 @@ before anyone types. Why: a rule the reader only discovers by failing wastes an 
 it in the error adds reading without new information. Create stays disabled until a Local Agent's runtime is chosen;
 no runtime is preselected, because the reader's computer may not have it.
 
+Creating an Agent always starts with the type step (Local or Cloud), even when the deployment cannot run Cloud
+Agents. When the availability check answers that Cloud is unavailable, the Cloud card stays in place, disabled, with an
+**Temporarily unavailable** (**暂不可用**) badge and a line saying the Agent can still run on the reader's own computer; Local
+stays the default. A failed check says so and offers Try again instead of claiming Cloud is unavailable. Why: the
+step tells the reader Cloud exists as an option, which skipping straight to the Local form would hide.
+
 First-time setup stays full-screen throughout its current journey, even when Account admission completes before
 Computer or messaging setup. An Account-scoped, tab-local layout marker preserves this presentation across reloads
 and external authorization; leaving setup or signing out clears it. If browser storage is unavailable, the current
@@ -164,6 +157,20 @@ cannot be repeated; failed or uncertain mutations cause status reads rather than
 Running, queued and unknown work also requires confirmation before save/release interrupts it;
 rows without a recorded save failure use a plain save/release label. Discard confirmation explains unsaved-file loss and that external effects are not undone. A
 failed inventory read never becomes an empty list, and revoked access hides cached resources.
+
+## Paused Agent settings
+
+Pausing an Agent does not change which settings its current Account owner can read. Name, Messaging, Computer,
+Model and Soul, Context Trees, Skills, MCP connectors, and Pause/Delete remain accessible. The settings overview,
+Agent status card, and Agent list use the existing channel identity and binding state. Why: an operator often pauses
+an Agent precisely to inspect its configuration or prepare a change, and a configuration they cannot see gives them
+nothing to decide from. A failed read stays unavailable; it is never presented as a missing or successful connection.
+
+Messaging settings are read-only while paused. Connection, replacement, reauthorization, credential updates,
+disconnection, activation checks, cancellation, and message-trigger changes are disabled with a localized reason.
+Saved Feishu attempts and Slack configuration details remain readable without starting setup or refreshing CLI
+credentials. Existing permissions for other settings are unchanged. Deleted Agents, other Accounts, and revoked
+Account sessions remain unauthorized; resuming the Agent is a separate explicit action.
 
 ## Layout and responsive acceptance
 

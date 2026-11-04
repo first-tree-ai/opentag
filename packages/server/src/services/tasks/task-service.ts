@@ -350,6 +350,40 @@ export class TaskService {
   }
 
   /**
+   * Whether a Session's `Session <shortId>` footer may link to its Task, read for the Account that
+   * owns the Session's Agent. The Session resolves to its Task exactly as the Task routes resolve
+   * it (`#scopeOf`: a chat Session, or the chat Session at the root of an internal Session's creator
+   * chain), and the Task must then qualify in the same `tasks` rollup that list and detail read
+   * their summary from. A Session whose Task does not qualify, such as an ambient-only group channel
+   * Session or an internal Session rooted at one, therefore keeps a plain footer instead of linking
+   * to a detail page that answers 404.
+   */
+  async hasLinkableTask(sessionId: string): Promise<boolean> {
+    return this.database.transaction(
+      async (transaction) => {
+        const located = await this.#locateSession(transaction, sessionId);
+        if (!located) return false;
+        const owners = await transaction.execute<{ accountId: string } & Record<string, unknown>>(sql`
+          select a.created_by_user_id as "accountId"
+          from im_bindings b
+          inner join agents a on a.id = b.agent_id
+          where b.id = ${located.bindingId}::uuid
+        `);
+        const owner = [...owners][0];
+        if (!owner) return false;
+        const scope = await this.#scopeOf(transaction, owner.accountId, sessionId);
+        if (!scope) return false;
+        const rows = await transaction.execute(sql`
+          with ${taskCtes({ accountId: owner.accountId, scope, now: this.#now(), rollups: true })}
+          select 1 from tasks t where t.task_id = ${scope.taskId}::uuid limit 1
+        `);
+        return [...rows].length > 0;
+      },
+      { isolationLevel: "repeatable read", accessMode: "read only" },
+    );
+  }
+
+  /**
    * One read-only Repeatable Read transaction: authorization, the summary and every section see one
    * snapshot, and its executor is the only connection the statements use. Nothing here performs
    * external I/O, so the transaction never spans a wait.

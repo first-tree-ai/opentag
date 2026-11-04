@@ -64,7 +64,11 @@ task, and outcome writes update only projections still referring to that message
 Internal Sessions inherit their Agent's available tools and default Runtime configuration. Local Sessions also share the
 Agent workspace. Cloud Sessions have independent Sandbox workspaces and Pi histories; see
 [Cloud Context Tree and Session collaboration](../cloud/cloud-context.md) for the Cloud boundaries. A creation command may
-override the model, reasoning effort, or maximum Run duration. Internal Sessions do not receive IM delivery or the
+override the model, reasoning effort, or maximum Run duration. Without a duration override, an internal Session's Run
+budget is the larger of 2 hours and its Agent's configured budget (30 minutes when unset), because delegated work such
+as coding usually outlasts an IM reply; channel and thread Sessions keep the Agent budget. A Run that exceeds its
+budget is aborted as `turn_timeout`, so managed instructions tell the creating Session to estimate the task and pass
+`--max-duration-ms` with headroom, up to the 24-hour maximum. Internal Sessions do not receive IM delivery or the
 temporary `OPENTAG_PROVIDER_ENV_FILE`; they report through `opentag session send`. Both visible and internal Sessions
 receive role-aware managed instructions and may create further internal Sessions.
 

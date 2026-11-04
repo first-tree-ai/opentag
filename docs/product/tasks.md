@@ -17,7 +17,9 @@ is one chat Session.
   group conversation reads as one Task rather than one per request.
 - Each thread Session is its own Task. A Slack thread or a Feishu thread (keyed by `thread_id`)
   that somebody answered in therefore reads separately from the channel it started in. The root
-  message stays in the channel Session's Task because the channel Session received it. A Session
+  message stays in the channel Session's Task because the channel Session received it. A Feishu
+  quote reply in an ordinary group carries `root_id` and `parent_id` but no `thread_id`, so it has
+  no thread key and belongs to the group's channel Session's Task; `root_id` never names a Task. A Session
   that ended and was later replaced, such as a thread revived after its Session ended, is a
   separate Task.
 - A private chat is one Task across all of its Sessions, including a thread Session inside it. Its
@@ -39,9 +41,12 @@ is one chat Session.
   Each endpoint reports the canonical id.
 - Outbound IM replies sent through the Server provider proxy append a clickable `Session <shortId>`
   footer linking to `/agents/:agentId/tasks/:sessionId` for the Session that sent them. Group channel
-  executions and internal Sessions link too, because every Session id resolves to a Task. Footers
-  that older replies carry anchor on a request's message id and keep resolving. A footer is plain
-  text only when its Session cannot be found.
+  executions and internal Sessions link too, because the Task routes resolve those Session ids to
+  their Task. A footer links only when that Task qualifies under the same rule the Task list and
+  detail use, so an emitted link never opens a 404: an ambient-only group channel Session, an
+  internal Session whose creator chain reaches one, or a Session that cannot be found gets plain
+  `Session <shortId>` text. Footers that older replies carry anchor on a request's message id and
+  keep resolving.
 - `createdAt` is the earlier of the Session's creation and its first addressed message.
 
 A Task reports `sessionKind: "thread"` and the Session's thread key for a group thread Session.
@@ -72,8 +77,11 @@ or channel when it was stored. In a private chat that is the chat's Task. In a g
 newest thread Session of the reply's thread that already existed, and otherwise the newest channel
 Session that already existed. A Session created later never claims an earlier message, so a
 message stored before any Session existed belongs to no Task. A reply the channel Session sent into a new thread before anybody answered there
-therefore stays on the channel Session's Task. A Feishu quote reply carries no thread Session's key
-and stays there too.
+therefore stays on the channel Session's Task. A captured reply to a Feishu quote reply is keyed by
+the message it answers, never by the quote chain's `root_id`; that key names no thread Session, so
+the reply stays on the channel Session's Task too. A captured reply that earlier versions stored in a
+real Feishu thread with the thread's `thread_id` as its thread key but no recorded `threadId` still
+matches that thread's Session by thread key, so it stays with the thread it was sent in.
 
 Every section cursor is the exact ordering key of the last row it returned: the timestamp at the
 microsecond precision PostgreSQL compares, not the millisecond a browser `Date` would keep, plus the

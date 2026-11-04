@@ -1,5 +1,4 @@
 import type { RuntimeCredentialProvider, RuntimeExecutionSource } from "@opentag/shared";
-import { sql } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
 import { createInstrumentedFetch } from "../observability/external-call-logger.js";
 import type { PerformanceLogger } from "../observability/performance-logger.js";
@@ -8,6 +7,7 @@ import type { ConnectionRegistry, RuntimeControlIdentity } from "../runtime/conn
 import type { RuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
 import type { ApplicationCipher } from "../services/crypto.js";
 import { ImOutboundCapture } from "../services/im/im-outbound-capture.js";
+import { TaskService } from "../services/tasks/index.js";
 import { closeServerResources, startClosingServerResources } from "../shutdown.js";
 import { RuntimeCapabilityStore } from "./capability-store.js";
 import {
@@ -430,8 +430,10 @@ function resolveProviderFetch(
 /**
  * Resolves an execution's Session to the Task anchor its `Session <shortId>` footer links to. A
  * Task is one chat Session, and the Task routes resolve any Session id — a chat Session, or an
- * internal Session through its creator chain — to its Task, so every stored Session links by its
- * own id. A missing Session or a failed lookup returns `plain` so the footer never links to a 404
+ * internal Session through its creator chain — to its Task, so a Session links by its own id. It
+ * links only when that Task qualifies under the same rollup Task list and detail read
+ * (`TaskService.hasLinkableTask`): an ambient-only group channel Session, an internal Session rooted
+ * at one, a missing Session, or a failed lookup returns `plain`, so the footer never links to a 404
  * route.
  */
 export async function resolveSessionTaskAnchor(
@@ -440,12 +442,8 @@ export async function resolveSessionTaskAnchor(
   logger?: Pick<ServiceLogger, "warn">,
 ): Promise<SessionTaskAnchorResolution> {
   try {
-    const rows = await database.execute<{ id: string } & Record<string, unknown>>(sql`
-      select s.id from sessions s where s.id = ${input.sessionId}::uuid limit 1
-    `);
-    const row = [...rows][0];
-    if (!row) return { kind: "plain" };
-    return { kind: "link", taskAnchorId: row.id };
+    if (!(await new TaskService(database).hasLinkableTask(input.sessionId))) return { kind: "plain" };
+    return { kind: "link", taskAnchorId: input.sessionId };
   } catch (error) {
     logger?.warn(
       {

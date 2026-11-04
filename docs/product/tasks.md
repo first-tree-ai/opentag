@@ -16,9 +16,9 @@ rows are topics, not Sessions.
 - In a group, channel, or multi-person direct message, a Task is one **topic**: the root message
   plus the reply chain around it. The topic key is `coalesce(thread root, thread_key,
   external_message_id)`. Slack's `thread_ts` is the root message's own id. Feishu threads are keyed
-  by `thread_id` when the provider supplies one and by `root_id` otherwise; when a reply carries a
-  `thread_id` that differs from its `rootId`, the topic is keyed by the root message so the root and
-  its replies stay together.
+  by `thread_id`; when a reply carries a `thread_id` that differs from its `rootId`, the topic is
+  keyed by the root message so the root and its replies stay together. A Feishu quote reply in an
+  ordinary group has no `thread_id`, so it has no thread key and is a root of its own topic.
 - In a private chat, the whole conversation is one Task.
 - A topic becomes a Task only once somebody addressed the Agent directly. Messages the Agent only
   overheard (`ambient` attention) are conversation context, not Tasks, and are not counted.

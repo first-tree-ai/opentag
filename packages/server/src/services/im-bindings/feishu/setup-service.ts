@@ -658,23 +658,31 @@ export class FeishuSetupService {
   }
 
   async get(callerUserId: string, attemptId: string): Promise<FeishuSetupAttempt> {
-    const row = await this.#load(attemptId);
-    if (!row) throw new Error("FEISHU_SETUP_NOT_FOUND");
-    await this.#imBindings.assertCanManage(callerUserId, row.agentId);
-    const current = await this.#observeRead({ row }, async () => {
-      const current = await this.#load(attemptId);
-      if (current) await this.#imBindings.assertCanManage(callerUserId, current.agentId);
-      return current ? { row: current } : undefined;
-    });
+    const read = () =>
+      this.#database.transaction(
+        async (transaction) => {
+          const row = await this.#load(attemptId, transaction);
+          if (!row) return undefined;
+          await this.#imBindings.assertCanRead(callerUserId, row.agentId, transaction);
+          return { row };
+        },
+        { isolationLevel: "repeatable read", accessMode: "read only" },
+      );
+    const current = await this.#observeRead(await read(), read);
     if (!current?.attempt) throw new Error("FEISHU_SETUP_NOT_FOUND");
+    await this.#imBindings.assertCanRead(callerUserId, current.row.agentId);
     return current.attempt;
   }
 
   /** Settings observes the open attempt independently of the currently active connection. */
   async getForAgent(callerUserId: string, agentId: string): Promise<FeishuSetupAttempt | undefined> {
-    await this.#imBindings.assertCanManage(callerUserId, agentId);
-    const attempt = await this.observeForAgent(agentId);
-    await this.#imBindings.assertCanManage(callerUserId, agentId);
+    const read = () =>
+      this.#imBindings.readForAgent(callerUserId, agentId, async (transaction) => {
+        const row = await this.#currentForAgent(agentId, transaction);
+        return row ? { row } : undefined;
+      });
+    const attempt = (await this.#observeRead(await read(), read))?.attempt;
+    await this.#imBindings.assertCanRead(callerUserId, agentId);
     return attempt && isOpenSetupState(attempt.state) ? attempt : undefined;
   }
 
@@ -1523,12 +1531,11 @@ export class FeishuSetupService {
     }
   }
 
-  async #load(attemptId: string): Promise<SetupRow | undefined> {
-    const [row] = await this.#database
-      .select()
-      .from(imBindings)
-      .where(eq(imBindings.setupAttemptId, attemptId))
-      .limit(1);
+  async #load(
+    attemptId: string,
+    executor: DatabaseClient | DatabaseTransaction = this.#database,
+  ): Promise<SetupRow | undefined> {
+    const [row] = await executor.select().from(imBindings).where(eq(imBindings.setupAttemptId, attemptId)).limit(1);
     return row;
   }
 

@@ -683,7 +683,7 @@ describe("Agent setup projection Messaging states", () => {
       const result = deferred<{ appId: string; appSecret: string; teamBrand: "feishu" }>();
       const probeEntered = deferred<void>();
       const probeResult = deferred<FeishuCandidateCheckOutcome>();
-      const pause = pausedBindingRead(unitDatabase.database);
+      const pause = pausedBindingRead(unitDatabase.database, { afterTransaction: true });
       const feishuSetup = new FeishuSetupService({
         database: pause.database,
         cipher: new ApplicationCipher(Buffer.alloc(32, 7)),
@@ -863,7 +863,7 @@ describe("Agent setup projection Messaging states", () => {
       const bootstrap = await account();
       const other = await otherAccount();
       const { agentId } = await messagingReadyAgent(bootstrap.userId);
-      const pause = pausedBindingRead(unitDatabase.database);
+      const pause = pausedBindingRead(unitDatabase.database, { afterTransaction: true });
       const { imBindingService, feishuSetup } = harness({
         database: pause.database,
         registrations: registrationGateway(new Date(Date.now() + 60_000)),
@@ -875,8 +875,8 @@ describe("Agent setup projection Messaging states", () => {
             .update(imBindings)
             .set({ setupOwnerHeartbeatAt: new Date(0) })
             .where(eq(imBindings.agentId, agentId));
-        const check = imBindingService.assertCanManage.bind(imBindingService);
-        vi.spyOn(imBindingService, "assertCanManage").mockImplementationOnce(async (...args) => {
+        const check = imBindingService.assertCanRead.bind(imBindingService);
+        vi.spyOn(imBindingService, "assertCanRead").mockImplementationOnce(async (...args) => {
           await check(...args);
           pause.arm();
         });

@@ -892,10 +892,10 @@ export async function startServer(): Promise<void> {
     };
     const imBindingService = new ImBindingService(database, applicationCipher, {
       agentRuntimeReadiness: agentRuntimeReadinessForAgent,
-      imCliReadiness: async (agentId, provider, integrationId, credentialGeneration) => {
+      imCliReadiness: async (agentId, provider, integrationId, credentialGeneration, refresh = true) => {
         const computerId = await imBindingService.getAgentComputerId(agentId);
         if (!computerId) return "unavailable";
-        refreshProviderCliReadiness(agentId, computerId);
+        if (refresh) refreshProviderCliReadiness(agentId, computerId);
         const observations = registry.providerCliArtifactReadiness(computerId);
         const observation = observations.find(
           ({ observation }) =>
@@ -910,10 +910,10 @@ export async function startServer(): Promise<void> {
           ...(observation.reason ? { reason: observation.reason } : {}),
         };
       },
-      credentialExecutionReadiness: async (agentId, provider, integrationId, credentialGeneration) => {
+      credentialExecutionReadiness: async (agentId, provider, integrationId, credentialGeneration, refresh = true) => {
         const computerId = await imBindingService.getAgentComputerId(agentId);
         if (!computerId) return { status: "unconfirmed" };
-        refreshProviderCliReadiness(agentId, computerId);
+        if (refresh) refreshProviderCliReadiness(agentId, computerId);
         const observations = registry.providerCliCredentialReadiness(computerId);
         const observation = observations.find(
           ({ observation }) =>

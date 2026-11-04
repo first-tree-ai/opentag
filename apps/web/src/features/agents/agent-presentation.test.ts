@@ -345,6 +345,18 @@ describe("Server status reasons across the list and dependency rows", () => {
       messaging: hasBinding ? messagingBinding(bindingStates[reason] ?? "active") : null,
     };
   }
+  function unconfirmedMessaging(reason: AgentStatusReason, hasBinding: boolean) {
+    if (reason !== "agent_paused") return { label: "Status unavailable", tone: "neutral" };
+    return { label: hasBinding ? "Connected" : "Not connected", tone: hasBinding ? "success" : "neutral" };
+  }
+  it("voids stored paused messaging state while its Computer is offline", () => {
+    const agent = boundAgent();
+    const status = { ...statusForReason(agent, "computer_offline", true), agentStatus: "suspended" as const };
+    expect(agentMessagingStatus(applyAgentStatus(agent, status))).toEqual({
+      label: "Status unavailable",
+      tone: "neutral",
+    });
+  });
   it.each(cases)(
     "projects $reason with binding=$hasBinding without inventing another failure",
     ({ reason, hasBinding }) => {
@@ -355,7 +367,7 @@ describe("Server status reasons across the list and dependency rows", () => {
       expect(detail.availability.dependencies.handoff.state).toBe(states[reason]);
       const messaging = agentMessagingStatus(detail);
       if (states[reason] === "unconfirmed") {
-        expect(messaging).toEqual({ label: "Status unavailable", tone: "neutral" });
+        expect(messaging).toEqual(unconfirmedMessaging(reason, hasBinding));
         expect(detail.availability.dependencies.channel.state).toBe("unconfirmed");
         expect(agentCardStatus(list).label).not.toBe("Cannot receive messages");
         expect(agentStatusPresentation(detail).label).not.toBe("Cannot receive messages");

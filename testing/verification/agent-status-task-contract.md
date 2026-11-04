@@ -148,7 +148,7 @@ overflow, no unexpected API endpoints or page errors, and zero axe violations. S
 [1440 px](agent-status-task-contract/messaging-disconnected-1440.png), and the
 [browser readback](agent-status-task-contract/review-browser.json).
 
-Messaging dependency projection now follows the causal Server reason. Computer, runtime, paused,
+Messaging dependency projection now follows the causal Server reason. Computer, runtime,
 and initializing verdicts leave messaging unconfirmed without a messaging repair action, including
 when an active binding exists. `im_not_connected` retains its neutral not-connected state. A
 table-driven list/detail regression covers every `AgentStatusReason`, with both active-binding and
@@ -159,6 +159,18 @@ The final integration with `main@179783208` also passed the affected Web tests (
 API/Context Tree tests (116), shared Context Tree/public-export tests (18), and coverage-gate
 script tests (27). Root build, type checks and repository checks passed. Package manifests and
 the lockfile did not change during this integration.
+
+The subsequent paused-settings integration preserves readable stored channel state while paused,
+without messaging recovery actions or writable controls. Computer offline still voids the other
+dependency verdicts. Immutable replacement controls remain absent, and an empty paused Agent's
+first-connection controls remain disabled.
+The affected six-file Web subset passed 189 cases and the four-file Server subset passed 172.
+After the conflict-resolution helper refactor, the two owning Web files passed 83 cases, including
+paused plus offline precedence. Root build and type checks, the final Web build, and repository
+checks passed. The existing PostgreSQL smoke also verified owner-only disconnected-identity reads
+while paused and rolled its fixtures back. The four-width disconnected Settings browser check
+passed again with fresh screenshots and zero overflow, unexpected endpoints, page errors or axe
+violations. No package manifest or lockfile changed.
 
 The older `db9e74d91` CI run passed 1,401 PostgreSQL cases and failed its 4,096-Session/max-1-pool
 stop deadline case. That red result is not waived by these local checks; the next head needs a

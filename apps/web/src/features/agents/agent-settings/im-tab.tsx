@@ -1,4 +1,4 @@
-import type { AgentSummary, ImBindingSummary } from "@opentag/shared/browser";
+import type { AgentSetupSnapshot, AgentSummary, ImBindingSummary } from "@opentag/shared/browser";
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 import { type RefObject, useEffect, useRef, useState } from "react";
@@ -20,6 +20,7 @@ import { agentCreateLink, agentSetupLink } from "../agent-routes.js";
 type Confirmation = { bindingId: string; provider: ImBindingSummary["provider"]; configured: boolean };
 
 export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
+  const readOnly = agent.status === "suspended";
   const [error, setError] = useState<string>();
   const [successMessage, setSuccessMessage] = useState<string>();
   const [confirmation, setConfirmation] = useState<Confirmation>();
@@ -41,7 +42,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
   }, [confirmation, restoreFocusTarget]);
 
   async function changeReceiveMode(receiveMode: "mention_only" | "all_message") {
-    if (receiveModePending) return;
+    if (readOnly || receiveModePending) return;
     try {
       setReceiveModePending(true);
       setError(undefined);
@@ -58,6 +59,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
   }
 
   async function disableBinding(bindingId: string, provider: ImBindingSummary["provider"]) {
+    if (readOnly) return;
     try {
       setConfirmationBusy(true);
       setError(undefined);
@@ -88,7 +90,9 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
           {m.im_messaging_page_title()}
         </Text>
       </header>
+      {readOnly ? <Banner variant="secondary" role="status" description={m.im_paused_read_only()} /> : null}
       <FeishuSetup
+        readOnly={readOnly}
         agentId={agent.id}
         presentation="dialog"
         restoreSavedAttempt
@@ -112,6 +116,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                 await feishuSetup.start(intent);
               };
               const connectSlack = async (intent: "create" | "reauthorize" = "create") => {
+                if (readOnly) return;
                 setError(undefined);
                 setSuccessMessage(undefined);
                 await slackConfiguration.startOAuth(intent);
@@ -158,6 +163,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                           agent={agent}
                           binding={binding}
                           onAgentChanged={onAgentChanged}
+                          readOnly={readOnly}
                           busy={feishuSetup.loading || slackConfiguration.loading}
                           feishuBusy={feishuSetup.loading}
                           disconnectRef={disableBindingButtonRef}
@@ -200,13 +206,13 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                               className="flex w-fit flex-wrap items-center gap-1 rounded-md bg-kumo-recessed p-1"
                             >
                               <TriggerModeOption
-                                busy={receiveModePending}
+                                busy={readOnly || receiveModePending}
                                 label={m.im_mentions_only()}
                                 selected={binding.receiveMode === "mention_only"}
                                 onSelect={() => void changeReceiveMode("mention_only")}
                               />
                               <TriggerModeOption
-                                busy={receiveModePending}
+                                busy={readOnly || receiveModePending}
                                 label={m.im_every_message()}
                                 selected={binding.receiveMode === "all_message"}
                                 onSelect={() => void changeReceiveMode("all_message")}
@@ -247,12 +253,12 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
         >
           {confirmationError ? <Banner variant="error" role="alert" description={confirmationError} /> : null}
           <div className="flex flex-wrap justify-end gap-3">
-            <Button disabled={confirmationBusy} variant="ghost" onClick={closeConfirmation}>
+            <Button disabled={readOnly || confirmationBusy} variant="ghost" onClick={closeConfirmation}>
               {m.im_disconnect_cancel()}
             </Button>
             <Button
               loading={confirmationBusy}
-              disabled={confirmationBusy}
+              disabled={readOnly || confirmationBusy}
               variant="danger"
               onClick={() => void disableBinding(confirmation.bindingId, confirmation.provider)}
             >
@@ -272,6 +278,7 @@ function MessagingConnectionActions({
   onAgentChanged,
   busy,
   feishuBusy,
+  readOnly,
   disconnectRef,
   onSlack,
   onDisconnect,
@@ -282,6 +289,7 @@ function MessagingConnectionActions({
   onAgentChanged: () => void;
   busy: boolean;
   feishuBusy: boolean;
+  readOnly: boolean;
   disconnectRef: RefObject<HTMLButtonElement | null>;
   onSlack?: () => void;
   onDisconnect: (binding: ImBindingSummary) => void;
@@ -293,25 +301,31 @@ function MessagingConnectionActions({
     gcTime: 0,
     enabled: !binding,
   });
-  const canCreate =
-    !binding && creation.isSuccess && creation.data.actions.some((action) => action.kind === "start-messaging");
+  const canCreate = creation.isSuccess && allowsMessagingCreation(creation.data, readOnly);
+  const needsCreationRecovery = !binding && !canCreate;
   return (
     <div className="flex flex-wrap items-center gap-3">
       {binding?.provider !== "feishu" ? (
         <SlackCustomApp
           agentId={agent.id}
+          readOnly={readOnly}
           bindingId={binding?.id}
           onSaved={onAgentChanged}
           cloud={agent.computerKind === "cloud"}
-          renderTrigger={!binding && !canCreate ? () => null : undefined}
+          renderTrigger={needsCreationRecovery ? () => null : undefined}
           onOAuth={binding ? onSlack : undefined}
           onDisconnect={binding ? () => onDisconnect(binding) : undefined}
         />
       ) : null}
       {binding?.provider === "feishu" ? (
         <>
-          <MessagingAppActions binding={binding} busy={busy} onFeishu={onFeishu} />
-          <Button ref={disconnectRef} variant="secondary-destructive" onClick={() => onDisconnect(binding)}>
+          <MessagingAppActions binding={binding} busy={busy} readOnly={readOnly} onFeishu={onFeishu} />
+          <Button
+            disabled={readOnly}
+            ref={disconnectRef}
+            variant="secondary-destructive"
+            onClick={() => onDisconnect(binding)}
+          >
             {spaceScriptBoundary(m.im_disconnect({ providerName: messagingProviderLabel(binding.provider) }))}
           </Button>
         </>
@@ -319,14 +333,14 @@ function MessagingConnectionActions({
         <Button
           icon={<ProviderIcon className="size-4" provider="feishu" />}
           loading={feishuBusy}
-          disabled={feishuBusy}
+          disabled={readOnly || feishuBusy}
           variant="secondary"
           onClick={(event) => onFeishu("create", event.currentTarget)}
         >
           {m.im_connect_feishu({ provider: messagingProviderLabel("feishu") })}
         </Button>
       ) : null}
-      {!binding && !canCreate ? (
+      {needsCreationRecovery ? (
         <AsyncState state={toResourceState(creation)}>
           {(snapshot) =>
             snapshot.messaging.kind === "blocked" &&
@@ -349,19 +363,32 @@ function MessagingConnectionActions({
   );
 }
 
+function allowsMessagingCreation(snapshot: AgentSetupSnapshot, readOnly: boolean): boolean {
+  return (
+    snapshot.actions.some((action) => action.kind === "start-messaging") ||
+    (readOnly && snapshot.messaging.kind === "not-configured")
+  );
+}
+
 function MessagingAppActions({
   binding,
   busy,
+  readOnly,
   onFeishu,
 }: {
   binding: ImBindingSummary;
   busy: boolean;
+  readOnly: boolean;
   onFeishu: (intent: "reauthorize", target: HTMLButtonElement) => void;
 }) {
   return (
     <>
       {messagingRecoveryLabel(binding) ? (
-        <Button disabled={busy} loading={busy} onClick={(event) => onFeishu("reauthorize", event.currentTarget)}>
+        <Button
+          disabled={readOnly || busy}
+          loading={busy}
+          onClick={(event) => onFeishu("reauthorize", event.currentTarget)}
+        >
           {messagingRecoveryLabel(binding)}
         </Button>
       ) : null}

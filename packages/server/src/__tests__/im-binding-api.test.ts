@@ -615,7 +615,7 @@ describe("ImBindingService persistence", () => {
       appSecret: "app-secret",
     });
     expect(material?.grantedScopes).toEqual([...FEISHU_REQUIRED_TENANT_SCOPES].sort());
-    expect(await value.service.listFeishuConnectionIds(undefined)).toEqual([bindingId]);
+    expect((await value.service.listFeishuConnectionIds(undefined)).map((row) => row.imBindingId)).toEqual([bindingId]);
     expect(await value.service.listFeishuConnectionIds(bindingId)).toEqual([]);
     expect(await value.service.getForAgent(value.bootstrap.userId, value.agent.id)).toMatchObject({
       id: bindingId,

@@ -626,8 +626,8 @@ export class TaskService {
         s.runtime_reasoning_effort as "runtimeReasoningEffort",
         s.ended_at as "endedAt",
         s.created_at as "createdAt",
-        coalesce(s.manual_title, s.generated_title, left(first_message.content, ${INTERNAL_SESSION_TITLE_MAX_LENGTH})) as "title",
-        greatest(s.created_at, s.ended_at, latest_message.created_at) as "lastActivityAt",
+        coalesce(s.manual_title, s.generated_title, first_message.title) as "title",
+        greatest(s.created_at, s.ended_at, latest_received.created_at, latest_sent.created_at) as "lastActivityAt",
         ${cursorText(sql`s.created_at`)} as "cursorAt"
       from (
         -- The keyset order and the page are decided on the related identities alone; only the rows
@@ -640,19 +640,37 @@ export class TaskService {
         ${page.limit === undefined ? sql`` : sql`limit ${page.limit}`}
       ) p
       inner join sessions s on s.id = p.id
-      -- What the Session was asked to do: the first collaboration message it received.
+      -- What the Session was asked to do: the first collaboration message it received, collapsed to
+      -- one line before it is capped, so leading or repeated whitespace never spends the title
+      -- budget. The whole body is normalized: the schema bounds it to 16 KiB and only one message per
+      -- page row is read.
       left join lateral (
-        select m.content
+        select nullif(
+          left(btrim(regexp_replace(m.content, '[[:space:]]+', ' ', 'g')), ${INTERNAL_SESSION_TITLE_MAX_LENGTH}),
+          ''
+        ) as title
         from session_messages m
         where m.target_session_id = s.id
         order by m.created_at asc, m.id asc
         limit 1
       ) first_message on true
+      -- Latest activity reads only the newest message on each side, each a reverse probe of its own
+      -- index (session_messages_target_created_idx, session_messages_source_created_idx), so the
+      -- enrichment never aggregates a Session's message history.
       left join lateral (
-        select max(m.created_at) as created_at
+        select m.created_at
         from session_messages m
-        where m.target_session_id = s.id or m.source_session_id = s.id
-      ) latest_message on true
+        where m.target_session_id = s.id
+        order by m.created_at desc, m.id desc
+        limit 1
+      ) latest_received on true
+      left join lateral (
+        select m.created_at
+        from session_messages m
+        where m.source_session_id = s.id
+        order by m.created_at desc, m.id desc
+        limit 1
+      ) latest_sent on true
       where s.kind = 'internal'
       order by s.created_at asc, s.id asc
     `);

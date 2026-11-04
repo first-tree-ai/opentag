@@ -298,7 +298,10 @@ export function toTurn(row: TaskTurnRow): TaskTurn {
   };
 }
 
-/** One line of the internal Session's title: whitespace collapsed, empty treated as absent. */
+/**
+ * One line of the internal Session's title: whitespace collapsed, empty treated as absent. A title
+ * derived from a message is already collapsed and capped in SQL; this keeps stored titles on one line.
+ */
 function internalSessionTitle(title: string | null): string | null {
   const line = title?.replace(/\s+/g, " ").trim();
   return line ? line : null;

@@ -1607,6 +1607,8 @@ describe("TaskService bounded detail", () => {
     const asked = await internal(minutes(1));
     const named = await internal(minutes(2), { manualTitle: "Stored title" });
     const silent = await internal(minutes(3), { endedAt: minutes(4) });
+    const padded = await internal(minutes(3));
+    const spaced = await internal(minutes(3));
     const message = (source: string | null, target: string, content: string, at: Date) => ({
       id: crypto.randomUUID(),
       sourceSessionId: source,
@@ -1619,14 +1621,16 @@ describe("TaskService bounded detail", () => {
       createdAt: at,
       updatedAt: at,
     });
-    await unitDatabase.database
-      .insert(sessionMessages)
-      .values([
-        message(channel.id, asked.id, `  Review the failing\n\ndeployment ${"and more ".repeat(30)}`, minutes(5)),
-        message(channel.id, asked.id, "A later instruction", minutes(6)),
-        message(asked.id, channel.id, "Done", minutes(7)),
-        message(channel.id, named.id, "Not the title", minutes(8)),
-      ]);
+    await unitDatabase.database.insert(sessionMessages).values([
+      message(channel.id, asked.id, `  Review the failing\n\ndeployment ${"and more ".repeat(30)}`, minutes(5)),
+      message(channel.id, asked.id, "A later instruction", minutes(6)),
+      message(asked.id, channel.id, "Done", minutes(7)),
+      message(channel.id, named.id, "Not the title", minutes(8)),
+      // More than the title budget of leading whitespace before the actual request.
+      message(channel.id, padded.id, `${" \n\t".repeat(100)}Summarize the incident\n\n  timeline`, minutes(9)),
+      // Repeated whitespace between words collapses before the cap, so it does not spend the budget.
+      message(channel.id, spaced.id, Array.from({ length: 40 }, (_, i) => `word${i}`).join(" \n\t  "), minutes(10)),
+    ]);
 
     const page = await service.listInternalSessions(bootstrap.userId, channel.id, { limit: 10 });
     const byId = new Map(page.items.map((item) => [item.id, item]));
@@ -1637,6 +1641,9 @@ describe("TaskService bounded detail", () => {
     expect(byId.get(asked.id)?.lastActivityAt).toBe(minutes(7).toISOString());
     expect(byId.get(named.id)).toMatchObject({ title: "Stored title", lastActivityAt: minutes(8).toISOString() });
     expect(byId.get(silent.id)).toMatchObject({ title: null, lastActivityAt: minutes(4).toISOString() });
+    expect(byId.get(padded.id)?.title).toBe("Summarize the incident timeline");
+    const collapsed = Array.from({ length: 40 }, (_, i) => `word${i}`).join(" ");
+    expect(byId.get(spaced.id)?.title).toBe(collapsed.slice(0, 120));
   });
 
   it("reads scheduled collaboration messages and deduplicates a message whose two ends are both related", async () => {

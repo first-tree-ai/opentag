@@ -51,7 +51,9 @@ alone. Each section returns at most 100 rows and 20 by default. Naming a subset 
 contract: the Web conversation renders the summary and the Turns, asks for `sections=turns`, and
 never reads the Internal Session or collaboration history it would discard. Reading any of them
 resolves the topic and serves the requested sections from one read-only Repeatable Read transaction,
-so an authorized topic is read from a single snapshot and no wait spans external I/O.
+so an authorized topic is read from a single snapshot and no wait spans external I/O. The captured-replies
+subresource also resolves its stored-message scope and reads replies in one read-only snapshot;
+it does not depend on a Runtime Session existing.
 
 Every section cursor is the exact ordering key of the last row it returned: the timestamp at the
 microsecond precision PostgreSQL compares, not the millisecond a browser `Date` would keep, plus the
@@ -115,6 +117,32 @@ The status is the topic's latest execution situation, read by precedence:
 4. Otherwise the outcome of the latest execution: `completed`, `failed` (including rejected
    deliveries), `cancelled` (a queued delivery the Account withdrew before it ran), or `expired` (a
    delivery that expired unprocessed, or an unreported Turn whose deadline has passed).
+
+The Web reads these in four groups (Queued, Running, Completed, Failed) for filtering: `ended` and
+`cancelled` filter with Completed, and `expired` with Failed. A `cancelled` Task still shows its own
+neutral **Cancelled** label rather than Completed. Why: the Account withdrew it before it ran, and
+"Completed" would claim work that never happened.
+
+### Task status from deliveries and message handling
+
+> **Planned — not yet implemented.** Tracking: #1215
+
+- **Task status:** it stays a projection over the message delivery table and is never stored separately:
+  - a queued delivery reads as queued;
+  - a delivered or accepted one reads as running;
+  - a completed or failed one reads as completed or failed.
+- **Delivery reporting:** the daemon reports each message's delivery status as it changes. Retry belongs to the
+  Server's queue, and the daemon dedups by message ID.
+- **New messages:** a new message for a topic is always steered into the Agent Session that is already running, right
+  away, and the model decides what to do with it. There is no classifier deciding steer versus append and no re-check
+  before replying. Where a runtime cannot take injected input, the current Turn is interrupted and the message
+  redelivered.
+- **Failures:** every IM failure is a plain message; the person retries by sending a new message (see
+  [IM task feedback](../system/messaging/im-feedback.md)).
+- **Indexing:** the delivery table is queryable by Agent and by Task through an index.
+
+Why: a status derived from the delivery records cannot drift from what happened, and retrying by sending a new message
+reuses the path every message takes. This replaces the precedence rules above once it ships.
 
 Each detail Turn exposes `delivery.isRunning` from the same effective predicate as the list. The Web
 shows progress only when that value is true; persisted `accepted` alone does not prove liveness.

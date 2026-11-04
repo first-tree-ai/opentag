@@ -13,7 +13,11 @@ import type {
 import { RuntimeExecutionRegistry } from "../runtime-credentials/execution-registry.js";
 import type { RuntimeGitHubAdmission } from "../runtime-credentials/github-admission.js";
 import { UnavailableRuntimeGitHubAdmission } from "../runtime-credentials/github-admission.js";
-import { RuntimeCredentialOwner } from "../runtime-credentials/runtime-credential-owner.js";
+import { RuntimeMcpGatewayTokenStore } from "../runtime-credentials/mcp-gateway-token-store.js";
+import {
+  RuntimeCredentialOwner,
+  type RuntimeCredentialOwnerOptions,
+} from "../runtime-credentials/runtime-credential-owner.js";
 import type {
   RuntimeScopeResolverPort,
   RuntimeScopeSnapshot,
@@ -23,6 +27,7 @@ import { DefaultRuntimeTaskPolicy, type RuntimeTaskPolicy } from "../runtime-cre
 import { RuntimeProxyTicketStore } from "../runtime-credentials/ticket-store.js";
 import { runtimeExecutionProviderBinding } from "../runtime-credentials/types.js";
 import { RuntimeValidationRunRegistry } from "../runtime-credentials/validation-runs.js";
+import { RuntimeWebGatewayTokenStore } from "../runtime-credentials/web-gateway-token-store.js";
 
 const AGENT = "00000000-0000-4000-8000-0000000000a1";
 const COMPUTER = "00000000-0000-4000-8000-0000000000c1";
@@ -126,6 +131,10 @@ function openFrame(overrides: Record<string, unknown> = {}): RuntimeCredentialCl
 
 async function fixture(
   overrides: {
+    stores?: Pick<
+      RuntimeCredentialOwnerOptions,
+      "executions" | "capabilities" | "tickets" | "mcpGatewayTokens" | "webGatewayTokens"
+    >;
     authority?: FakeAuthority;
     scopeResolver?: FakeScopeResolver;
     gitHubAdmission?: RuntimeGitHubAdmission;
@@ -159,9 +168,11 @@ async function fixture(
     async () => undefined,
   );
   registry.activate(COMPUTER, instanceId, runtimeSocket);
-  const executions = new RuntimeExecutionRegistry();
-  const capabilities = new RuntimeCapabilityStore();
-  const tickets = new RuntimeProxyTicketStore();
+  const { executions, capabilities, tickets, ...gatewayStores } = overrides.stores ?? {
+    executions: new RuntimeExecutionRegistry(),
+    capabilities: new RuntimeCapabilityStore(),
+    tickets: new RuntimeProxyTicketStore(),
+  };
   const validationRuns = new RuntimeValidationRunRegistry();
   const scopeResolver = overrides.scopeResolver ?? new FakeScopeResolver();
   const authority = overrides.authority ?? new FakeAuthority();
@@ -197,6 +208,7 @@ async function fixture(
     policy,
     gitHubAdmission,
     ...(overrides.cloudControlActive ? { cloudControlActive: overrides.cloudControlActive } : {}),
+    ...gatewayStores,
     sweepIntervalMs: 60_000,
   });
   const context: RuntimeBusinessContext = {
@@ -228,9 +240,9 @@ async function fixture(
   };
 }
 
-const cleanup: Array<() => void> = [];
-afterEach(() => {
-  for (const close of cleanup.splice(0)) close();
+const cleanup: Array<() => unknown> = [];
+afterEach(async () => {
+  for (const close of cleanup.splice(0)) await close();
 });
 
 describe("RuntimeCredentialOwner execution open", () => {
@@ -596,9 +608,13 @@ describe("RuntimeCredentialOwner composed Cloud control authority", () => {
     expect(state.executions.get(first.executionId)).toBeUndefined();
     expect(state.executions.get(second.executionId)).toBeDefined();
 
-    expect(state.owner.closeSessionExecutions("session-a", "execution_closed")).toEqual([second.executionId]);
+    const closeSelected = state.owner.prepareSessionExecutionClose("session-a", "execution_closed");
+    const successor = openExecution("session-a", randomUUID(), "cloud-instance-d");
+    expect(closeSelected()).toEqual([second.executionId]);
     expect(state.executions.get(second.executionId)).toBeUndefined();
     expect(state.executions.get(third.executionId)).toBeDefined();
+    expect(state.executions.get(successor.executionId)).toBeDefined();
+    expect(state.owner.closeSessionExecutions("session-a", "execution_closed")).toEqual([successor.executionId]);
   });
 });
 
@@ -780,3 +796,72 @@ describe("RuntimeCredentialOwner GitHub source and Cloud control", () => {
     expect(denied).toMatchObject({ status: "rejected", code: "execution_authority_denied" });
   });
 });
+
+it.each(["parent", "child", "expiry", "connection", "owner"] as const)(
+  "reclaims every child grant on %s close",
+  async (mode) => {
+    let now = Date.now();
+    const stores = {
+      executions: new RuntimeExecutionRegistry({ now: () => now, maxLifetimeMs: 100 }),
+      capabilities: new RuntimeCapabilityStore({ now: () => now, maxRecords: 2 }),
+      tickets: new RuntimeProxyTicketStore({ now: () => now, maxTickets: 2 }),
+      mcpGatewayTokens: new RuntimeMcpGatewayTokenStore({ now: () => now, maxTokens: 2 }),
+      webGatewayTokens: new RuntimeWebGatewayTokenStore({ now: () => now, maxTokens: 2 }),
+    };
+    const state = await fixture({ stores });
+    cleanup.push(() => state.owner.close());
+    for (let cycle = 0; cycle < (mode === "owner" ? 1 : 2); cycle++) {
+      const parentResult = await state.owner.handle(openFrame(), state.context);
+      expect(parentResult).toMatchObject({ status: "succeeded" });
+      if (!parentResult || !("executionId" in parentResult)) throw new Error("Expected parent execution");
+      const parent = stores.executions.get(parentResult.executionId);
+      if (!parent) throw new Error("Expected live parent");
+      const child = stores.executions.open({
+        ...parent,
+        purpose: "context-tree",
+        contextTree: {
+          kind: "git",
+          repository: "acme/memory",
+          path: "docs",
+          ref: "main",
+          parentExecutionId: parent.executionId,
+        },
+      });
+      for (const execution of [parent, child]) {
+        stores.capabilities.issue({
+          executionId: execution.executionId,
+          provider: "slack",
+          bindingId: BINDING,
+          purpose: execution.purpose,
+          scopeHash: "scope",
+          authorizationRevision: "v1",
+          credentialGeneration: "1",
+        });
+        stores.tickets.issue(execution);
+        stores.mcpGatewayTokens.issue({ executionId: execution.executionId, expiresAt: now + 60000 });
+        stores.webGatewayTokens.issue({ executionId: execution.executionId, expiresAt: now + 60000 });
+      }
+      const close = {
+        parent: () => stores.executions.close(parent.executionId, "execution_closed"),
+        child: () => {
+          stores.executions.close(child.executionId, "execution_closed");
+          expect(stores.capabilities.size).toBe(1);
+          expect(stores.tickets.size).toBe(1);
+          stores.executions.close(parent.executionId, "execution_closed");
+        },
+        expiry: () => {
+          now += 101;
+          state.owner.sweepNow();
+        },
+        connection: () => state.owner.closeConnection(state.connectionId, "connection_replaced"),
+        owner: () => state.owner.close(),
+      };
+      close[mode]();
+      expect(
+        [stores.executions, stores.capabilities, stores.tickets, stores.mcpGatewayTokens, stores.webGatewayTokens].map(
+          (store) => store.size,
+        ),
+      ).toEqual([0, 0, 0, 0, 0]);
+    }
+  },
+);

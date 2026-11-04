@@ -180,6 +180,7 @@ import {
   PROVIDER_CLI_REASON_V2_HEADER,
   PROVIDER_READINESS_V1_HEADER,
   PROVIDER_READINESS_V2_HEADER,
+  parseResponseIgnoringUnknownKeys,
   type ReadSkillFileResponse,
   ReadSkillFileResponseSchema,
   type RebindAgentComputerRequest,
@@ -1317,9 +1318,9 @@ export class BrowserApi {
   }
 
   private parseResponse<T>(path: string, schema: RuntimeSchema<T>, body: unknown, response?: Response): T {
-    const parsed = schema.safeParse(body);
+    const parsed = parseResponseIgnoringUnknownKeys(schema, body);
     if (parsed.success) return parsed.data;
-    const issues = parsed.error.issues.map(({ path: issuePath, code }) => ({
+    const issues = parsed.issues.map(({ path: issuePath, code }) => ({
       path: issuePath.map((segment) => (typeof segment === "symbol" ? segment.toString() : segment)),
       code,
     }));

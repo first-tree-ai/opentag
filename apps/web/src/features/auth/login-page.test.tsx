@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../../__tests__/support/router.js";
+import { withLocaleAsync } from "../../__tests__/support/with-locale.js";
 import { ApiError, browserApi } from "../../api.js";
 import * as locale from "../../i18n/locale.js";
 import { overwriteGetLocale } from "../../paraglide/runtime.js";
@@ -180,6 +181,41 @@ describe("LoginPage", () => {
     expect(screen.queryByLabelText("Name")).toBeNull();
   });
 
+  it.each([
+    ["AUTH_INVALID_TOKEN", "邮箱或密码不正确。"],
+    ["RATE_LIMITED", "尝试次数过多，请稍后再试。"],
+    ["SERVICE_UNAVAILABLE", "暂时无法登录，请稍后再试。"],
+    ["AUTH_USER_SUSPENDED", "此账户已停用，请联系 openTag 管理员。"],
+    ["SOMETHING_NEW", "登录失败，请重试。"],
+  ])("shows %s in Chinese without the Server's English message", async (code, copy) => {
+    vi.spyOn(browserApi, "authProviders").mockResolvedValue({ providers: [google, password] });
+    vi.spyOn(browserApi, "signInWithPassword").mockRejectedValue(new ApiError(401, "English server message", code));
+    await withLocaleAsync("zh", async () => {
+      const rendered = await renderInRouter(<LoginPage />);
+      fireEvent.change(await screen.findByLabelText("邮箱"), { target: { value: "ada@example.com" } });
+      fireEvent.change(screen.getByLabelText("密码"), { target: { value: "wrong-password-here" } });
+      fireEvent.click(screen.getByRole("button", { name: "登录" }));
+      expect((await screen.findByRole("alert")).textContent).toBe(copy);
+      rendered.unmount();
+    });
+  });
+
+  it.each([
+    ["AUTH_EMAIL_CONFLICT", "An account already exists for that email address. Sign in instead."],
+    ["VALIDATION_ERROR", "The account couldn’t be created. Check the details you entered."],
+  ])("explains a refused registration (%s)", async (code, copy) => {
+    vi.spyOn(browserApi, "authProviders").mockResolvedValue({ providers: [google, password] });
+    vi.spyOn(browserApi, "signUpWithPassword").mockRejectedValue(new ApiError(409, "English server message", code));
+    const rendered = await renderInRouter(<LoginPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Create one" }));
+    fireEvent.change(await screen.findByLabelText("Name"), { target: { value: "Ada" } });
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "ada@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "a-long-password" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+    expect((await screen.findByRole("alert")).textContent).toBe(copy);
+    rendered.unmount();
+  });
+
   it("prevents competing actions and duplicate submissions, then restores inputs after rejection", async () => {
     vi.spyOn(browserApi, "authProviders").mockResolvedValue({ providers: [google, password] });
     const pending = pendingRequest<void>();
@@ -200,8 +236,10 @@ describe("LoginPage", () => {
     expect(screen.getByRole("button", { name: "Create one" }).hasAttribute("disabled")).toBe(true);
     expect(screen.getByRole("combobox", { name: "Language" }).hasAttribute("disabled")).toBe(true);
     expect(screen.getByRole("link", { name: "Sign in with Google" }).getAttribute("href")).toBeNull();
-    await act(async () => pending.reject(new ApiError(401, "The email address or password is incorrect")));
-    expect((await screen.findByRole("alert")).textContent).toBe("The email address or password is incorrect");
+    await act(async () =>
+      pending.reject(new ApiError(401, "The email address or password is incorrect", "AUTH_INVALID_TOKEN")),
+    );
+    expect((await screen.findByRole("alert")).textContent).toBe("The email address or password is incorrect.");
     expect(email.disabled).toBe(false);
     expect(email.value).toBe("ada@example.com");
     expect(input.value).toBe("a-long-password");

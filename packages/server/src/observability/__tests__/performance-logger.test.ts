@@ -3,10 +3,12 @@ import { createApp } from "../../app.js";
 import {
   createPerformanceLogger,
   getCurrentPerformanceContext,
+  resolvePerformanceLoggingConfig,
   runWithPerformanceContext,
   safePerformanceErrorCode,
   updateCurrentPerformanceContext,
 } from "../performance-logger.js";
+import { instrumentService, instrumentWorker } from "../service-instrumentation.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -279,5 +281,176 @@ describe("performance logger", () => {
     expect(
       runWithPerformanceContext({ callId: "c-1", operation: "manual" }, () => getCurrentPerformanceContext()?.callId),
     ).toBe("c-1");
+  });
+
+  it("keeps started and fast DB completion logs at debug when OPENTAG_PERF_LOG_LEVEL=info while escalating slow DB and non-DB completions to info", async () => {
+    const config = resolvePerformanceLoggingConfig({
+      OPENTAG_PERF_LOG_LEVEL: "info",
+      OPENTAG_PERF_SLOW_THRESHOLD_MS: "200",
+    });
+    expect(config).toEqual({
+      enabled: true,
+      level: "info",
+      dbLevel: "debug",
+      startLevel: "debug",
+      slowThresholdMs: 200,
+    });
+
+    const records: Array<{ level: string; payload: Record<string, unknown> }> = [];
+    const fakeLogger = {
+      isLevelEnabled: () => true,
+      debug: (payload: Record<string, unknown>) => records.push({ level: "debug", payload }),
+      info: (payload: Record<string, unknown>) => records.push({ level: "info", payload }),
+      warn: (payload: Record<string, unknown>) => records.push({ level: "warn", payload }),
+    };
+
+    const durations = [10, 250, 20];
+    let nowMs = 1_000;
+    let callIndex = 0;
+    vi.spyOn(performance, "now").mockImplementation(() => {
+      if (callIndex % 2 === 0) {
+        callIndex += 1;
+        return nowMs;
+      }
+      const delta = durations[Math.floor(callIndex / 2)] ?? 10;
+      callIndex += 1;
+      nowMs += delta;
+      return nowMs;
+    });
+
+    const perf = createPerformanceLogger(() => fakeLogger as never, config);
+
+    await perf.traceAsync(
+      {
+        module: "database",
+        category: "db",
+        operation: "db.query",
+        attributes: { sqlCommand: "SELECT", dbTarget: "im_message_deliveries" },
+      },
+      async () => "fast-db",
+    );
+
+    await perf.traceAsync(
+      {
+        module: "database",
+        category: "db",
+        operation: "db.query",
+        attributes: { sqlCommand: "SELECT", dbTarget: "agent_schedules" },
+      },
+      async () => "slow-db",
+    );
+
+    await perf.traceAsync(
+      {
+        module: "ImDeliveryWorker",
+        category: "worker",
+        operation: "ImDeliveryWorker.runOnce",
+      },
+      async () => "worker-done",
+    );
+
+    expect(
+      records.map((r) => ({
+        level: r.level,
+        category: r.payload.perfCategory,
+        outcome: r.payload.outcome,
+        slow: r.payload.slow,
+      })),
+    ).toEqual([
+      { level: "debug", category: "db", outcome: "started", slow: undefined },
+      { level: "debug", category: "db", outcome: "completed", slow: undefined },
+      { level: "debug", category: "db", outcome: "started", slow: undefined },
+      { level: "info", category: "db", outcome: "completed", slow: true },
+      { level: "debug", category: "worker", outcome: "started", slow: undefined },
+      { level: "info", category: "worker", outcome: "completed", slow: undefined },
+    ]);
+
+    expect(
+      resolvePerformanceLoggingConfig({
+        OPENTAG_PERF_LOG_LEVEL: "info",
+        OPENTAG_PERF_DB_LOG_LEVEL: "info",
+        OPENTAG_PERF_START_LOG_LEVEL: "info",
+      }),
+    ).toEqual({
+      enabled: true,
+      level: "info",
+      dbLevel: "info",
+      startLevel: "info",
+      slowThresholdMs: 1_000,
+    });
+  });
+
+  it("propagates turnId, sandboxId, deliveryId, sessionId, and agentId across nested context and extracts nested resource IDs", async () => {
+    const records: Array<{ payload: Record<string, unknown> }> = [];
+    const fakeLogger = {
+      isLevelEnabled: () => true,
+      debug: (payload: Record<string, unknown>) => records.push({ payload }),
+      info: (payload: Record<string, unknown>) => records.push({ payload }),
+      warn: (payload: Record<string, unknown>) => records.push({ payload }),
+    };
+    const perf = createPerformanceLogger(() => fakeLogger as never);
+
+    const sandboxService = instrumentService(
+      {
+        async handleScope(input: {
+          scope: { sandboxId: string; sessionId: string };
+          claims: { turnId: string };
+          request: { agentId: string; deliveryId: string };
+        }) {
+          return input.scope.sandboxId;
+        },
+      },
+      { serviceName: "SandboxRunnerService", perfLogger: perf },
+    );
+
+    const worker = instrumentWorker(
+      {
+        async notifyCloudRunnerReady(allocation: { sandboxId: string; sessionId: string }) {
+          updateCurrentPerformanceContext({
+            agentId: "agent-turn-1",
+            deliveryId: "deliv-turn-1",
+            turnId: "turn-uuid-1",
+          });
+          return sandboxService.handleScope({
+            scope: allocation,
+            claims: { turnId: "turn-uuid-1" },
+            request: { agentId: "agent-turn-1", deliveryId: "deliv-turn-1" },
+          });
+        },
+      },
+      { workerName: "ImDeliveryWorker", perfLogger: perf },
+    );
+
+    await worker?.notifyCloudRunnerReady({ sandboxId: "sbx-1", sessionId: "sess-1" });
+
+    const workerStart = records.find(
+      (r) => r.payload.operation === "ImDeliveryWorker.notifyCloudRunnerReady" && r.payload.outcome === "started",
+    )?.payload;
+    const workerEnd = records.find(
+      (r) => r.payload.operation === "ImDeliveryWorker.notifyCloudRunnerReady" && r.payload.outcome === "completed",
+    )?.payload;
+    const serviceStart = records.find(
+      (r) => r.payload.operation === "SandboxRunnerService.handleScope" && r.payload.outcome === "started",
+    )?.payload;
+
+    expect(workerStart).toMatchObject({
+      sandboxId: "sbx-1",
+      sessionId: "sess-1",
+    });
+    expect(workerEnd).toMatchObject({
+      sandboxId: "sbx-1",
+      sessionId: "sess-1",
+      agentId: "agent-turn-1",
+      deliveryId: "deliv-turn-1",
+      turnId: "turn-uuid-1",
+    });
+    expect(serviceStart).toMatchObject({
+      parentCallId: workerStart?.callId,
+      sandboxId: "sbx-1",
+      sessionId: "sess-1",
+      agentId: "agent-turn-1",
+      deliveryId: "deliv-turn-1",
+      turnId: "turn-uuid-1",
+    });
   });
 });

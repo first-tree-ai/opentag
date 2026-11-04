@@ -358,14 +358,14 @@ describe("Tasks view", () => {
     const statusOf = (title: string) => {
       const row = screen.getByRole("link", { name: title }).closest("tr");
       if (!row) throw new Error("Expected the Task link to be inside a row");
-      return within(row).getByText(/^(Queued|Running|Completed|Failed)$/u).textContent;
+      return within(row).getByText(/^(Queued|Running|Completed|Failed|Cancelled)$/u).textContent;
     };
     expect(statuses.map((status) => statusOf(`Task ${status}`))).toEqual([
       "Queued",
       "Running",
       "Completed",
       "Failed",
-      "Completed",
+      "Cancelled",
       "Failed",
       "Completed",
     ]);

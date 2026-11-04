@@ -28,7 +28,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
     render(<App />);
     fireEvent.click(await screen.findByRole("link", { name: /Restore connection$/ }));
-    expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Copy" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "Back to Reviewer settings" }).getAttribute("href")).toBe(
       `/agents/${agentId}/settings/computer`,
     );
@@ -47,7 +47,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", "/agents/computers");
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Restore connection" }));
-    expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Copy" })).toBeTruthy();
     status = "online";
     fireEvent(window, new Event("focus"));
     expect(await screen.findByText("Online")).toBeTruthy();
@@ -365,10 +365,10 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
     const card = screen.getByRole("region", { name: "Agent status" });
     expect(card.querySelector('[data-ui="agent-status-provider"]')?.textContent).toBe(name);
-    const details = within(card).getByRole("button", { name: /^Computer: Online/ });
-    expect(details.getAttribute("aria-label")).toContain(`Ada's Mac · macOS · ${name}`);
-    fireEvent.click(details);
-    expect(await screen.findByText(`Ada's Mac · macOS · ${name}`)).toBeTruthy();
+    // A healthy row is plain text, not a control; its full identity stays available to assistive
+    // technology and as the row's title, where the narrow layout truncates it.
+    expect(within(card).queryByRole("button", { name: /^Computer: Online/ })).toBeNull();
+    expect(within(card).getByText(/^Computer: Online/).textContent).toContain(`Ada's Mac · macOS · ${name}`);
   });
 
   it("does not let a paused Agent make the Computer row contradict itself", async () => {

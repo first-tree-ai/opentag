@@ -48,7 +48,7 @@ describe("AgentUsageOverview", () => {
     await renderInRouter(<AgentUsageOverview agentId="agent-1" />);
 
     expect(await screen.findByText("428K")).toBeTruthy();
-    expect(screen.queryByText(/tasks reported token usage/)).toBeNull();
+    expect(screen.queryByText(/Tasks without reported usage/)).toBeNull();
     const metrics = screen.getByLabelText(/Last 30 days/);
     expect(metrics.classList.contains("grid-cols-2")).toBe(true);
     expect(metrics.classList.contains("divide-x")).toBe(true);
@@ -130,8 +130,8 @@ describe("AgentUsageOverview", () => {
       </>,
     );
 
-    expect(await screen.findByText(/31 of 32 tasks reported token usage/)).toBeTruthy();
-    expect(screen.getAllByText(/31 of 32 tasks reported token usage/)).toHaveLength(1);
+    expect(await screen.findByText("Tasks without reported usage: 1")).toBeTruthy();
+    expect(screen.getAllByText("Tasks without reported usage: 1")).toHaveLength(1);
     expect(loadUsage).toHaveBeenCalledTimes(1);
     for (const period of screen.getAllByRole("combobox", { name: "Usage period" })) {
       expect(period.classList.contains("w-full")).toBe(true);
@@ -155,7 +155,7 @@ describe("AgentUsageOverview", () => {
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
 
     expect(await screen.findByText("428K")).toBeTruthy();
-    expect(screen.queryByText(/tasks reported token usage/)).toBeNull();
+    expect(screen.queryByText(/Tasks without reported usage/)).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
     expect(loadUsage).toHaveBeenCalledTimes(2);
     expect(loadUsage).toHaveBeenNthCalledWith(2, "agent-1", 30);
@@ -194,7 +194,7 @@ describe("AgentUsageOverview", () => {
       ],
     });
     await renderInRouter(<AgentUsageTab agentId="agent-covered" />);
-    expect(await screen.findByText(/No token data was reported for the 2 tasks/)).toBeTruthy();
+    expect(await screen.findByText("Tasks without reported usage: 2")).toBeTruthy();
     expect(screen.getByRole("img", { name: /10 Tokens used/ })).toBeTruthy();
     expect(usageWindowLabel(1)).toBe("Last 24 hours");
   });

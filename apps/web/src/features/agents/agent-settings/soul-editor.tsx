@@ -159,7 +159,8 @@ export function SoulEditor({
         />
       ) : null}
       <p className="sr-only" id={`${id}-help`}>
-        {m.agent_settings_soul_editor_help()} {!readOnly ? m.agent_settings_soul_format_shortcut() : null}
+        {/* The page subtitle already says what Soul is for; while editing, only the formatting hint is new. */}
+        {!readOnly ? m.agent_settings_soul_format_shortcut() : null}
       </p>
     </div>
   );

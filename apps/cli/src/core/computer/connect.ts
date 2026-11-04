@@ -17,7 +17,7 @@ import {
 } from "@opentag/shared";
 import { CLI_VERSION } from "../../build-info.js";
 import { resolveCommandContext } from "../command/context.js";
-import { redactSecrets } from "../command/policy.js";
+import { CommandError, redactSecrets } from "../command/policy.js";
 import {
   createDaemonServiceManager,
   type DaemonServiceInfo,
@@ -31,6 +31,8 @@ export interface ComputerConnectOptions {
   manager?: DaemonServiceManager;
   noStart?: boolean;
   serverUrl: string;
+  /** The Computer a repair command restores; the run stops before the code is used on another machine. */
+  expectedComputerId?: string;
 }
 
 export interface ComputerConnectResult {
@@ -67,6 +69,7 @@ export async function runComputerConnect(options: ComputerConnectOptions): Promi
   const home = options.home ?? resolveOpenTagHome();
   const serverUrl = normalizeServerUrl(options.serverUrl);
   const currentPlatform = supportedPlatform();
+  await assertExpectedComputer(home, serverUrl, options.expectedComputerId);
   const manager = options.noStart ? undefined : (options.manager ?? (await createDaemonServiceManager({ home })));
   await manager?.preflight();
   const serviceBefore = await manager?.status();
@@ -180,6 +183,21 @@ function supportedPlatform(): "darwin" | "linux" | "win32" {
  * The stored token for this Server, if any, as an exchange field. An unreadable credentials file is
  * treated as having none: the exchange then repairs or creates instead of reporting already connected.
  */
+/**
+ * A repair command names the Computer it restores. When this home is connected to a different Computer
+ * on the same Server, the command was pasted on the wrong machine: stop before using the code. A home
+ * with no connection (its identity was lost) may be that Computer, so it continues.
+ */
+async function assertExpectedComputer(home: string, serverUrl: string, expected: string | undefined): Promise<void> {
+  if (!expected) return;
+  const stored = await readMachineCredentials(home).catch(() => undefined);
+  if (!stored || stored.computer.serverUrl !== serverUrl || stored.computer.computerId === expected) return;
+  throw new CommandError(
+    { code: "COMPUTER_TARGET_MISMATCH", category: "conflict", retryability: "never", phase: "validation" },
+    "This command restores a different computer than this one",
+  );
+}
+
 async function currentMachineTokenField(home: string, serverUrl: string): Promise<{ machineToken?: string }> {
   try {
     const stored = await readMachineCredentials(home);

@@ -9,7 +9,7 @@ import {
   SLACK_REQUIRED_BOT_SCOPES,
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
 import {
@@ -66,6 +66,7 @@ import { type CloudConnectionRecord, CloudRuntimeFence } from "../../services/sa
 import { createSessionCliCloudProofAuthority } from "../../services/sandboxes/cloud-session-collaboration-owner.js";
 import { RunnerHub, type RunnerScope } from "../../services/sandboxes/runner-hub.js";
 import { SessionCliProofService } from "../../services/sessions/index.js";
+import { deferred } from "../support/deferred.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 const INSTANCE_ID = "11111111-1111-4111-8111-111111111111";
@@ -1332,3 +1333,130 @@ describe("Cloud internal collaboration execution at the production credential bo
     stack.owner.close();
   });
 });
+
+it.each(["local", "cloud"] as const)("loads a complete %s scope without unrelated reads", async (computerKind) => {
+  const state = await fixture({ computerKind });
+  const queries: string[] = [];
+  const original = state.sql.options.debug;
+  state.sql.options.debug = (_id, query) => {
+    queries.push(query);
+  };
+  try {
+    const snapshot = await new RuntimeScopeResolver(state.database).load(state.session.id);
+    expect(snapshot).toMatchObject({
+      sessionId: state.session.id,
+      sessionKind: "channel",
+      computer: { id: state.computer.id, kind: computerKind },
+      sandbox: null,
+    });
+    expect(queries.filter((q) => q.trimStart().toLowerCase().startsWith("select"))).toHaveLength(
+      computerKind === "local" ? 1 : 2,
+    );
+  } finally {
+    state.sql.options.debug = original;
+    await state.sql.end();
+  }
+});
+
+it.each(["open", "live", "acquire", "validation"] as const)(
+  "joins actual credential %s SQL and fences the next stage on close",
+  async (phase) => {
+    const state = await fixture();
+    const stack = credentialOwnerStack(state, {
+      controlAuthority: { isCurrentConnection: () => true },
+      connectionFence: { isCurrent: () => true },
+    });
+    const context: RuntimeBusinessContext = {
+      computerId: state.computer.id,
+      installationId: state.computer.currentInstallationId as string,
+      instanceId: INSTANCE_ID,
+      connectionId: "connection-1",
+      negotiatedCapabilities: { [RUNTIME_CAPABILITY.runtimeCredential]: 1 },
+      signal: new AbortController().signal,
+    };
+    const turnId = randomUUID();
+    const deliveryId = await seedDelivery(state.database, state, "accepted", turnId);
+    const frame: RuntimeCredentialClientFrame = {
+      type: "runtime:execution:open",
+      requestId: randomUUID(),
+      sessionId: state.session.id,
+      agentId: state.agent.id,
+      placementGeneration: 1,
+      runId: randomUUID(),
+      source: { kind: "delivery", deliveryId, turnId },
+    };
+    let executionId = "";
+    if (phase === "live" || phase === "acquire") {
+      const opened = await stack.owner.handle(frame, context);
+      expect(opened).toMatchObject({ status: "succeeded" });
+      if (!opened || !("executionId" in opened)) throw new Error("Missing execution");
+      executionId = opened.executionId;
+    }
+    const entered = deferred(),
+      resume = deferred();
+    const hold = async <T>(result: T): Promise<T> => {
+      entered.resolve();
+      await resume.promise;
+      return result;
+    };
+    const originalLoad = stack.resolver.load.bind(stack.resolver);
+    const originalValidation = stack.resolver.loadValidationScope.bind(stack.resolver);
+    const spy =
+      phase === "validation"
+        ? vi
+            .spyOn(stack.resolver, "loadValidationScope")
+            .mockImplementation(async (...args) => hold(await originalValidation(...args)))
+        : vi.spyOn(stack.resolver, "load").mockImplementation(async (...args) => hold(await originalLoad(...args)));
+    let drained = false;
+    try {
+      const operations = {
+        validation: () =>
+          stack.owner.issueValidationRun({
+            provider: "slack",
+            bindingId: state.imBindingId,
+            agentId: state.agent.id,
+            computerId: state.computer.id,
+            instanceId: INSTANCE_ID,
+            connectionId: "connection-1",
+          }),
+        live: () => stack.owner.isExecutionLive(executionId),
+        open: () => stack.owner.handle(frame, context),
+        acquire: () =>
+          stack.owner.handle(
+            {
+              type: "runtime:credential:acquire",
+              requestId: randomUUID(),
+              executionId,
+              provider: "slack",
+              bindingId: state.imBindingId,
+            },
+            context,
+          ),
+      };
+      const operation = operations[phase]();
+      await entered.promise;
+      const closing = stack.owner.close().then(() => {
+        drained = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(drained).toBe(false);
+      expect(await stack.owner.handle(frame, context)).toMatchObject({ status: "rejected", code: "owner_unavailable" });
+      resume.resolve();
+      const result = await operation;
+      await closing;
+      if (phase === "validation") expect(result).toBeUndefined();
+      else if (phase === "live") expect(result).toBe(false);
+      else expect(result).toMatchObject({ status: "rejected" });
+      expect(stack.executions.executions()).toHaveLength(0);
+      expect(stack.capabilities.size).toBe(0);
+      expect(stack.tickets.size).toBe(0);
+      expect(stack.validationRuns.size).toBe(0);
+      expect((await state.sql`select 1 as healthy`)[0]?.healthy).toBe(1);
+    } finally {
+      resume.resolve();
+      await stack.owner.close();
+      spy.mockRestore();
+      await state.sql.end({ timeout: 1 });
+    }
+  },
+);

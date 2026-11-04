@@ -21,6 +21,8 @@ export {
   type ExternalCallTraceInput,
   type ExternalCallTraceOptions,
   extractExternalTransportCode,
+  isExternalTimeoutError,
+  markExternalCallTimedOut,
   sanitizeExternalUrl,
   traceExternalCall,
 } from "./external-call-logger.js";
@@ -62,6 +64,7 @@ export {
   type PerformanceOperationHandle,
   type PerformanceStartInput,
   type PerformanceTraceOptions,
+  resolvePerformanceLoggingConfig,
   runWithPerformanceContext,
   safePerformanceErrorCode,
   updateCurrentPerformanceContext,

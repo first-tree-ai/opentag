@@ -4,7 +4,8 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { bearer } from "better-auth/plugins/bearer";
 import type { DatabaseClient } from "../db/client.js";
 import { authIdentities, authSessions, authVerifications, users } from "../db/schema/index.js";
-import { devSignInPlugin } from "./internal-sign-in.js";
+import { AuthServiceError } from "../services/auth/errors.js";
+import { devSignInPlugin, resolveAuthDecision } from "./internal-sign-in.js";
 
 /**
  * Where the instance will be mounted, under the repository's `/api/v1` versioning convention rather than Better Auth's
@@ -17,14 +18,6 @@ import { devSignInPlugin } from "./internal-sign-in.js";
 export const BETTER_AUTH_BASE_PATH = "/api/v1/auth";
 
 export interface BetterAuthConfig {
-  /**
-   * Runs before any session row exists, and must throw to prevent one.
-   *
-   * Better Auth owns account creation on its own sign-in paths, so this is where OpenTag decides whether an Account
-   * may hold a session at all. A suspended Account is refused; an active Account may authenticate, while resource
-   * routes derive authority directly from that Account's ownership.
-   */
-  onSessionCreating: (userId: string) => Promise<void>;
   /** Origin the browser reaches the server on; also the only trusted origin. */
   publicUrl: string;
   secret: string;
@@ -63,7 +56,10 @@ export type OpenTagBetterAuth = ReturnType<typeof createBetterAuth>;
  * is byte-for-byte what the pre-migration rows already carry, so existing Accounts resolve instead of duplicating.
  */
 export function createBetterAuth(database: DatabaseClient, config: BetterAuthConfig) {
-  return betterAuth({
+  let accountReader: Promise<
+    Pick<Awaited<ReturnType<typeof betterAuth>["$context"]>["internalAdapter"], "findUserById">
+  >;
+  const auth = betterAuth({
     appName: "openTag",
     baseURL: config.publicUrl,
     basePath: BETTER_AUTH_BASE_PATH,
@@ -71,6 +67,7 @@ export function createBetterAuth(database: DatabaseClient, config: BetterAuthCon
     trustedOrigins: [config.publicUrl],
     database: drizzleAdapter(database, {
       provider: "pg",
+      transaction: true,
       // Keyed by Better Auth's model names so the adapter resolves each table without a separate `modelName` map.
       schema: {
         user: users,
@@ -92,7 +89,10 @@ export function createBetterAuth(database: DatabaseClient, config: BetterAuthCon
      * thirty without anyone choosing it, and left an idle CLI unable to refresh.
      */
     session: { expiresIn: config.sessionTtlSeconds },
-    user: { fields: { name: "displayName" } },
+    user: {
+      fields: { name: "displayName" },
+      additionalFields: { suspendedAt: { type: "date", required: false, input: false, returned: false } },
+    },
     account: {
       fields: { accountId: "subject", providerId: "provider" },
       // Google verifies the address before we ever see it, so a returning Account with a matching email links to the
@@ -124,8 +124,21 @@ export function createBetterAuth(database: DatabaseClient, config: BetterAuthCon
         create: {
           // Throwing here aborts the sign-in that asked for the session, so the caller sees why rather than a
           // session that silently failed to appear.
-          before: async (session) => {
-            await config.onSessionCreating(session.userId);
+          before: async (session, hookContext) => {
+            const check = async () => {
+              const adapter = hookContext?.context.internalAdapter ?? (await accountReader);
+              const user = await adapter.findUserById(session.userId);
+              if (!user || ("suspendedAt" in user && user.suspendedAt !== null && user.suspendedAt !== undefined)) {
+                throw new AuthServiceError(
+                  "AUTH_USER_SUSPENDED",
+                  "deterministic",
+                  "The user account is suspended",
+                  403,
+                );
+              }
+            };
+            if (hookContext) await resolveAuthDecision(check());
+            else await check();
           },
         },
       },
@@ -163,6 +176,8 @@ export function createBetterAuth(database: DatabaseClient, config: BetterAuthCon
       ...(config.devSignIn ? [devSignInPlugin(config.devSignIn)] : []),
     ],
   });
+  accountReader = auth.$context.then((context) => context.internalAdapter);
+  return auth;
 }
 
 /** Blanks every provider credential Better Auth would otherwise persist on the identity row. */

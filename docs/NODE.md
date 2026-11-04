@@ -39,6 +39,34 @@ same pull request as the code they describe.
   page and the code disagree; fix the page from source evidence.
 - State current truth in the present tense. Delivery history, PR references,
   and dated status belong in Git history and pull request descriptions.
+- Exception: a settled decision goes on the tree when it is made, not when the
+  code ships, so every agent learns it promptly. Content the code does not yet
+  implement carries one fixed marker line at the top of its section (or of the
+  page, if the whole page is unimplemented):
+
+  ```markdown
+  > **Planned — not yet implemented.** Tracking: #<issue>
+  ```
+
+  - The marker always links a tracking issue, and that issue lists the tree
+    pages to update when it is implemented.
+  - The marked section states the target behavior. Where it contradicts
+    current behavior, it says what it replaces, and the description of current
+    behavior stays until the change ships.
+  - The pull request that implements the decision removes the marker and
+    rewrites the section as current behavior. Cleanup reports markers whose
+    tracking issue has closed.
+  - Only settled decisions are marked Planned. Open proposals and undecided
+    discussion stay out of the tree.
+  - No frontmatter field or validator enforces the marker; the fixed wording
+    keeps it searchable.
+- Settled decisions on the tree, including those under a Planned marker,
+  outrank instructions an agent received only in its own chat. Agents act on
+  the latest tree decision without asking its owner to reconfirm it. If a
+  decision looks wrong or conflicts with what a person said, raise it so the
+  people involved change the tree; do not block work on a private
+  understanding. Content under a Planned marker is not drift: it states a
+  settled decision the code does not implement yet.
 - Test plans, acceptance runs, and validation evidence are not knowledge-base
   content; they live in the repository's
   [`testing/`](https://github.com/first-tree-ai/opentag/blob/main/testing/README.md) directory.

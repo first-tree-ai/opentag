@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { isIP } from "node:net";
 import { type Readable, Transform } from "node:stream";
@@ -5,6 +6,10 @@ import { domainToASCII } from "node:url";
 import { redactSensitive, type StructuredError, StructuredErrorSchema } from "@opentag/shared";
 import { traceExternalCall } from "../../observability/external-call-logger.js";
 import type { PerformanceLogger } from "../../observability/performance-logger.js";
+
+const activePolicyStorage = new AsyncLocalStorage<
+  ReadonlyMap<ExternalCallPolicy, { signal: AbortSignal; requestId: string; active: boolean }>
+>();
 
 export type PolicyErrorCategory = "security" | "transient" | "validation" | "availability";
 export type PolicyRetryability = "retryable" | "not_retryable";
@@ -281,6 +286,10 @@ export class ExternalCallPolicy {
     this.#perfLogger = options.performanceLogger;
   }
 
+  get performanceLogger(): PerformanceLogger | undefined {
+    return this.#perfLogger;
+  }
+
   /** Validate a provider URL before any credential-bearing request headers are constructed. */
   admitUrl(input: string | URL, options: Pick<ExternalCallOptions, "allowAnyHttpsHost"> = {}): URL {
     if (hasEncodedAuthority(input)) throw hostNotAllowedError("Encoded provider hosts are not allowed");
@@ -299,23 +308,46 @@ export class ExternalCallPolicy {
   }
 
   async run<T>(operation: string, action: PolicyAction<T>, options: ExternalCallOptions = {}): Promise<T> {
+    const active = activePolicyStorage.getStore()?.get(this);
+    if (active?.active) {
+      return action(composeReentrantSignal(active.signal, options), active.requestId);
+    }
     const provider = operation.startsWith("slack")
       ? "slack"
       : operation.startsWith("feishu")
         ? "feishu"
         : "im-provider";
+    let attemptsUsed = 0;
     return traceExternalCall(
       this.#perfLogger,
       {
         provider,
         operation: `external.${operation}`,
       },
-      () => this.#executeRun(operation, action, options),
-      { fallbackErrorCode: "IM_PROVIDER_CALL_FAILED" },
+      () =>
+        this.#executeRun(operation, action, options, (attemptNumber) => {
+          attemptsUsed = attemptNumber;
+        }),
+      {
+        resultAttributes: () => ({
+          attemptCount: attemptsUsed,
+          retryCount: Math.max(0, attemptsUsed - 1),
+        }),
+        errorAttributes: () => ({
+          attemptCount: attemptsUsed,
+          retryCount: Math.max(0, attemptsUsed - 1),
+        }),
+        fallbackErrorCode: "IM_PROVIDER_CALL_FAILED",
+      },
     );
   }
 
-  async #executeRun<T>(operation: string, action: PolicyAction<T>, options: ExternalCallOptions): Promise<T> {
+  async #executeRun<T>(
+    operation: string,
+    action: PolicyAction<T>,
+    options: ExternalCallOptions,
+    onAttempt?: (attemptNumber: number) => void,
+  ): Promise<T> {
     const requestId = randomUUID();
     const circuitKey = options.circuitKey ?? operation;
     const circuit = this.#circuit(circuitKey);
@@ -325,9 +357,18 @@ export class ExternalCallPolicy {
     const startedAt = this.#clock().getTime();
     let permitSettled = Promise.resolve();
     try {
-      return await this.#runAttempts(operation, requestId, action, options, circuit, startedAt, (settled) => {
-        permitSettled = settled;
-      });
+      return await this.#runAttempts(
+        operation,
+        requestId,
+        action,
+        options,
+        circuit,
+        startedAt,
+        (settled) => {
+          permitSettled = settled;
+        },
+        onAttempt,
+      );
     } catch (error) {
       this.#recordFailure(circuit, operation, requestId, error);
       const code = errorCode(error);
@@ -370,10 +411,12 @@ export class ExternalCallPolicy {
     circuit: CircuitEntry,
     startedAt: number,
     onPermitSettled: (settled: Promise<void>) => void,
+    onAttempt?: (attemptNumber: number) => void,
   ): Promise<T> {
     const attempts = Math.max(1, options.maxAttempts ?? this.#maxAttempts);
     let lastError: unknown;
     for (let attemptNumber = 1; attemptNumber <= attempts; attemptNumber += 1) {
+      onAttempt?.(attemptNumber);
       try {
         const attempt = this.#withDeadline(operation, requestId, action, options);
         onPermitSettled(attempt.settled);
@@ -474,12 +517,18 @@ export class ExternalCallPolicy {
       abandonmentTimer = setTimeout(() => abandon?.(), abandonmentWindowMs);
       abandonmentTimer.unref?.();
     };
-    const actionPromise = Promise.resolve().then(() => action(controller.signal, requestId));
+    const activeEntry = { signal: controller.signal, requestId, active: true };
+    const nextActive = new Map(activePolicyStorage.getStore());
+    nextActive.set(this, activeEntry);
+    const actionPromise = Promise.resolve().then(() =>
+      activePolicyStorage.run(nextActive, () => action(controller.signal, requestId)),
+    );
     const actionSettled = actionPromise.then(
       () => undefined,
       () => undefined,
     );
     actionSettled.then(() => {
+      activeEntry.active = false;
       if (abandonmentTimer) clearTimeout(abandonmentTimer);
     });
     const settled = Promise.race([actionSettled, abandonment]);
@@ -544,6 +593,7 @@ export class ExternalCallPolicy {
         }
         throw error;
       } finally {
+        activeEntry.active = false;
         if (timer) clearTimeout(timer);
         options.signal?.removeEventListener("abort", onAbort);
         if (rejectCancelledListener) options.signal?.removeEventListener("abort", rejectCancelledListener);
@@ -670,6 +720,18 @@ export class ExternalCallPolicy {
     this.#active = Math.max(0, this.#active - 1);
     this.#waiters.shift()?.grant();
   }
+}
+
+function composeReentrantSignal(
+  outerSignal: AbortSignal,
+  options: Pick<ExternalCallOptions, "signal" | "timeoutMs">,
+): AbortSignal {
+  const signals: AbortSignal[] = [outerSignal];
+  if (options.signal) signals.push(options.signal);
+  if (options.timeoutMs !== undefined) {
+    signals.push(AbortSignal.timeout(Math.max(1, options.timeoutMs)));
+  }
+  return signals.length === 1 ? outerSignal : AbortSignal.any(signals);
 }
 
 export function limitReadableStream(

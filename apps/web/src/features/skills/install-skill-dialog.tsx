@@ -221,7 +221,11 @@ function InstallActions({
             {m.common_cancel()}
           </Button>
           <Button disabled={busy || loading || count === 0} loading={busy} onClick={onConfirm} variant="primary">
-            {busy ? m.skills_install_installing() : m.skills_install_count({ count: count || 1 })}
+            {busy
+              ? m.skills_install_installing()
+              : count > 0
+                ? m.skills_install_count({ count })
+                : m.skills_install_action()}
           </Button>
         </>
       )}

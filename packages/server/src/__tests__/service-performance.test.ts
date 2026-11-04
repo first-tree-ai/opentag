@@ -8,7 +8,10 @@ import {
   instrumentServerWorkers,
   instrumentService,
 } from "../observability/index.js";
+import { RuntimeApprovalOwner } from "../runtime/runtime-approval-owner.js";
+import { createChannelTargetPoller } from "../services/channel-target/poller.js";
 import { runTrustedProcess } from "../services/github-proxy/git-process.js";
+import { ScheduleScheduler } from "../services/schedules/scheduler.js";
 
 class PrivateFieldService {
   readonly #secretPrefix = "agent";
@@ -314,5 +317,147 @@ describe("service and HTTP performance instrumentation", () => {
       environmentGeneration: 7,
       statusCode: 0,
     });
+  });
+
+  it("propagates callerOperation and parentCallId from periodic background worker spans even after service proxying", async () => {
+    const records: Array<Record<string, unknown>> = [];
+    const perfLogger = createPerformanceLogger(
+      () =>
+        ({
+          isLevelEnabled: () => true,
+          debug: (payload: Record<string, unknown>) => records.push(payload),
+          info: (payload: Record<string, unknown>) => records.push(payload),
+          warn: (payload: Record<string, unknown>) => records.push(payload),
+        }) as never,
+    );
+
+    const traceNestedDbQuery = async (dbTarget: string) => {
+      await perfLogger.traceAsync(
+        {
+          module: "database",
+          category: "db",
+          operation: "db.query",
+          attributes: { sqlCommand: "SELECT", dbTarget },
+        },
+        async () => [],
+      );
+    };
+
+    const scheduleScheduler = new ScheduleScheduler({
+      database: {} as never,
+      dispatch: { dispatchScheduledMessage: vi.fn() },
+      sessions: { resolveScheduledMessageRoute: vi.fn() },
+      publicUrl: "https://app.opentag.build",
+      listDue: async () => {
+        await traceNestedDbQuery("agent_schedules");
+        return [];
+      },
+    });
+
+    const approvalOwner = new RuntimeApprovalOwner({
+      store: {
+        find: vi.fn(),
+        insert: vi.fn(),
+        update: vi.fn(),
+        deliver: vi.fn(),
+        list: async () => {
+          await traceNestedDbQuery("runtime_approvals");
+          return [];
+        },
+        invalidateExpired: vi.fn(async () => undefined),
+        purge: vi.fn(async () => undefined),
+      },
+      registry: { isCurrentConnection: vi.fn(() => false), send: vi.fn() },
+      serverInstanceId: "srv-1",
+      authority: vi.fn(),
+      messenger: { post: vi.fn(), finish: vi.fn() },
+      onError: vi.fn(),
+    });
+
+    const feishuConnections = {
+      maintain: async () => {
+        await traceNestedDbQuery("im_bindings");
+      },
+    };
+    const feishuSetupService = {
+      maintainHeartbeat: async () => {
+        await traceNestedDbQuery("im_bindings");
+      },
+      maintainSweep: async () => {
+        await traceNestedDbQuery("im_bindings");
+      },
+    };
+    const cloudModelService = {
+      reconcile: async () => {
+        await traceNestedDbQuery("billing.attempts");
+      },
+    };
+    const imDeliveryWorker = {
+      runExpiryOnce: async () => {
+        await traceNestedDbQuery("im_message_deliveries");
+      },
+      runRetentionOnce: async () => {
+        await traceNestedDbQuery("im_messages");
+      },
+    };
+    const channelTargetPoller = createChannelTargetPoller({
+      channel: "staging",
+      downloadBaseUrl: "https://dl.opentag.build/releases",
+      intervalMs: 60_000,
+      fetchImpl: createInstrumentedFetch(perfLogger, {
+        provider: "channel-target",
+        baseFetch: vi.fn(
+          async () => new Response(JSON.stringify({ channel: "staging", version: "0.1.0-staging.1" }), { status: 200 }),
+        ),
+      }),
+    });
+
+    // Proxying a service first must not prevent instrumentServerWorkers from wrapping its worker methods
+    instrumentService(approvalOwner, { serviceName: "RuntimeApprovalOwner", perfLogger });
+    instrumentService(feishuSetupService, { serviceName: "FeishuSetupService", perfLogger });
+    instrumentService(cloudModelService, { serviceName: "CloudModelService", perfLogger });
+
+    instrumentServerWorkers(
+      [
+        ["ScheduleScheduler", scheduleScheduler],
+        ["RuntimeApprovalOwner", approvalOwner],
+        ["FeishuConnectionManager", feishuConnections],
+        ["FeishuSetupService", feishuSetupService],
+        ["CloudModelService", cloudModelService],
+        ["ImDeliveryWorker", imDeliveryWorker],
+        ["ChannelTargetPoller", channelTargetPoller],
+      ],
+      perfLogger,
+    );
+
+    await scheduleScheduler.scanNow();
+    await approvalOwner.poll();
+    await feishuConnections.maintain();
+    await feishuSetupService.maintainHeartbeat();
+    await feishuSetupService.maintainSweep();
+    await cloudModelService.reconcile();
+    await imDeliveryWorker.runExpiryOnce();
+    await imDeliveryWorker.runRetentionOnce();
+    channelTargetPoller.start();
+    channelTargetPoller.stop();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    const childStarts = records.filter(
+      (r) => (r.perfCategory === "db" || r.perfCategory === "external") && r.outcome === "started",
+    );
+    expect(childStarts.map((r) => [r.callerOperation, r.dbTarget ?? r.provider])).toEqual([
+      ["ScheduleScheduler.runOnce", "agent_schedules"],
+      ["RuntimeApprovalOwner.poll", "runtime_approvals"],
+      ["FeishuConnectionManager.maintain", "im_bindings"],
+      ["FeishuSetupService.maintainHeartbeat", "im_bindings"],
+      ["FeishuSetupService.maintainSweep", "im_bindings"],
+      ["CloudModelService.reconcile", "billing.attempts"],
+      ["ImDeliveryWorker.runExpiryOnce", "im_message_deliveries"],
+      ["ImDeliveryWorker.runRetentionOnce", "im_messages"],
+      ["ChannelTargetPoller.refresh", "channel-target"],
+    ]);
+    for (const child of childStarts) {
+      expect(typeof child.parentCallId).toBe("string");
+    }
   });
 });

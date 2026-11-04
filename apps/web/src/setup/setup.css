@@ -59,6 +59,21 @@
   color: var(--fg-2);
 }
 
+/*
+ * The connect window shows the whole copied text: it grows with the command instead of scrolling inside a
+ * fixed box, so a narrow screen never hides part of what is pasted. The floor keeps a reissued command
+ * from changing the window's height.
+ */
+[data-ui="computer-connect"] .ots-command__body {
+  height: auto;
+  min-height: 132px;
+}
+
+[data-ui="computer-connect"] .ots-command__code {
+  max-height: none;
+  overflow: visible;
+}
+
 /* Task instructions size to their text and grow with the page instead of nesting a scrollable reader. */
 .ots-command[data-flowing="true"] .ots-command__body {
   height: auto;

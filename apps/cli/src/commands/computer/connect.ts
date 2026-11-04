@@ -26,6 +26,7 @@ type ComputerConnectCommandOptions = {
   prepareProviderClis?: boolean;
   json?: boolean;
   verbose?: boolean;
+  computer?: string;
 };
 
 export function registerComputerConnectCommand(computer: Command): void {
@@ -35,6 +36,7 @@ export function registerComputerConnectCommand(computer: Command): void {
     .argument("<code>", "one-time Computer connect code")
     .option("--server <url>", "openTag server URL")
     .option("--home <path>", "openTag home directory")
+    .option("--computer <id>", "the Computer a repair command restores; stops on any other computer")
     .option("--no-start", "skip only daemon service installation/start")
     .option("--no-prepare-provider-clis", "skip Lark and Slack CLI preparation")
     .option("--json", "print JSON")
@@ -95,7 +97,13 @@ async function connectOrPresentFailure(
   const serverUrl = options.server ?? environment.OPENTAG_SERVER_URL ?? channelConfig.defaultServerUrl;
   try {
     if (!serverUrl) throw new Error(`The ${channelConfig.channel} channel requires --server for Computer connect`);
-    return await runComputerConnect({ code, home, noStart: options.start === false, serverUrl });
+    return await runComputerConnect({
+      code,
+      home,
+      noStart: options.start === false,
+      serverUrl,
+      ...(options.computer ? { expectedComputerId: options.computer } : {}),
+    });
   } catch (error) {
     const commandError = commandPolicy.toCommandError(error, "request");
     const exitCode = commandPolicy.commandExitCode(commandError);

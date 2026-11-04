@@ -21,6 +21,7 @@ import { SessionCliProofError } from "../services/sessions/index.js";
 
 const accountId = randomUUID();
 const source = {
+  proofId: crypto.randomUUID(),
   agentId: randomUUID(),
   computerId: randomUUID(),
   connectionInstanceId: randomUUID(),
@@ -154,8 +155,7 @@ function fixture(overrides: Partial<AgentSelfServiceOptions> = {}) {
   };
   const proofs = { authenticate: vi.fn(async () => source) };
   const owners = {
-    isSelfConfigurationEnabled: vi.fn(async () => true),
-    resolveAccountId: vi.fn(async () => accountId),
+    resolve: vi.fn(async () => ({ accountId, selfConfigurationEnabled: true })),
   };
   const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   const service = new AgentSelfService({
@@ -184,7 +184,7 @@ describe("Runtime Agent self-configuration routes", () => {
     expect(shown.headers["cache-control"]).toBe("no-store");
     expect(shown.json()).toMatchObject({ id: source.agentId, revision: 3 });
     expect(proofs.authenticate).toHaveBeenCalledWith("proof");
-    expect(owners.resolveAccountId).toHaveBeenCalledWith(source.agentId);
+    expect(owners.resolve).toHaveBeenCalledWith(source.agentId);
     expect(agents.getConfigById).toHaveBeenCalledWith(accountId, source.agentId);
 
     const updated = await app.inject({
@@ -195,10 +195,12 @@ describe("Runtime Agent self-configuration routes", () => {
     });
     expect(updated.statusCode).toBe(200);
     expect(updated.json()).toMatchObject({ revision: 4 });
-    expect(agents.updateById).toHaveBeenCalledWith(accountId, source.agentId, {
-      expectedRevision: 3,
-      runtimeConfig: { instructions: "be thorough", model: null },
-    });
+    expect(agents.updateById).toHaveBeenCalledWith(
+      accountId,
+      source.agentId,
+      { expectedRevision: 3, runtimeConfig: { instructions: "be thorough", model: null } },
+      "agent-self",
+    );
     const audit = logger.info.mock.calls.find(([bindings]) => bindings.event === "agent_self.config_updated");
     expect(audit?.[0]).toMatchObject({ fields: ["instructions", "model"], revision: 4, runtimeConfigRevision: 8 });
     expect(JSON.stringify(logger.info.mock.calls)).not.toContain("be thorough");
@@ -224,7 +226,7 @@ describe("Runtime Agent self-configuration routes", () => {
 
   it("rejects every self route while the Agent owner has disabled self-configuration", async () => {
     const { app, agents, mcp, owners } = fixture();
-    owners.isSelfConfigurationEnabled.mockResolvedValue(false);
+    owners.resolve.mockResolvedValue({ accountId, selfConfigurationEnabled: false });
 
     const responses = await Promise.all([
       app.inject({ method: "GET", url: RUNTIME_AGENT_PATH, headers }),
@@ -503,7 +505,7 @@ describe("Runtime Agent self-configuration routes", () => {
     });
     expect(response.statusCode).toBe(401);
     expect(response.json()).toMatchObject({ error: { code: "SESSION_PROOF_INVALID" } });
-    expect(owners.resolveAccountId).not.toHaveBeenCalled();
+    expect(owners.resolve).not.toHaveBeenCalled();
     expect(agents.updateById).not.toHaveBeenCalled();
     await app.close();
   });

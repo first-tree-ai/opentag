@@ -15,6 +15,7 @@ import {
   SKILL_PRESETS,
 } from "@opentag/skill-presets";
 import type { ServiceLogger } from "../../../observability/service-logger.js";
+import type { SessionCliSourceContext } from "../../sessions/session-cli-proof-service.js";
 import { SkillServiceError, skillNameConflict, skillPresetNotFound } from "../errors.js";
 import { normalizeSkillArchive } from "../skill-archive.js";
 import type { SkillRowExpectation, SkillService } from "../skill-service.js";
@@ -133,18 +134,18 @@ export class SkillPresetService {
 
   // --------------------------------------------------------------- agent (cli)
 
-  async listForAgent(agentId: string): Promise<ListSkillPresetsResponse> {
-    const { skills } = await this.#skills.listForAgent(agentId);
+  async listForAgent(source: SessionCliSourceContext): Promise<ListSkillPresetsResponse> {
+    const { skills } = await this.#skills.listForAgent(source);
     return this.#catalogFor(skills);
   }
 
-  async installForAgent(agentId: string, presetName: string): Promise<InstallSkillPresetResponse> {
+  async installForAgent(source: SessionCliSourceContext, presetName: string): Promise<InstallSkillPresetResponse> {
     return this.#install(
       {
-        load: () => this.#skills.listForAgent(agentId).then((response) => response.skills),
+        load: () => this.#skills.listForAgent(source).then((response) => response.skills),
         save: (preset, replace, expectedRow) =>
           this.#skills.uploadForAgent(
-            agentId,
+            source,
             {
               bytes: preset.archive,
               format: "tar.gz",

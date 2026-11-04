@@ -41,7 +41,7 @@ test("Details OAuth retry stays recoverable when its authorization window is blo
   });
   const { dialog, card } = await openFirecrawl(page, agentId);
   await card.getByRole("button", { name: "Authorize: Firecrawl", exact: true }).click();
-  await expect(card.getByRole("alert")).toHaveText("Cannot reach service");
+  await expect(card.getByRole("alert")).toHaveText("Can't reach the service. Try again later.");
   await dialog.getByRole("button", { name: "Close Discover", exact: true }).click();
   await page.getByRole("button", { name: "Firecrawl", exact: true }).click();
   const details = page.getByRole("dialog", { name: "Firecrawl", exact: true });
@@ -135,11 +135,11 @@ for (const width of [1440, 320]) {
     const row = page
       .locator('[data-ui="mcp-server-row"]')
       .filter({ has: page.getByRole("button", { name: "Firecrawl", exact: true }) });
-    await expect(row.getByText("Authorization failed", { exact: true })).toBeVisible();
+    await expect(row.getByText("Authorization didn't finish. Try again.", { exact: true })).toBeVisible();
     await expect(row.getByRole("button", { name: /^(Authorize|Reauthorize)(?:: .+)?$/ })).toBeVisible();
     await expect(row.getByRole("button", { name: "Cancel", exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "Discover", exact: true }).click();
-    await expect(card.getByRole("alert")).toHaveText("Authorization failed");
+    await expect(card.getByRole("alert")).toHaveText("Authorization didn't finish. Try again.");
     await expectNoPageOverflow(page);
   });
 }
@@ -150,10 +150,10 @@ test("successful authorization from Details clears an earlier Discover failure",
   fixture.failOAuth();
   const { dialog, card } = await openFirecrawl(page, agentId);
   await card.getByRole("button", { name: "Add: Firecrawl", exact: true }).click();
-  await expect(card.getByRole("alert")).toHaveText("Authorization failed");
+  await expect(card.getByRole("alert")).toHaveText("Authorization didn't finish. Try again.");
   await dialog.getByRole("button", { name: "Close Discover", exact: true }).click();
   const row = page.locator('[data-ui="mcp-server-row"]');
-  await expect(row.getByText("Authorization failed", { exact: true })).toBeVisible();
+  await expect(row.getByText("Authorization didn't finish. Try again.", { exact: true })).toBeVisible();
   await row.getByRole("button", { name: "Firecrawl", exact: true }).click();
   const details = page.getByRole("dialog", { name: "Firecrawl", exact: true });
   fixture.allowOAuth();
@@ -169,7 +169,7 @@ test("successful authorization from Details clears an earlier Discover failure",
   await consent.getByRole("link", { name: "Finish authorization" }).click();
   await expect(details.getByRole("button", { name: "Reauthorize", exact: true })).toBeVisible();
   await details.getByRole("button", { name: "Close Firecrawl", exact: true }).click();
-  await expect(row.getByText("Authorization failed", { exact: true })).toHaveCount(0);
+  await expect(row.getByText("Authorization didn't finish. Try again.", { exact: true })).toHaveCount(0);
   await expect(row.getByRole("button", { name: /^(Authorize|Reauthorize|Retry)(?:: .+)?$/ })).toHaveCount(0);
   await expect(row.getByRole("button", { name: "Remove Firecrawl", exact: true })).toBeEnabled();
 });
@@ -213,7 +213,7 @@ test("successful authorization from Discover clears an earlier Details failure",
   await page.getByRole("button", { name: "Firecrawl", exact: true }).click();
   const details = page.getByRole("dialog", { name: "Firecrawl", exact: true });
   await details.getByRole("button", { name: "Authorize", exact: true }).click();
-  await expect(details.getByRole("alert")).toHaveText("Authorization failed");
+  await expect(details.getByRole("alert")).toHaveText("Authorization didn't finish. Try again.");
   await details.getByRole("button", { name: "Close Firecrawl", exact: true }).click();
   fixture.allowOAuth();
   await consentFixture(page);
@@ -230,7 +230,7 @@ test("successful authorization from Discover clears an earlier Details failure",
   await expect(card.getByRole("img", { name: "Added", exact: true })).toBeVisible();
   await discover.getByRole("button", { name: "Close Discover", exact: true }).click();
   const row = page.locator('[data-ui="mcp-server-row"]');
-  await expect(row.getByText("Authorization failed", { exact: true })).toHaveCount(0);
+  await expect(row.getByText("Authorization didn't finish. Try again.", { exact: true })).toHaveCount(0);
   await row.getByRole("button", { name: "Firecrawl", exact: true }).click();
   await expect(details.getByRole("button", { name: "Reauthorize", exact: true })).toBeVisible();
   await expect(details.getByRole("alert")).toHaveCount(0);

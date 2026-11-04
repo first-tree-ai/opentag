@@ -75,8 +75,8 @@ describe("steadyAgentListItem", () => {
     expect(shown.activity).toEqual(working.activity);
   });
 
-  it("presents a check with nothing settled as ready and leaves unknown evidence unknown", () => {
-    expect(steadyAgentListItem(checking, undefined).availability).toMatchObject({ state: "ready", reason: null });
+  it("passes the current read through when nothing is settled", () => {
+    expect(steadyAgentListItem(checking, undefined)).toBe(checking);
     expect(steadyAgentListItem(unreadable, undefined)).toBe(unreadable);
   });
 });
@@ -87,7 +87,7 @@ describe("observeAgentListStatus", () => {
 
   it("notes a held status as refreshing only once transient evidence outlasts one refresh interval", () => {
     const memory: AgentListStatusMemory = new Map();
-    expect(observeAgentListStatus(memory, ready, 0)).toEqual({ shown: ready, refreshing: false });
+    expect(observeAgentListStatus(memory, ready, 0)).toEqual({ shown: ready, refreshing: false, checking: false });
     expect(observeAgentListStatus(memory, unreadable, 1_000)).toMatchObject({ refreshing: false });
     expect(observeAgentListStatus(memory, unreadable, 1_000 + AGENT_STATUS_REFRESHING_AFTER_MS - 1)).toMatchObject({
       refreshing: false,
@@ -96,7 +96,11 @@ describe("observeAgentListStatus", () => {
     expect(held.refreshing).toBe(true);
     expect(held.shown.availability).toBe(ready.availability);
 
-    expect(observeAgentListStatus(memory, ready, 100_000)).toEqual({ shown: ready, refreshing: false });
+    expect(observeAgentListStatus(memory, ready, 100_000)).toEqual({
+      shown: ready,
+      refreshing: false,
+      checking: false,
+    });
     expect(observeAgentListStatus(memory, unreadable, 100_001)).toMatchObject({ refreshing: false });
   });
 
@@ -106,6 +110,14 @@ describe("observeAgentListStatus", () => {
     expect(observeAgentListStatus(memory, unreadable, 10 * AGENT_STATUS_REFRESHING_AFTER_MS)).toEqual({
       shown: unreadable,
       refreshing: false,
+      checking: false,
     });
+  });
+
+  it("marks a running check as checking only until a first answer settles", () => {
+    const memory: AgentListStatusMemory = new Map();
+    expect(observeAgentListStatus(memory, checking, 0)).toEqual({ shown: checking, refreshing: false, checking: true });
+    observeAgentListStatus(memory, ready, 1);
+    expect(observeAgentListStatus(memory, checking, 2)).toMatchObject({ checking: false });
   });
 });

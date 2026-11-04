@@ -209,6 +209,8 @@ describe("Agent creation with a Cloud destination", () => {
     await waitFor(() => expect(cloudCard().hasAttribute("disabled")).toBe(false));
     // Local is pre-selected, so the destination step goes straight to the Agent step.
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    // Focus follows to the new step's heading instead of falling to the page.
+    await waitFor(() => expect(document.activeElement?.tagName).toBe("H1"));
     fireEvent.click(screen.getByRole("button", { name: /Claude Code/ }));
     fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
 

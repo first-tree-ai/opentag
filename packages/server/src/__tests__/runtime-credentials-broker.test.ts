@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi } from "vitest";
+import type { DatabaseClient } from "../db/client.js";
 import type { RuntimeControlIdentity } from "../runtime/connection-registry.js";
 import { RuntimeCapabilityStore } from "../runtime-credentials/capability-store.js";
 import {
@@ -13,6 +14,8 @@ import type {
 } from "../runtime-credentials/execution-authority.js";
 import { RuntimeExecutionRegistry } from "../runtime-credentials/execution-registry.js";
 import type { RuntimeGitHubAdmission, RuntimeGitHubAdmissionResult } from "../runtime-credentials/github-admission.js";
+import { GitHubRuntimePolicy } from "../services/github-proxy/runtime-policy.js";
+import { deferred } from "./support/deferred.js";
 import type { GitHubAgentScope } from "./support/legacy-github-fixtures.js";
 
 type TestGitHubAdmissionResult = RuntimeGitHubAdmissionResult & { bindings?: readonly unknown[] };
@@ -887,3 +890,75 @@ describe("RuntimeCredentialBroker Cloud control liveness", () => {
     expect(outcome.status).toBe("succeeded");
   });
 });
+
+it.each(["acquire", "renew", "begin"] as const)(
+  "passes cancellation from broker %s through actual GitHub task policy",
+  async (mode) => {
+    const entered = deferred(),
+      resume = deferred(),
+      abort = new AbortController();
+    const read = vi.fn(async () => {
+      entered.resolve();
+      await resume.promise;
+      return [
+        {
+          scheduledOrigin: null,
+          sourceSessionId: "user-root",
+          userTaskSource: { sessionId: "user-root", source: { kind: "delivery", deliveryId: "root", turnId: "turn" } },
+        },
+      ];
+    });
+    const chain = { from: () => chain, innerJoin: () => chain, where: () => chain, limit: read };
+    const management = { getOverview: vi.fn() };
+    const policy = new GitHubRuntimePolicy({
+      database: { select: () => chain } as unknown as DatabaseClient,
+      management,
+    });
+    const state = createBroker({ policy });
+    const record = execution(
+      state.executions,
+      [
+        runtimeExecutionProviderBinding("github", "connection-live", {
+          provider: "github",
+          connectionId: "connection-live",
+          authority: "user-task",
+        }),
+      ],
+      { source: { kind: "session-message", messageId: "child" } },
+    );
+    const grant = state.capabilities.issue({
+      executionId: record.executionId,
+      provider: "github",
+      bindingId: "connection-live",
+      purpose: "context-tree",
+      scopeHash: "scope",
+      authorizationRevision: "1",
+      credentialGeneration: "1",
+    });
+    const operations = {
+      acquire: () =>
+        state.broker.acquire({
+          execution: record,
+          provider: "github",
+          bindingId: "connection-live",
+          signal: abort.signal,
+        }),
+      renew: () => state.broker.renew({ execution: record, grantId: grant.record.grantId, signal: abort.signal }),
+      begin: () =>
+        state.broker.beginRequest({
+          capability: grant.token,
+          provider: "github",
+          bindingId: "connection-live",
+          signal: abort.signal,
+        }),
+    };
+    const operation = operations[mode]();
+    const rejected = expect(operation).rejects.toThrow();
+    await entered.promise;
+    abort.abort();
+    resume.resolve();
+    await rejected;
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(management.getOverview).not.toHaveBeenCalled();
+  },
+);

@@ -35,6 +35,8 @@ const DEFAULT_EXCLUDED_METHODS = new Set([
   "notify",
   "onActiveBindingChanged",
   "onAgentPlacementChanged",
+  "executionComputerId",
+  "executionContext",
   "hasActiveCapacityLease",
   "inputInstance",
   "canBatch",
@@ -62,6 +64,14 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
     : undefined;
 }
 
+function pickSafeId(sources: ReadonlyArray<Record<string, unknown> | undefined>, key: string): string | undefined {
+  for (const source of sources) {
+    const id = safeId(source?.[key]);
+    if (id) return id;
+  }
+  return undefined;
+}
+
 function extractResourceIds(firstArg: unknown): {
   accountId?: string;
   agentId?: string;
@@ -70,18 +80,21 @@ function extractResourceIds(firstArg: unknown): {
   environmentGeneration?: number;
   sessionId?: string;
   deliveryId?: string;
+  turnId?: string;
 } {
   const record = asRecord(firstArg);
   if (!record) return {};
   const scope = asRecord(record.scope) ?? asRecord(record.allocation);
-  const accountId = safeId(record.accountId);
-  const agentId = safeId(record.agentId);
-  const computerId = safeId(record.computerId);
-  const sandboxId = safeId(record.sandboxId) ?? safeId(scope?.sandboxId);
+  const sources = [record, scope, asRecord(record.claims), asRecord(record.request)];
+  const accountId = pickSafeId(sources, "accountId");
+  const agentId = pickSafeId(sources, "agentId");
+  const computerId = pickSafeId(sources, "computerId");
+  const sandboxId = pickSafeId(sources, "sandboxId");
   const environmentGeneration =
     safeGeneration(record.environmentGeneration) ?? safeGeneration(scope?.environmentGeneration);
-  const sessionId = safeId(record.sessionId) ?? safeId(scope?.sessionId);
-  const deliveryId = safeId(record.deliveryId);
+  const sessionId = pickSafeId(sources, "sessionId");
+  const deliveryId = pickSafeId(sources, "deliveryId");
+  const turnId = pickSafeId(sources, "turnId");
   return {
     ...(accountId ? { accountId } : {}),
     ...(agentId ? { agentId } : {}),
@@ -90,6 +103,7 @@ function extractResourceIds(firstArg: unknown): {
     ...(environmentGeneration !== undefined ? { environmentGeneration } : {}),
     ...(sessionId ? { sessionId } : {}),
     ...(deliveryId ? { deliveryId } : {}),
+    ...(turnId ? { turnId } : {}),
   };
 }
 
@@ -366,6 +380,12 @@ export function instrumentAppOptions<T extends object>(options: T, perfLogger: P
   for (const [containerKey, fields] of CONTAINER_SERVICE_FIELDS) {
     wrapContainerFields(copy, containerKey, fields, perfLogger);
   }
+  if (typeof copy.runnerChannel === "object" && copy.runnerChannel !== null) {
+    copy.runnerChannel = {
+      ...(copy.runnerChannel as Record<string, unknown>),
+      performanceLogger: perfLogger,
+    };
+  }
 
   return copy as T;
 }
@@ -373,11 +393,28 @@ export function instrumentAppOptions<T extends object>(options: T, perfLogger: P
 const DEFAULT_WORKER_METHODS = [
   "runOnce",
   "runPass",
+  "runJanitorOnce",
+  "runExpiryOnce",
+  "runRetentionOnce",
+  "maintain",
+  "maintainHeartbeat",
+  "maintainSweep",
+  "poll",
+  "reconcile",
   "check",
   "refresh",
   "notifyComputerReady",
   "notifyCloudRunnerReady",
 ] as const;
+
+const WORKER_METHOD_OVERRIDES: Readonly<Record<string, readonly string[]>> = {
+  FeishuSetupService: ["maintainHeartbeat", "maintainSweep"],
+  FeishuConnectionManager: ["maintain"],
+  RuntimeApprovalOwner: ["poll"],
+  CloudModelService: ["reconcile"],
+};
+
+const instrumentedWorkers = new WeakSet<object>();
 
 export function instrumentWorker<T extends object>(
   worker: T | undefined,
@@ -388,8 +425,8 @@ export function instrumentWorker<T extends object>(
   },
 ): T | undefined {
   const perfLogger = options.perfLogger;
-  if (!worker || !perfLogger?.config.enabled || instrumentedServices.has(worker)) return worker;
-  const methods = options.methods ?? DEFAULT_WORKER_METHODS;
+  if (!worker || !perfLogger?.config.enabled || instrumentedWorkers.has(worker)) return worker;
+  const methods = options.methods ?? WORKER_METHOD_OVERRIDES[options.workerName] ?? DEFAULT_WORKER_METHODS;
   const record = worker as Record<string, unknown>;
   for (const methodName of methods) {
     const original = Reflect.get(worker, methodName, worker);
@@ -407,7 +444,7 @@ export function instrumentWorker<T extends object>(
         { fallbackErrorCode: "WORKER_OPERATION_FAILED" },
       );
   }
-  instrumentedServices.set(worker, worker);
+  instrumentedWorkers.add(worker);
   return worker;
 }
 

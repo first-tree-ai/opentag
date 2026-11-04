@@ -1443,8 +1443,9 @@ function ComputerSummary({
       >
         <Icon name="laptop" />
       </span>
-      <span className="flex min-w-0 items-baseline gap-x-1.5 overflow-hidden">
-        <strong className="truncate text-sm font-medium text-kumo-strong" title={title}>
+      {/* At phone width the platform moves to its own line, so the computer name is not cut short. */}
+      <span className="flex min-w-0 flex-col gap-x-1.5 overflow-hidden sm:flex-row sm:items-baseline">
+        <strong className="wrap-anywhere text-sm font-medium text-kumo-strong sm:truncate" title={title}>
           {title}
         </strong>
         {metadata ? <span className="shrink-0 text-sm text-kumo-subtle">{metadata}</span> : null}

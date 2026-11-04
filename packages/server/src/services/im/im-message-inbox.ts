@@ -1,6 +1,6 @@
 import type { ImContentV1 } from "@opentag/shared";
 import { ImContentV1Schema, type NormalizedInboundImEvent, NormalizedInboundImEventSchema } from "@opentag/shared";
-import { and, desc, eq, gt, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   agents,
@@ -116,6 +116,9 @@ export class ImMessageInbox {
   readonly #now: () => Date;
   readonly #onDeliveryChanged: ((deliveryId: string) => void) | undefined;
   readonly #onTaskCreated: ((request: TaskTitleGenerationRequest) => Promise<void> | void) | undefined;
+  #closed = false;
+  #closing: Promise<void> | undefined;
+  readonly #work = new Map<Promise<unknown>, AbortController | undefined>();
   readonly #overflowPasses = new Map<string, Promise<void>>();
   readonly #overflowRechecks = new Map<string, OverflowCandidate>();
   readonly #sessions: SessionService;
@@ -149,7 +152,62 @@ export class ImMessageInbox {
     this.#sessions = new SessionService(database, { now: this.#now });
   }
 
+  close(): Promise<void> {
+    if (this.#closing) return this.#closing;
+    this.#closed = true;
+    this.#overflowRechecks.clear();
+    for (const controller of this.#work.values()) controller?.abort("im_inbox_closed");
+    this.#closing = this.#drain();
+    return this.#closing;
+  }
+
+  async #drain(): Promise<void> {
+    while (this.#work.size > 0 || this.#overflowPasses.size > 0) {
+      await Promise.allSettled([...this.#work.keys(), ...this.#overflowPasses.values()]);
+    }
+  }
+
+  #track<T>(operation: Promise<T>, controller?: AbortController): Promise<T> {
+    this.#work.set(operation, controller);
+    void operation.then(
+      () => this.#work.delete(operation),
+      () => this.#work.delete(operation),
+    );
+    return operation;
+  }
+
+  #generateTaskTitles(requests: Iterable<TaskTitleGenerationRequest>): void {
+    if (!this.#onTaskCreated || this.#closed) return;
+    for (const request of requests) {
+      const controller = new AbortController();
+      const timer = setTimeout(
+        () => controller.abort("task_title_generation_timeout"),
+        TASK_TITLE_GENERATION_TIMEOUT_MS,
+      );
+      timer.unref();
+      const operation = Promise.resolve()
+        .then(() => {
+          controller.signal.throwIfAborted();
+          return this.#onTaskCreated?.({ ...request, signal: controller.signal });
+        })
+        .catch(() => undefined)
+        .finally(() => clearTimeout(timer));
+      void this.#track(operation, controller);
+    }
+  }
+
   async ingest(
+    imBindingId: string,
+    credentialGeneration: number,
+    rawEvent: NormalizedInboundImEvent,
+    admissionFence?: { provider: "feishu"; holderInstanceId: string; fencingEpoch: number },
+    telemetry?: { provider: "feishu" | "slack"; receivedAt?: Date },
+  ): Promise<IngestResult> {
+    if (this.#closed) throw new Error("The IM message inbox is closed");
+    return this.#track(this.#ingest(imBindingId, credentialGeneration, rawEvent, admissionFence, telemetry));
+  }
+
+  async #ingest(
     imBindingId: string,
     credentialGeneration: number,
     rawEvent: NormalizedInboundImEvent,
@@ -562,8 +620,22 @@ export class ImMessageInbox {
               now,
             );
             if (direct && threadKey === null) {
-              const pendingThreadMessages = await transaction
-                .select()
+              const rootExternalId = sql<
+                string | null
+              >`nullif(case when ${imMessages.providerContext}->>'provider' = 'slack'
+                then ${imMessages.providerContext}->>'threadTs' else ${imMessages.providerContext}->>'rootId' end, '')`;
+              const newestFirst = sql`${imMessages.occurredAt} desc, ${imMessages.providerRevisionKey} desc, ${imMessages.id} desc`;
+              const rankedMessages = transaction
+                .select({
+                  id: imMessages.id,
+                  threadKey: imMessages.threadKey,
+                  revisionRank: sql<number>`row_number() over (
+                    partition by ${imMessages.externalMessageId} order by ${newestFirst})`.as("revision_rank"),
+                  rootExternalId: sql<string | null>`first_value(${rootExternalId}) over (
+                    partition by ${imMessages.threadKey} order by (${rootExternalId} is null), ${newestFirst})`.as(
+                    "root_external_id",
+                  ),
+                })
                 .from(imMessages)
                 .where(
                   and(
@@ -571,28 +643,32 @@ export class ImMessageInbox {
                     eq(imMessages.channelId, event.conversation.externalId),
                     eq(imMessages.direction, "inbound"),
                     isNotNull(imMessages.threadKey),
-                    or(gt(imMessages.occurredAt, created.occurredAt), eq(imMessages.occurredAt, created.occurredAt)),
+                    gte(imMessages.occurredAt, created.occurredAt),
                   ),
                 )
-                .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id));
-              const reliableRootsByThreadKey = new Map<string, string>();
+                .as("ranked_thread_messages");
+              const pendingThreadMessages = await transaction
+                .select()
+                .from(imMessages)
+                .where(
+                  inArray(
+                    imMessages.id,
+                    transaction
+                      .select({ id: rankedMessages.id })
+                      .from(rankedMessages)
+                      .where(
+                        and(
+                          eq(rankedMessages.revisionRank, 1),
+                          eq(rankedMessages.rootExternalId, event.message.externalId),
+                          ne(rankedMessages.threadKey, ""),
+                        ),
+                      ),
+                  ),
+                )
+                .orderBy(asc(imMessages.occurredAt), asc(imMessages.providerRevisionKey), asc(imMessages.id));
               for (const pending of pendingThreadMessages) {
-                if (!pending.threadKey || reliableRootsByThreadKey.has(pending.threadKey)) continue;
-                const reliableRootExternalId = threadRootExternalId(pending.providerContext);
-                if (reliableRootExternalId) {
-                  reliableRootsByThreadKey.set(pending.threadKey, reliableRootExternalId);
-                }
-              }
-              const seenExternalMessageIds = new Set<string>();
-              const latestThreadMessages = pendingThreadMessages.filter((pending) => {
-                if (seenExternalMessageIds.has(pending.externalMessageId)) return false;
-                seenExternalMessageIds.add(pending.externalMessageId);
-                return true;
-              });
-              for (const pending of latestThreadMessages.reverse()) {
                 if (
                   !pending.threadKey ||
-                  reliableRootsByThreadKey.get(pending.threadKey) !== event.message.externalId ||
                   (await this.#hasEndedThreadSession(
                     transaction,
                     imBindingId,
@@ -628,17 +704,7 @@ export class ImMessageInbox {
           for (const candidate of overflowCandidates.values()) {
             this.#queueOverflowExpiry(candidate);
           }
-          for (const request of createdTasks.values()) {
-            const controller = new AbortController();
-            const timer = setTimeout(
-              () => controller.abort("task_title_generation_timeout"),
-              TASK_TITLE_GENERATION_TIMEOUT_MS,
-            );
-            timer.unref();
-            void Promise.resolve(this.#onTaskCreated?.({ ...request, signal: controller.signal }))
-              .catch(() => undefined)
-              .finally(() => clearTimeout(timer));
-          }
+          this.#generateTaskTitles(createdTasks.values());
           return result;
         } catch (error) {
           setActiveSpanAttributes(outcomeAttrs("failed", classifyImInboundPersistenceError(error)));
@@ -778,6 +844,7 @@ export class ImMessageInbox {
   }
 
   #queueOverflowExpiry(candidate: OverflowCandidate): void {
+    if (this.#closed) return;
     const key = candidate.sessionId;
     if (this.#overflowPasses.has(key)) {
       this.#overflowRechecks.set(key, candidate);
@@ -788,8 +855,9 @@ export class ImMessageInbox {
         const hasOverflow = await this.#database.transaction((transaction) =>
           this.#hasOverflow(transaction, candidate.sessionId),
         );
-        if (!hasOverflow) return;
+        if (!hasOverflow || this.#closed) return;
         await this.#beforeOverflowExpiry?.();
+        if (this.#closed) return;
         const expiredIds = await this.#database.transaction((transaction) =>
           this.#expireOverflow(transaction, candidate.sessionId),
         );
@@ -987,8 +1055,10 @@ export class ImMessageInbox {
     const current = threadRootExternalId(currentContext);
     if (current) return current;
     this.#beforeReliableThreadRootLookup?.();
-    const contexts = await transaction
-      .select({ providerContext: imMessages.providerContext })
+    const rootExternalId = sql<string | null>`nullif(case when ${imMessages.providerContext}->>'provider' = 'slack'
+      then ${imMessages.providerContext}->>'threadTs' else ${imMessages.providerContext}->>'rootId' end, '')`;
+    const [context] = await transaction
+      .select({ rootExternalId })
       .from(imMessages)
       .where(
         and(
@@ -996,14 +1066,12 @@ export class ImMessageInbox {
           eq(imMessages.channelId, channelId),
           eq(imMessages.threadKey, threadKey),
           eq(imMessages.direction, "inbound"),
+          isNotNull(rootExternalId),
         ),
       )
-      .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id));
-    for (const row of contexts) {
-      const rootExternalId = threadRootExternalId(row.providerContext);
-      if (rootExternalId) return rootExternalId;
-    }
-    return undefined;
+      .orderBy(desc(imMessages.occurredAt), desc(imMessages.providerRevisionKey), desc(imMessages.id))
+      .limit(1);
+    return context?.rootExternalId ?? undefined;
   }
 }
 

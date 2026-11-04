@@ -3,6 +3,7 @@ import { useState } from "react";
 import { ApiError } from "../../api.js";
 import * as m from "../../paraglide/messages.js";
 import { Banner, Button, Dialog, Field, KumoInputControl, Loader, Text, Tooltip } from "../../ui/design-system.js";
+import { presetSummary } from "./skill-summary.js";
 import {
   isSkillPresetActionable,
   skillErrorMessage,
@@ -169,10 +170,10 @@ function SkillPresetCard({
         </Button>
       </div>
       <Tooltip
-        content={preset.description}
+        content={presetSummary(preset)}
         render={<p className="skill-preset-summary ui-text text-kumo-subtle" data-text-size="sm" />}
       >
-        {preset.description}
+        {presetSummary(preset)}
       </Tooltip>
       {preset.state === "name_conflict" || preset.state === "update_available" ? (
         <Text as="p" size="sm" variant="secondary">

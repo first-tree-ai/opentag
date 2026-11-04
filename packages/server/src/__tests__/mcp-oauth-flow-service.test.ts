@@ -118,6 +118,7 @@ function oauthNode(routes: RouteMap) {
 function build(
   routes: RouteMap,
   options: {
+    discoveryTimeoutMs?: number;
     now?: () => Date;
     googleMcpClient?: { clientId: string; clientSecret: string };
     staticMcpClients?: Partial<Record<McpStaticOAuthBrand, { clientId: string; clientSecret: string }>>;
@@ -1736,7 +1737,7 @@ describe("McpOAuthFlowService.callback", () => {
     expect(row).toMatchObject({ status: "revoked", ciphertext: null });
   });
 
-  it("keeps a transient exchange failure retryable and a terminal one recorded", async () => {
+  it("ends a failed one-time exchange while allowing a new authorization", async () => {
     const ids = await seed();
     let transient = false;
     const { flows } = build({
@@ -1764,9 +1765,12 @@ describe("McpOAuthFlowService.callback", () => {
       flows.callback({ code: "c2", state: stateOf(restarted.authorizationUrl) }, FLOW_SECRET),
     ).rejects.toMatchObject({ code: MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE });
     const row = await readAuthorization(ids);
-    // Nothing was sent that could have rotated the token, so the flow is simply cleared for a retry.
     expect(row?.state).toBeNull();
-    expect(row?.failureCode).toBeNull();
+    expect(row?.status).toBe("error");
+    expect(row?.failureCode).toBe(MCP_ERROR_CODES.OAUTH_FAILED);
+    await expect(
+      flows.callback({ code: "c2", state: stateOf(restarted.authorizationUrl) }, FLOW_SECRET),
+    ).rejects.toMatchObject({ code: MCP_ERROR_CODES.OAUTH_FLOW_INVALID });
   });
 
   it("builds the fixed local return surface, with and without a bounded outcome", async () => {
@@ -2095,8 +2099,8 @@ describe("McpOAuthFlowService.refreshAuthorization", () => {
     });
     await flows.refreshAuthorization(row?.id as string);
     expect(await readAuthorization(ids)).toMatchObject({
-      status: "error",
-      failureCode: MCP_ERROR_CODES.UPSTREAM_ERROR,
+      status: "active",
+      failureCode: null,
       ciphertext: row?.ciphertext,
     });
   });
@@ -2554,7 +2558,8 @@ async function expectUnpublishedAuthorization(ids: { agentId: string; mcpServerI
       agentId: ids.agentId,
       mcpServerId: ids.mcpServerId,
       kind: "oauth",
-      status: "pending",
+      status: "error",
+      failureCode: MCP_ERROR_CODES.OAUTH_FAILED,
       state: null,
       pkceCiphertext: null,
       ciphertext: null,
@@ -2564,3 +2569,146 @@ async function expectUnpublishedAuthorization(ids: { agentId: string; mcpServerI
     },
   ]);
 }
+
+describe("bounded start discovery", () => {
+  it("deduplicates issuers before preferring the recorded one", () => {
+    expect(orderIssuers(["https://a", "https://b", "https://a", "https://b"], "https://b")).toEqual([
+      "https://b",
+      "https://a",
+    ]);
+  });
+
+  it("tries duplicate advertised issuers only once", async () => {
+    const ids = await seed();
+    const { flows, calls } = build({
+      [PRM_URL]: doc({ resource: MCP_URL, authorization_servers: Array(16).fill(ISSUER) }),
+      [AS_URL]: doc({ issuer: "https://wrong.example" }),
+    });
+    await expect(flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET)).rejects.toMatchObject({
+      code: MCP_ERROR_CODES.OAUTH_FAILED,
+    });
+    expect(calls.filter((c) => c.url === AS_URL)).toHaveLength(1);
+  });
+
+  it("refuses more than four distinct candidates before requesting any issuer", async () => {
+    const ids = await seed();
+    const { flows, calls } = build({
+      [PRM_URL]: doc({
+        resource: MCP_URL,
+        authorization_servers: Array.from({ length: 16 }, (_, n) => `https://issuer${n}.example`),
+      }),
+    });
+    await expect(flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET)).rejects.toMatchObject({
+      code: MCP_ERROR_CODES.OAUTH_FAILED,
+      detail: { maxCandidates: 4 },
+    });
+    expect(calls).toHaveLength(1);
+    await expectUnpublishedAuthorization(ids);
+  });
+
+  it("honors an already-aborted start without outbound work", async () => {
+    const ids = await seed();
+    const { flows, calls } = build(discoverableAs());
+    await expect(
+      flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET, "account", AbortSignal.abort()),
+    ).rejects.toMatchObject({ code: MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE, detail: { cause: "aborted" } });
+    expect(calls).toHaveLength(0);
+    await expectUnpublishedAuthorization(ids);
+  });
+
+  it.each(["metadata", "registration", "caller-abort"] as const)(
+    "shares the deadline through %s and fences a late response",
+    async (stage) => {
+      const ids = await seed();
+      let release!: () => void, enter!: () => void;
+      const gate = new Promise<void>((r) => {
+        release = r;
+      });
+      const entered = new Promise<void>((r) => {
+        enter = r;
+      });
+      let signal: AbortSignal | null | undefined;
+      const held = stage === "registration" ? REGISTER_URL : AS_URL;
+      const routes: RouteMap = {
+        ...discoverableAs({ registration_endpoint: REGISTER_URL }),
+        [REGISTER_URL]: doc({ client_id: "late-client", client_secret: "late-secret" }),
+      };
+      const reply = routes[held];
+      routes[held] = async (init) => {
+        signal = init.signal;
+        enter();
+        await gate;
+        return typeof reply === "function" ? reply(init) : (reply as StubResponse);
+      };
+      const { flows, calls } = build(routes, { discoveryTimeoutMs: 80 });
+      const controller = new AbortController();
+      const running = flows.start(
+        ids.accountId,
+        ids.agentId,
+        ids.mcpServerId,
+        [],
+        FLOW_SECRET,
+        "account",
+        controller.signal,
+      );
+      const rejected = expect(running).rejects.toMatchObject({
+        code: MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE,
+        detail: { cause: stage === "caller-abort" ? "aborted" : "deadline" },
+      });
+      try {
+        await entered;
+        if (stage === "caller-abort") controller.abort();
+        await rejected;
+        expect(signal?.aborted).toBe(true);
+        await expectUnpublishedAuthorization(ids);
+        const before = await readAuthorization(ids);
+        release();
+        await new Promise((r) => setImmediate(r));
+        expect(await readAuthorization(ids)).toEqual(before);
+        expect(calls.filter((c) => c.url === REGISTER_URL)).toHaveLength(stage === "registration" ? 1 : 0);
+        expect(await unit.database.select().from(mcpClientRegistrations)).toHaveLength(0);
+      } finally {
+        release();
+        await rejected;
+      }
+    },
+  );
+
+  it("uses one budget across resource and issuer metadata", async () => {
+    const ids = await seed();
+    let release!: () => void, enter!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const entered = new Promise<void>((r) => {
+      enter = r;
+    });
+    const { flows, calls } = build(
+      {
+        [PRM_URL]: async () => {
+          await new Promise((r) => setTimeout(r, 40));
+          return doc({ resource: MCP_URL, authorization_servers: [ISSUER] });
+        },
+        [AS_URL]: async () => {
+          enter();
+          await gate;
+          return asMetadata({ registration_endpoint: REGISTER_URL });
+        },
+        [REGISTER_URL]: doc({ client_id: "unused" }),
+      },
+      { discoveryTimeoutMs: 80 },
+    );
+    const rejected = expect(
+      flows.start(ids.accountId, ids.agentId, ids.mcpServerId, [], FLOW_SECRET),
+    ).rejects.toMatchObject({ code: MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE });
+    try {
+      await entered;
+      setTimeout(release, 60);
+      await rejected;
+      expect(calls).toHaveLength(2);
+    } finally {
+      release();
+      await rejected;
+    }
+  });
+});

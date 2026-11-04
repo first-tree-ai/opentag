@@ -134,7 +134,9 @@ describe("AgentComputerChoice over a cached inventory", () => {
     await flush();
     await act(async () => release([]));
 
-    expect(await screen.findByText("Copy the task to your Agent on this computer.")).toBeTruthy();
+    expect(
+      await screen.findByText("Run this in a terminal on this computer, or send it to your Agent there."),
+    ).toBeTruthy();
     expect(rebind).not.toHaveBeenCalled();
   });
 
@@ -240,7 +242,9 @@ describe("AgentComputerChoice over a cached inventory", () => {
     const rebind = vi.spyOn(browserApi, "rebindAgentComputer").mockResolvedValue(boundConfig);
     renderOverCachedInventory();
 
-    expect(await screen.findByText("Copy the task to your Agent on this computer.")).toBeTruthy();
+    expect(
+      await screen.findByText("Run this in a terminal on this computer, or send it to your Agent there."),
+    ).toBeTruthy();
     expect(screen.queryByText("Cloud")).toBeNull();
     expect(screen.queryByRole("button", { name: /Use this computer:/ })).toBeNull();
     expect(rebind).not.toHaveBeenCalled();

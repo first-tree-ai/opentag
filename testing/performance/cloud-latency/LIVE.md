@@ -14,6 +14,13 @@ no added records. `OPENTAG_REVISION` accepts only a full lowercase 40-character 
 credentials, protocol frames or into the native worker. Configure Server and selected Runner
 processes only under separate deployment authorization.
 
+Production composition forwards exactly the Staging environment, enable flag and complete validated
+Session list to new managed Instances only when their birth Session is selected. Both Server config
+and create spec must identify Staging. No arbitrary environment bag or Server revision is forwarded.
+Existing/adopted Instances are never patched; an uninstrumented borrowed Instance remains a missing
+Runner observation. Disabling the Server flag affects future creation, with existing settings lasting
+until normal reclamation. Runner Session selection still applies after ownership transfers.
+
 Server uses existing Pino stdout (`module=im-delivery`), Runner the existing protected stderr writer
 (`module=cloud-latency`); both use `operation=cloud.latency`, `version=1`. Service identities stay
 `opentag-server` / `opentag-runner`. The reader normalizes the Server's owning-module wrapper.

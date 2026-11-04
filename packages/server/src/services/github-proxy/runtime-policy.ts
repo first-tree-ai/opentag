@@ -50,12 +50,14 @@ export class GitHubRuntimePolicy implements RuntimeGitHubAdmission, RuntimeTaskP
 
   async #load(input: AdmissionInput): Promise<AgentGitHubConnection | undefined> {
     input.signal?.throwIfAborted();
-    if (!(await this.#userTask(input.accountId, input.sessionId, input.source, new Set(), input.agentId)))
+    if (!(await this.#userTask(input.accountId, input.sessionId, input.source, new Set(), input.agentId, input.signal)))
       return undefined;
+    input.signal?.throwIfAborted();
     const { connection } = await this.options.management.getOverview(input.accountId, input.agentId).catch((error) => {
       if (error instanceof AgentGitHubAuthorizationError) return { connection: null };
       throw error;
     });
+    input.signal?.throwIfAborted();
     return connection?.accountId === input.accountId ? connection : undefined;
   }
 
@@ -66,7 +68,9 @@ export class GitHubRuntimePolicy implements RuntimeGitHubAdmission, RuntimeTaskP
     source: RuntimeExecutionSource | undefined,
     visited: Set<string>,
     expectedAgentId?: string,
+    signal?: AbortSignal,
   ): Promise<boolean> {
+    signal?.throwIfAborted();
     if (!source || source.kind === "validation" || visited.size >= 32) return false;
     const key = source.kind === "delivery" ? source.deliveryId : source.messageId;
     if (visited.has(key)) return false;
@@ -122,6 +126,6 @@ export class GitHubRuntimePolicy implements RuntimeGitHubAdmission, RuntimeTaskP
     if (!provenance.success) return false;
     if (row.scheduledOrigin ? row.sourceSessionId !== null : row.sourceSessionId !== provenance.data.sessionId)
       return false;
-    return this.#userTask(accountId, provenance.data.sessionId, provenance.data.source, visited);
+    return this.#userTask(accountId, provenance.data.sessionId, provenance.data.source, visited, undefined, signal);
   }
 }

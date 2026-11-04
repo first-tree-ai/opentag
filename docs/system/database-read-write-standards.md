@@ -61,6 +61,11 @@ Finding a deviation does not authorize its implementation.
   [Observability](../operations/observability.md). A statement deadline,
   transaction idle timeout, transport deadline, and whole-operation budget
   cover different waits; document which component owns each applicable bound.
+- A single database query must complete in 500 ms or less on representative data. This is the performance
+  guardrail every change, including Agent-authored ones, must meet. It is a target, not the statement timeout
+  (`OPENTAG_DATABASE_STATEMENT_TIMEOUT_MS`, 30 seconds by default), which only cancels runaway statements. A tighter
+  target for a particular path needs a human decision on whether it is worth pursuing. Why: one clear bound lets
+  changes be checked consistently, while deciding where faster is worth the cost stays a judgement call.
 
 ## Migrations
 

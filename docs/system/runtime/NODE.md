@@ -18,3 +18,6 @@ one Provider-neutral contract, and negotiates its protocol with the Server.
   rules, and IM approval requests.
 - **[Agent self-configuration](agent-self-configuration.md)** — what an Agent
   may change about itself through the CLI.
+- **[Computer status pipeline (proposed)](computer-status-pipeline.md)** — proposed
+  redesign: one 30-second self-check heartbeat, latest-report Server state, and a
+  steady 10-second Web refresh.

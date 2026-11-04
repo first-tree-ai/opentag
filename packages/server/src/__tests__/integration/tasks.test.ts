@@ -1,5 +1,10 @@
 import type { NormalizedMessage } from "@larksuiteoapi/node-sdk";
-import { computeTurnResultHash, type TurnReportRequest, TurnReportRequestSchema } from "@opentag/shared";
+import {
+  computeTurnResultHash,
+  type NormalizedInboundImEvent,
+  type TurnReportRequest,
+  TurnReportRequestSchema,
+} from "@opentag/shared";
 import { eq, sql } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -14,6 +19,7 @@ import {
   sessionMessages,
   sessions,
 } from "../../db/schema/index.js";
+import { ImMessageInbox } from "../../services/im/im-message-inbox.js";
 import { normalizeFeishuMessage } from "../../services/im-bindings/feishu/adapter.js";
 import { normalizeSlackEnvelope } from "../../services/im-bindings/slack/adapter.js";
 import { TaskQueryError, TaskService } from "../../services/tasks/index.js";
@@ -357,7 +363,115 @@ describe("Task cancel under a row lock", () => {
       await value.sql.end();
     }
   }, 20_000);
+
+  it("serializes a cancel with IM admission into the same Session, so a 200 never leaves a queued delivery", async () => {
+    // The reported interleaving: a worker holds pending row A, the cancel waits for it, and a new
+    // message is admitted into the same Session meanwhile. The cancel must not withdraw A, leave the
+    // new delivery queued and still answer 200. The admission goes through the real inbound path on
+    // its own pool, so it takes the binding lock every production admission takes.
+    const value = await fixture();
+    await value.database
+      .update(imBindings)
+      .set({
+        status: "active",
+        externalAppId: "app",
+        externalBotId: "bot",
+        credentialSchemaVersion: 1,
+        credentialGeneration: 1,
+        encryptedCredential: "unit-only-unused",
+        activatedAt: new Date(),
+      })
+      .where(eq(imBindings.id, value.binding.id));
+    const admitter = createDatabaseClient(databaseUrl);
+    const observer = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+    const first = await new ImMessageInbox(value.database).ingest(value.binding.id, 1, dmEvent("race-admit-a"));
+    const deliveryA = first.deliveryIds[0];
+    if (!deliveryA || !first.messageId) throw new Error("The first admission queued no delivery");
+    const lock = await holdDeliveryLock(deliveryA, async () => undefined);
+    try {
+      const racing = value.service.cancel(value.bootstrap.userId, first.messageId);
+      // The cancel holds the binding and waits for row A.
+      await waitForBlockedStatements(observer, 1);
+      let admitted = false;
+      const second = new ImMessageInbox(admitter.database)
+        .ingest(value.binding.id, 1, dmEvent("race-admit-b"))
+        .then((result) => {
+          admitted = true;
+          return result;
+        });
+      // The admission waits for the cancel's binding lock instead of inserting beside it.
+      await waitForBlockedStatements(observer, 2, '"im_bindings"');
+      expect(admitted).toBe(false);
+      await lock.commit();
+      await expect(racing).resolves.toMatchObject({ status: "cancelled" });
+      const later = await second;
+      const deliveryB = later.deliveryIds[0];
+      if (!deliveryB) throw new Error("The second admission queued no delivery");
+      expect(await deliveryState(value, deliveryA)).toEqual({ state: "expired", reason: "cancelled" });
+      // The message admitted behind the cancel is a new request in the queue, not a survivor of it.
+      expect(await deliveryState(value, deliveryB)).toEqual({ state: "pending", reason: null });
+      // Both requests went into the one Session the cancel was serialized against.
+      const rows = await value.database
+        .select({ sessionId: imMessageDeliveries.sessionId })
+        .from(imMessageDeliveries)
+        .where(sql`${imMessageDeliveries.id} in (${deliveryA}::uuid, ${deliveryB}::uuid)`);
+      expect(new Set(rows.map((row) => row.sessionId)).size).toBe(1);
+    } finally {
+      await lock.commit();
+      await lock.end();
+      await observer.end();
+      await admitter.sql.end();
+      await value.sql.end();
+    }
+  }, 30_000);
 });
+
+/** A private-chat message in a conversation of its own, admitted through the inbound path. */
+function dmEvent(id: string): NormalizedInboundImEvent {
+  return {
+    providerEventId: `event-${id}`,
+    externalAppId: "app",
+    externalTeamId: "team",
+    providerContext: { provider: "feishu", chatType: "p2p" },
+    conversation: { externalId: "oc_admission_race", kind: "dm" },
+    message: {
+      externalId: `om_${id}`,
+      revisionKey: "1",
+      operation: "created",
+      author: { externalId: "ou_debug", kind: "human" },
+      occurredAt: new Date(),
+      content: {
+        version: 1,
+        fallbackText: `Request ${id}`,
+        blocks: [{ type: "text", text: `Request ${id}` }],
+        truncated: false,
+      },
+      resources: [],
+    },
+    mentions: [],
+  };
+}
+
+/**
+ * Wait until `count` backends are blocked behind another backend's lock, one of them running a
+ * statement that contains `fragment` when given. Long statements are truncated in
+ * `pg_stat_activity`, so the count rather than the text identifies the cancel.
+ */
+async function waitForBlockedStatements(observer: postgres.Sql, count: number, fragment?: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    const [row] = await observer`
+      select
+        count(*)::int as blocked,
+        count(*) filter (where ${fragment ?? ""} = '' or position(${fragment ?? ""} in query) > 0)::int as matching
+      from pg_stat_activity
+      where datname = current_database() and cardinality(pg_blocking_pids(pid)) > 0
+    `;
+    if ((row?.blocked ?? 0) >= count && (row?.matching ?? 0) > 0) return;
+    if (Date.now() > deadline) throw new Error(`Fewer than ${count} statements waited for a lock`);
+    await wait(50);
+  }
+}
 
 describe("Task queries", () => {
   it.each(["running", "expired", "ended", "superseded"] as const)(

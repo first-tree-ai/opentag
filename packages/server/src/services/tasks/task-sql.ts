@@ -154,7 +154,10 @@ export function taskCtes(input: TaskQueryInput): SQL {
     `
     : sql``;
   return sql`
-    scoped_bindings as (
+    -- Inlined wherever it is joined rather than materialized once: as a materialized CTE the
+    -- planner sizes each join to it from the Session table's channel statistics alone, and the
+    -- inflated estimate pushes small Task reads over the JIT threshold.
+    scoped_bindings as not materialized (
       select
         b.id as binding_id,
         b.provider,
@@ -171,6 +174,22 @@ export function taskCtes(input: TaskQueryInput): SQL {
         ${input.agentId ? sql`and a.id = ${input.agentId}::uuid` : sql``}
         ${input.scope ? sql`and b.id = ${input.scope.bindingId}::uuid` : sql``}
     ),
+    -- A private chat is one Task, read from one canonical Session per (binding, channel): the live
+    -- Session first, the channel Session before a thread, the newest otherwise. It is decided once
+    -- per conversation here rather than once per candidate Session, so the planner never costs a
+    -- per-Session lookup over the conversation's whole Session history.
+    dm_task_sessions as (
+      select distinct on (s.im_binding_id, s.channel_id)
+        s.im_binding_id,
+        s.channel_id,
+        s.id as task_id
+      from sessions s
+      inner join scoped_bindings sb on sb.binding_id = s.im_binding_id
+      where s.kind in ('channel', 'thread')
+        and s.conversation_kind = 'dm'
+        ${channelFilter("s")}
+      order by s.im_binding_id, s.channel_id, (s.ended_at is null) desc, (s.kind = 'channel') desc, s.created_at desc, s.id desc
+    ),
     task_sessions as (
       select
         s.id,
@@ -183,21 +202,31 @@ export function taskCtes(input: TaskQueryInput): SQL {
         s.generated_title,
         s.ended_at,
         s.created_at,
-        coalesce(dm.id, s.id) as task_id
+        s.id as task_id
       from sessions s
       inner join scoped_bindings sb on sb.binding_id = s.im_binding_id
-      left join lateral (
-        select r.id
-        from sessions r
-        where s.conversation_kind = 'dm'
-          and r.im_binding_id = s.im_binding_id
-          and r.channel_id = s.channel_id
-          and r.kind in ('channel', 'thread')
-        order by (r.ended_at is null) desc, (r.kind = 'channel') desc, r.created_at desc, r.id desc
-        limit 1
-      ) dm on true
       where s.kind in ('channel', 'thread')
+        and s.conversation_kind <> 'dm'
         ${channelFilter("s")}
+      union all
+      select
+        s.id,
+        s.im_binding_id,
+        s.channel_id,
+        s.kind,
+        s.conversation_kind,
+        s.thread_key,
+        s.manual_title,
+        s.generated_title,
+        s.ended_at,
+        s.created_at,
+        dm.task_id
+      from sessions s
+      inner join dm_task_sessions dm on dm.im_binding_id = s.im_binding_id and dm.channel_id = s.channel_id
+      -- The conversation is already scoped by the join; repeating its constants here would let the
+      -- planner size this branch by the channel's whole Session history, internal Sessions included.
+      where s.kind in ('channel', 'thread')
+        and s.conversation_kind = 'dm'
     ),
     scoped_sessions as (
       select * from task_sessions ts
@@ -324,8 +353,10 @@ export function relatedSessionCtes(): SQL {
       where child.kind = 'internal'
     ),
     related_sessions as (
+      -- Internal and chat Sessions are disjoint, and the recursive walk already produced each
+      -- internal identity once, so concatenating them needs no de-duplication pass.
       select id from internal_related
-      union
+      union all
       select id from scoped_sessions
     )
   `;

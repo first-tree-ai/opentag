@@ -291,16 +291,15 @@ export class TaskService {
     const status = taskStatus(before);
     if (status === "cancelled") return toSummary(before);
     if (status !== "queued") throw taskNotQueued(`The Task is ${status}, not queued`);
-    const outcome = await this.#withdrawQueuedDeliveries(accountId, scope);
+    const { outcome, after } = await this.#withdrawQueuedDeliveries(accountId, scope);
     if (outcome === "running") throw taskNotQueued("The Task is running, not queued");
     if (outcome === "in_flight") throw taskNotQueued("The Task's queued message is already being delivered");
     if (outcome === "awaiting_computer")
       throw taskNotQueued("The Task's queued message was handed to a Computer that has not reported back yet");
-    const [after] = await this.#summaryRows(this.database, accountId, { scope, limit: 1 });
     if (!after) throw taskNotFound();
     // Nothing left to withdraw: another cancel got there first, or the queue drained some other way.
-    // A message that arrived after the locked read can leave the Task queued again; say so rather
-    // than contradicting the status the caller is about to re-read.
+    // The summary was read under the admission lock, so it is the state the withdrawal left; say what
+    // it is rather than contradicting the status the caller is about to re-read.
     const settled = taskStatus(after);
     if (outcome !== "withdrawn" && settled !== "cancelled")
       throw taskNotQueued(
@@ -456,8 +455,10 @@ export class TaskService {
   }
 
   /**
-   * Expire every pending delivery of the Task, or none. The transaction first locks the
-   * Task's pending rows: the worker's claim steps around locked rows (`for update skip
+   * Expire every pending delivery of the Task, or none. The transaction first holds the Task's
+   * binding against IM admission, so no new pending delivery can join the Task while it runs and
+   * the summary it returns is read before any can. It then locks the Task's pending rows: the
+   * worker's claim steps around locked rows (`for update skip
    * locked`), and its acceptance of a row it already claimed waits behind the lock, so what the
    * locked read shows is what the update acts on. A lock that waited behind a worker's write
    * returns the row as the worker left it: a claim taken in the meantime, or a row the worker
@@ -476,9 +477,26 @@ export class TaskService {
    * so a withdrawn row is kept for the retention window after the cancel, as a lapsed one is kept
    * after its deadline.
    */
-  async #withdrawQueuedDeliveries(accountId: string, scope: TaskScope): Promise<WithdrawalOutcome> {
+  async #withdrawQueuedDeliveries(
+    accountId: string,
+    scope: TaskScope,
+  ): Promise<{ outcome: WithdrawalOutcome; after?: TaskSummaryRow }> {
     const now = this.#now();
     return this.database.transaction(async (transaction) => {
+      // The linearization point with IM admission. Every pending delivery is created by the inbound
+      // path while it holds its binding row `FOR UPDATE` (after the Agent custody fence, the Agent and
+      // the Computer), so holding the binding `FOR SHARE` here means no admission into this Task is
+      // in flight: one that committed first is visible to the locked read below, and one that starts
+      // later waits until this cancel commits and is queued after it. Locking the existing pending
+      // rows alone cannot do that, because a row inserted after the read's snapshot is never locked.
+      // The binding comes before every delivery lock, the order the binding lifecycle and the
+      // maintenance settlement already use (Agent, binding, Sessions, deliveries).
+      const [binding] = [
+        ...(await transaction.execute<{ id: string } & Record<string, unknown>>(sql`
+          select b.id from im_bindings b where b.id = ${scope.bindingId}::uuid for share
+        `)),
+      ];
+      if (!binding) return { outcome: "nothing" };
       const locked = await transaction.execute<LockedDeliveryRow>(sql`
         with ${taskCtes({ accountId, scope, now })}
         select
@@ -496,8 +514,16 @@ export class TaskService {
         for update of d
       `);
       const rows = [...locked];
+      // The summary is read before the admission lock is released, so a `200` reports the state this
+      // withdrawal left rather than a message admitted after it.
+      const summary = async () => {
+        const [row] = await this.#summaryRows(transaction, accountId, { scope, limit: 1 });
+        return row;
+      };
       const refusal = withdrawalRefusal(rows);
-      if (refusal) return refusal;
+      if (refusal === "running" || refusal === "in_flight" || refusal === "awaiting_computer")
+        return { outcome: refusal };
+      if (refusal) return { outcome: refusal, after: await summary() };
       const pending = rows.filter((row) => row.state === "pending");
       const withdrawn = await transaction
         .update(imMessageDeliveries)
@@ -510,7 +536,7 @@ export class TaskService {
         )
         .returning({ id: imMessageDeliveries.id });
       if (withdrawn.length !== pending.length) throw new Error("A locked queued delivery was not withdrawn");
-      return "withdrawn";
+      return { outcome: "withdrawn", after: await summary() };
     });
   }
 
@@ -641,9 +667,11 @@ export class TaskService {
   /**
    * Collaboration messages exchanged by the Task's own Sessions and its Internal Sessions, oldest
    * first with an `(created_at, id)` keyset cursor. A message names its source Session, or a
-   * Server-scheduled origin instead of one, so both directions are matched inside SQL. Both matches
-   * are one predicate on the same row rather than two joined branches, so a message whose source and
-   * target are both related is read once and can never consume two page slots.
+   * Server-scheduled origin instead of one, so both directions are matched inside SQL: a join on the
+   * source and a join on the target, so each side is a relational membership test that can use its
+   * own index rather than a linear search through an id array. Each side's first page is merged by
+   * `UNION` before the final keyset page is cut, so a message whose source and target are both
+   * related is read once and can never consume two page slots.
    */
   async #collaborationRows(
     executor: QueryExecutor,
@@ -651,9 +679,30 @@ export class TaskService {
     scope: TaskScope,
     page: { cursor?: TaskCursor; limit?: number },
   ): Promise<CollaborationMessageRow[]> {
+    const keyset = page.cursor
+      ? sql`and (m.created_at, m.id) > (${cursorTimestamp(page.cursor)}, ${page.cursor.id}::uuid)`
+      : sql``;
+    const limit = page.limit === undefined ? sql`` : sql`limit ${page.limit}`;
     const rows = await executor.execute<CollaborationMessageRow>(sql`
       with recursive ${taskCtes({ accountId, scope, now: this.#now() })},
-      ${relatedSessionCtes()}
+      ${relatedSessionCtes()},
+      -- One relational join per side, each able to use its own source or target index. Each side is
+      -- materialized without the page limit, so the planner costs it as the whole join (a hash or
+      -- merge join) rather than as a fast-start ordered scan probing every related Session per row;
+      -- each side is then cut to the page on its own, so the UNION that keeps a message whose source
+      -- and target are both related only once de-duplicates at most two pages, not the history.
+      source_matches as materialized (
+        select m.id, m.created_at
+        from session_messages m
+        inner join related_sessions r on r.id = m.source_session_id
+        where true ${keyset}
+      ),
+      target_matches as materialized (
+        select m.id, m.created_at
+        from session_messages m
+        inner join related_sessions r on r.id = m.target_session_id
+        where true ${keyset}
+      )
       select
         sm.id,
         sm.source_session_id as "sourceSessionId",
@@ -667,20 +716,19 @@ export class TaskService {
         sm.updated_at as "updatedAt",
         ${cursorText(sql`sm.created_at`)} as "cursorAt"
       from (
-        -- The page is cut on the message identity alone, so it reads an ordered index rather than
-        -- every message body; only the rows that survive resolve their stored content.
-        select m.id
-        from session_messages m
-        where (
-            m.source_session_id = any (array(select id from related_sessions))
-            or m.target_session_id = any (array(select id from related_sessions))
-          )
-          ${page.cursor ? sql`and (m.created_at, m.id) > (${cursorTimestamp(page.cursor)}, ${page.cursor.id}::uuid)` : sql``}
-        order by m.created_at asc, m.id asc
-        ${page.limit === undefined ? sql`` : sql`limit ${page.limit}`}
+        -- The page is cut on the message identity alone; only the rows that survive resolve their
+        -- stored content, by primary key, in the page's own order.
+        select matched.id, matched.created_at
+        from (
+          (select sc.id, sc.created_at from source_matches sc order by sc.created_at asc, sc.id asc ${limit})
+          union
+          (select tg.id, tg.created_at from target_matches tg order by tg.created_at asc, tg.id asc ${limit})
+        ) matched
+        order by matched.created_at asc, matched.id asc
+        ${limit}
       ) p
       inner join session_messages sm on sm.id = p.id
-      order by sm.created_at asc, sm.id asc
+      order by p.created_at asc, p.id asc
     `);
     return [...rows];
   }

@@ -56,13 +56,16 @@ export function privateConversation(alias: string): SQL {
  * The topic key of one stored message inside a group channel. The inbound thread-root mapping comes
  * first, exactly as Task detail and list classify inbound messages; then comes a threaded message's
  * own captured native root, which is what lets a first outbound reply land in the topic before any
- * inbound thread mapping exists; then the thread key and the message itself. A message with no
- * thread context is a root of its own, so its root field never re-classifies it.
+ * inbound thread mapping exists; then the thread key and the message itself. Only a message in a real
+ * Feishu thread (`threadId`) uses its root: an unthreaded quote reply's `rootId` is the top of the
+ * quote chain, not its topic. A message with no thread context is a root of its own, so its root
+ * field never re-classifies it.
  */
 export function topicKeyExpression(messageAlias: string, rootAlias: string): SQL {
   return sql`coalesce(
     ${sql.raw(rootAlias)}.root_external_id,
     case when ${sql.raw(messageAlias)}.thread_key is not null
+      and ${sql.raw(messageAlias)}.provider_context ->> 'threadId' is not null
       then ${sql.raw(messageAlias)}.provider_context ->> 'rootId' end,
     ${sql.raw(messageAlias)}.thread_key,
     ${sql.raw(messageAlias)}.external_message_id

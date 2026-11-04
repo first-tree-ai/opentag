@@ -18,7 +18,9 @@ rows are topics, not Sessions.
   external_message_id)`. Slack's `thread_ts` is the root message's own id. Feishu threads are keyed
   by `thread_id`; when a reply carries a `thread_id` that differs from its `rootId`, the topic is
   keyed by the root message so the root and its replies stay together. A Feishu quote reply in an
-  ordinary group has no `thread_id`, so it has no thread key and is a root of its own topic.
+  ordinary group has no `thread_id`, so it has no thread key and is a root of its own topic. A
+  captured Agent reply joins the topic of the stored message it answers; outside a real Feishu
+  thread, the reply's `root_id` (the top of a quote chain) never names its topic.
 - In a private chat, the whole conversation is one Task.
 - A topic becomes a Task only once somebody addressed the Agent directly. Messages the Agent only
   overheard (`ambient` attention) are conversation context, not Tasks, and are not counted.

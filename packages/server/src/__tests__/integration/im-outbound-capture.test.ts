@@ -229,6 +229,7 @@ describe("ImOutboundCapture persistence safety", () => {
     expect(sameChannel?.threadKey).toBe("omt_target");
     expect(sameChannel?.providerContext).toEqual({
       provider: "feishu",
+      threadId: "omt_target",
       parentId: "om_target_root",
       rootId: "om_target_root",
     });

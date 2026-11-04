@@ -227,3 +227,12 @@ cases, including 4,096 Sessions with max-1 and max-20 pools, without changing co
 deadlines. The settings-index base passed 321 affected Web cases. No package manifest or lockfile
 changed across these updates. Fresh CI and exact-head review are required for the published
 integration commit.
+
+The next main update, `c4e99bed5`, scopes timeout cleanup with `onTestFinished`. Its integration
+also retains dispatch-observed fake-time progression and respects the cleanup AbortSignal. It
+keeps eight timeout attempts plus one terminal claim check and advances only backoff wall time.
+The five-file V8 run passed all 145 cases at the configured four-worker concurrency. A temporary
+controlled probe withheld dispatch acknowledgement after transport admission and forced the
+first case to hit its 150 ms test budget: that expected timeout was the sole failure, while both
+adjacent timeout cases passed. The probe file was removed. Server type checks and repository
+checks passed; no production behavior, deadline, concurrency or schema changed in this merge.

@@ -160,11 +160,18 @@ transport's URL rewrite does not change the selected repository's identity.
 
 ## Distribution
 
-OpenTag pins `@first-tree-ai/context-tree` to `1.0.2-alpha.202611020650`. New managed
-Git subtree snapshots and write sessions use cone-mode sparse checkout with a full
-Git index, requiring Git 2.36 or newer. Snapshot identity includes the selected
-directory and commit; repository-root sources use full checkouts. Existing snapshots
-and unpublished write sessions are preserved. Portable builds and Cloud images
+OpenTag pins `@first-tree-ai/context-tree` to `1.1.1`. New managed repository caches
+are treeless partial clones (`--filter=tree:0`). Git subtree snapshots and write sessions
+use a literal non-cone sparse checkout of only the selected directory with a full Git
+index, requiring Git 2.36 or newer. Snapshot identity includes the selected directory and
+commit; repository-root sources use full checkouts. Existing snapshots and unpublished
+write sessions are preserved. `sync` reuses a fetch made within the last 60 seconds on
+the same machine (`--max-age <seconds>`, `0` forces a fetch); `connect` and
+`write prepare` always fetch. A publish advances that machine's cached branch, so an
+immediate `sync` resolves the published commit. A `sync` removes that repository's other
+clean, unlocked snapshots that have not been resolved for 24 hours; a removed snapshot is
+recreated at the same path when resolved again. Repository-cache and snapshot locks wait
+up to two minutes before failing. Portable builds and Cloud images
 include its CLI, public contracts, and six skills: init, connect, read, write, cleanup,
 and schedule-cleanup. Native cleanup schedules belong on persistent supported hosts,
 not ephemeral Cloud sandboxes. Server, Local runtimes, and Cloud images use the same

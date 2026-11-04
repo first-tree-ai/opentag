@@ -8,10 +8,12 @@ import {
   SessionMessageDeliveryRequestV3Schema,
   type SessionMessageDeliveryResult,
 } from "@opentag/shared";
-import type { AgentInput } from "../agent-runtime/types.js";
+import type { AgentInput, AgentRuntime } from "../agent-runtime/types.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import type { AdmissionController } from "./admission-controller.js";
+import { ImCredentialEnvironmentError } from "./im-credential-environment-manager.js";
 import type { ProviderCliTurnPlanPrepareInput } from "./provider-cli/turn-plan-manager.js";
+import { providerLaunchConfiguration } from "./provider-launch-configuration.js";
 import { buildProviderOutboxInstructions } from "./provider-outbox-instructions.js";
 import type {
   PreparedRuntimeCredentialEnvironment,
@@ -53,7 +55,8 @@ interface RememberedMessage {
 export interface SessionMessageInboxOptions {
   admission: AdmissionController;
   cliCommand?: string;
-  credentialEnvironment: Pick<RuntimeCredentialEnvironmentManager, "cleanup" | "prepare">;
+  credentialEnvironment: Pick<RuntimeCredentialEnvironmentManager, "cleanup" | "prepare"> &
+    Partial<Pick<RuntimeCredentialEnvironmentManager, "mode">>;
   turnPlan?: {
     cleanup(input: ProviderCliTurnPlanPrepareInput): Promise<void>;
     prepare(input: ProviderCliTurnPlanPrepareInput, signal?: AbortSignal): Promise<unknown>;
@@ -347,25 +350,21 @@ export class SessionMessageInbox {
       const sessionKind = this.#runtimeManager.sessionKind(sessionId);
       let outboxContext: RuntimeImOutboxContext | undefined;
       let allowedUnixSockets: readonly string[] | undefined;
-      if (sessionKind === "visible") {
-        phase = "credential";
-        const prepared = await this.#prepareCredentials(sessionId, next.request);
+      phase = "credential";
+      const prepared = await this.#prepareCredentials(sessionId, next.request, sessionKind);
+      if (prepared) {
         credentialPrepared = true;
         preparedExecutionId = prepared.executionId;
         allowedUnixSockets = prepared.allowedUnixSockets;
         executionSignal = prepared.signal;
-        if (!prepared.outboxContext) {
-          this.#logger.warn(
-            { code: "SESSION_MESSAGE_OUTBOX_PREPARATION_FAILED", messageId: next.request.messageId, sessionId },
-            "Visible Session collaboration outbox context was missing",
-          );
-          throw new Error("The credential grant did not include visible Session outbox context");
-        }
+      }
+      if (sessionKind === "visible") {
+        this.#requirePreparedOutbox(prepared, next.request);
         outboxContext = prepared.outboxContext;
         turnPlanInput = await this.#prepareTurnPlan(sessionId, runId, prepared, ensureRunSignal());
       }
       phase = "runtime";
-      const runtimeSignal = sessionKind === "visible" ? ensureRunSignal() : this.#abort.signal;
+      const runtimeSignal = credentialPrepared ? ensureRunSignal() : this.#abort.signal;
       runtimeSignal.throwIfAborted();
       const runtime = await this.#runtimeManager.ensureRuntime(sessionId, runtimeSignal);
       await runtime.waitForIdle();
@@ -389,6 +388,7 @@ export class SessionMessageInbox {
           new Date(this.#now()),
         ),
         signal: ensureRunSignal(),
+        ...sessionMessageLaunchConfiguration(prepared, runtime),
       });
       if (result.status !== "completed") {
         throw new Error(result.error?.message ?? `Session message Run ended with status ${result.status}`);
@@ -412,7 +412,29 @@ export class SessionMessageInbox {
     }
   }
 
-  async #prepareCredentials(sessionId: string, request: SessionMessageDeliveryRequestV3) {
+  #requirePreparedOutbox(
+    prepared: PreparedRuntimeCredentialEnvironment | undefined,
+    request: SessionMessageDeliveryRequestV3,
+  ): asserts prepared is PreparedRuntimeCredentialEnvironment & { outboxContext: RuntimeImOutboxContext } {
+    if (!prepared?.outboxContext) {
+      this.#logger.warn(
+        {
+          code: "SESSION_MESSAGE_OUTBOX_PREPARATION_FAILED",
+          messageId: request.messageId,
+          sessionId: request.targetSessionId,
+        },
+        "Visible Session collaboration outbox context was missing",
+      );
+      throw new Error("The credential grant did not include visible Session outbox context");
+    }
+  }
+
+  async #prepareCredentials(
+    sessionId: string,
+    request: SessionMessageDeliveryRequestV3,
+    sessionKind: "visible" | "internal",
+  ) {
+    if (sessionKind === "internal" && this.#credentialEnvironment.mode !== "proxy") return undefined;
     try {
       return await this.#credentialEnvironment.prepare(
         {
@@ -427,6 +449,22 @@ export class SessionMessageInbox {
         this.#abort.signal,
       );
     } catch (error) {
+      if (
+        sessionKind === "internal" &&
+        error instanceof ImCredentialEnvironmentError &&
+        (error.code === "execution_rejected" || error.code === "proxy_negotiation_unavailable")
+      ) {
+        this.#logger.warn(
+          {
+            code: "SESSION_MESSAGE_PLATFORM_SERVICES_UNAVAILABLE",
+            reason: error.code,
+            messageId: request.messageId,
+            sessionId,
+          },
+          "Internal Session message has no platform execution; managed services are unavailable",
+        );
+        return undefined;
+      }
       this.#logger.warn(
         {
           code: "SESSION_MESSAGE_OUTBOX_PREPARATION_FAILED",
@@ -434,7 +472,7 @@ export class SessionMessageInbox {
           messageId: request.messageId,
           sessionId,
         },
-        "Visible Session collaboration outbox preparation failed",
+        "Session message execution preparation failed",
       );
       throw error;
     }
@@ -862,4 +900,12 @@ function deliveryResult(
 function positive(value: number, field: string): number {
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${field} must be a positive safe integer`);
   return value;
+}
+
+function sessionMessageLaunchConfiguration(
+  prepared: PreparedRuntimeCredentialEnvironment | undefined,
+  runtime: AgentRuntime,
+) {
+  if (!prepared?.web && !prepared?.mcp) return {};
+  return providerLaunchConfiguration({ webTools: prepared.web, mcpGateway: prepared.mcp }, runtime.manifest.providerId);
 }

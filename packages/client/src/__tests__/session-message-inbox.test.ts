@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { lstat, rm } from "node:fs/promises";
+import { lstat, mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
   InputRejectReason,
@@ -9,7 +10,9 @@ import type {
 } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { executeProviderCliTurnPlan } from "../index.js";
+import { ClaudeCodeAgentRuntimeFactory } from "../providers/claude-code/agent-runtime.js";
 import { AdmissionController } from "../runtime/admission-controller.js";
+import { ImCredentialEnvironmentError } from "../runtime/im-credential-environment-manager.js";
 import { collectOutgoingReplyReceipts } from "../runtime/provider-cli/outgoing-reply-store.js";
 import { renderProviderOutboxGuidance } from "../runtime/provider-outbox-instructions.js";
 import {
@@ -29,6 +32,156 @@ import {
 } from "./fixtures/provider-cli-turn-plan.js";
 
 describe("SessionMessageInbox", () => {
+  it.each(["execution_rejected", "proxy_negotiation_unavailable"])(
+    "retains credential-free internal messages when an older Server returns %s",
+    async (code) => {
+      const prompt = vi.fn(async (_request: unknown) => ({ runId: "run", status: "completed" as const, output: [] }));
+      const logger = { warn: vi.fn() };
+      const credentials = {
+        mode: "proxy" as const,
+        prepare: vi.fn(async () => {
+          throw new ImCredentialEnvironmentError(code);
+        }),
+        cleanup: vi.fn(async () => undefined),
+      };
+      const inbox = new SessionMessageInbox({
+        admission: new AdmissionController(),
+        credentialEnvironment: credentials,
+        logger,
+        imCredentialGrantVersion: () => 2,
+        sessionCollaborationVersion: () => 3,
+        reconciler: inboxReconciler(),
+        runtimeManager: {
+          sessionKind: () => "internal",
+          ensureRuntime: async () => ({ waitForIdle: async () => undefined, prompt }) as never,
+        },
+      });
+      const request = delivery();
+      expect((await inbox.accept(request)).status).toBe("accepted");
+      await inbox.settled();
+      expect(prompt).toHaveBeenCalledOnce();
+      expect(prompt.mock.calls[0]?.[0]).not.toHaveProperty("configuration");
+      expect(credentials.cleanup).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ code: "SESSION_MESSAGE_PLATFORM_SERVICES_UNAVAILABLE", reason: code }),
+        expect.any(String),
+      );
+      expect(inbox.getState(request.messageId)?.status).toBe("succeeded");
+      inbox.stop();
+    },
+  );
+
+  it.each(["visible", "internal"] as const)(
+    "delivers fresh MCP grants to new and resumed Claude %s Sessions without persisting the bearer",
+    async (sessionKind) => {
+      const cwd = await mkdtemp(join(tmpdir(), "opentag-session-message-mcp-"));
+      const configs: { path: string; names: string[]; authorization: string[]; args: readonly string[] }[] = [];
+      const factory = new ClaudeCodeAgentRuntimeFactory({
+        createProcess: (_cwd, args) => ({
+          execute: async (_input, onMessage) => {
+            const path = args[args.indexOf("--mcp-config") + 1] as string;
+            const config = JSON.parse(await readFile(path, "utf8"));
+            configs.push({
+              path,
+              names: Object.keys(config.mcpServers),
+              authorization: Object.values(config.mcpServers).map(
+                (entry) => (entry as { headers: { Authorization: string } }).headers.Authorization,
+              ),
+              args,
+            });
+            expect((await stat(path)).mode & 0o777).toBe(0o600);
+            const sessionId = args[args.indexOf(args.includes("--resume") ? "--resume" : "--session-id") + 1];
+            onMessage({ type: "system", subtype: "init", session_id: sessionId });
+            onMessage({
+              type: "result",
+              subtype: "success",
+              session_id: sessionId,
+              is_error: false,
+              result: "fixture-ok",
+              permission_denials: [],
+              usage: {},
+            });
+            return { stderr: "" };
+          },
+          interrupt: async () => undefined,
+          close: async () => undefined,
+          send: async () => undefined,
+        }),
+      });
+      const create = {
+        eventSink: () => undefined,
+        systemPrompt: "Local MCP fixture",
+        workspace: { cwd },
+        skillPaths: [],
+        policy: {
+          fileSystem: "unrestricted",
+          network: "enabled",
+          approvals: "never",
+          tools: { mode: "provider-default" },
+        },
+      } as const;
+      let runtime = await factory.create(create);
+      const persistence = new MemoryRuntimeDurabilityStore();
+      let token: string | undefined = "otmg_first_fixture";
+      const credentials = {
+        mode: "proxy" as const,
+        prepare: vi.fn(async () => ({
+          path: "/fixture/env.sh",
+          executionId: randomUUID(),
+          ...(token ? { mcp: { url: "http://127.0.0.1:1/mcp", token } } : {}),
+          ...(sessionKind === "visible"
+            ? {
+                provider: "slack" as const,
+                outboxContext: { provider: "slack" as const, sessionKind: "channel" as const, channelId: "C-fixture" },
+              }
+            : {}),
+        })),
+        cleanup: vi.fn(async () => undefined),
+      };
+      const inbox = new SessionMessageInbox({
+        admission: new AdmissionController(),
+        credentialEnvironment: credentials,
+        imCredentialGrantVersion: () => 2,
+        sessionCollaborationVersion: () => 3,
+        reconciler: inboxReconciler(),
+        persistence,
+        runtimeManager: { sessionKind: () => sessionKind, ensureRuntime: async () => runtime },
+      });
+      const request = delivery();
+      try {
+        for (const [index, nextToken] of [token, "otmg_second_fixture", undefined].entries()) {
+          token = nextToken;
+          const message = { ...request, requestId: randomUUID(), messageId: randomUUID() };
+          expect((await inbox.accept(message)).status).toBe("accepted");
+          await inbox.settled();
+          expect((await persistence.list("session-message")).at(-1)?.status).toBe("succeeded");
+          expect(configs[index]?.authorization).toEqual(token ? [`Bearer ${token}`] : []);
+          expect(JSON.stringify(runtime.binding)).not.toContain("otmg_");
+          expect(JSON.stringify(await persistence.list("session-message"))).not.toContain("otmg_");
+          if (index === 0) {
+            const binding = runtime.binding;
+            if (!binding) throw new Error("Expected a Claude binding");
+            await runtime.close();
+            runtime = await factory.resume({ ...create, binding });
+          }
+        }
+        expect(configs[0]?.names).not.toEqual(configs[1]?.names);
+        expect(configs[0]?.args).toContain("--session-id");
+        expect(configs[1]?.args).toContain("--resume");
+        expect(credentials.prepare).toHaveBeenCalledTimes(3);
+        expect(credentials.cleanup).toHaveBeenCalledTimes(3);
+        for (const config of configs) {
+          expect(config.args.join(" ")).not.toContain("otmg_");
+          await expect(stat(config.path)).rejects.toMatchObject({ code: "ENOENT" });
+        }
+      } finally {
+        inbox.stop();
+        await runtime.close();
+        await rm(cwd, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("rejects a remembered scheduled delivery when the channel no longer has v3 capability", async () => {
     let version = 3;
     const prompt = vi.fn(async () => ({ runId: "run", status: "completed" as const, output: [] }));
@@ -250,7 +403,7 @@ describe("SessionMessageInbox", () => {
     expect(inbox.getState(request.messageId)?.status).toBe("dead-letter");
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ code: "SESSION_MESSAGE_OUTBOX_PREPARATION_FAILED", messageId: request.messageId }),
-      "Visible Session collaboration outbox preparation failed",
+      "Session message execution preparation failed",
     );
     inbox.stop();
   });

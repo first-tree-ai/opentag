@@ -50,6 +50,7 @@ interface Props {
   onOAuth?: () => void;
   cloud?: boolean;
   manualOnly?: boolean;
+  readOnly?: boolean;
   onDisconnect?: () => void;
   renderTrigger?: (control: {
     onClick: () => void;
@@ -59,7 +60,7 @@ interface Props {
 }
 
 export function SlackCustomApp(props: Props) {
-  return <SlackCustomAppFlow key={props.agentId} {...props} />;
+  return <SlackCustomAppFlow key={`${props.agentId}:${props.readOnly ?? false}`} {...props} />;
 }
 
 function SlackCustomAppFlow({
@@ -72,6 +73,7 @@ function SlackCustomAppFlow({
   onOAuth,
   cloud = false,
   manualOnly = false,
+  readOnly = false,
   renderTrigger,
   onDisconnect,
 }: Props) {
@@ -120,12 +122,14 @@ function SlackCustomAppFlow({
     setError(undefined);
     setAutoResume(false);
     setSavedMethod(undefined);
-    setEditing(view.allowedIntent === "create" || view.binding?.reauthorizationRequired ? view : undefined);
+    setEditing(
+      !readOnly && (view.allowedIntent === "create" || view.binding?.reauthorizationRequired) ? view : undefined,
+    );
     setOpen(true);
   }
   function update() {
     setAutoResume(false);
-    if (view?.allowedIntent !== "reauthorize") return;
+    if (readOnly || view?.allowedIntent !== "reauthorize") return;
     setError(undefined);
     setEditing(view);
   }
@@ -152,7 +156,7 @@ function SlackCustomAppFlow({
     else if (mounted.current) setError(customAppError(cause));
   }
   async function save(input: SaveSlackConfigurationRequest) {
-    if (saving.current) return;
+    if (readOnly || saving.current) return;
     saving.current = true;
     setBusy(true);
     setError(undefined);
@@ -172,11 +176,12 @@ function SlackCustomAppFlow({
   }
 
   if (view?.binding?.provider === "feishu") return null;
-  const officialRecovery = view?.preferredRecovery === "oauth" ? onOAuth : undefined;
+  const officialRecovery = !readOnly && view?.preferredRecovery === "oauth" ? onOAuth : undefined;
   return (
     <>
       {presentation !== "inline" || !open ? (
         <SlackConfigurationEntry
+          readOnly={readOnly}
           view={view}
           bindingId={bindingId}
           busy={busy}
@@ -184,7 +189,7 @@ function SlackCustomAppFlow({
           trigger={trigger}
           onOpen={start}
           onOAuth={officialRecovery}
-          onDisconnect={onDisconnect}
+          onDisconnect={readOnly ? undefined : onDisconnect}
           onEdit={() => {
             start();
             update();
@@ -197,7 +202,7 @@ function SlackCustomAppFlow({
           bindingId={bindingId}
           error={configuration.error}
           onRetry={() => void configuration.refetch()}
-          onDisconnect={onDisconnect}
+          onDisconnect={readOnly ? undefined : onDisconnect}
         />
       ) : null}
       {open && view ? (
@@ -234,6 +239,7 @@ function SlackCustomAppFlow({
               />
             ) : (
               <SlackAppStatus
+                readOnly={readOnly}
                 agentId={agentId}
                 view={view}
                 onUpdate={update}
@@ -253,6 +259,7 @@ function SlackCustomAppFlow({
 }
 
 function SlackConfigurationEntry({
+  readOnly,
   view,
   bindingId,
   busy,
@@ -263,6 +270,7 @@ function SlackConfigurationEntry({
   onDisconnect,
   onEdit,
 }: {
+  readOnly: boolean;
   view?: SlackConfigurationView;
   bindingId?: string;
   busy: boolean;
@@ -273,6 +281,19 @@ function SlackConfigurationEntry({
   onDisconnect?: () => void;
   onEdit: () => void;
 }) {
+  if (readOnly)
+    return (
+      <>
+        <Button ref={trigger} variant="secondary" disabled={!view?.binding} onClick={onOpen}>
+          {bindingId ? m.im_slack_more_settings() : m.im_connect_slack({ provider: messagingProviderLabel("slack") })}
+        </Button>
+        {bindingId ? (
+          <Button disabled variant="ghost">
+            {spaceScriptBoundary(m.im_disconnect({ providerName: messagingProviderLabel("slack") }))}
+          </Button>
+        ) : null}
+      </>
+    );
   const bindingMatches = !bindingId || view?.binding?.id === bindingId;
   const disabled = busy || !view || Boolean(view.blockedReason) || !bindingMatches;
   if (renderTrigger) return renderTrigger({ onClick: onOpen, disabled, ref: trigger });
@@ -822,6 +843,7 @@ function slackVerificationLabel(view: SlackConfigurationView): string {
 }
 
 function SlackAppStatus({
+  readOnly,
   agentId,
   view,
   onUpdate,
@@ -829,6 +851,7 @@ function SlackAppStatus({
   savedMethod,
   onAutoResume,
 }: {
+  readOnly: boolean;
   agentId: string;
   view: SlackConfigurationView;
   onUpdate: () => void;
@@ -871,6 +894,7 @@ function SlackAppStatus({
         </a>
       )}
       <SlackAppHelp
+        readOnly={readOnly}
         view={view}
         identity={identity}
         appSettings={appSettings}
@@ -893,6 +917,7 @@ function needsSlackUrlVerification(view: SlackConfigurationView, method?: "auto"
 }
 
 function SlackAppHelp({
+  readOnly,
   view,
   identity,
   appSettings,
@@ -901,6 +926,7 @@ function SlackAppHelp({
   onOAuth,
   onAutoResume,
 }: {
+  readOnly: boolean;
   view: SlackConfigurationView;
   identity: Extract<NonNullable<SlackConfigurationView["binding"]>["identity"], { provider: "slack" }>;
   appSettings: string;
@@ -920,15 +946,15 @@ function SlackAppHelp({
           {m.im_slack_open_settings()}
         </a>
         {view.preferredRecovery !== "oauth" && !verified ? (
-          <Button variant="secondary" onClick={onAutoResume}>
+          <Button disabled={readOnly} variant="secondary" onClick={onAutoResume}>
             {m.im_slack_auto_continue()}
           </Button>
         ) : null}
-        <Button variant="secondary" onClick={onUpdate}>
+        <Button disabled={readOnly} variant="secondary" onClick={onUpdate}>
           {m.im_slack_update_credentials()}
         </Button>
-        {onOAuth ? (
-          <Button variant="ghost" onClick={onOAuth}>
+        {onOAuth || (readOnly && view.preferredRecovery === "oauth") ? (
+          <Button disabled={readOnly} variant="ghost" onClick={onOAuth}>
             {m.im_slack_explicit_oauth()}
           </Button>
         ) : null}

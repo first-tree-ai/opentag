@@ -949,3 +949,17 @@ function abortError(): Error {
   error.name = "AbortError";
   return error;
 }
+
+it("reads Context Tree prerequisites without sending repository details or starting an operation", async () => {
+  const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
+    expect(String(input)).toBe(`/api/v1/agents/${SETUP_AGENT_ID}/context-tree`);
+    expect(init?.method ?? "GET").toBe("GET");
+    expect(init?.body).toBeUndefined();
+    return jsonResponse({ status: "ready", readOnly: false });
+  });
+  expect(await new BrowserApi(fetchImpl).contextTreeAvailability(SETUP_AGENT_ID)).toEqual({
+    status: "ready",
+    readOnly: false,
+  });
+  expect(fetchImpl).toHaveBeenCalledOnce();
+});

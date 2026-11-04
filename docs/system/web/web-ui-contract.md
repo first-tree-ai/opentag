@@ -183,20 +183,43 @@ Running, queued and unknown work also requires confirmation before save/release 
 rows without a recorded save failure use a plain save/release label. Discard confirmation explains unsaved-file loss and that external effects are not undone. A
 failed inventory read never becomes an empty list, and revoked access hides cached resources.
 
+## Agent home and settings index
+
+- **Settings has no navigation item of its own.** It opens from the Overview's Settings button, so the Overview stays
+  current in the Agent navigation on every settings page, and each settings page's back link reads **Back to
+  Overview** (**返回概览**) or **Back to Agent settings**. Why: a navigation with nothing current leaves the reader
+  unsure where they are, and a back link carrying a long Agent name wrapped on phones while the name sat beside it.
+- **The Agent's state reads the same everywhere:** **Running · Receiving messages** (**运行中 · 正在接收消息**) or
+  **Paused · Not receiving messages** (**已暂停 · 不接收消息**), and the pause page describes it in the same terms.
+  Why: "active" and "requests" named the same state differently, and requests are not a product concept; people send
+  the Agent messages.
+- **A settings row whose state the reader can fix carries the same single fix as the Agent list and home**, as its
+  own named link beside the row: an offline or disconnected Computer offers **Restore connection** (**恢复连接**),
+  which opens that Computer's card with its command window already shown, and a runtime problem shows the same label
+  as the list (for example "Pi isn't installed") with **Continue setup**. The row itself still opens its settings page.
+  Why: the settings index otherwise read healthy while the list and home showed a problem, and four different words
+  for one fix made it look like four different actions.
+- **A Cloud Computer is named "Cloud" (云端)** on the home, the settings index, and the Computer page, without a
+  machine name or platform, which are openTag's choice and nothing the reader acts on.
+- **The home's Task list asks for work only when work can arrive.** With no messaging app connected, its empty state
+  offers the status card's own **Connect messaging app** (**连接消息应用**) link instead of asking the reader to message
+  the Agent, and **View all** appears only once there is a Task. Why: an Agent without a channel cannot receive the
+  message the old empty state asked for, and View all opened the same empty list.
+
 ## Paused Agent settings
 
-> **Planned — not yet implemented.** Tracking: #1233
+Pausing an Agent does not change which settings its current Account owner can read. Name, Messaging, Computer,
+Model and Soul, Context Trees, Skills, MCP connectors, and Pause/Delete remain accessible. The settings overview,
+Agent status card, and Agent list use the existing channel identity and binding state. Why: an operator often pauses
+an Agent precisely to inspect its configuration or prepare a change, and a configuration they cannot see gives them
+nothing to decide from. A failed read stays unavailable; it is never presented as a missing or successful connection.
 
-Pausing an Agent does not change which of its settings its owner can read. Every settings page of a paused Agent
-(name, messaging, Computer, model and instructions, Context Tree, Skills, connectors, and pause or delete) shows its
-current configuration, and the settings overview, the Agent page's status card, and the Agent list show the real
-messaging status. Actions that a paused Agent cannot take stay disabled with a reason in place rather than hiding the
-page. Why: an operator often pauses an Agent precisely to inspect its configuration or prepare a change, and a
-configuration they cannot see gives them nothing to decide from.
-
-This replaces the current behavior for messaging only. Today the Server refuses every messaging-binding read for a
-paused Agent as not found, so the messaging page shows that refusal and the overview, status card, and list show the
-messaging status as unavailable. The other settings pages are already readable while paused.
+Messaging settings are read-only while paused. Connection, replacement, reauthorization, credential updates,
+disconnection, activation checks, cancellation, and message-trigger changes are disabled with a localized reason.
+Read-only controls keep their action labels; being paused does not show an operation as busy or in progress.
+Saved Feishu attempts and Slack configuration details remain readable without starting setup or refreshing CLI
+credentials. Existing permissions for other settings are unchanged. Deleted Agents, other Accounts, and revoked
+Account sessions remain unauthorized; resuming the Agent is a separate explicit action.
 
 ## Layout and responsive acceptance
 

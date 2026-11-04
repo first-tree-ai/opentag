@@ -40,6 +40,7 @@ interface ProtocolPeerOptions {
   readonly sessionId?: string;
   /** Deterministic save failure: reject the Nth and every later archive upload without storing it. */
   readonly rejectUploadsFrom?: number;
+  readonly rejectUpload?: (sealed: boolean) => boolean;
   readonly authReply?: (frame: Record<string, unknown>, attempt: number) => object | object[] | undefined;
   readonly httpToken?: () => string;
 }
@@ -68,7 +69,10 @@ async function protocolPeer(options: ProtocolPeerOptions = {}) {
   const readyObjects: RunnerWorkspaceObject[] = [];
   const upload = async (request: IncomingMessage, response: ServerResponse) => {
     uploads += 1;
-    if (options.rejectUploadsFrom !== undefined && uploads >= options.rejectUploadsFrom) {
+    if (
+      (options.rejectUploadsFrom !== undefined && uploads >= options.rejectUploadsFrom) ||
+      options.rejectUpload?.(request.headers["x-opentag-workspace-sealed"] === "true")
+    ) {
       response.writeHead(412).end();
       return;
     }
@@ -308,6 +312,104 @@ it("retains unsaved files through rejected auth and renews before saving on a fr
     expect(Number(peer.object().generation)).toBeGreaterThan(Number(saved));
   } finally {
     allowRetry.resolve();
+    stop.abort();
+    await running;
+    await peer.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+it("executes new Cloud input after a rejected seal and same-assignment reconnect", async () => {
+  const root = await mkdtemp(join(tmpdir(), "opentag-rejected-seal-"));
+  let rejectSeal = true;
+  const peer = await protocolPeer({ rejectUpload: (sealed) => sealed && rejectSeal });
+  const workspace = join(root, "workspace");
+  const native = {
+    launch: vi.fn(async () => mkdir(workspace, { recursive: true })),
+    destroy: vi.fn(async () => undefined),
+    probe: vi.fn(async () => ({ nodeVersion: "v24.20.0", piVersion: "test", runnerVersion: "0.0.5" })),
+  };
+  const runWorker = vi.fn(async () => ({
+    code: 0,
+    stderr: "",
+    stdout: `${JSON.stringify({
+      kind: "result",
+      completion: {
+        outcome: "completed",
+        executionEffects: "completed",
+        finalText: "recovered",
+      },
+    })}\n`,
+  }));
+  const stop = new AbortController();
+  const running = runRunnerServe(
+    {
+      backendUrl: peer.url,
+      bootstrapToken: "fixture-1",
+      sandboxName: "ots-test-1",
+      workspace,
+      stateDir: join(root, "private"),
+      workspacePersistence: true,
+    },
+    {
+      installSignalHandlers: false,
+      signal: stop.signal,
+      stderr: { write: () => undefined },
+      sandboxFactory: () => native as unknown as NativeSandbox,
+      cloudTurnSeams: {
+        openExecution: async () => ({ close: async () => undefined, executionDir: "/run/test" }),
+        runWorker,
+      },
+      sleep: async () => undefined,
+    },
+  );
+  try {
+    await peer.wait("runner:ready");
+    await writeFile(join(workspace, "unpublished.txt"), "keep local progress");
+    const baseline = peer.object();
+    const failedSeal = randomUUID();
+    peer.send({ type: "workspace:seal", requestId: failedSeal });
+    expect(await peer.wait("workspace:seal:result")).toMatchObject({ requestId: failedSeal, ok: false });
+    expect(peer.object()).toEqual(baseline);
+    expect(await readFile(join(workspace, "unpublished.txt"), "utf8")).toBe("keep local progress");
+    rejectSeal = false;
+    peer.disconnect();
+    await peer.wait("auth", 1);
+    expect(await peer.wait("runner:ready", 1)).toMatchObject({ workspaceRestored: true });
+    expect(peer.object().ownerGeneration).toBe(1);
+    const delivery = cloudDeliveryFixture({ sessionId });
+    peer.send({ type: "delivery:run", requestId: delivery.requestId, delivery });
+    expect(await peer.wait("delivery:received")).toMatchObject({ deliveryId: delivery.deliveryId });
+    peer.send({
+      type: "delivery:verified",
+      requestId: delivery.requestId,
+      status: "verified",
+      model: {
+        baseUrl: "https://server.example.com/api/v1/cloud-model",
+        token: "fixture-model-token-1234567890123456",
+        model: delivery.runtime.model,
+        contextWindow: 64_000,
+        maxTokens: 8_192,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+    });
+    const frame = await peer.wait("delivery:report");
+    expect(frame.report).toMatchObject({ outcome: "completed", finalText: "recovered" });
+    expect(runWorker).toHaveBeenCalledOnce();
+    const report = frame.report as { turnId: string; resultHash: string };
+    peer.send({
+      type: "delivery:report:ack",
+      requestId: randomUUID(),
+      turnId: report.turnId,
+      resultHash: report.resultHash,
+      status: "recorded",
+    });
+    const seal = randomUUID();
+    peer.send({ type: "workspace:seal", requestId: seal });
+    expect(await peer.wait("workspace:seal:result", 1)).toMatchObject({ requestId: seal, ok: true });
+    expect(peer.object().sealed).toBe(true);
+    expect(await readFile(join(workspace, "unpublished.txt"), "utf8")).toBe("keep local progress");
+  } finally {
     stop.abort();
     await running;
     await peer.close();

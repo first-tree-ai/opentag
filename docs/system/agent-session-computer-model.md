@@ -132,6 +132,13 @@ retains durable work until terminal evidence. Proof retirement compares the sele
 update version; only a successful delete drops that proof's execution correlation. A later reused
 or replaced proof survives an older result.
 
+Local and Cloud final stop admission acquires Agent → Session → placement locks through
+dependent locking CTEs in one SQL statement, retaining the transaction through enqueue.
+Confirmed Local stop retires its captured proof with a single statement that locks the
+matching placement before conditionally deleting that exact proof ID and update version.
+Unfenced revocation retains separate placement locking and deletion statements so it observes
+proofs committed by a preceding mint while it waited for the placement lock.
+
 Local lifecycle stop runs at most 16 complete requests concurrently within one
 30-second dispatch window. Deadline expiry or shared-domain capacity stops new
 targets; admitted requests retain their result timers. Confirmed stop proof cleanup

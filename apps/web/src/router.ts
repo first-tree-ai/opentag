@@ -29,7 +29,6 @@ declare module "@tanstack/react-router" {
    */
   interface HistoryState {
     agent?: AgentDetailView;
-    returnLabel?: string;
     returnAgentId?: string;
   }
 }

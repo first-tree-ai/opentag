@@ -29,6 +29,7 @@ let state;
 let fixtureError;
 let runtime;
 let siblingRuntime;
+let discoveryRuntime;
 let messageSequence = 0;
 
 function sendMessage(response, content, stopReason) {
@@ -45,7 +46,17 @@ function sendMessage(response, content, stopReason) {
   };
   const events = [{ type: "message_start", message }];
   for (const [index, block] of content.entries()) {
-    events.push({ type: "content_block_start", index, content_block: block });
+    events.push({
+      type: "content_block_start",
+      index,
+      content_block: block.type === "tool_use" ? { ...block, input: {} } : block,
+    });
+    if (block.type === "tool_use")
+      events.push({
+        type: "content_block_delta",
+        index,
+        delta: { type: "input_json_delta", partial_json: JSON.stringify(block.input) },
+      });
     events.push({ type: "content_block_stop", index });
   }
   events.push(
@@ -76,7 +87,12 @@ function serveMcp(request, response, body) {
     result = { protocolVersion: "2025-03-26", capabilities: { tools: {} }, serverInfo: { name: kind, version: "1" } };
   } else if (body.method === "tools/list") {
     result = {
-      tools: [`${kind}_echo`, ...(kind === "managed" ? longToolNames : [])].map((name) => ({
+      tools: [
+        `${kind}_echo`,
+        ...(kind === "managed"
+          ? [...longToolNames, ...Array.from({ length: 41 }, (_, index) => `github__fixture_${index}`)]
+          : []),
+      ].map((name) => ({
         name,
         description: `${kind} fixture`,
         inputSchema: { type: "object" },
@@ -98,6 +114,7 @@ function serveMcp(request, response, body) {
 }
 
 function serveModel(response, body) {
+  if (state.phase === "tool-search") return serveToolSearchModel(response, body);
   const names = (body.tools ?? []).map((tool) => tool.name);
   if (names.some((name) => name.length > 128)) {
     fixtureError = new Error("Model-facing tool name exceeds 128 characters");
@@ -133,6 +150,46 @@ function serveModel(response, body) {
     );
   } else {
     sendMessage(response, [{ type: "text", text: "native-plugin-fixture-ok" }], "end_turn");
+  }
+}
+
+function serveToolSearchModel(response, body) {
+  if (!state.searched) {
+    const names = body.tools.map((tool) => tool.name);
+    assert.ok(names.includes("ToolSearch"));
+    assert.equal(
+      names.some((name) => name.includes("__github__fixture_")),
+      false,
+    );
+    state.searched = true;
+    sendMessage(
+      response,
+      [
+        {
+          type: "tool_use",
+          id: "search_fixture",
+          name: "ToolSearch",
+          input: { query: "github", max_results: 5 },
+        },
+      ],
+      "tool_use",
+    );
+  } else if (!state.issued) {
+    const references = [];
+    const visit = (value) => {
+      if (Array.isArray(value)) return value.forEach(visit);
+      if (value && typeof value === "object") {
+        if (value.type === "tool_reference") references.push(value.tool_name);
+        Object.values(value).forEach(visit);
+      }
+    };
+    visit(body.messages);
+    const target = references.find((name) => /^mcp__g[a-f0-9]{10}__github__fixture_/.test(name));
+    assert.ok(target, "ToolSearch must return a managed GitHub fixture tool reference");
+    state.issued = true;
+    sendMessage(response, [{ type: "tool_use", id: "search_call_fixture", name: target, input: {} }], "tool_use");
+  } else {
+    sendMessage(response, [{ type: "text", text: "local-tool-search-ok" }], "end_turn");
   }
 }
 
@@ -339,13 +396,30 @@ try {
   assert.equal(isolated.catalog.includes(tools.plugin), false);
   assert.equal(isolated.catalog.includes(tools.collision), false);
   assert.equal(await readFile(mcpPath, "utf8"), originalMcp);
+  discoveryRuntime = await openRuntime(
+    new ClaudeCodeAgentRuntimeFactory({
+      process: { command, env: { ...environment, ENABLE_TOOL_SEARCH: "true" } },
+    }),
+    sibling,
+  );
+  state = { phase: "tool-search", token: "otmg_search_fixture", issued: false };
+  const discoveryResult = await discoveryRuntime.prompt({
+    runId: "tool-search",
+    input: { items: [{ type: "text", text: "Run the local tool search fixture." }] },
+    configuration: { provider: { mcpGateway: { url: `${origin}/mcp/managed`, token: state.token } } },
+    signal: AbortSignal.timeout(20_000),
+  });
+  assert.equal(fixtureError, undefined);
+  assert.equal(discoveryResult.status, "completed", JSON.stringify(discoveryResult.error));
+  assert.equal(mcpCalls.filter((call) => call.phase === "tool-search" && call.kind === "managed").length, 1);
   const version = (await exec(command, ["--version"], { env: environment })).stdout.trim();
   process.stdout.write(
-    `${JSON.stringify({ ok: true, version, reports, nativeMcpCalls: mcpCalls.length, hostedCalls: hostedCalls.length, longToolCalls: 4, maxModelToolNameLength: 128, projectSkillLoadedOnce: true, runtimeNamespacesStable: true, runtimeNameCollisionsUsePlatform: true, hookCount: hookBeforeDisable.count, sharedFilesUnchanged: true, unavailableDurationMs })}\n`,
+    `${JSON.stringify({ ok: true, version, reports, nativeMcpCalls: mcpCalls.length, hostedCalls: hostedCalls.length, longToolCalls: 4, maxModelToolNameLength: 128, projectSkillLoadedOnce: true, runtimeNamespacesStable: true, runtimeNameCollisionsUsePlatform: true, hookCount: hookBeforeDisable.count, sharedFilesUnchanged: true, unavailableDurationMs, toolSearchWith44ManagedTools: true })}\n`,
   );
 } finally {
   await runtime?.close();
   await siblingRuntime?.close();
+  await discoveryRuntime?.close();
   server.closeAllConnections();
   await new Promise((resolve) => server.close(resolve));
   await rm(home, { recursive: true, force: true });

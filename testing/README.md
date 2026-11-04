@@ -7,6 +7,8 @@ contents, and machine-specific operational logs outside the repository.
 
 ## Plans and harnesses
 
+- [Exclusive local IM acceptance control](local-im-control/README.md)
+
 - [SQL caller remediation and progress](sql-caller-remediation.md)
 
 - [Web product regression catalogue](web-product-regression/README.md)
@@ -21,6 +23,8 @@ contents, and machine-specific operational logs outside the repository.
 - [Context-token composition and cache audit](performance/context-tokens/README.md)
 
 ## Verification by feature
+
+- [Paused messaging settings](verification/paused-messaging-settings.md)
 
 - [Provider CLI identity validation](verification/provider-cli-validation.md)
 
@@ -99,6 +103,7 @@ contents, and machine-specific operational logs outside the repository.
 - [Agent GitHub access through MCP](verification/agent-github-mcp-only.md)
 - [GitHub OAuth cutover](verification/github-oauth-cutover.md)
 - [IM delivery claim queries](im-delivery-claim/README.md)
+- [Accepted recovery lease and cancellation](verification/im-accepted-recovery-lease.md)
 - [IM Turn budget and recovery](im-turn-budget-recovery/README.md)
 - [Steered IM custody without terminal reports](verification/im-steer-custody.md)
 - [Provider process shutdown](verification/provider-process-custody.md)
@@ -126,6 +131,7 @@ Screenshots and browser checks for Web UI changes, one directory per change:
 
 - [Cloud workspace recovery](web-ui/cloud-workspace-recovery/README.md)
 
+- [Context Tree GitHub prerequisite check](web-ui/context-tree-github-preflight/README.md)
 - [Context Tree GitHub MCP authorization](web-ui/context-mcp-authorization/README.md)
 - [Agent status layout](web-ui/agent-status/README.md)
 - [Agent home task table alignment](web-ui/agent-home-task-alignment/README.md)

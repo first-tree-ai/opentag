@@ -95,6 +95,8 @@ import {
   type ComputerConnectCodeStatus,
   ComputerConnectCodeStatusSchema,
   ConnectMCPOAuthResponseSchema,
+  type ContextTreeAvailabilityResponse,
+  ContextTreeAvailabilityResponseSchema,
   type ContextTreeOperationRequest,
   type ContextTreeOperationResponse,
   ContextTreeOperationResponseSchema,
@@ -138,8 +140,6 @@ import {
   InstallRemoteSkillsResponseSchema,
   type InstallSkillPresetResponse,
   InstallSkillPresetResponseSchema,
-  type InternalNavigationVisibility,
-  InternalNavigationVisibilitySchema,
   imBindingDiagnosticsPath,
   imBindingDisablePath,
   imFeedbackActionsPath,
@@ -609,6 +609,10 @@ export class BrowserApi {
     });
   }
 
+  contextTreeAvailability(agentId: string): Promise<ContextTreeAvailabilityResponse> {
+    return this.request(agentContextTreePath(agentId), ContextTreeAvailabilityResponseSchema);
+  }
+
   contextTreeOperation(agentId: string, input: ContextTreeOperationRequest): Promise<ContextTreeOperationResponse> {
     return this.request(agentContextTreePath(agentId), ContextTreeOperationResponseSchema, {
       method: "POST",
@@ -880,27 +884,6 @@ export class BrowserApi {
     if (response.status === 204) return true;
     if (response.status === 404) return false;
     throw this.apiError(response, await response.json().catch(() => undefined));
-  }
-
-  /**
-   * Reads the Server-wide navigation preview. A deployment without Internal Tools has no endpoint,
-   * which is the same product answer as both previews being hidden.
-   */
-  async internalNavigationVisibility(): Promise<InternalNavigationVisibility> {
-    try {
-      return await this.request(HTTP_PATHS.internalNavigationVisibility, InternalNavigationVisibilitySchema);
-    } catch (cause) {
-      if (cause instanceof ApiError && cause.status === 404) return { integrations: false };
-      throw cause;
-    }
-  }
-
-  updateInternalNavigationVisibility(input: InternalNavigationVisibility): Promise<InternalNavigationVisibility> {
-    return this.request(HTTP_PATHS.internalNavigationVisibility, InternalNavigationVisibilitySchema, {
-      method: "PUT",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
   }
 
   /*

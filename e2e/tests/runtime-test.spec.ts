@@ -21,7 +21,7 @@ test("runtime test pass is user-visible through the saved Claude Code path", asy
   await page.goto(`/agents/${agentId}/settings/execution`, { waitUntil: "networkidle" });
   await expect(page.getByRole("heading", { name: "Model", exact: true })).toBeVisible();
   await expect(
-    page.getByText("Send a short request using the saved model settings. This may use provider quota."),
+    page.getByText("Sends a short request with the saved model settings. This may use a small amount of usage."),
   ).toBeVisible();
   await page.getByRole("button", { name: "Run test" }).click();
   await expect(page.getByRole("status")).toHaveText(

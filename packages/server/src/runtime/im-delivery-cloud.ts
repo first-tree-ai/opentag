@@ -24,7 +24,7 @@ import {
   users,
 } from "../db/schema/index.js";
 import { CloudDeliveryLatency } from "../observability/cloud-latency.js";
-import { outcomeAttrs, setActiveSpanAttributes } from "../observability/index.js";
+import { outcomeAttrs, setActiveSpanAttributes, updateCurrentPerformanceContext } from "../observability/index.js";
 import type { ServiceLogger } from "../observability/service-logger.js";
 import { InboundReceiptPendingError } from "../services/im/inbound-admission.js";
 import type { CloudDeliveryOwner } from "../services/sandboxes/cloud-delivery-owner.js";
@@ -128,6 +128,14 @@ export class CloudDeliveryCoordinator {
 
   /** One claimed Cloud delivery: validate/refresh the dispatch and send it through the owner. */
   async deliver(row: CloudDeliveryClaimRow, attempt: DeliveryAttempt, lease: CloudClaimLease, signal: AbortSignal) {
+    updateCurrentPerformanceContext({
+      accountId: row.agent.createdByUserId,
+      agentId: row.agent.id,
+      computerId: row.computer.id,
+      sessionId: row.session.id,
+      deliveryId: row.delivery.id,
+      ...(row.delivery.turnId ? { turnId: row.delivery.turnId } : {}),
+    });
     const latency = this.#latency.begin(row.session.id, row.delivery.id, attempt.attemptCount);
     try {
       const dispatched = await this.#deliver(row, attempt, lease, signal, latency);
@@ -381,6 +389,7 @@ export class CloudDeliveryCoordinator {
   ): Promise<boolean> {
     const sandboxId = await this.#ensureSandboxRow(row, attempt, signal);
     if (signal.aborted || !sandboxId) return false;
+    updateCurrentPerformanceContext({ sandboxId });
     if (!this.#options.cloudAllocation) return true;
     return this.#convergeAllocation(attempt, row.agent.createdByUserId, sandboxId);
   }

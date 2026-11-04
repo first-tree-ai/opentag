@@ -6,7 +6,7 @@ import {
   type McpGatewayErrorCode,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { createServiceLoggerPort } from "../observability/index.js";
+import { type createServiceLoggerPort, updateCurrentPerformanceContext } from "../observability/index.js";
 import { createMcpGatewayAuthPreHandler } from "../plugins/mcp-gateway-auth.js";
 import { McpGatewayError, type McpGatewayExecutionAuthorizer } from "../runtime-credentials/mcp-gateway-execution.js";
 import type { RuntimeMcpGatewayTokenStore } from "../runtime-credentials/mcp-gateway-token-store.js";
@@ -121,6 +121,16 @@ async function handleGatewayRequest(
   } catch (error) {
     return sendGatewayFailure(reply, id, error, options);
   }
+  updateCurrentPerformanceContext({
+    accountId: execution.accountId,
+    agentId: execution.agentId,
+    sessionId: execution.sessionId,
+    computerId: execution.computerId,
+    ...(execution.source?.kind === "delivery"
+      ? { deliveryId: execution.source.deliveryId, turnId: execution.source.turnId }
+      : {}),
+    ...(execution.sandbox?.sandboxId ? { sandboxId: execution.sandbox.sandboxId } : {}),
+  });
 
   const handlers = buildHandlers(options, execution.accountId, execution.agentId, aborted.signal);
   try {

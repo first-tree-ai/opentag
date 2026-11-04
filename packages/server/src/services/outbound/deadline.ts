@@ -1,3 +1,5 @@
+import { markExternalCallTimedOut } from "../../observability/external-call-logger.js";
+
 /**
  * One deadline for a whole outbound operation: the address check *and* the request it authorizes.
  *
@@ -61,9 +63,10 @@ export async function withOutboundDeadline<T>(
 
   const end = (reason: OutboundDeadlineReason) => {
     if (ended !== undefined) return;
-    ended = options.failure(reason);
+    const err = options.failure(reason);
+    ended = reason === "deadline" ? markExternalCallTimedOut(err) : err;
     // Before the rejection: the socket must not outlive the answer the caller got.
-    controller.abort();
+    controller.abort(ended);
     expire(ended);
   };
   const timer = setTimeout(() => end("deadline"), timeoutMs);
@@ -78,6 +81,9 @@ export async function withOutboundDeadline<T>(
         throwIfEnded: () => {
           if (ended !== undefined) throw ended;
         },
+      }).catch((error: unknown) => {
+        if (ended !== undefined) throw ended;
+        throw error;
       }),
       expiry,
     ]);

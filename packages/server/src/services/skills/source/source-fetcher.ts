@@ -75,8 +75,12 @@ export class SkillSourceFetcher {
    * knows it is reading something small — a well-known index, or one file of a Skill whose budget is
    * nearly spent.
    */
-  async fetchBytes(url: string, maxBytes = this.#maxBytes): Promise<SkillSourceFetchResult> {
-    const result = await this.#request(url, maxBytes);
+  async fetchBytes(
+    url: string,
+    maxBytes = this.#maxBytes,
+    options?: { signal?: AbortSignal },
+  ): Promise<SkillSourceFetchResult> {
+    const result = await this.#request(url, maxBytes, options?.signal);
     if (result.status >= 400) throw skillSourceUnreachable(`That source returned HTTP ${result.status}`);
     return result;
   }
@@ -86,12 +90,17 @@ export class SkillSourceFetcher {
    * well-known index is *allowed* not to exist, and that absence selects the fallback path rather
    * than reporting an error. Transport failures, redirects, and the byte cap still fail.
    */
-  async fetchBytesAllowMissing(url: string, maxBytes = this.#maxBytes): Promise<SkillSourceFetchResult> {
-    return this.#request(url, maxBytes);
+  async fetchBytesAllowMissing(
+    url: string,
+    maxBytes = this.#maxBytes,
+    options?: { signal?: AbortSignal },
+  ): Promise<SkillSourceFetchResult> {
+    return this.#request(url, maxBytes, options?.signal);
   }
 
-  async #request(url: string, maxBytes: number): Promise<SkillSourceFetchResult> {
+  async #request(url: string, maxBytes: number, signal?: AbortSignal): Promise<SkillSourceFetchResult> {
     const urlMeta = sanitizeExternalUrl(url);
+    let attempts = 0;
     return traceExternalCall(
       this.#options.performanceLogger,
       {
@@ -102,12 +111,36 @@ export class SkillSourceFetcher {
           ...urlMeta,
         },
       },
-      () => this.#executeRequest(url, maxBytes),
-      { statusFromResult: (res) => res.status },
+      () =>
+        this.#executeRequest(
+          url,
+          maxBytes,
+          () => {
+            attempts += 1;
+          },
+          signal,
+        ),
+      {
+        statusFromResult: (res) => res.status,
+        resultAttributes: (res) => ({
+          status: res.status,
+          attemptCount: attempts,
+          retryCount: Math.max(0, attempts - 1),
+        }),
+        errorAttributes: () => ({
+          attemptCount: attempts,
+          retryCount: Math.max(0, attempts - 1),
+        }),
+      },
     );
   }
 
-  async #executeRequest(url: string, maxBytes: number): Promise<SkillSourceFetchResult> {
+  async #executeRequest(
+    url: string,
+    maxBytes: number,
+    onAttempt: () => void,
+    signal?: AbortSignal,
+  ): Promise<SkillSourceFetchResult> {
     const policy = { allowLoopback: this.#options.allowLoopback };
     const target = checkOutboundUrl(url, policy);
     if ("failure" in target) throw sourceFailure(target.failure);
@@ -119,13 +152,18 @@ export class SkillSourceFetcher {
      * fetch failed, and `throwIfEnded` is what stops a request being dialed after that.
      */
     const response = await withOutboundDeadline(
-      { timeoutMs: this.#timeoutMs, failure: () => skillSourceUnreachable() },
+      {
+        timeoutMs: this.#timeoutMs,
+        ...(signal ? { signal } : {}),
+        failure: () => skillSourceUnreachable(),
+      },
       async (deadline) => {
         const destination = await classifyOutboundDestination(target.url, this.#resolveAddresses);
         if (!destination.ok) {
           throw destination.failure.kind === "blocked" ? skillSourceBlocked() : skillSourceUnreachable();
         }
         deadline.throwIfEnded();
+        onAttempt();
         return this.#transport({
           url: target.url,
           ...(destination.pin === undefined ? {} : { pin: destination.pin }),

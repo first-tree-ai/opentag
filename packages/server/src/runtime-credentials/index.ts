@@ -1,6 +1,7 @@
 import type { RuntimeCredentialProvider, RuntimeExecutionSource } from "@opentag/shared";
 import { sql } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
+import { createInstrumentedFetch } from "../observability/external-call-logger.js";
 import type { PerformanceLogger } from "../observability/performance-logger.js";
 import type { ServiceLogger } from "../observability/service-logger.js";
 import type { ConnectionRegistry, RuntimeControlIdentity } from "../runtime/connection-registry.js";
@@ -291,10 +292,11 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
       custody: options.custody,
       validationRuns,
     });
+  const feishuFetch = resolveProviderFetch(options, "feishu");
   const tenantTokens = new FeishuTenantTokenCache(
-    options.fetchImpl
+    feishuFetch
       ? {
-          exchange: (input) => exchangeFeishuTenantToken({ ...input, fetchImpl: options.fetchImpl as typeof fetch }),
+          exchange: (input) => exchangeFeishuTenantToken({ ...input, fetchImpl: feishuFetch }),
         }
       : {},
   );
@@ -411,6 +413,19 @@ function registryConnectionFence(registry: ConnectionRegistry): RuntimeConnectio
   };
 }
 
+function resolveProviderFetch(
+  options: RuntimeCredentialServicesOptions,
+  provider: "slack" | "feishu",
+): typeof fetch | undefined {
+  if (options.performanceLogger) {
+    return createInstrumentedFetch(options.performanceLogger, {
+      provider,
+      ...(options.fetchImpl ? { baseFetch: options.fetchImpl } : {}),
+    });
+  }
+  return options.fetchImpl;
+}
+
 /**
  * Resolves an execution's Session and source to a stable Task anchor ID (`kind: "link"`) or a
  * plain non-clickable `Session <shortId>` label (`kind: "plain"`):
@@ -482,6 +497,7 @@ function createImAdapters(
   ] as const;
   for (const [provider, operations] of defaults) {
     if (adapters.has(provider)) continue;
+    const providerFetch = resolveProviderFetch(options, provider);
     adapters.set(
       provider,
       new ImProviderProxyAdapter({
@@ -491,7 +507,7 @@ function createImAdapters(
         outboundCapture,
         resolveTaskAnchor,
         ...(options.publicOrigin ? { publicOrigin: options.publicOrigin } : {}),
-        ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+        ...(providerFetch ? { fetchImpl: providerFetch } : {}),
         ...(options.logger ? { logger: options.logger } : {}),
       }),
     );

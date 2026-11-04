@@ -39,7 +39,15 @@ the daemon user's files.
 `session create` atomically creates an internal child Session and its first message. `session send` addresses an
 existing Session in the same Agent and conversation scope. Both accept an optional `--message-id` for an explicit retry;
 reuse the same ID and identical semantic input after an uncertain result. `accepted` means the target accepted the
-message into its bounded FIFO, not that the task completed.
+message into its bounded FIFO, not that the task completed. On a Local Computer, a message whose target Session is
+running a Turn on a steer-capable runtime is steered into that Turn instead of waiting for it to end. Runtime acceptance
+is not delivery: the durable record stays `running` until that Turn's Run settles. It becomes `succeeded` when the Run
+completed; returns to the FIFO when the provider reports that it never started the input (Claude Code `command_lifecycle`),
+so the message is delivered again as its own Run; and fails permanently without replay when the provider may have started
+it but the Run failed or was cancelled. Codex and Pi report no per-input start, so their acknowledged steer counts as
+possibly started. A restart while the record is `running` recovers it like any interrupted Session message Run. A message
+that arrives while the target runs another Session message, or whose runtime cannot steer, still waits in the FIFO. The
+Cloud Session message path is unchanged.
 
 Within each existing create/send transaction, authorization locks the source Agent, binding,
 Sessions in ID order (`FOR NO KEY UPDATE`), placements in Session ID order, then Computers in ID order.
@@ -122,7 +130,10 @@ Server tells the Session that created it (`created_by_session_id`):
   record write; the marker becomes `published` once the report is durable in the reporter's file. On startup a
   terminal record still marked `pending` (for example after a crash between the two writes) hands its report over
   again, and the child is never rerun. Terminal records written before the marker existed carry no marker and are
-  not backfilled. The Server-backed Runtime durability adapter does not store the marker.
+  not backfilled. The Server-backed Runtime durability adapter does not store the marker. A steered message follows
+  its steer receipt: `interrupted` takes this same terminal path (reason `session_message_steer_interrupted`, never
+  replayed), `processed` succeeds, and `not_started` returns to the FIFO with no report. Eligibility is unchanged, so
+  a message steered into a visible Session's IM Turn produces no notice.
 - Cloud: the Runner's `session:message:settled` frame carries the failure `reason` (for example `turn_timeout`) on a
   collaboration-v3 channel. Every non-completed outcome (`failed`, `cancelled`, `unknown`) produces a notice. The
   Server makes up to three delivery attempts, 30 seconds apart. The notice's source authority is the settling

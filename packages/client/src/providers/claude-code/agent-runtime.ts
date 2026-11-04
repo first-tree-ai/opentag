@@ -17,6 +17,7 @@ import {
   type AgentPromptRequest,
   type AgentProviderRunContext,
   type AgentProviderRunResult,
+  type AgentProviderSteerCustody,
   type AgentRunConfiguration,
   type AgentRuntimeBinding,
   type AgentRuntimeConfigurationOptionsRequest,
@@ -27,6 +28,7 @@ import {
   type AgentRuntimeProbeIssue,
   type AgentRuntimeProbeRequest,
   type AgentRuntimeProbeResult,
+  type AgentSteerRequest,
   type CreateAgentRuntimeRequest,
   type JsonValue,
   type ResumeAgentRuntimeRequest,
@@ -141,6 +143,8 @@ interface ClaudeCodeTerminal {
   readonly stopReason?: string;
   readonly subtype: string;
   readonly totalCostUsd?: number;
+  /** Result texts of earlier results in this Run that were followed by steered input. */
+  readonly earlierResults?: readonly string[];
   readonly usage?: {
     readonly cachedInputTokens?: number;
     readonly inputTokens?: number;
@@ -181,6 +185,9 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   #context?: AgentProviderRunContext;
   #eventTail: Promise<void> = Promise.resolve();
   #terminal?: ClaudeCodeTerminal;
+  /** Results that steered input continued past; merged into the one terminal of this Run. */
+  readonly #continuedTerminals: ClaudeCodeTerminal[] = [];
+  #processReady?: ProcessReady;
   #providerFailure?: Error;
   #assistantError?: string;
   #currentMessageId?: string;
@@ -190,7 +197,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   constructor(options: ClaudeCodeRuntimeOptions) {
     super({
       manifest: CLAUDE_CODE_AGENT_RUNTIME_MANIFEST,
-      capabilities: { steer: "unsupported", interactions: "supported" },
+      capabilities: { steer: "supported", interactions: "supported" },
       eventSink: options.eventSink,
       binding: options.binding,
     });
@@ -212,7 +219,10 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     context: AgentProviderRunContext,
   ): Promise<AgentProviderRunResult> {
     this.#context = context;
+    // A steer admitted before executeRun started may already be waiting on this slot.
+    this.#processReady ??= deferredProcess();
     this.#terminal = undefined;
+    this.#continuedTerminals.length = 0;
     this.#providerFailure = undefined;
     this.#assistantError = undefined;
     this.#currentMessageId = undefined;
@@ -253,7 +263,12 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
         );
       }
       this.#process = process;
-      await process.execute(claudeCodeInput(request), (message) => this.#enqueue(message), context.signal);
+      this.#processReady?.resolve(process);
+      await process.execute(
+        claudeCodeInput(request),
+        (message, terminal) => this.#enqueue(message, terminal),
+        context.signal,
+      );
       await this.#eventTail;
       if (this.#providerFailure) throw this.#providerFailure;
       if (!this.#terminal) throw protocolError("Claude Code exited without a result message");
@@ -277,6 +292,9 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
         logger.debug({ code: "provider_close_failed", error: String(error) }, "Claude Code provider close failed");
       });
       await hostedToolBridge?.close();
+      this.#processReady?.resolve(undefined);
+      this.#processReady = undefined;
+      this.#continuedTerminals.length = 0;
       this.#process = undefined;
       this.#context = undefined;
       this.#currentMessageId = undefined;
@@ -284,6 +302,28 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       this.#tools.clear();
       this.#toolBlocks.clear();
       this.#permissions.clear();
+    }
+  }
+
+  /**
+   * Claude Code's stream-json input queues a user message written mid-query and attaches it at the
+   * next tool boundary; input that arrives after the last tool call runs right after the current
+   * result. Either way the provider session already holds the earlier input, so the Run continues
+   * until Claude Code has started every steered message and emitted a result after it.
+   *
+   * A written steer is not yet owned by the provider: the process can exit before Claude Code starts
+   * it. The returned custody reports whether `command_lifecycle` showed it started, so a Run that
+   * fails first lets the caller deliver the input again instead of treating it as processed.
+   */
+  protected override async steerProvider(request: AgentSteerRequest): Promise<AgentProviderSteerCustody> {
+    this.#processReady ??= deferredProcess();
+    const process = await this.#processReady.promise;
+    if (!process?.steer || this.#terminalClaimed || this.#providerFailure)
+      throw new AgentRuntimeError("run_mismatch", "Claude Code settled before steer was accepted");
+    try {
+      return await process.steer({ ...claudeCodeUserMessage(request.input.items), uuid: randomUUID() });
+    } catch (error) {
+      throw new AgentRuntimeError("run_mismatch", "Claude Code did not accept the steer input", { cause: error });
     }
   }
 
@@ -354,13 +394,15 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     return args;
   }
 
-  #enqueue(message: Readonly<Record<string, unknown>>): void {
-    this.#claimTerminalAtIngress(message);
+  #enqueue(message: Readonly<Record<string, unknown>>, mayBeTerminal = true): void {
+    // A result followed by still-queued steered input is not this Run's terminal.
+    const terminal = mayBeTerminal && message.type === "result";
+    if (terminal) this.#claimTerminalAtIngress(message);
     const next = this.#eventTail.then(async () => {
       if (!this.#context || this.#providerFailure) return;
       if (message.type === "control_request" || message.type === "control_cancel_request")
         await this.#handleControlMessage(message);
-      else await this.#handleMessage(message);
+      else await this.#handleMessage(message, terminal);
     });
     this.#eventTail = next.catch((error: unknown) => {
       logger.debug({ code: "event_processing_failed", error: String(error) }, "Claude Code event processing failed");
@@ -369,7 +411,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   }
 
   #claimTerminalAtIngress(message: Readonly<Record<string, unknown>>): void {
-    if (message.type !== "result" || !this.#context) return;
+    if (!this.#context) return;
     try {
       parseTerminal(message, this.#sessionId);
       this.#context.claimTerminal();
@@ -405,7 +447,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     await this.#requireContext().resolveInteraction(id, "cancel");
   }
 
-  async #handleMessage(message: Readonly<Record<string, unknown>>): Promise<void> {
+  async #handleMessage(message: Readonly<Record<string, unknown>>, terminal: boolean): Promise<void> {
     const type = requireString(message.type, "Claude Code message has no type");
     if (type === "stream_event") {
       await this.#handleStreamEvent(requireRecord(message.event, "Claude Code stream event is invalid"));
@@ -437,14 +479,24 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       return;
     }
     if (type === "result") {
-      const terminal = parseTerminal(message, this.#sessionId);
-      this.#sessionExists = true;
-      await this.#completeOutstandingTools(terminal);
-      if (terminal.usage) await this.#requireContext().emit({ type: "usage_updated", usage: terminal.usage });
-      this.#terminal = terminal;
+      await this.#handleResult(message, terminal);
       return;
     }
     await this.#emitProviderEvent(message);
+  }
+
+  async #handleResult(message: Readonly<Record<string, unknown>>, terminal: boolean): Promise<void> {
+    const parsed = parseTerminal(message, this.#sessionId);
+    this.#sessionExists = true;
+    await this.#completeOutstandingTools(parsed);
+    if (!terminal) {
+      // Steered input is still queued behind this result; Claude Code continues the same session.
+      this.#continuedTerminals.push(parsed);
+      return;
+    }
+    const merged = mergeTerminals(this.#continuedTerminals, parsed);
+    if (merged.usage) await this.#requireContext().emit({ type: "usage_updated", usage: merged.usage });
+    this.#terminal = merged;
   }
 
   async #handleStreamEvent(event: Readonly<Record<string, unknown>>): Promise<void> {
@@ -1121,13 +1173,74 @@ function mergeConfiguration(
 }
 
 function claudeCodeInput(request: AgentPromptRequest): Readonly<Record<string, unknown>> {
+  return claudeCodeUserMessage(request.input.items);
+}
+
+function claudeCodeUserMessage(items: AgentPromptRequest["input"]["items"]): Readonly<Record<string, unknown>> {
   return {
     type: "user",
     message: {
       role: "user",
-      content: request.input.items.map((item) => ({ type: "text", text: item.text })),
+      content: items.map((item) => ({ type: "text", text: item.text })),
     },
     parent_tool_use_id: null,
+  };
+}
+
+interface ProcessReady {
+  readonly promise: Promise<ClaudeCodeProcessClient | undefined>;
+  resolve(process?: ClaudeCodeProcessClient): void;
+}
+
+function deferredProcess(): ProcessReady {
+  let resolve!: (process?: ClaudeCodeProcessClient) => void;
+  const promise = new Promise<ClaudeCodeProcessClient | undefined>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+/**
+ * One OpenTag Run reports one terminal: the last result's outcome plus everything steered input added.
+ *
+ * Result fields have two scopes in Claude Code's streaming-input mode
+ * (https://code.claude.com/docs/en/agent-sdk/cost-tracking#track-costs-in-streaming-input-mode):
+ * - `usage` covers only its own turn and `num_turns` counts only that result's agent loop (coalesced
+ *   completions report `num_turns: 0`), so both are summed across the Run's results.
+ * - `total_cost_usd` is the process's running total, so the latest result supersedes earlier ones and
+ *   summing would double-count. Every OpenTag Run spawns a fresh Claude Code process (`--resume` after
+ *   the first Run) that is closed when the Run settles, so no earlier Run's spend accrues in this
+ *   process and no in-process baseline is subtracted: the Run reports the last result's value, the
+ *   same scope a single-result Run reports. Claude Code restores a resumed session's saved totals, so
+ *   that value may include spend from earlier Runs of the session, exactly as before steering existed.
+ * `duration_ms` and `duration_api_ms` are not parsed.
+ */
+function mergeTerminals(earlier: readonly ClaudeCodeTerminal[], last: ClaudeCodeTerminal): ClaudeCodeTerminal {
+  if (earlier.length === 0) return last;
+  const sum = (pick: (terminal: ClaudeCodeTerminal) => number | undefined): number | undefined => {
+    const values = [...earlier, last].map(pick).filter((value): value is number => value !== undefined);
+    return values.length === 0 ? undefined : values.reduce((total, value) => total + value, 0);
+  };
+  const inputTokens = sum((terminal) => terminal.usage?.inputTokens);
+  const cachedInputTokens = sum((terminal) => terminal.usage?.cachedInputTokens);
+  const outputTokens = sum((terminal) => terminal.usage?.outputTokens);
+  const numTurns = sum((terminal) => terminal.numTurns);
+  const totalCostUsd = [...earlier, last].reduce<number | undefined>(
+    (latest, terminal) => terminal.totalCostUsd ?? latest,
+    undefined,
+  );
+  const usage = {
+    ...(inputTokens !== undefined ? { inputTokens } : {}),
+    ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),
+    ...(outputTokens !== undefined ? { outputTokens } : {}),
+  };
+  return {
+    ...last,
+    permissionDenials: [...earlier, last].flatMap((terminal) => terminal.permissionDenials),
+    earlierResults: earlier.flatMap((terminal) => (terminal.result === undefined ? [] : [terminal.result])),
+    ...(numTurns !== undefined ? { numTurns } : {}),
+    ...(totalCostUsd !== undefined ? { totalCostUsd } : {}),
+    ...(Object.keys(usage).length > 0 ? { usage } : {}),
   };
 }
 
@@ -1178,7 +1291,9 @@ function parseTerminal(message: Readonly<Record<string, unknown>>, expectedSessi
 }
 
 function claudeCodeRunResult(terminal: ClaudeCodeTerminal, assistantError: string | undefined): AgentProviderRunResult {
-  const output = terminal.result === undefined ? [] : [{ type: "text" as const, text: terminal.result }];
+  const output = [...(terminal.earlierResults ?? []), ...(terminal.result === undefined ? [] : [terminal.result])].map(
+    (text) => ({ type: "text" as const, text }),
+  );
   const diagnostics: JsonValue = {
     providerSessionId: terminal.sessionId,
     resultSubtype: terminal.subtype,

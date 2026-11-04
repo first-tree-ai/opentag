@@ -252,6 +252,9 @@ Step 7 makes publication monotonic and step 8 makes it single-writer. `install.s
 channel-pinned and version-independent, so a failure between the two writes leaves an installer that is at least as new
 as the pointer.
 
+After upload, the channel smoke test installs the advertised version and runs the installer again. The second run
+must succeed and report that the same version is already installed without downloading it again.
+
 ## Channel heads
 
 A release channel has two heads that must agree: the npm dist-tag and the portable `latest.json`. `npm publish --tag

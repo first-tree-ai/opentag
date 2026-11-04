@@ -3,6 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
+  copyFileSync,
   createReadStream,
   existsSync,
   mkdirSync,
@@ -10,6 +11,7 @@ import {
   readFileSync,
   realpathSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -196,22 +198,9 @@ async function withReleaseServer(run) {
 
 // The release server runs in this process, so the installer must be spawned asynchronously: a
 // synchronous child would block the event loop and deadlock against its own download.
-function runInstaller({ root, baseUrl, args = [], env = {} }) {
+function runScript(command, args, env = process.env) {
   return new Promise((complete, reject) => {
-    const child = spawn(
-      "sh",
-      [installerPath, "--prefix", join(root, "prefix"), "--bin-dir", join(root, "bin"), "--no-path-edit", ...args],
-      {
-        env: {
-          ...process.env,
-          HOME: join(root, "home"),
-          OPENTAG_PORTABLE_CHANNEL: channel,
-          OPENTAG_PORTABLE_DOWNLOAD_BASE_URL: baseUrl,
-          ...env,
-        },
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
+    const child = spawn(command, args, { env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");
@@ -226,6 +215,52 @@ function runInstaller({ root, baseUrl, args = [], env = {} }) {
     child.on("close", (status) => complete({ status, stderr, stdout }));
   });
 }
+
+function runInstaller({ root, baseUrl, args = [], env = {} }) {
+  return runScript(
+    "sh",
+    [installerPath, "--prefix", join(root, "prefix"), "--bin-dir", join(root, "bin"), "--no-path-edit", ...args],
+    {
+      ...process.env,
+      HOME: join(root, "home"),
+      OPENTAG_PORTABLE_CHANNEL: channel,
+      OPENTAG_PORTABLE_DOWNLOAD_BASE_URL: baseUrl,
+      ...env,
+    },
+  );
+}
+
+test("portable release smoke accepts the current installer's repeat result without downloading twice", {
+  skip: platform === null,
+}, async () => {
+  await withReleaseServer(async ({ baseUrl, releaseRoot, requests, root }) => {
+    const version = "0.0.2-staging.1.1";
+    buildRelease({ baseUrl, releaseRoot, version });
+    copyFileSync(installerPath, join(releaseRoot, channel, "install.sh"));
+
+    const scriptsDir = join(root, "scripts");
+    const portableDir = join(scriptsDir, "portable");
+    mkdirSync(portableDir, { recursive: true });
+    const releasePath = join(portableDir, "release-gcs.sh");
+    copyFileSync(join(repoRoot, "scripts", "portable", "release-gcs.sh"), releasePath);
+    symlinkSync(join(repoRoot, "scripts", "channel-config.mjs"), join(scriptsDir, "channel-config.mjs"));
+    writeExecutable(join(portableDir, "upload-gcs.sh"), "#!/bin/sh\nexit 0\n");
+
+    const result = await runScript("bash", [
+      releasePath,
+      "--channel",
+      channel,
+      "--version",
+      version,
+      "--download-base-url",
+      baseUrl,
+      "--skip-build",
+    ]);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, /public install smoke test passed for staging 0\.0\.2-staging\.1\.1/);
+    assert.equal(tarballRequests(requests, version), 1, "the second install must not download the payload");
+  });
+});
 
 function tarballRequests(requests, version) {
   return requests.filter((url) => url.includes(`/${version}/`) && url.endsWith(".tar.gz")).length;

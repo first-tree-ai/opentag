@@ -206,10 +206,11 @@ export class RuntimeScopeResolver {
   ): RuntimeFenceViolation | undefined {
     if (snapshot.sessionId !== record.sessionId) return "session_unknown";
     if (snapshot.sessionEnded) return "session_ended";
-    // A Local internal Session (or any internal Session without the explicit Cloud collaboration
-    // authority) stays closed here. The exact open-time decision is carried on the record, so the
-    // per-request fence never has to re-derive authorization from the frame or the connection.
-    if (snapshot.sessionKind === "internal" && record.internalAuthority !== "cloud-session-collaboration") {
+    // Revalidate the Server-owned collaboration admission without trusting a new Client frame.
+    if (
+      snapshot.sessionKind === "internal" &&
+      record.internalAuthority !== `${record.computerKind}-session-collaboration`
+    ) {
       return "session_internal";
     }
     if (snapshot.agent.id !== record.agentId || snapshot.agent.computerId !== record.computerId) {

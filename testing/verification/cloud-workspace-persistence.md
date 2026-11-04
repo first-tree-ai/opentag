@@ -24,6 +24,11 @@ violation from an incident without its original error or prove real GCS/native r
 
 ## Web recovery
 
+- Ordinary Agent home exposes no workspace recovery entry, including during a known save failure.
+  Explicit `?recovery=true` retains guided diagnostics; removing the opt-in or closing the panel
+  removes its controls. The existing generation, confirmation, uncertain-result and revoked-access
+  cases continue to apply. The ordinary notice keeps factual failure and administrator guidance
+  without promising recovery or encouraging task replay.
 - `cloud-workspace-recovery.test.tsx` checks access without a release-failure marker, generation
   capture, duplicate-click prevention, discard confirmation/cancellation, a replacement during
   confirmation, status-read failures, uncertain mutations without automatic resubmission,

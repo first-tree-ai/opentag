@@ -15,19 +15,6 @@ describe("Agent recovery notices", () => {
     expect(screen.queryByRole("button", { name: /Recovery and error notices/ })).toBeNull();
   });
 
-  it("keeps the section for other recovery controls when there are no notices", async () => {
-    vi.spyOn(browserApi, "imFeedbackList").mockResolvedValue({ items: [], nextCursor: null });
-    const view = await renderInRouter(
-      <ImFeedbackList agentId="22222222-2222-4222-8222-222222222222">
-        <button type="button">Recover workspace</button>
-      </ImFeedbackList>,
-    );
-    await waitFor(() => expect(browserApi.imFeedbackList).toHaveBeenCalledOnce());
-    expect(view.container.querySelector('[data-ui="im-feedback-list"]')).not.toBeNull();
-    expect(screen.getByRole("button", { name: "Recover workspace" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /Recovery and error notices/ })).toBeNull();
-  });
-
   it("stays collapsed with a count, shows unknown delivery, and paginates through the owner API", async () => {
     const id = "11111111-1111-4111-8111-111111111111",
       agentId = "22222222-2222-4222-8222-222222222222";

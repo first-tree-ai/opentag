@@ -1,5 +1,4 @@
 import { Link } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
 import * as m from "../../paraglide/messages.js";
 import { buttonClassName, Icon, StatusIndicator, Text } from "../../ui/design-system.js";
 import { AgentUsageOverview } from "../agent-usage.js";
@@ -14,7 +13,7 @@ import { useAgentDetailView } from "./agent-queries.js";
 import { agentDetailLink, agentSettingsLink } from "./agent-routes.js";
 import { AgentSchedulesSection } from "./agent-schedules-section.js";
 import { AgentStatusCard } from "./agent-status-card.js";
-import { CloudProgressNotice, CloudWorkspaceRecovery } from "./cloud/cloud-workspace-recovery.js";
+import { CloudWorkspaceRecovery } from "./cloud/cloud-workspace-recovery.js";
 import { ResumeAgentButton } from "./resume-agent-button.js";
 
 export function AgentDetailPage({
@@ -28,10 +27,6 @@ export function AgentDetailPage({
 }) {
   const { me } = useAccount();
   const state = useAgentDetailView(agentId, { watched: true, accountId: me.user.id });
-  const [workspaceOpen, setWorkspaceOpen] = useState(workspaceRecovery === true);
-  useEffect(() => {
-    if (workspaceRecovery) setWorkspaceOpen(true);
-  }, [workspaceRecovery]);
   return (
     <AsyncState state={state}>
       {(agent) => (
@@ -48,20 +43,11 @@ export function AgentDetailPage({
               <AgentStatusCard agent={agent} />
             </div>
             {agent.computerKind === "cloud" ? (
-              <CloudProgressNotice agentId={agent.id} onRecover={() => setWorkspaceOpen(true)} />
+              <CloudWorkspaceRecovery key={agent.id} agentId={agent.id} initialOpen={workspaceRecovery} />
             ) : null}
             <AgentSchedulesSection agentId={agent.id} scheduleId={scheduleId} />
             <AgentTasksSection agentId={agent.id} connectChannel={connectChannelAction(agent)} />
-            <ImFeedbackList agentId={agent.id}>
-              {agent.computerKind === "cloud" ? (
-                <CloudWorkspaceRecovery
-                  key={agent.id}
-                  agentId={agent.id}
-                  open={workspaceOpen}
-                  onOpenChange={setWorkspaceOpen}
-                />
-              ) : null}
-            </ImFeedbackList>
+            <ImFeedbackList agentId={agent.id} />
           </div>
         </section>
       )}

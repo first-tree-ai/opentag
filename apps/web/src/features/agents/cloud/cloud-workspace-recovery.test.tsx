@@ -4,22 +4,10 @@ import type {
   CloudSessionSummary,
 } from "@opentag/shared/browser";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { useState } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { renderInRouter } from "../../../__tests__/support/router.js";
 import { ApiError, browserApi } from "../../../api.js";
-import { CloudProgressNotice, CloudWorkspaceRecovery } from "./cloud-workspace-recovery.js";
-
-/** The Agent home owns the save-failure banner and whether the panel is open; this stands in for it. */
-function Recovery({ initialOpen = false }: { initialOpen?: boolean }) {
-  const [open, setOpen] = useState(initialOpen);
-  return (
-    <>
-      <CloudProgressNotice agentId={AGENT} onRecover={() => setOpen(true)} />
-      <CloudWorkspaceRecovery agentId={AGENT} open={open} onOpenChange={setOpen} />
-    </>
-  );
-}
+import { CloudWorkspaceRecovery } from "./cloud-workspace-recovery.js";
 
 const AGENT = "11111111-1111-4111-8111-111111111111";
 const SESSION = "33333333-3333-4333-8333-333333333333";
@@ -90,21 +78,30 @@ function setup(rows = [row()]) {
   };
 }
 async function renderPanel() {
-  await renderInRouter(<Recovery initialOpen />);
+  await renderInRouter(<CloudWorkspaceRecovery agentId={AGENT} initialOpen />);
   return screen.findByRole("listitem", { name: "Chat · 33333333" });
 }
 afterEach(() => vi.restoreAllMocks());
 
-it("offers recovery without a release-failure marker and does not mutate on opening", async () => {
+it("keeps recovery behind an explicit diagnostics destination, even without a failure marker", async () => {
   const fixture = setup();
-  await renderInRouter(<Recovery />);
-  expect(screen.queryByRole("region", { name: "Workspace recovery" })).toBeNull();
-  fireEvent.click(await screen.findByRole("button", { name: "Recover workspace" }));
-  await screen.findByRole("region", { name: "Workspace recovery" });
+  const { rerender } = await renderInRouter(<CloudWorkspaceRecovery agentId={AGENT} />);
+  expect(screen.queryByRole("region", { name: "Workspace diagnostics" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Recover workspace" })).toBeNull();
+  expect(fixture.read).not.toHaveBeenCalledWith(AGENT, { limit: 20 });
+  rerender(<CloudWorkspaceRecovery agentId={AGENT} initialOpen />);
+  await screen.findByRole("region", { name: "Workspace diagnostics" });
   await screen.findByRole("button", { name: "Save and release" });
   expect(fixture.read).toHaveBeenCalledWith(AGENT, { limit: 20 });
   expect(fixture.readStatus).not.toHaveBeenCalled();
   expect(fixture.release).not.toHaveBeenCalled();
+  rerender(<CloudWorkspaceRecovery agentId={AGENT} />);
+  expect(screen.queryByRole("region", { name: "Workspace diagnostics" })).toBeNull();
+  rerender(<CloudWorkspaceRecovery agentId={AGENT} initialOpen />);
+  await screen.findByRole("region", { name: "Workspace diagnostics" });
+  fireEvent.click(screen.getByRole("button", { name: "Close" }));
+  expect(screen.queryByRole("region", { name: "Workspace diagnostics" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Recover workspace" })).toBeNull();
 });
 
 it("captures the allocation generation and accepts only one release while busy", async () => {
@@ -257,7 +254,7 @@ it("does not treat a failed overview read as an empty workspace inventory", asyn
     if (options?.limit === 100) return overview([]);
     throw new Error("private inventory detail");
   });
-  await renderInRouter(<Recovery initialOpen />);
+  await renderInRouter(<CloudWorkspaceRecovery agentId={AGENT} initialOpen />);
   await screen.findByText(/Workspace status could not be read/);
   expect(screen.queryByText("No conversation workspaces are available.")).toBeNull();
   expect(screen.queryByRole("button", { name: "Save and release" })).toBeNull();

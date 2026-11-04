@@ -42,6 +42,7 @@ import {
   type TaskScope,
   taskCtes,
   taskPageCtes,
+  taskQualifies,
   threadRootExternalId,
 } from "./task-sql.js";
 
@@ -353,10 +354,15 @@ export class TaskService {
    * Whether a Session's `Session <shortId>` footer may link to its Task, read for the Account that
    * owns the Session's Agent. The Session resolves to its Task exactly as the Task routes resolve
    * it (`#scopeOf`: a chat Session, or the chat Session at the root of an internal Session's creator
-   * chain), and the Task must then qualify in the same `tasks` rollup that list and detail read
-   * their summary from. A Session whose Task does not qualify, such as an ambient-only group channel
+   * chain), and the Task must then qualify under the same rule list and detail apply
+   * (`taskQualifies`). A Session whose Task does not qualify, such as an ambient-only group channel
    * Session or an internal Session rooted at one, therefore keeps a plain footer instead of linking
    * to a detail page that answers 404.
+   *
+   * This runs before every annotatable provider write, so it never reads the `tasks` rollup: the
+   * creator chain is walked once, and qualification is a set of bounded index-range existence probes
+   * that each stop at their first row, also when the history holds only superseded deliveries,
+   * instead of deriving the Task's status over its whole history.
    */
   async hasLinkableTask(sessionId: string): Promise<boolean> {
     return this.database.transaction(
@@ -371,13 +377,13 @@ export class TaskService {
         `);
         const owner = [...owners][0];
         if (!owner) return false;
-        const scope = await this.#scopeOf(transaction, owner.accountId, sessionId);
+        const scope = await this.#scopeOfSession(transaction, owner.accountId, located);
         if (!scope) return false;
-        const rows = await transaction.execute(sql`
-          with ${taskCtes({ accountId: owner.accountId, scope, now: this.#now(), rollups: true })}
-          select 1 from tasks t where t.task_id = ${scope.taskId}::uuid limit 1
+        const rows = await transaction.execute<{ qualifies: boolean } & Record<string, unknown>>(sql`
+          with ${taskCtes({ accountId: owner.accountId, scope, now: this.#now() })}
+          select ${taskQualifies()} as "qualifies"
         `);
-        return [...rows].length > 0;
+        return [...rows][0]?.qualifies === true;
       },
       { isolationLevel: "repeatable read", accessMode: "read only" },
     );
@@ -416,17 +422,8 @@ export class TaskService {
    */
   async #scopeOf(executor: QueryExecutor, accountId: string, id: string): Promise<TaskScope | undefined> {
     const located = await this.#locateSession(executor, id);
+    if (located) return this.#scopeOfSession(executor, accountId, located);
     const now = this.#now();
-    if (located) {
-      const rows = await executor.execute<ScopeRow>(sql`
-        with ${taskCtes({ accountId, scope: { bindingId: located.bindingId, channelId: located.channelId }, now })}
-        select ts.im_binding_id as "bindingId", ts.channel_id as "channelId", ts.task_id as "taskId"
-        from task_sessions ts
-        where ts.id = ${located.sessionId}::uuid
-        limit 1
-      `);
-      return scopeFrom([...rows][0]);
-    }
     const messages = await executor.execute<ChannelScope & Record<string, unknown>>(sql`
       select m.im_binding_id as "bindingId", m.channel_id as "channelId"
       from im_messages m
@@ -440,6 +437,22 @@ export class TaskService {
       from im_messages m
       where m.id = ${id}::uuid
         and exists (select 1 from scoped_bindings sb where sb.binding_id = m.im_binding_id)
+      limit 1
+    `);
+    return scopeFrom([...rows][0]);
+  }
+
+  /** The Task of an already located chat Session, or undefined when it is outside the Account. */
+  async #scopeOfSession(
+    executor: QueryExecutor,
+    accountId: string,
+    located: LocatedSessionRow,
+  ): Promise<TaskScope | undefined> {
+    const rows = await executor.execute<ScopeRow>(sql`
+      with ${taskCtes({ accountId, scope: { bindingId: located.bindingId, channelId: located.channelId }, now: this.#now() })}
+      select ts.im_binding_id as "bindingId", ts.channel_id as "channelId", ts.task_id as "taskId"
+      from task_sessions ts
+      where ts.id = ${located.sessionId}::uuid
       limit 1
     `);
     return scopeFrom([...rows][0]);
@@ -661,6 +674,9 @@ export class TaskService {
   /**
    * Internal Sessions of a Task, earliest first with an `(created_at, id)` keyset cursor: every
    * internal Session the Task's own Sessions created, with their descendants, ended ones included.
+   * Each row carries a title — its stored title, or the start of the first collaboration message it
+   * received, which is the work it was created for — and its latest activity: its creation, its
+   * end, or the newest collaboration message it sent or received.
    * The page is cut on the related identities, so a Task with a hundred thousand related Sessions
    * resolves only the page's rows.
    */
@@ -680,6 +696,9 @@ export class TaskService {
         s.runtime_reasoning_effort as "runtimeReasoningEffort",
         s.ended_at as "endedAt",
         s.created_at as "createdAt",
+        coalesce(s.manual_title, s.generated_title) as "title",
+        first_message.content as "firstMessage",
+        greatest(s.created_at, s.ended_at, latest_received.created_at, latest_sent.created_at) as "lastActivityAt",
         ${cursorText(sql`s.created_at`)} as "cursorAt"
       from (
         -- The keyset order and the page are decided on the related identities alone; only the rows
@@ -692,6 +711,35 @@ export class TaskService {
         ${page.limit === undefined ? sql`` : sql`limit ${page.limit}`}
       ) p
       inner join sessions s on s.id = p.id
+      -- What the Session was asked to do: the whole body of the first collaboration message it
+      -- received. The Server collapses it to one line and caps it, with JavaScript's Unicode
+      -- whitespace, so the SQL and the mapper never disagree on what a space is. The body is bounded:
+      -- the schema caps it at 16 KiB (session_messages_content_bounds) and only one message per page
+      -- row is read.
+      left join lateral (
+        select m.content
+        from session_messages m
+        where m.target_session_id = s.id
+        order by m.created_at asc, m.id asc
+        limit 1
+      ) first_message on true
+      -- Latest activity reads only the newest message on each side, each a reverse probe of its own
+      -- index (session_messages_target_created_idx, session_messages_source_created_idx), so the
+      -- enrichment never aggregates a Session's message history.
+      left join lateral (
+        select m.created_at
+        from session_messages m
+        where m.target_session_id = s.id
+        order by m.created_at desc, m.id desc
+        limit 1
+      ) latest_received on true
+      left join lateral (
+        select m.created_at
+        from session_messages m
+        where m.source_session_id = s.id
+        order by m.created_at desc, m.id desc
+        limit 1
+      ) latest_sent on true
       where s.kind = 'internal'
       order by s.created_at asc, s.id asc
     `);

@@ -275,8 +275,10 @@ immutable-prefix compatibility without writing, and `--skip-build` reuses artifa
 ## Release authority
 
 GitHub Actions is the release authority. `publish-npm-package.yml` preflights the portable release before `npm publish`
-so an immutable-prefix conflict fails while the release is still retryable, and publishes it afterwards from the same
-preflighted artifacts. The portable steps are skipped unless the repository is configured for Cloud Storage.
+so an immutable-prefix conflict fails while the release is still retryable, verifies that the published npm coordinate
+is readable from `registry.npmjs.org` after `npm publish`, and only then publishes the portable release from the same
+preflighted artifacts and advances `latest.json`. The portable steps are skipped unless the repository is configured for
+Cloud Storage.
 
 Required repository variables:
 

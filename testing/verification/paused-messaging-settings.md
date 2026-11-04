@@ -70,3 +70,19 @@ The subsequent base `cbacb543f9289d2b2b9ba4fb7b86202d2ec20282` includes the sett
 Computer connection-copy changes. The paused-settings section is consolidated as implemented, with its Planned
 marker removed; the Cloud type-step decision is preserved. Manifests and the lockfile are unchanged. This merge
 is checked with affected package type checks/builds and the focused messaging/presentation tests.
+
+## Embedded setup-read race fixtures
+
+The embedded setup projection tests use one PGlite connection. Their pause fixture opts into holding a captured
+result after its read-only transaction commits, before the service receives that result. This lets the controlled
+writer advance the saved attempt or transfer ownership without queuing behind the same embedded connection.
+The default pause mode still retains its transaction for the other drain and cancellation tests. Public attempt
+and Agent read authority tests observe `assertCanRead`; final authority revalidation and all existing assertions
+remain in place. The Agent setup projection suite passes all 72 cases, and the default-mode cancellation/drain
+regressions pass all three selected cases. This fixture adjustment supplements the independent-connection
+PostgreSQL snapshot evidence above; it does not replace it or change production read/write behavior.
+
+With that fixture adjustment, `node scripts/unit-coverage.mjs --project server` completes with 5,052 tests passed,
+16 skipped, zero failures, zero retries, and zero flaky tests. Server line coverage is 90.75%. The Server-only patch
+coverage check uses the repository gate at its 80% threshold and passes with 139/147 changed executable lines
+covered (94.56%). The eight uncovered Slack-view lines retain the real PostgreSQL configuration evidence above.

@@ -36,5 +36,6 @@
   "im_feedback_card_blocked": "The error card could not be delivered. Check the Agent connection and its messaging permissions.",
   "im_feedback_task": "Open Task",
   "im_feedback_batch_retry_blocked": "This frozen batch cannot be retried here. Open the original Task and review every input before starting new work.",
-  "im_feedback_history_with_count": "Recovery and error notices ({count})"
+  "im_feedback_history_with_count": "Recovery and error notices ({count})",
+  "im_feedback_more_failed": "More notices couldn't be loaded."
 }

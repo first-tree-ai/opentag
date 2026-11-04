@@ -9,7 +9,9 @@ import { Button } from "../ui/design-system.js";
 /**
  * Recovery and error notices for an Agent. With none there is nothing to open, so the section is not
  * shown at all; otherwise it stays collapsed and names how many there are. The first page is read up
- * front to know that; a failed read hides the section, since it is a diagnostic, not a task.
+ * front to know that; a failed first read hides the section, since it is a diagnostic, not a task. Once
+ * notices are on screen, a failed later page keeps them, says the read failed, and keeps Load more as
+ * the retry.
  */
 export function ImFeedbackList({ agentId }: { agentId: string }) {
   const [open, setOpen] = useState(false);
@@ -21,7 +23,7 @@ export function ImFeedbackList({ agentId }: { agentId: string }) {
     retry: false,
   });
   const loaded = query.data?.pages.flatMap((page) => page.items).length ?? 0;
-  if (!query.isSuccess || loaded === 0) return null;
+  if (!query.data || loaded === 0) return null;
   const count = query.hasNextPage ? `${loaded}+` : String(loaded);
   return (
     <section className="space-y-3 rounded-lg border border-kumo-line p-4" data-ui="im-feedback-list">
@@ -49,6 +51,7 @@ export function ImFeedbackList({ agentId }: { agentId: string }) {
                 </li>
               ))}
           </ul>
+          {query.isFetchNextPageError ? <p role="alert">{m.im_feedback_more_failed()}</p> : null}
           {query.hasNextPage ? (
             <Button variant="secondary" disabled={query.isFetchingNextPage} onClick={() => void query.fetchNextPage()}>
               {m.im_feedback_more()}

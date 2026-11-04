@@ -74,3 +74,12 @@ The tests exercise local PostgreSQL, transport and request ownership, not a phys
 Cloud deployment or the completeness of unseen provider messages. Deployment and real-environment
 acceptance remain separate. Old Server writers do not acquire the new recovery lease, so a mixed
 rollout or rollback does not establish the repaired single-owner guarantee.
+
+## CI fixture follow-up
+
+The successor CI passes the full PostgreSQL suite. Its remaining Client failure compares compressed
+archive sizes after successful restore/re-save. A controlled baseline file mtime of the Unix epoch
+reproduces that failure despite unchanged contents: extraction creates a new mtime, which the next
+archive includes. The test now forces that interleaving and requires a newer CAS generation while
+checking the restored and replacement files and absence of pre-prompt dirt. No Cloud workspace
+production behavior changes. This test correction is required to complete this PR's CI verification.

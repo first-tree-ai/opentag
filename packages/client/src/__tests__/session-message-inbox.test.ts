@@ -776,6 +776,114 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
   });
 
+  it("steers a message into the Session's running Turn instead of waiting for it to end", async () => {
+    const admission = new AdmissionController();
+    const persistence = new MemoryRuntimeDurabilityStore();
+    const targetSessionId = randomUUID();
+    const agentId = randomUUID();
+    const held = admission.reserve(targetSessionId, agentId);
+    if (!held.accepted) throw new Error("Expected the test reservation");
+    held.reservation.markActive();
+    const state = { phase: "running", activeRunId: "im-turn" as string | undefined };
+    const steer = vi.fn(async (_request: { expectedRunId: string; input: { items: readonly { text: string }[] } }) => {
+      if (steer.mock.calls.length === 1) throw new Error("starting");
+    });
+    const prompt = vi.fn();
+    const runtime = { capabilities: { steer: "supported" }, state, steer, prompt, waitForIdle: async () => undefined };
+    const credentials = {
+      ...credentialEnvironment(),
+      outboxContextForSession: vi.fn(() => ({
+        provider: "slack" as const,
+        sessionKind: "thread" as const,
+        channelId: "C-visible",
+        threadTs: "1710000000.000001",
+      })),
+    };
+    const inbox = new SessionMessageInbox({
+      admission,
+      credentialEnvironment: credentials,
+      imCredentialGrantVersion: () => 2,
+      persistence,
+      sessionCollaborationVersion: () => 3,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(),
+        runtime: vi.fn(() => runtime as never),
+        sessionKind: vi.fn(() => "visible" as const),
+      },
+      steerRetryMs: 5,
+    });
+    const message = delivery({ targetSessionId, agentId, text: "child result" });
+    expect((await inbox.accept(message)).status).toBe("accepted");
+    // The first attempt is refused (the Turn is still starting); the retry lands in the running Turn.
+    await vi.waitFor(() => expect(steer).toHaveBeenCalledTimes(2));
+    await inbox.settled();
+    expect(steer.mock.calls[1]?.[0]).toMatchObject({ expectedRunId: "im-turn" });
+    const items = steer.mock.calls[1]?.[0].input.items ?? [];
+    expect(items.at(-1)?.text).toBe("child result");
+    expect(items[0]?.text).toContain('"threadTs":"1710000000.000001"');
+    expect(prompt).not.toHaveBeenCalled();
+    expect(credentials.prepare).not.toHaveBeenCalled();
+    expect(inbox.getState(message.messageId)?.status).toBe("succeeded");
+    expect(inbox.queuedCount).toBe(0);
+    // A duplicate delivery of the steered message is acknowledged without a second steer.
+    await expect(inbox.accept({ ...message, requestId: randomUUID() })).resolves.toMatchObject({ status: "accepted" });
+    expect(steer).toHaveBeenCalledTimes(2);
+    held.reservation.release();
+    inbox.stop();
+  });
+
+  it.each(["unsupported", "not-ready", "no-outbox"] as const)(
+    "keeps a message queued when the running Turn cannot take steered input (%s)",
+    async (scenario) => {
+      const admission = new AdmissionController();
+      const targetSessionId = randomUUID();
+      const agentId = randomUUID();
+      const held = admission.reserve(targetSessionId, agentId);
+      if (!held.accepted) throw new Error("Expected the test reservation");
+      held.reservation.markActive();
+      const prompts: string[] = [];
+      let released = false;
+      const steer = vi.fn();
+      const runtime = {
+        capabilities: { steer: scenario === "unsupported" ? "unsupported" : "supported" },
+        state: { phase: "running", activeRunId: "im-turn" },
+        steer,
+        waitForIdle: async () => undefined,
+        prompt: vi.fn(async (request: { input: { items: readonly { text: string }[] } }) => {
+          prompts.push(request.input.items.at(-1)?.text ?? "");
+          return { runId: "run", status: "completed", output: [] };
+        }),
+      };
+      const inbox = new SessionMessageInbox({
+        admission,
+        credentialEnvironment: { ...credentialEnvironment(), outboxContextForSession: () => undefined },
+        imCredentialGrantVersion: () => 2,
+        sessionCollaborationVersion: () => 3,
+        reconciler: inboxReconciler(),
+        runtimeManager: {
+          ensureRuntime: vi.fn(async () => runtime as never),
+          runtime: vi.fn(() => {
+            if (scenario === "not-ready") throw new Error("The Session Agent Runtime is not ready");
+            return runtime as never;
+          }),
+          // Released visible work prepares credentials; only the steer path is under test here.
+          sessionKind: vi.fn(() => (scenario === "no-outbox" && !released ? "visible" : "internal")),
+        },
+        steerRetryMs: 5,
+      });
+      expect((await inbox.accept(delivery({ targetSessionId, agentId, text: "queued" }))).status).toBe("accepted");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(steer).not.toHaveBeenCalled();
+      expect(prompts).toEqual([]);
+      released = true;
+      held.reservation.release();
+      await vi.waitFor(() => expect(prompts).toEqual(["queued"]));
+      await inbox.settled();
+      inbox.stop();
+    },
+  );
+
   it("deduplicates the same logical payload and rejects a conflicting retry", async () => {
     const inbox = new SessionMessageInbox({
       admission: new AdmissionController(),

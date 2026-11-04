@@ -151,9 +151,11 @@ neutral **Cancelled** label rather than Completed. Why: the Account withdrew it 
 Task status remains a projection over existing message and delivery records. The precedence and
 terminal distinctions above, topic ordering, placement fences, immutable reports and delivery
 idempotency remain authoritative; there is no new Task-status table or independent execution state.
-New input follows the existing Session path: a runtime that supports steer may accept it into the
-running Turn; an unsupported runtime leaves it queued until the current Turn settles. The Server
-does not force interruption or replay an accepted Turn.
+New input follows the existing Session path: it is steered into the running Turn, which every Local
+runtime (Codex, Pi, Claude Code) supports; a runtime without steer leaves it queued until the
+current Turn settles. Local Session messages (`session send` callbacks, scheduled messages) steer
+into a running Turn the same way. The Server does not yet force interruption or replay an accepted
+Turn for a runtime that cannot steer.
 
 New failure targets can use plain messages through the feedback rollout described in
 [IM task feedback](../system/messaging/im-feedback.md). New Task Retry admissions are disabled;

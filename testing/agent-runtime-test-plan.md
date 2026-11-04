@@ -127,7 +127,8 @@ public network nor Provider credentials.
 A scripted `stream-json` process verifies:
 
 - generated UUID session binding and exact `--resume` continuation;
-- FIFO follow-ups with `steer` and interactive callbacks explicitly unsupported;
+- FIFO follow-ups, and `steer` written as a uuid-tagged stream-json user message: a `result` that precedes
+  `command_lifecycle: started` for a steered input is not terminal, and the Run reports one merged terminal;
 - fail-closed rejection of filesystem and network constraints that managed settings can override;
 - unrestricted filesystem, enabled network, and approval mapping with tool allow-lists rejected;
 - streamed model turn, text, tool, usage, warning, extension, and result events;

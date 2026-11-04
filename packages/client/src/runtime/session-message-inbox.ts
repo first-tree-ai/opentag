@@ -56,7 +56,7 @@ export interface SessionMessageInboxOptions {
   admission: AdmissionController;
   cliCommand?: string;
   credentialEnvironment: Pick<RuntimeCredentialEnvironmentManager, "cleanup" | "prepare"> &
-    Partial<Pick<RuntimeCredentialEnvironmentManager, "mode">>;
+    Partial<Pick<RuntimeCredentialEnvironmentManager, "mode" | "outboxContextForSession">>;
   turnPlan?: {
     cleanup(input: ProviderCliTurnPlanPrepareInput): Promise<void>;
     prepare(input: ProviderCliTurnPlanPrepareInput, signal?: AbortSignal): Promise<unknown>;
@@ -84,7 +84,10 @@ export interface SessionMessageInboxOptions {
     SessionReconciler,
     "checkSessionMessageDelivery" | "clearActivity" | "setActivity" | "withAgentLock"
   >;
-  runtimeManager: Pick<SessionRuntimeManager, "ensureRuntime" | "sessionKind">;
+  runtimeManager: Pick<SessionRuntimeManager, "ensureRuntime" | "sessionKind"> &
+    Partial<Pick<SessionRuntimeManager, "runtime">>;
+  /** How often a message waiting behind a busy Session re-checks whether it can steer into the running Turn. */
+  steerRetryMs?: number;
 }
 
 export class SessionMessageInbox {
@@ -107,6 +110,7 @@ export class SessionMessageInbox {
   readonly #sessionCollaborationVersion: SessionMessageInboxOptions["sessionCollaborationVersion"];
   readonly #reconciler: SessionMessageInboxOptions["reconciler"];
   readonly #runtimeManager: SessionMessageInboxOptions["runtimeManager"];
+  readonly #steerRetryMs: number;
   readonly #queues = new Map<string, QueuedMessage[]>();
   readonly #drains = new Map<string, Promise<void>>();
   readonly #records = new Map<string, DurableWorkRecord<SessionMessageDeliveryRequestV3>>();
@@ -136,6 +140,7 @@ export class SessionMessageInbox {
     this.#sessionCollaborationVersion = options.sessionCollaborationVersion;
     this.#reconciler = options.reconciler;
     this.#runtimeManager = options.runtimeManager;
+    this.#steerRetryMs = positive(options.steerRetryMs ?? 1_000, "steerRetryMs");
     this.#readyPromise = this.#hydrate();
   }
 
@@ -300,14 +305,74 @@ export class SessionMessageInbox {
       }
       let reservation = this.#admission.reserve(sessionId, next.request.agentId, { acceptedWork: true });
       while (!reservation.accepted) {
-        await this.#admission.waitForRelease(this.#abort.signal);
+        // A busy Session usually has a running Turn: the message joins it instead of waiting for it to end.
+        if (await this.#steerIntoRunningTurn(sessionId, next)) break;
+        await this.#waitForReleaseOrSteerRetry();
         reservation = this.#admission.reserve(sessionId, next.request.agentId, { acceptedWork: true });
       }
       queue?.shift();
       this.#queuedTotal -= 1;
+      if (!reservation.accepted) continue;
       reservation.reservation.markActive();
       await this.#runMessage(sessionId, next, reservation.reservation);
     }
+  }
+
+  async #waitForReleaseOrSteerRetry(): Promise<void> {
+    const retry = new AbortController();
+    const timer = this.#timeoutScheduler.schedule(this.#steerRetryMs, () => retry.abort());
+    try {
+      await this.#admission.waitForRelease(AbortSignal.any([this.#abort.signal, retry.signal]));
+    } catch (error) {
+      if (this.#abort.signal.aborted) throw error;
+    } finally {
+      timer.cancel();
+    }
+  }
+
+  /**
+   * Steers an accepted message into the Session's running Turn when its runtime accepts input
+   * mid-Turn. The running Turn already holds the Session's credentials and IM outbox target, so the
+   * message is delivered once the runtime accepts it; any refusal leaves it queued as before.
+   */
+  async #steerIntoRunningTurn(sessionId: string, next: QueuedMessage): Promise<boolean> {
+    const lookup = this.#runtimeManager.runtime;
+    if (!lookup) return false;
+    let runtime: AgentRuntime;
+    try {
+      runtime = lookup.call(this.#runtimeManager, sessionId);
+    } catch {
+      return false;
+    }
+    const activeRunId = runtime.state.activeRunId;
+    if (runtime.capabilities.steer !== "supported" || runtime.state.phase !== "running" || !activeRunId) return false;
+    let turnContext: SessionMessageTurnContext = { sessionKind: "internal" };
+    if (this.#runtimeManager.sessionKind(sessionId) === "visible") {
+      const outboxContext = this.#credentialEnvironment.outboxContextForSession?.(sessionId);
+      if (!outboxContext) return false;
+      turnContext = { sessionKind: "visible", outboxContext };
+    }
+    try {
+      await runtime.steer({
+        expectedRunId: activeRunId,
+        input: buildSessionMessageInput(next.request, this.#cliCommand, turnContext, new Date(this.#now())),
+      });
+    } catch {
+      return false;
+    }
+    const key = `${next.request.targetSessionId}:${next.request.messageId}`;
+    const current = this.#records.get(key);
+    try {
+      if (current) await this.#transition(current, "succeeded");
+    } catch {
+      // The input is already in the running Turn. Only a restart before this record is rewritten can redeliver it.
+      this.#logger.warn(
+        { code: "SESSION_MESSAGE_STEER_PERSISTENCE_FAILED", messageId: next.request.messageId },
+        "Steered Session message could not be marked delivered",
+      );
+    }
+    this.#remember(key, { hash: next.hash, status: "succeeded" });
+    return true;
   }
 
   async #runMessage(

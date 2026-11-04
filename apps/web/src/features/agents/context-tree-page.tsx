@@ -60,10 +60,7 @@ function ContextTreeConfig({
     );
   return (
     <div className="grid gap-6">
-      <PageHeader
-        title={m.agent_settings_context_tree_title()}
-        description={m.agent_settings_context_tree_description()}
-      />
+      <PageHeader title={m.agent_settings_context_tree_title()} />
       {state.kind === "loading" ? (
         <div role="status" className="grid gap-4 py-8">
           <span className="sr-only">{m.common_loading()}</span>

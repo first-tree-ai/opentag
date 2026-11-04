@@ -243,7 +243,7 @@ function RuntimeConfigurationEditor({
                 cloudModelState={cloudModelState}
                 modelDraft={modelDraft}
                 id={fieldId("model")}
-                note={cloud ? undefined : localOptionsNote(localOptions, computerOnline)}
+                note={cloud ? undefined : localOptionsNote(localOptions, computerOnline, modelField.choices.length > 0)}
                 onSelectionChange={(selection) => {
                   setModelSelection(selection);
                   if (selection === CUSTOM_MODEL_OPTION) {
@@ -412,10 +412,16 @@ function invalidNewReasoning(
 }
 
 /** Why the computer's model list is missing, said once by the model field; undefined when it loaded. */
-function localOptionsNote(query: ReturnType<typeof useLocalRuntimeOptions>, computerOnline: boolean) {
+function localOptionsNote(
+  query: ReturnType<typeof useLocalRuntimeOptions>,
+  computerOnline: boolean,
+  suggested: boolean,
+) {
   if (computerOnline && !query.isError) return undefined;
   const denied = query.error instanceof ApiError && [401, 403, 404].includes(query.error.status);
-  return denied ? m.agent_settings_runtime_options_denied() : m.agent_settings_runtime_options_unavailable();
+  if (denied) return m.agent_settings_runtime_options_denied();
+  // The runtime's suggested models are still offered, so the note must not say there is no list.
+  return suggested ? m.agent_settings_runtime_options_suggested() : m.agent_settings_runtime_options_unavailable();
 }
 
 function LocalRuntimeOptionsFeedback({

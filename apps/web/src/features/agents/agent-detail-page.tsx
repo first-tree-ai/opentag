@@ -8,7 +8,7 @@ import { useAccount } from "../session/session-context.js";
 import { AgentTasksSection } from "../tasks-page.js";
 import { AgentAvatar } from "./agent-avatar.js";
 import type { AgentDetailView } from "./agent-model.js";
-import { agentRecoveryMessage, agentStatusPresentation } from "./agent-presentation.js";
+import { agentMessagingStatus, agentRecoveryMessage, agentStatusPresentation } from "./agent-presentation.js";
 import { useAgentDetailView } from "./agent-queries.js";
 import { agentDetailLink, agentSettingsLink } from "./agent-routes.js";
 import { AgentSchedulesSection } from "./agent-schedules-section.js";
@@ -46,7 +46,7 @@ export function AgentDetailPage({
               <CloudWorkspaceRecovery key={agent.id} agentId={agent.id} initialOpen={workspaceRecovery} />
             ) : null}
             <AgentSchedulesSection agentId={agent.id} scheduleId={scheduleId} />
-            <AgentTasksSection agentId={agent.id} />
+            <AgentTasksSection agentId={agent.id} connectChannel={connectChannelAction(agent)} />
             <ImFeedbackList agentId={agent.id} />
           </div>
         </section>
@@ -137,4 +137,10 @@ export function AgentLifecycleNotice({ agent }: { agent: AgentDetailView }) {
       <ResumeAgentButton agentId={agent.id} />
     </section>
   );
+}
+
+/** The status card's own way to connect messaging, offered again where the empty Task list asks for work. */
+function connectChannelAction(agent: AgentDetailView) {
+  if (agent.messaging.kind !== "ready" || agent.messaging.value) return undefined;
+  return agentMessagingStatus(agent).action;
 }

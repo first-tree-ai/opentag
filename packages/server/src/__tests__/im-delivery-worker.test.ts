@@ -989,6 +989,7 @@ describe("ImDeliveryWorker database workflow", () => {
           undefined,
           undefined,
           expect.any(AbortSignal),
+          { joinSettlement: true },
         );
         expect(domain.requestReconcile.mock.calls[0]?.[2]).not.toHaveProperty("runtime");
       } else {
@@ -1085,6 +1086,133 @@ describe("ImDeliveryWorker database workflow", () => {
       expect(domain.requestSteer).not.toHaveBeenCalled();
     },
   );
+
+  it("records one cooperative accepted-recovery timeout and preserves custody", async () => {
+    const f = await workerFixture(unit);
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({
+        state: "accepted",
+        inputHash: "original-input",
+        turnId: "original-turn",
+        reportOwnerInstanceId: f.instanceId,
+        acceptedAt: new Date(),
+        nextAttemptAt: new Date(Date.now() - 1),
+      })
+      .where(eq(imMessageDeliveries.id, f.deliveryId));
+    const diagnostic = vi.fn();
+    const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), f);
+    const requestReconcile = vi.fn(async (...args: unknown[]) => {
+      const signal = args[5] as AbortSignal;
+      await new Promise<void>((_resolve, reject) =>
+        signal.addEventListener("abort", () => reject(new Error("cancelled transport")), { once: true }),
+      );
+    });
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      registry: f.registry,
+      domain: { ...domain, requestReconcile } as never,
+      assembler: { assembleForSession: vi.fn() },
+      operationTimeoutMs: 200,
+      claimLeaseMs: 1_000,
+      claimRenewMs: 30,
+      onDiagnostic: diagnostic,
+    });
+    try {
+      await worker.runOnce();
+      const [row] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, f.deliveryId));
+      expect(row).toMatchObject({
+        state: "accepted",
+        attemptCount: 1,
+        inputHash: "original-input",
+        turnId: "original-turn",
+        reportedAt: null,
+        lastErrorCode: "IM_DELIVERY_OPERATION_TIMEOUT",
+      });
+      expect(diagnosticCodes(diagnostic)).toEqual(["IM_DELIVERY_OPERATION_TIMEOUT"]);
+      expect(domain.requestDelivery).not.toHaveBeenCalled();
+      expect(domain.requestSteer).not.toHaveBeenCalled();
+    } finally {
+      await worker.stop();
+    }
+  });
+
+  it("renews globally queued recovery and drops it without a shutdown saturation failure", async () => {
+    const fixtures = [await workerFixture(unit), await workerFixture(unit)];
+    for (const [index, f] of fixtures.entries()) {
+      await unit.database
+        .update(imMessageDeliveries)
+        .set({
+          state: "accepted",
+          inputHash: "original-input",
+          turnId: `original-turn-${index}`,
+          reportOwnerInstanceId: f.instanceId,
+          acceptedAt: new Date(),
+          nextAttemptAt: new Date(Date.now() - 1_000 + index),
+        })
+        .where(eq(imMessageDeliveries.id, f.deliveryId));
+    }
+    const first = fixtures[0];
+    const second = fixtures[1];
+    if (!first || !second) throw new Error("missing recovery fixtures");
+    const registry = new ConnectionRegistry();
+    for (const f of fixtures)
+      await registry.register(
+        {
+          computerId: f.computerId,
+          installationId: randomUUID(),
+          instanceId: f.instanceId,
+          clientVersion: "0.1.1",
+          lastHeartbeatAt: Date.now(),
+          socket: { close: vi.fn(), terminate: vi.fn() } as never,
+        },
+        async () => undefined,
+      );
+    const requestReconcile = vi.fn(async (...args: unknown[]) => {
+      const signal = args[5] as AbortSignal;
+      await new Promise<void>((_resolve, reject) =>
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true }),
+      );
+    });
+    const diagnostic = vi.fn();
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      registry,
+      domain: { requestReconcile } as never,
+      assembler: { assembleForSession: vi.fn() },
+      maxConcurrent: 1,
+      claimLeaseMs: 1_000,
+      claimRenewMs: 30,
+      onDiagnostic: diagnostic,
+    });
+    const runs = [worker.runOnce()];
+    try {
+      await vi.waitFor(() => expect(requestReconcile).toHaveBeenCalledTimes(1));
+      runs.push(worker.runOnce());
+      const read = async () => {
+        const [row] = await unit.database
+          .select()
+          .from(imMessageDeliveries)
+          .where(eq(imMessageDeliveries.id, second.deliveryId));
+        return row;
+      };
+      await vi.waitFor(async () => expect((await read())?.attemptCount).toBe(1));
+      const initial = (await read())?.nextAttemptAt.getTime() ?? 0;
+      await vi.waitFor(async () => expect((await read())?.nextAttemptAt.getTime()).toBeGreaterThan(initial));
+      await worker.runOnce();
+      expect(requestReconcile).toHaveBeenCalledTimes(1);
+      await worker.stop();
+      await Promise.all(runs);
+      expect((await read())?.lastErrorCode).toBeNull();
+      expect(diagnostic).not.toHaveBeenCalled();
+    } finally {
+      await worker.stop();
+      await Promise.all(runs);
+    }
+  });
 
   it.each(["reported", "newer-attempt"] as const)("does not overwrite a %s race after reconcile", async (race) => {
     const fixture = await workerFixture(unit);

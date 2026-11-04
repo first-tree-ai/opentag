@@ -33,8 +33,8 @@ expiry tells the reader why an old copy no longer works.
 
 - A local computer that is not online shows its status badge and one **Restore connection** action. Pressing it
   opens the shared command window inline on the card and issues a targeted repair command only then; the card hides
-  its badge while the window is shown, so the window's status is the only one. A link that names the computer (Agent
-  settings' Reconnect, the Agent list's Restore connection) arrives with that card's window already open. The copied
+  its badge while the window is shown, so the window's status is the only one. A **Restore connection** link that names the computer (from the Agent list, the
+  Agent home, or Agent settings) arrives with that card's window already open. The copied
   text is always complete. Copying is never evidence of connection.
 - While the inventory read is uncertain, the repair task is hidden and the card offers Check status instead. Cancel
   inventory reads that began before the failure, then latch uncertainty against the cache's current

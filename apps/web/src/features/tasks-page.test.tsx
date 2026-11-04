@@ -12,6 +12,7 @@ import { renderInRouter } from "../__tests__/support/router.js";
 import { detailPage, mockDetail } from "../__tests__/support/task-detail-fixture.js";
 import { ApiError, browserApi } from "../api.js";
 import { queryKeys } from "../query/keys.js";
+import { agentSettingsSectionLink } from "./agents/agent-routes.js";
 import { AgentTasksSection, TaskDetailPage, TasksPage } from "./tasks-page.js";
 
 const sessionId = "11111111-1111-4111-8111-111111111111";
@@ -850,6 +851,27 @@ describe("Tasks view", () => {
     expect(await screen.findByText("This is an older inbound message.")).toBeTruthy();
     expect(taskRequest).toHaveBeenLastCalledWith(sessionId, "older-turns");
     expect(screen.queryByRole("button", { name: "Load earlier activity" })).toBeNull();
+  });
+
+  it("offers the messaging connection instead of View all when an Agent with no channel has no Tasks", async () => {
+    vi.spyOn(browserApi, "tasks").mockResolvedValue({ tasks: [], nextCursor: null });
+    await renderInRouter(
+      <AgentTasksSection
+        agentId={agentId}
+        connectChannel={{ label: "Connect messaging app", link: agentSettingsSectionLink(agentId, "messaging") }}
+      />,
+    );
+    const connect = await screen.findByRole("link", { name: "Connect messaging app" });
+    expect(connect.getAttribute("href")).toBe(`/agents/${agentId}/settings/messaging`);
+    expect(screen.queryByText("Message this Agent in your chat app to put it to work.")).toBeNull();
+    expect(screen.queryByRole("link", { name: "View all" })).toBeNull();
+  });
+
+  it("asks for a first message when a connected Agent has no Tasks", async () => {
+    vi.spyOn(browserApi, "tasks").mockResolvedValue({ tasks: [], nextCursor: null });
+    await renderInRouter(<AgentTasksSection agentId={agentId} />);
+    expect(await screen.findByText("Message this Agent in your chat app to put it to work.")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "View all" })).toBeNull();
   });
 
   it("does not let a late page for one Agent land on another Agent's Tasks", async () => {

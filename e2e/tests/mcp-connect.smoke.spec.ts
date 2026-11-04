@@ -989,7 +989,7 @@ const discoverCopy = {
   },
   zh: {
     title: "发现",
-    empty: "暂无连接器",
+    empty: "尚未添加连接器",
     close: "关闭 发现",
     search: "搜索连接器",
     add: "添加: Linear",

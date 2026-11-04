@@ -209,3 +209,21 @@ local results do not waive either failed remote run or establish a new-head CI r
 The final base update through `ce3b11254` changes only runtime-options abort handling and its test.
 The owning Server tests and Server type checks passed after integration; manifests and lockfile
 were unchanged.
+
+## Current-main conflict integration
+
+The integration through `main@047a78043` retains the shared Messaging settings surface and its
+identity block while preserving the configured-versus-initial-slot disconnect confirmation.
+The Slack dialog remains mounted during the unbound-to-bound refresh. Root build, root type
+checks and repository checks passed; the affected settings, messaging, home and setup Web subset
+passed all 404 cases. Both disconnected-identity and paused-read-only browser checks passed at
+320/390/768/1440 px, including no overflow or axe violations, no replacement controls and no
+paused messaging writes. Their screenshots were refreshed and visually reviewed. The dedicated
+local browser database was removed after the run; no test container was created.
+
+The intermediate Cloud/recovery base combination also passed 224 Server and 173 Client unit
+cases. The later lifecycle base passed 40 Session unit cases and all 22 PostgreSQL lifecycle
+cases, including 4,096 Sessions with max-1 and max-20 pools, without changing concurrency or
+deadlines. The settings-index base passed 321 affected Web cases. No package manifest or lockfile
+changed across these updates. Fresh CI and exact-head review are required for the published
+integration commit.

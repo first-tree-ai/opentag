@@ -22,6 +22,30 @@ Test and acceptance material for [Cloud workspace persistence](../../docs/system
 These checks establish reproducible failure handling. They do not identify the exact archive
 violation from an incident without its original error or prove real GCS/native recovery.
 
+## Failed automatic reclamation and pending allocation
+
+- `serve-workspace.test.ts` verifies transient seal recovery, coalesced retries, terminal archive
+  blocking, fatal native-stop handling and a committed seal that cannot relaunch execution.
+- `runner-workspace-wire.test.ts` rejects the final seal upload over real loopback HTTP/WS,
+  reconnects the same assignment, receives and executes a new Cloud input using the real Turn
+  controller, acknowledges its report, and seals successfully. Unpublished local files survive.
+  `cloud-turns.test.ts` verifies that unacknowledged release reports prevent resumption and permanent
+  shutdown remains irreversible.
+- `sandbox-idle-instance-reuse.test.ts` checks that repeated 15-second sweeps perform no new Cloud
+  or seal I/O during cooldown, preserve the binding, and consume a committed seal proof after the
+  delay. Delete failures survive restart without a same-pass retry; explicit stop remains available.
+- `im-delivery-worker-cloud.test.ts` verifies that `pending` allocation skips dispatch and reports
+  an allocation latency failure. Workspace-blocked undispatched input retains its TTL and custody
+  fields, receives ten-minute backoff, and resumes through a valid readiness notification or the
+  polling fallback. It also covers readiness preceding the failure write and stale UID wakeups.
+- `integration/sandbox-instance-reuse-race.test.ts` uses independent PostgreSQL clients and a
+  controlled row lock to make two workers contend for the same ready or releasing retry. Exactly
+  one performs seal I/O. Restart/cooldown expiry and late failures racing stop, generation or UID
+  replacement retain the latest allocation state and previous object.
+
+These are local tests with fake Cloud and object-store transports. They do not release historical
+online Instances, establish live GCS recovery, or change the retention of messages and reports.
+
 ## Web recovery
 
 - Ordinary Agent home exposes no workspace recovery entry, including during a known save failure.

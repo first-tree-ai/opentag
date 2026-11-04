@@ -133,56 +133,38 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                        */}
                       <section aria-label={m.im_messaging_app()} className="grid gap-4">
                         {binding ? (
-                          <>
-                            <Text as="h2" variant="heading">
-                              {m.im_messaging_app()}
-                            </Text>
-                            <div
-                              className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-3"
-                              data-ui="messaging-app-identity"
-                            >
-                              <ProviderIcon className="size-6" provider={binding.provider} />
-                              <span className="grid min-w-0 justify-items-start gap-1">
-                                <strong className="text-base font-semibold text-kumo-strong">
-                                  {binding.bot.displayName ?? messagingProviderLabel(binding.provider)}
-                                </strong>
-                                <StatusIndicator
-                                  label={messagingConnectionLabel(binding)}
-                                  tone={messagingConnectionTone(binding)}
-                                />
-                              </span>
-                            </div>
-                            {connectionFailureMessage(binding) ? (
-                              <p className="text-sm text-kumo-default" data-ui="messaging-connection-failure">
-                                {connectionFailureMessage(binding)}
-                              </p>
-                            ) : null}
-                          </>
+                          <Text as="h2" variant="heading">
+                            {m.im_messaging_app()}
+                          </Text>
                         ) : null}
-                        <MessagingConnectionActions
-                          agent={agent}
-                          binding={binding}
-                          onAgentChanged={onAgentChanged}
-                          readOnly={readOnly}
-                          busy={feishuSetup.loading || slackConfiguration.loading}
-                          feishuBusy={feishuSetup.loading}
-                          disconnectRef={disableBindingButtonRef}
-                          onSlack={
-                            agent.slackOAuthAvailable !== false ? () => void connectSlack("reauthorize") : undefined
-                          }
-                          onDisconnect={(current) => {
-                            setConfirmationError(undefined);
-                            setConfirmation({
-                              bindingId: current.id,
-                              provider: current.provider,
-                              configured: current.bindingState !== "provisioning",
-                            });
-                          }}
-                          onFeishu={(intent, target) => {
-                            activeFeishuTriggerRef.current = target;
-                            void connectFeishu(intent);
-                          }}
-                        />
+                        {/* The same surface as other settings pages, so the page reads as one family. */}
+                        <div className={MESSAGING_SURFACE}>
+                          {binding ? <MessagingAppIdentity binding={binding} /> : null}
+                          <MessagingConnectionActions
+                            agent={agent}
+                            binding={binding}
+                            onAgentChanged={onAgentChanged}
+                            readOnly={readOnly}
+                            busy={feishuSetup.loading || slackConfiguration.loading}
+                            feishuBusy={feishuSetup.loading}
+                            disconnectRef={disableBindingButtonRef}
+                            onSlack={
+                              agent.slackOAuthAvailable !== false ? () => void connectSlack("reauthorize") : undefined
+                            }
+                            onDisconnect={(current) => {
+                              setConfirmationError(undefined);
+                              setConfirmation({
+                                bindingId: current.id,
+                                provider: current.provider,
+                                configured: current.bindingState !== "provisioning",
+                              });
+                            }}
+                            onFeishu={(intent, target) => {
+                              activeFeishuTriggerRef.current = target;
+                              void connectFeishu(intent);
+                            }}
+                          />
+                        </div>
                       </section>
                       {feishuSetup.feedback}
 
@@ -200,7 +182,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                             </Text>
                             <p className="text-sm text-kumo-subtle">{triggerModeExplanation(binding.provider)}</p>
                           </div>
-                          <div className="grid gap-3">
+                          <div className={MESSAGING_SURFACE}>
                             <fieldset
                               aria-label={m.im_receive_mode()}
                               className="flex w-fit flex-wrap items-center gap-1 rounded-md bg-kumo-recessed p-1"
@@ -270,6 +252,8 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
     </div>
   );
 }
+
+const MESSAGING_SURFACE = "ui-surface grid gap-3 bg-kumo-base p-4";
 
 /** The Slack dialog stays mounted across the unbound-to-bound refresh. */
 function MessagingConnectionActions({
@@ -446,4 +430,27 @@ function triggerModeExplanation(provider: ImBindingSummary["provider"]): string 
 
 function triggerModeDescription(receiveMode: AgentSummary["receiveMode"]): string {
   return receiveMode === "all_message" ? m.im_every_message_description() : m.im_mentions_only_description();
+}
+
+/** The connected app's identity, its connection state, and why a failed connection failed. */
+function MessagingAppIdentity({ binding }: { binding: ImBindingSummary }) {
+  const failure = connectionFailureMessage(binding);
+  return (
+    <>
+      <div className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-3" data-ui="messaging-app-identity">
+        <ProviderIcon className="size-6" provider={binding.provider} />
+        <span className="grid min-w-0 justify-items-start gap-1">
+          <strong className="text-base font-semibold text-kumo-strong">
+            {binding.bot.displayName ?? messagingProviderLabel(binding.provider)}
+          </strong>
+          <StatusIndicator label={messagingConnectionLabel(binding)} tone={messagingConnectionTone(binding)} />
+        </span>
+      </div>
+      {failure ? (
+        <p className="text-sm text-kumo-default" data-ui="messaging-connection-failure">
+          {failure}
+        </p>
+      ) : null}
+    </>
+  );
 }

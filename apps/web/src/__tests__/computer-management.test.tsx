@@ -28,11 +28,11 @@ describe("Account Computer management", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
     render(<App />);
     expect(await screen.findByText("Disconnected")).toBeTruthy();
-    const restore = screen.getByRole("link", { name: "Reconnect" });
+    const restore = screen.getByRole("link", { name: "Restore connection" });
     expect(restore.getAttribute("href")).toContain(`computerId=${computerId}`);
     fireEvent.click(restore);
     expect(await screen.findByRole("button", { name: "Copy" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Reconnect" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Restore connection" })).toBeNull();
     expect(JSON.parse(String(repairRequests()[0]?.[1]?.body))).toEqual({
       mode: "repair",
       targetComputerId: computerId,

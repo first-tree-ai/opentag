@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { link, mkdir, mkdtemp, open, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, open, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as retryDelay } from "node:timers/promises";
@@ -431,6 +431,7 @@ describe("Cloud workspace transfer", () => {
     const runner = await client(store);
     await runner.client.initialize();
     await writeFile(join(runner.workspace, "baseline.txt"), "committed baseline");
+    await utimes(join(runner.workspace, "baseline.txt"), new Date(0), new Date(0));
     await runner.client.save();
     const savedBaseline = store.object();
 
@@ -454,7 +455,7 @@ describe("Cloud workspace transfer", () => {
     expect(runner.client.pendingSave).toBe(false);
     expect(await readdir(runner.workspace)).toEqual(["baseline.txt"]);
     expect(await readFile(join(runner.workspace, "baseline.txt"), "utf8")).toBe("committed baseline");
-    expect(store.object().bytes).toBe(savedBaseline.bytes);
+    expect(BigInt(store.object().generation)).toBeGreaterThan(BigInt(savedBaseline.generation));
 
     const replacement = await client(store, 2);
     await replacement.client.initialize();

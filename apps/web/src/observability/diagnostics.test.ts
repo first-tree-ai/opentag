@@ -125,13 +125,43 @@ describe("web diagnostics", () => {
       },
       "error",
     );
+    // Empty issues array on a route omits parenthesized issue list; string path, missing code, non-object entry, and empty routeTemplate fall back cleanly.
+    reporter.report(
+      {
+        source: "api",
+        code: "invalid_response_schema",
+        routeTemplate: "/api/v1/me",
+        issues: [],
+      },
+      "error",
+    );
+    reporter.report(
+      {
+        source: "api",
+        code: "invalid_response_schema",
+        routeTemplate: "/api/v1/computers",
+        issues: [null, { path: "computers.0.status" }, { code: "custom_error" }],
+      },
+      "error",
+    );
+    reporter.report(
+      {
+        source: "api",
+        code: "invalid_response_schema",
+        routeTemplate: "",
+      },
+      "error",
+    );
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(5);
     const bodies = fetchImpl.mock.calls.map((call) => JSON.parse(String(call[1]?.body)) as { message: string });
     expect(bodies.map((body) => body.message)).toEqual([
       "invalid_response_schema: /api/v1/sessions (tasks.0.status:invalid_enum_value)",
       "invalid_response_schema: /api/v1/agents (<root>:unrecognized_keys, agents.0.status:invalid_enum_value, agents.0.activity.state:invalid_literal)",
+      "invalid_response_schema: /api/v1/me",
+      "invalid_response_schema: /api/v1/computers (computers.0.status:invalid, <root>:custom_error)",
+      "invalid_response_schema",
     ]);
   });
 

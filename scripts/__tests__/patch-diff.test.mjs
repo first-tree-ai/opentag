@@ -310,3 +310,51 @@ test("a pure rename must keep its coverage entry, while a deletion passes", asyn
     assert.deepEqual(deleted.unmeasured, []);
   });
 });
+
+test("a quoted source path keeps its changed lines and is judged by the threshold", async () => {
+  await withRepository(async (repository) => {
+    const source = "packages/shared/src/café.ts";
+    await mkdir(join(repository, "packages/shared/src"), { recursive: true });
+    await writeFile(join(repository, source), "export const original = 1;\n");
+    git(repository, ["add", "."]);
+    git(repository, ["commit", "-m", "base"]);
+    const baseSha = git(repository, ["rev-parse", "HEAD"]).trim();
+    await writeFile(join(repository, source), "export const original = 1;\nexport const added = 2;\n");
+    git(repository, ["add", "."]);
+    git(repository, ["commit", "-m", "add a line"]);
+
+    const diff = captureMergeBaseDiff({ baseSha, repositoryRoot: repository });
+    // Git quotes a non-ASCII path in C style.
+    assert.ok(diff.includes('+++ "b/packages/shared/src/caf\\303\\251.ts"'), diff);
+
+    const coverageWith = (hits) => ({
+      [join(repository, source)]: {
+        path: join(repository, source),
+        s: { 0: hits },
+        statementMap: { 0: { start: { line: 2, column: 0 }, end: { line: 2, column: 24 } } },
+      },
+    });
+    const uncovered = evaluatePatchCoverage({
+      coverage: coverageWith(0),
+      diff,
+      repositoryRoot: repository,
+      threshold: 80,
+    });
+    assert.equal(uncovered.total, 1);
+    assert.equal(uncovered.passed, false);
+    assert.deepEqual(uncovered.uncovered, [`${source}:2`]);
+
+    const covered = evaluatePatchCoverage({
+      coverage: coverageWith(1),
+      diff,
+      repositoryRoot: repository,
+      threshold: 80,
+    });
+    assert.equal(covered.total, 1);
+    assert.equal(covered.passed, true);
+
+    const missing = evaluatePatchCoverage({ coverage: {}, diff, repositoryRoot: repository, threshold: 80 });
+    assert.equal(missing.passed, false);
+    assert.deepEqual(missing.unmeasured, [source]);
+  });
+});

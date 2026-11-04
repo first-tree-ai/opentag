@@ -64,10 +64,16 @@ function isExecutableSourceLine(value) {
 }
 
 /** Extract added lines from a unified diff, keyed by their post-change repository path. */
+/**
+ * The post-change path of a `+++` header: `+++ b/<path>`, Git's C-style quoted `+++ "b/<path>"`, or
+ * `undefined` for a deletion (`+++ /dev/null`). `null` when the line is not such a header. Both the
+ * changed-line and the surviving-target readers use this one decoder, so they agree on every path.
+ */
 function parseDiffFileHeader(line) {
-  if (!line.startsWith("+++ b/") && line !== "+++ /dev/null") return null;
-  const path = line.slice(4);
-  return path === "/dev/null" ? undefined : path.slice(0, 2) === "b/" ? path.slice(2) : path;
+  if (line === "+++ /dev/null") return undefined;
+  if (line.startsWith("+++ b/")) return line.slice(6);
+  if (line.startsWith('+++ "b/')) return unquoteGitPath(line.slice(4)).slice(2);
+  return null;
 }
 
 function parseDiffHunkStart(line) {
@@ -101,8 +107,9 @@ export function extractChangedLines(diffText) {
 
   for (const rawLine of diffText.split("\n")) {
     const line = rawLine.replace(/\r$/, "");
-    if (line.startsWith("+++ b/") || line === "+++ /dev/null") {
-      currentFile = parseDiffFileHeader(line);
+    const header = parseDiffFileHeader(line);
+    if (header !== null) {
+      currentFile = header;
       nextLine = undefined;
       continue;
     }
@@ -153,10 +160,10 @@ export function extractChangedTargets(diffText) {
   const targets = new Set();
   for (const rawLine of diffText.split("\n")) {
     const line = rawLine.replace(/\r$/, "");
-    const target = line.startsWith("+++ b/")
-      ? line.slice(6)
-      : line.startsWith('+++ "b/')
-        ? unquoteGitPath(line.slice(4)).slice(2)
+    const header = parseDiffFileHeader(line);
+    const target =
+      header !== null
+        ? header
         : /^(?:rename|copy) to /.test(line)
           ? unquoteGitPath(line.replace(/^(?:rename|copy) to /, ""))
           : undefined;

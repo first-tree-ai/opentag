@@ -130,6 +130,7 @@ Screenshots and browser checks for Web UI changes, one directory per change:
 
 - [Cloud workspace recovery](web-ui/cloud-workspace-recovery/README.md)
 
+- [Context Tree GitHub prerequisite check](web-ui/context-tree-github-preflight/README.md)
 - [Context Tree GitHub MCP authorization](web-ui/context-mcp-authorization/README.md)
 - [Agent status layout](web-ui/agent-status/README.md)
 - [Agent home task table alignment](web-ui/agent-home-task-alignment/README.md)

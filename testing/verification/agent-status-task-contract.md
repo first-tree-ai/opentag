@@ -155,6 +155,11 @@ table-driven list/detail regression covers every `AgentStatusReason`, with both 
 missing-binding cases for the higher-priority verdicts. The three owning Web files passed all 102
 cases; Web build, root type checks and repository checks passed after this correction.
 
+The final integration with `main@179783208` also passed the affected Web tests (221), Server
+API/Context Tree tests (116), shared Context Tree/public-export tests (18), and coverage-gate
+script tests (27). Root build, type checks and repository checks passed. Package manifests and
+the lockfile did not change during this integration.
+
 The older `db9e74d91` CI run passed 1,401 PostgreSQL cases and failed its 4,096-Session/max-1-pool
 stop deadline case. That red result is not waived by these local checks; the next head needs a
 fresh CI result and fresh review of all five corrected contracts.

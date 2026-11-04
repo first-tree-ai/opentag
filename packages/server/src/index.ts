@@ -1,10 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import type {
-  InternalNavigationVisibility,
-  ProviderReadinessStatus,
-  RuntimeCredentialServerFrame,
-} from "@opentag/shared";
+import type { ProviderReadinessStatus, RuntimeCredentialServerFrame } from "@opentag/shared";
 import { MCP_OAUTH_CALLBACK_PATH, RUNTIME_CAPABILITY, redactForLog } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { createApp } from "./app.js";
@@ -218,19 +214,6 @@ export {
 } from "./services/sessions/index.js";
 export { createPlatformRuntime };
 
-class InternalNavigationVisibilityService {
-  #value: InternalNavigationVisibility = { integrations: false };
-
-  read(): InternalNavigationVisibility {
-    return this.#value;
-  }
-
-  update(value: InternalNavigationVisibility): InternalNavigationVisibility {
-    this.#value = { ...value };
-    return this.#value;
-  }
-}
-
 /** The live Cloud fence exists exactly when the Cloud Runner runtime is enabled. */
 function cloudRuntimeFenceFor(runtime: SandboxRunnerRuntime | undefined): CloudRuntimeFence | undefined {
   return runtime ? new CloudRuntimeFence() : undefined;
@@ -378,6 +361,9 @@ function createContextTreeServices(
     githubContextTreeOperations,
     contextTreeOperationService: new ContextTreeOperationService(agents, registry, {
       computerKind,
+      availability: (accountId, agentId) =>
+        githubContextTreeOperations?.availability(accountId, agentId) ??
+        Promise.resolve({ status: "failed", code: "github_not_configured" }),
       run: (input) =>
         githubContextTreeOperations?.run(input) ??
         Promise.resolve({ result: { status: "failed", code: "github_not_configured" } }),
@@ -1251,7 +1237,6 @@ export async function startServer(): Promise<void> {
           registry,
         })
       : undefined;
-    const internalNavigationService = new InternalNavigationVisibilityService();
     const scheduleService = new ScheduleService({
       database,
       logger: serviceLogger("schedules"),
@@ -1495,7 +1480,7 @@ export async function startServer(): Promise<void> {
             botId: binding.botId,
           }),
       },
-      ...(setupResetService ? { internalNavigationService, setupResetService } : {}),
+      ...(setupResetService ? { setupResetService } : {}),
       accountSetupService,
     });
     instrumentServerWorkers(

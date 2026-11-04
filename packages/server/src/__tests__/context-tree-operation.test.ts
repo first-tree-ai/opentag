@@ -34,6 +34,7 @@ function fixture() {
     repository: "Acme/Memory",
   };
   const github = {
+    availability: vi.fn(async () => ({ status: "ready" as const, readOnly: false })),
     computerKind: vi.fn(async () => "local" as const),
     run: vi.fn(async () => ({ result: { status: "completed" as const, repository: "acme/memory", ref: "main" } })),
   };
@@ -187,6 +188,7 @@ it("rejects a new connection at the tree limit before any remote work", async ()
     repository: `acme/tree-${index}`,
   }));
   const cloud = {
+    availability: f.github.availability,
     computerKind: vi.fn(async () => "cloud" as const),
     run: vi.fn(async () => ({ result: { status: "completed" as const, repository: "acme/memory" } })),
   };
@@ -237,4 +239,36 @@ it("allows disconnect and idempotent requests at the tree limit", async () => {
   });
   expect(f.github.run).not.toHaveBeenCalled();
   expect(f.agents.updateContextTreeSelection).toHaveBeenCalledTimes(1);
+});
+
+it("checks ownership before reporting Context Tree availability", async () => {
+  const f = fixture();
+  f.agents.getConfigById.mockRejectedValueOnce(new Error("permission denied"));
+  await expect(f.service.availability("other-account", f.config.id)).rejects.toThrow("permission denied");
+  expect(f.github.availability).not.toHaveBeenCalled();
+});
+it("reports usable GitHub access without running an operation or saving a selection", async () => {
+  const f = fixture();
+  expect(await f.service.availability("user", f.config.id)).toEqual({ status: "ready", readOnly: false });
+  expect(f.github.availability).toHaveBeenCalledWith("user", f.config.id);
+  expect(f.github.run).not.toHaveBeenCalled();
+  expect(f.agents.updateContextTreeSelection).not.toHaveBeenCalled();
+});
+it.each(["unbound", "unknown", "offline", "old-client"])("reports %s Computers before GitHub work", async (state) => {
+  const f = fixture();
+  if (state === "unbound") f.config.computerId = null;
+  if (state === "unknown") f.github.computerKind.mockResolvedValueOnce(undefined as never);
+  if (state === "offline") f.registry.currentInstanceId.mockReturnValueOnce(undefined as never);
+  if (state === "old-client") f.registry.supportsCapability.mockReturnValueOnce(false);
+  expect(await f.service.availability("user", f.config.id)).toEqual({
+    status: "failed",
+    code: state === "old-client" ? "capability_missing" : "computer_unavailable",
+  });
+  expect(f.github.availability).not.toHaveBeenCalled();
+});
+it("checks Cloud GitHub access without requiring a Local runtime capability", async () => {
+  const f = fixture();
+  f.github.computerKind.mockResolvedValueOnce("cloud" as never);
+  expect(await f.service.availability("user", f.config.id)).toEqual({ status: "ready", readOnly: false });
+  expect(f.registry.currentInstanceId).not.toHaveBeenCalled();
 });

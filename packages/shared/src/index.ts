@@ -12,8 +12,6 @@ export {
   COMPUTER_ACCESS_CAPABILITY_HEADER,
   type CompleteAccountSetupRequest,
   CompleteAccountSetupRequestSchema,
-  type InternalNavigationVisibility,
-  InternalNavigationVisibilitySchema,
   type ListAccountComputersResponse,
   ListAccountComputersResponseSchema,
 } from "./account.js";

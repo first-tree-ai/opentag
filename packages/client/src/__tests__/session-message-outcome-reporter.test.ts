@@ -188,6 +188,33 @@ describe("SessionMessageOutcomeReporter", () => {
     reporter.stop();
   });
 
+  it("still sends a report it could not persist but rejects so the caller keeps its intent", async () => {
+    const { connection, sent } = fakeConnection(4);
+    const persistence = new MemoryRuntimeDurabilityStore();
+    vi.spyOn(persistence, "write").mockRejectedValueOnce(new Error("disk full"));
+    const reporter = new SessionMessageOutcomeReporter({
+      connection,
+      logger: { warn: vi.fn() },
+      persistence,
+      scheduler: manualScheduler(),
+    });
+    const report = outcome();
+    await expect(reporter.report(report)).rejects.toThrow("disk full");
+    expect(sent.map((frame) => frame.messageId)).toEqual([report.messageId]);
+    // A repeated hand-off in the same process is already known and resolves without resending.
+    await expect(reporter.report(report)).resolves.toBeUndefined();
+    expect(sent).toHaveLength(1);
+    reporter.stop();
+  });
+
+  it("rejects a report after stop", async () => {
+    const { connection, sent } = fakeConnection(4);
+    const reporter = new SessionMessageOutcomeReporter({ connection, scheduler: manualScheduler() });
+    reporter.stop();
+    await expect(reporter.report(outcome())).rejects.toThrow("stopped");
+    expect(sent).toEqual([]);
+  });
+
   it("gives up after the bounded retry age", async () => {
     let now = 0;
     const warn = vi.fn();

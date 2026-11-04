@@ -90,10 +90,14 @@ export class SessionMessageOutcomeReporter {
     return count;
   }
 
-  /** Record one terminal non-completed Run outcome and start delivering it. Idempotent per message. */
+  /**
+   * Record one terminal non-completed Run outcome and start delivering it. Idempotent per message.
+   * Resolves only once the report is durable (or already known); rejects otherwise, so the inbox
+   * keeps its terminal record's outcome-report intent `pending` and hands it over again on restart.
+   */
   async report(input: SessionMessageOutcomeInput): Promise<void> {
     await this.#readyPromise;
-    if (this.#stopped) return;
+    if (this.#stopped) throw new Error("Session message outcome reporter is stopped");
     const key = recordKey(input);
     if (this.#records.has(key)) return;
     const now = this.#now();
@@ -106,10 +110,12 @@ export class SessionMessageOutcomeReporter {
       status: "accepted",
       updatedAt: now,
     };
+    let persistError: unknown;
     try {
       await this.#persist(record);
-    } catch {
-      // Keep the report in memory: losing it across a restart is better than never notifying.
+    } catch (error) {
+      // Still deliver from memory now; the caller's pending intent covers a restart.
+      persistError = error;
       this.#records.set(key, record);
       this.#logger.warn(
         { code: "SESSION_MESSAGE_OUTCOME_PERSISTENCE_FAILED", messageId: input.messageId },
@@ -117,6 +123,7 @@ export class SessionMessageOutcomeReporter {
       );
     }
     this.#send(key);
+    if (persistError !== undefined) throw persistError;
   }
 
   /** Apply the Server's answer for the exact in-flight send; stale answers are ignored. */

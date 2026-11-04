@@ -98,9 +98,9 @@ const DEFAULT_ENSURE_TIMEOUT_MS = 20_000;
 /** Grant transport allowance on top of the Turn budget (mirrors the IM delivery owner). */
 const CLOUD_SESSION_GRANT_TRANSPORT_MS = 30_000;
 /**
- * Bounded Server-side redelivery of one creator Run outcome notice. The Runner's settlement is
- * acknowledged independently, so the Server owns these few retries for a busy or briefly
- * unreachable creator; every attempt reuses the same deterministic notice row.
+ * Bounded Server-side redelivery of one creator Run outcome notice. The settlement ack waits for
+ * these attempts, so the Runner's journaled settlement stays the replay owner until the notice
+ * has a final answer; every attempt reuses the same deterministic notice row.
  */
 const RUN_OUTCOME_NOTICE_ATTEMPTS = 3;
 const RUN_OUTCOME_NOTICE_RETRY_MS = 30_000;
@@ -470,6 +470,8 @@ export class CloudSessionCollaborationOwner {
   readonly #stop = new AbortController();
   #runOutcomeNotifier: RunOutcomeNotifier | undefined;
   readonly #runOutcomeRetryMs: number;
+  /** `${connectionId}:${messageId}` of notices whose settlement ack is still withheld. */
+  readonly #noticesInFlight = new Set<string>();
   #closing: Promise<void> | undefined;
 
   constructor(options: CloudSessionCollaborationOwnerOptions) {
@@ -1499,25 +1501,60 @@ export class CloudSessionCollaborationOwner {
     if (!committed) return;
     this.#work.settleTurn(connection.scope, frame.messageId, frame.turnId);
     this.#revokeGrant(frame.turnId);
-    this.#sendToConnection(connection, {
+    const ack = {
       type: "session:message:settled:ack",
       messageId: frame.messageId,
       requestId: frame.requestId,
       status: committed,
       turnId: frame.turnId,
-    });
+    } as const;
     // Both a new and a replayed identical commit may notify: the notice id is deterministic, so a
     // replay after a lost notice repairs it and a replay after a delivered notice is a no-op.
-    const notice = runOutcomeNotice(frame, envelope, connection);
-    if (notice) void this.#track(this.#notifyRunOutcome(notice));
+    const notice = this.#runOutcomeNotifier ? runOutcomeNotice(frame, envelope, connection) : undefined;
+    if (notice) {
+      /*
+       * The ack lets the Runner delete its only durable copy of this settlement, and the notice's
+       * source authority is this exact live connection. So the ack waits until the notice has a
+       * final answer (or its bounded attempts are spent) and is sent only on the still-current
+       * connection; a detach, supersession, or Server stop before then leaves the settlement
+       * journaled, and the Runner replays it to the next connection, which notifies again under
+       * the same notice id. The wait runs off the frame loop.
+       */
+      const inFlight = `${connection.connectionId}:${frame.messageId}`;
+      if (!this.#noticesInFlight.has(inFlight)) {
+        this.#noticesInFlight.add(inFlight);
+        void this.#track(
+          this.#notifyThenAcknowledge(connection, notice, ack).finally(() => this.#noticesInFlight.delete(inFlight)),
+        );
+      }
+    } else {
+      this.#sendToConnection(connection, ack);
+    }
     await this.#recordActivity(connection.scope.sandboxId);
   }
 
-  async #notifyRunOutcome(notice: RunOutcomeNoticeInput): Promise<void> {
+  async #notifyThenAcknowledge(
+    connection: CloudConnectionRecord,
+    notice: RunOutcomeNoticeInput,
+    ack: Extract<Parameters<RunnerHub["sendToCurrent"]>[2], { type: "session:message:settled:ack" }>,
+  ): Promise<void> {
+    if ((await this.#notifyRunOutcome(notice)) === "aborted") return;
+    if (!this.#isExactConnection(connection)) {
+      this.#logger?.warn(
+        { code: "CLOUD_SESSION_RUN_OUTCOME_ACK_WITHHELD", messageId: notice.messageId },
+        "The settling Runner connection changed before the Run outcome notice finished; the settlement stays journaled for replay",
+      );
+      return;
+    }
+    this.#sendToConnection(connection, ack);
+  }
+
+  /** `final` once the notice has a final answer or its bounded attempts are spent. */
+  async #notifyRunOutcome(notice: RunOutcomeNoticeInput): Promise<"final" | "aborted"> {
     const notifier = this.#runOutcomeNotifier;
-    if (!notifier) return;
+    if (!notifier) return "final";
     for (let attempt = 1; attempt <= RUN_OUTCOME_NOTICE_ATTEMPTS; attempt += 1) {
-      if (this.#stop.signal.aborted) return;
+      if (this.#stop.signal.aborted) return "aborted";
       let status: Awaited<ReturnType<RunOutcomeNotifier["notifyRunOutcome"]>>;
       try {
         status = await notifier.notifyRunOutcome(notice);
@@ -1528,18 +1565,19 @@ export class CloudSessionCollaborationOwner {
         );
         status = "retry";
       }
-      if (status !== "retry") return;
+      if (status !== "retry") return "final";
       if (attempt === RUN_OUTCOME_NOTICE_ATTEMPTS) break;
       try {
         await delay(this.#runOutcomeRetryMs, undefined, { signal: this.#stop.signal });
       } catch {
-        return;
+        return "aborted";
       }
     }
     this.#logger?.warn(
       { code: "CLOUD_SESSION_RUN_OUTCOME_NOTICE_UNDELIVERED", messageId: notice.messageId },
       "The internal Session Run outcome notice was not accepted by its creator",
     );
+    return "final";
   }
 
   #rejectReceipt(

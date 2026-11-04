@@ -118,15 +118,25 @@ Server tells the Session that created it (`created_by_session_id`):
 - Local: a Run that reaches its maximum duration fails terminally with `turn_timeout` and is never rerun from scratch.
   Other permanent failures and exhausted retries are also terminal. The daemon then reports the outcome with
   `session:message:outcome`. Reports are kept in a local durable file and resent until the Server gives a final
-  answer or one day passes.
+  answer or one day passes. The terminal inbox record and an `outcomeReport: pending` marker are written in one
+  record write; the marker becomes `published` once the report is durable in the reporter's file. On startup a
+  terminal record still marked `pending` (for example after a crash between the two writes) hands its report over
+  again, and the child is never rerun. Terminal records written before the marker existed carry no marker and are
+  not backfilled. The Server-backed Runtime durability adapter does not store the marker.
 - Cloud: the Runner's `session:message:settled` frame carries the failure `reason` (for example `turn_timeout`) on a
   collaboration-v3 channel. Every non-completed outcome (`failed`, `cancelled`, `unknown`) produces a notice. The
-  Server makes up to three delivery attempts, 30 seconds apart.
+  Server makes up to three delivery attempts, 30 seconds apart. The notice's source authority is the settling
+  connection, and `session:message:settled:ack` lets the Runner delete its journaled settlement, so the Server sends
+  that ack only after the notice has a final answer (or the three attempts are spent), and only on the
+  still-current connection. If the Runner detaches or the Server stops first, the settlement stays journaled; the
+  Runner replays it to the next connection, which commits it as `already_recorded` and notifies again under the same
+  notice ID. The wait runs outside the Runner's frame handling.
 
 The notice is an ordinary SessionMessage from the child to its creator. It uses the existing authorization, lock order,
 activity projection, and delivery, including the visible-Session callback rules. A visible creator's callback Run
 decides what to tell the user; openTag does not forward anything to IM. The text starts with
-`[openTag notice] Internal Session Run did not complete` (`SESSION_RUN_OUTCOME_NOTICE_HEADER`). It names the child,
+`[openTag notice] Internal Session Run did not complete` (`SESSION_RUN_OUTCOME_NOTICE_HEADER`). A notice means the
+child's done milestone, its final result sent with `opentag session send`, will not arrive on its own. It names the child,
 the reported message, the outcome, and a stable reason code, never provider output. It also says that the child keeps
 its context and that `opentag session send <child-session-id>` continues it. Managed instructions describe the
 header so the creator knows the message comes from openTag, not from the child.

@@ -147,6 +147,14 @@ export interface DurableWorkRecord<T = unknown> {
   readonly kind: DurableWorkKind;
   readonly lastError?: DurableFailure;
   readonly nextAttemptAt?: number;
+  /**
+   * Session-message only: the creator-notice intent written in the SAME record write as the
+   * terminal `failed`/`dead-letter` transition. `pending` means the Run outcome has not yet been
+   * handed to the durable outcome reporter; hydration re-derives the report from the terminal
+   * record. `published` means the reporter owns it. Absent on records written before the marker
+   * existed, which are deliberately not backfilled.
+   */
+  readonly outcomeReport?: "pending" | "published";
   readonly payload: T;
   readonly status: DurableWorkStatus;
   readonly updatedAt: number;

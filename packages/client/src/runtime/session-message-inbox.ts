@@ -71,9 +71,12 @@ export interface SessionMessageInboxOptions {
   now?: () => number;
   onFailure?(failure: DurableFailure): void;
   /**
-   * Called once when a message's Run reaches a terminal non-completed state (timeout, permanent
+   * Called when a message's Run reaches a terminal non-completed state (timeout, permanent
    * failure, or exhausted retries). The Server uses the report to notify an internal Session's
-   * creator; it ignores reports for visible Sessions.
+   * creator; it ignores reports for visible Sessions. The terminal inbox record carries a
+   * `pending` outcome-report marker until this resolves, so it must resolve only once the report
+   * is durable and reject otherwise; hydration calls it again for a still-pending record, so it
+   * must be idempotent per message.
    */
   onRunOutcome?(outcome: SessionMessageRunOutcomeEvent): void | Promise<void>;
   persistence?: RuntimeDurabilityStore;
@@ -530,39 +533,58 @@ export class SessionMessageInbox {
   async #hydrate(): Promise<void> {
     if (!this.#persistence) return;
     const records = await this.#persistence.list<SessionMessageDeliveryRequestV3>("session-message");
+    const unpublished: DurableWorkRecord<SessionMessageDeliveryRequestV3>[] = [];
     for (const stored of records) {
-      const request = SessionMessageDeliveryRequestV3Schema.safeParse(stored.payload);
-      if (!request.success) continue;
-      /*
-       * Hydration recomputes the semantic hash with the SAME branch function as first accept, so
-       * an ordinary record keeps its frozen v2-era hash and a scheduled record reproduces the
-       * hash computed when it was accepted — never a "everything conflicts after upgrade" wave.
-       */
-      const hash = sessionMessageSemanticHash(request.data);
-      const key = stored.key;
-      let record = { ...stored, payload: request.data } as DurableWorkRecord<SessionMessageDeliveryRequestV3>;
-      this.#records.set(key, record);
-      if (record.status === "succeeded") {
-        this.#remember(key, { hash, status: "succeeded" });
-        continue;
-      }
-      if (record.status === "dead-letter" || record.status === "failed") {
-        this.#remember(key, { hash, status: record.status, reason: "provider_unavailable" });
-        continue;
-      }
-      if (retryExhausted(this.#retryPolicy, record, this.#now())) {
-        record = await this.#transition(record, "dead-letter", { nextAttemptAt: undefined });
-        this.#remember(key, { hash, status: "dead-letter", reason: "provider_unavailable" });
-        this.#emitRunOutcome(record.payload, "failed", record.lastError?.code ?? "retry_exhausted");
-        continue;
-      }
-      if (record.status === "running") {
-        record = { ...record, status: "retryable", nextAttemptAt: this.#now(), updatedAt: this.#now() };
-        await this.#persist(record);
-      }
-      this.#remember(key, { hash, status: "retryable" });
-      this.#enqueue(record.payload, hash);
+      const pending = await this.#hydrateRecord(stored);
+      if (pending) unpublished.push(pending);
     }
+    for (const record of unpublished) {
+      const { outcome, code } = terminalRunOutcome(record);
+      await this.#publishRunOutcome(record, outcome, code);
+    }
+  }
+
+  /** Restore one durable record; returns it when its terminal outcome still needs a report. */
+  async #hydrateRecord(
+    stored: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
+  ): Promise<DurableWorkRecord<SessionMessageDeliveryRequestV3> | undefined> {
+    const request = SessionMessageDeliveryRequestV3Schema.safeParse(stored.payload);
+    if (!request.success) return undefined;
+    /*
+     * Hydration recomputes the semantic hash with the SAME branch function as first accept, so
+     * an ordinary record keeps its frozen v2-era hash and a scheduled record reproduces the
+     * hash computed when it was accepted — never a "everything conflicts after upgrade" wave.
+     */
+    const hash = sessionMessageSemanticHash(request.data);
+    const key = stored.key;
+    let record = { ...stored, payload: request.data } as DurableWorkRecord<SessionMessageDeliveryRequestV3>;
+    this.#records.set(key, record);
+    if (record.status === "succeeded") {
+      this.#remember(key, { hash, status: "succeeded" });
+      return undefined;
+    }
+    if (record.status === "dead-letter" || record.status === "failed") {
+      this.#remember(key, { hash, status: record.status, reason: "provider_unavailable" });
+      // The terminal fact committed but its report never reached the reporter (for example a
+      // crash in between): re-derive it. Records without the marker predate it and are not
+      // backfilled; the Run is never rerun either way.
+      return record.outcomeReport === "pending" ? record : undefined;
+    }
+    if (retryExhausted(this.#retryPolicy, record, this.#now())) {
+      record = await this.#transition(record, "dead-letter", {
+        nextAttemptAt: undefined,
+        ...this.#pendingOutcomeReport(),
+      });
+      this.#remember(key, { hash, status: "dead-letter", reason: "provider_unavailable" });
+      return record;
+    }
+    if (record.status === "running") {
+      record = { ...record, status: "retryable", nextAttemptAt: this.#now(), updatedAt: this.#now() };
+      await this.#persist(record);
+    }
+    this.#remember(key, { hash, status: "retryable" });
+    this.#enqueue(record.payload, hash);
+    return undefined;
   }
 
   #enqueue(request: SessionMessageDeliveryRequestV3, hash: string): void {
@@ -617,24 +639,26 @@ export class SessionMessageInbox {
     const attempts = record.attempts + 1;
     const now = this.#now();
     const candidate = { ...record, attempts, lastError: failure, updatedAt: now };
+    // The terminal status and the creator-notice intent commit in ONE record write.
+    const terminalFields = { nextAttemptAt: undefined, ...this.#pendingOutcomeReport() };
     if (failure.retryability === "never") {
-      await this.#transition(candidate, "failed", { nextAttemptAt: undefined }).catch(() => undefined);
+      const terminal = await this.#transition(candidate, "failed", terminalFields).catch(() => undefined);
       this.#remember(record.key, { hash, status: "failed", reason: "provider_unavailable" });
       this.#logger.warn(
         { code: failure.code, messageId: record.payload.messageId, phase, status: "failed" },
         "Session message failed permanently",
       );
-      this.#emitRunOutcome(record.payload, timedOut ? "timed_out" : "failed", failure.code);
+      await this.#publishRunOutcome(terminal ?? candidate, timedOut ? "timed_out" : "failed", failure.code);
       return;
     }
     if (retryExhausted(this.#retryPolicy, candidate, now)) {
-      await this.#transition(candidate, "dead-letter", { nextAttemptAt: undefined }).catch(() => undefined);
+      const terminal = await this.#transition(candidate, "dead-letter", terminalFields).catch(() => undefined);
       this.#remember(record.key, { hash, status: "dead-letter", reason: "provider_unavailable" });
       this.#logger.warn(
         { code: failure.code, messageId: record.payload.messageId, phase, status: "dead-letter" },
         "Session message moved to dead letter",
       );
-      this.#emitRunOutcome(record.payload, "failed", failure.code);
+      await this.#publishRunOutcome(terminal ?? candidate, "failed", failure.code);
       return;
     }
     const nextAttemptAt = now + retryDelay(this.#retryPolicy, attempts);
@@ -652,9 +676,25 @@ export class SessionMessageInbox {
     this.#scheduleRetry(retryable, hash);
   }
 
-  #emitRunOutcome(request: SessionMessageDeliveryRequestV3, outcome: "timed_out" | "failed", code: string): void {
+  #pendingOutcomeReport(): Pick<DurableWorkRecord, "outcomeReport"> {
+    return this.#onRunOutcome ? { outcomeReport: "pending" } : {};
+  }
+
+  /**
+   * Hand a terminal Run outcome to the durable reporter, then mark the inbox record `published`.
+   * A failure leaves the marker `pending`, so the next hydration hands it over again; the reporter
+   * and the Server's UUIDv5 notice identity make that repeat harmless. The inbox state machine
+   * never depends on reporting.
+   */
+  async #publishRunOutcome(
+    record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
+    outcome: "timed_out" | "failed",
+    code: string,
+  ): Promise<void> {
+    if (!this.#onRunOutcome) return;
+    const request = record.payload;
     try {
-      const reported = this.#onRunOutcome?.({
+      await this.#onRunOutcome({
         messageId: request.messageId,
         targetSessionId: request.targetSessionId,
         agentId: request.agentId,
@@ -662,13 +702,19 @@ export class SessionMessageInbox {
         outcome,
         reason: SessionMessageRunOutcomeReasonSchema.safeParse(code).success ? code : "run_failed",
       });
-      void Promise.resolve(reported).catch(() => this.#warnRunOutcomeFailed(request.messageId));
     } catch {
       this.#warnRunOutcomeFailed(request.messageId);
+      return;
     }
+    if (record.outcomeReport !== "pending" || this.#records.get(record.key) !== record) return;
+    await this.#persist({ ...record, outcomeReport: "published", updatedAt: this.#now() }).catch(() =>
+      this.#logger.warn(
+        { code: "SESSION_MESSAGE_PERSISTENCE_FAILED", messageId: request.messageId, status: record.status },
+        "Session message outcome handoff could not be marked; it is handed over again on restart",
+      ),
+    );
   }
 
-  /** The inbox state machine never depends on reporting; the reporter owns its own durability. */
   #warnRunOutcomeFailed(messageId: string): void {
     this.#logger.warn(
       { code: "SESSION_MESSAGE_OUTCOME_REPORT_FAILED", messageId },
@@ -712,6 +758,15 @@ export class SessionMessageInbox {
       this.#remembered.delete(oldest);
     }
   }
+}
+
+/** The report a committed terminal record implies, matching what `#handleFailure` reported. */
+function terminalRunOutcome(record: DurableWorkRecord<SessionMessageDeliveryRequestV3>): {
+  outcome: "timed_out" | "failed";
+  code: string;
+} {
+  const code = record.lastError?.code ?? "retry_exhausted";
+  return { outcome: code === SESSION_MESSAGE_TURN_TIMEOUT_CODE ? "timed_out" : "failed", code };
 }
 
 function retryableAuthorityReason(reason: InputRejectReason): boolean {

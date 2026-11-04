@@ -933,6 +933,88 @@ describe("CloudSessionCollaborationOwner", () => {
     await stack.owner.close();
   });
 
+  it("withholds the settlement ack until the notice is final and replays it after an ACK-window detach", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    const warn = vi.fn();
+    const stack = makeStack(fixture, { logger: { error: vi.fn(), warn } });
+    const answers: ((status: "notified" | "ignored" | "retry") => void)[] = [];
+    const notifyRunOutcome = vi.fn(
+      () =>
+        new Promise<"notified" | "ignored" | "retry">((resolve) => {
+          answers.push(resolve);
+        }),
+    );
+    stack.owner.setRunOutcomeNotifier({ notifyRunOutcome });
+    const first = await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "accepted",
+    });
+    const settled = { ...settleFrame(messageId, "failed"), reason: "turn_timeout" } as const;
+    const acks = (sent: RunnerServerFrame[]) => sent.filter((frame) => frame.type === "session:message:settled:ack");
+
+    // The terminal fact commits and the frame loop is released, but the ack is withheld while
+    // the notice is in flight; a replay on the same connection does not start a second notice.
+    await stack.owner.handleSettled(first.connection, settled);
+    await vi.waitFor(() => expect(notifyRunOutcome).toHaveBeenCalledOnce());
+    await expect(stack.owner.hasUnsettledSessionWork({ sessionId: fixture.sessionId })).resolves.toBe(false);
+    await stack.owner.handleSettled(first.connection, settled);
+    expect(notifyRunOutcome).toHaveBeenCalledOnce();
+    expect(acks(first.sent)).toEqual([]);
+
+    // The Runner detaches before the notice is recorded: its source authority is now stale, so
+    // the notifier's final answer is `ignored`. No ack reaches the Runner, which keeps the
+    // journaled settlement.
+    stack.fence.detach(first.connection.connectionId);
+    stack.hub.detach(fixture.sandboxId, first.socket);
+    await stack.owner.detachConnection(first.connection.connectionId);
+    answers[0]?.("ignored");
+    await vi.waitFor(() =>
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ code: "CLOUD_SESSION_RUN_OUTCOME_ACK_WITHHELD", messageId }),
+        expect.any(String),
+      ),
+    );
+    expect(acks(first.sent)).toEqual([]);
+
+    // The replay on the next connection notifies again under that connection and only then acks.
+    const second = await attachRunner(stack, fixture);
+    await stack.owner.handleSettled(second.connection, settled);
+    await vi.waitFor(() => expect(notifyRunOutcome).toHaveBeenCalledTimes(2));
+    expect(notifyRunOutcome).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        messageId,
+        source: expect.objectContaining({ connectionInstanceId: second.connection.connectionId }),
+      }),
+    );
+    expect(acks(second.sent)).toEqual([]);
+    answers[1]?.("notified");
+    await vi.waitFor(() =>
+      expect(acks(second.sent)).toEqual([
+        expect.objectContaining({ messageId, status: "already_recorded", turnId: `turn-${messageId}` }),
+      ]),
+    );
+    await stack.owner.close();
+  });
+
+  it("withholds the ack when the Server stops before the notice is final", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    const stack = makeStack(fixture, { runOutcomeRetryMs: 60_000 });
+    const notifyRunOutcome = vi.fn(async () => "retry" as const);
+    stack.owner.setRunOutcomeNotifier({ notifyRunOutcome });
+    const attach = await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "accepted",
+    });
+    await stack.owner.handleSettled(attach.connection, settleFrame(messageId, "unknown"));
+    await vi.waitFor(() => expect(notifyRunOutcome).toHaveBeenCalledOnce());
+    await stack.owner.close();
+    expect(attach.sent.some((frame) => frame.type === "session:message:settled:ack")).toBe(false);
+  });
+
   it("never notifies for a completed settlement and bounds retries for a busy creator", async () => {
     const fixture = await seedCloudSession();
     const completedId = randomUUID();
@@ -961,6 +1043,12 @@ describe("CloudSessionCollaborationOwner", () => {
       expect(warn).toHaveBeenCalledWith(
         expect.objectContaining({ code: "CLOUD_SESSION_RUN_OUTCOME_NOTICE_UNDELIVERED", messageId: failedId }),
         expect.any(String),
+      ),
+    );
+    // The bounded attempts are spent, so the settlement is finally acked and retired.
+    await vi.waitFor(() =>
+      expect(attach.sent).toContainEqual(
+        expect.objectContaining({ messageId: failedId, type: "session:message:settled:ack" }),
       ),
     );
     await stack.owner.close();

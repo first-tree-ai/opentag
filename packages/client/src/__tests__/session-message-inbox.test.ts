@@ -2,11 +2,13 @@ import { randomUUID } from "node:crypto";
 import { lstat, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type {
-  InputRejectReason,
-  SessionMessageDeliveryRequest,
-  SessionMessageDeliveryRequestV3,
-  SessionReconcileRequest,
+import {
+  type InputRejectReason,
+  RUNTIME_CAPABILITY,
+  type SessionMessageDeliveryRequest,
+  type SessionMessageDeliveryRequestV3,
+  type SessionMessageOutcomeReport,
+  type SessionReconcileRequest,
 } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { executeProviderCliTurnPlan } from "../index.js";
@@ -23,6 +25,7 @@ import {
   type RuntimeRetryScheduler,
 } from "../runtime/runtime-durability.js";
 import { buildSessionMessageInput, SessionMessageInbox } from "../runtime/session-message-inbox.js";
+import { SessionMessageOutcomeReporter } from "../runtime/session-message-outcome-reporter.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
 import { UpdateManager, type UpdaterStateSnapshot } from "../runtime/update-manager.js";
 import {
@@ -539,6 +542,205 @@ describe("SessionMessageInbox", () => {
       );
       inbox.stop();
     }
+  });
+
+  describe("terminal → outcome-report crash boundary", () => {
+    /** Commits everything except the paused outcome-report writes, like a process killed mid-write. */
+    class PausableStore extends MemoryRuntimeDurabilityStore {
+      pauseOutcomeWrites = false;
+      pausedWrites = 0;
+      override async write<T>(record: DurableWorkRecord<T>): Promise<void> {
+        if (this.pauseOutcomeWrites && record.kind === "session-message-outcome") {
+          this.pausedWrites += 1;
+          return new Promise<void>(() => undefined);
+        }
+        await super.write(record);
+      }
+      async restore(): Promise<MemoryRuntimeDurabilityStore> {
+        const restored = new MemoryRuntimeDurabilityStore();
+        for (const kind of ["session-message", "session-message-outcome"] as const) {
+          for (const record of await this.list(kind)) await restored.write(record);
+        }
+        return restored;
+      }
+    }
+
+    function v4Connection() {
+      const sent: SessionMessageOutcomeReport[] = [];
+      const connection = {
+        state: "registered" as const,
+        capabilityVersion: (capability: string) =>
+          capability === RUNTIME_CAPABILITY.sessionCollaboration ? 4 : undefined,
+        send: vi.fn(async (frame: unknown) => {
+          sent.push(frame as SessionMessageOutcomeReport);
+        }),
+        subscribeState: () => () => undefined,
+      };
+      return { connection, sent };
+    }
+
+    const idleScheduler: RuntimeRetryScheduler = { schedule: () => ({ cancel: () => undefined }) };
+
+    function restartedPair(persistence: MemoryRuntimeDurabilityStore) {
+      const { connection, sent } = v4Connection();
+      const reporter = new SessionMessageOutcomeReporter({ connection, persistence, scheduler: idleScheduler });
+      const prompt = vi.fn();
+      const inbox = new SessionMessageInbox({
+        admission: new AdmissionController(),
+        credentialEnvironment: credentialEnvironment(),
+        imCredentialGrantVersion: () => 2,
+        onRunOutcome: reporter.report.bind(reporter),
+        persistence,
+        sessionCollaborationVersion: () => 4,
+        reconciler: inboxReconciler(),
+        runtimeManager: {
+          ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+          sessionKind: vi.fn(() => "internal" as const),
+        },
+        scheduler: idleScheduler,
+      });
+      return { inbox, prompt, reporter, sent };
+    }
+
+    it.each([
+      ["failed", "timed_out", "turn_timeout"],
+      ["dead-letter", "failed", "provider_failed"],
+    ] as const)(
+      "recovers exactly one report for a %s record committed before the outcome write",
+      async (status, outcome, reason) => {
+        const store = new PausableStore();
+        store.pauseOutcomeWrites = true;
+        let fireTimeout: () => void = () => undefined;
+        const prompt =
+          status === "failed"
+            ? vi.fn(
+                (input: { signal?: AbortSignal }) =>
+                  new Promise((_resolve, reject) => {
+                    input.signal?.addEventListener("abort", () => reject(input.signal?.reason), { once: true });
+                    queueMicrotask(() => fireTimeout());
+                  }),
+              )
+            : vi.fn(async () => ({ status: "failed", error: { message: "provider rejected input" } }));
+        const first = v4Connection();
+        const firstReporter = new SessionMessageOutcomeReporter({
+          connection: first.connection,
+          persistence: store,
+          scheduler: idleScheduler,
+        });
+        const firstInbox = new SessionMessageInbox({
+          admission: new AdmissionController(),
+          credentialEnvironment: credentialEnvironment(),
+          imCredentialGrantVersion: () => 2,
+          onRunOutcome: firstReporter.report.bind(firstReporter),
+          persistence: store,
+          retryPolicy: { maxAttempts: 1, maxAgeMs: 10_000 },
+          sessionCollaborationVersion: () => 4,
+          reconciler: inboxReconciler(),
+          runtimeManager: {
+            ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+            sessionKind: vi.fn(() => "internal" as const),
+          },
+          scheduler: idleScheduler,
+          timeoutScheduler: {
+            schedule(_delay, task) {
+              fireTimeout = task;
+              return { cancel: () => undefined };
+            },
+          },
+        });
+        const request = delivery();
+        await expect(firstInbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
+        // Crash cut: the terminal inbox record committed; the outcome write never did.
+        await vi.waitFor(() => expect(store.pausedWrites).toBe(1));
+        const key = `${request.targetSessionId}:${request.messageId}`;
+        expect(await store.list("session-message")).toEqual([
+          expect.objectContaining({ key, status, outcomeReport: "pending" }),
+        ]);
+        expect(await store.list("session-message-outcome")).toEqual([]);
+        firstInbox.stop();
+        firstReporter.stop();
+
+        const restored = await store.restore();
+        const second = restartedPair(restored);
+        await Promise.all([second.reporter.ready(), second.inbox.ready()]);
+        expect(second.prompt).not.toHaveBeenCalled();
+        expect(second.inbox.getState(request.messageId)).toMatchObject({ status, outcomeReport: "published" });
+        expect(second.reporter.pendingCount).toBe(1);
+        expect(second.sent).toEqual([
+          expect.objectContaining({ type: "session:message:outcome", messageId: request.messageId, outcome, reason }),
+        ]);
+        const frame = second.sent[0] as SessionMessageOutcomeReport;
+        second.reporter.handleResult({
+          type: "session:message:outcome:result",
+          requestId: frame.requestId,
+          messageId: request.messageId,
+          status: "notified",
+        });
+        await vi.waitFor(async () =>
+          expect(await restored.list("session-message-outcome")).toEqual([
+            expect.objectContaining({ key, status: "succeeded" }),
+          ]),
+        );
+        second.inbox.stop();
+        second.reporter.stop();
+
+        // A further restart after publication reports nothing again.
+        const third = restartedPair(restored);
+        await Promise.all([third.reporter.ready(), third.inbox.ready()]);
+        expect(third.sent).toEqual([]);
+        expect(third.reporter.pendingCount).toBe(0);
+        expect(third.prompt).not.toHaveBeenCalled();
+        third.inbox.stop();
+        third.reporter.stop();
+      },
+    );
+
+    it("re-hands an outcome whose report committed before the published marker without a duplicate", async () => {
+      const store = new MemoryRuntimeDurabilityStore();
+      const request = delivery();
+      const key = `${request.targetSessionId}:${request.messageId}`;
+      await store.write(
+        recordFor(request, "failed", {
+          lastError: { ...failureFor(request, "turn_timeout"), retryability: "never" },
+          outcomeReport: "pending",
+        }),
+      );
+      await store.write({
+        acceptedAt: 1,
+        attempts: 0,
+        key,
+        kind: "session-message-outcome",
+        payload: {
+          messageId: request.messageId,
+          targetSessionId: request.targetSessionId,
+          agentId: request.agentId,
+          placementGeneration: request.placementGeneration,
+          outcome: "timed_out",
+          reason: "turn_timeout",
+        },
+        status: "succeeded",
+        updatedAt: 1,
+      });
+      const pair = restartedPair(store);
+      await Promise.all([pair.reporter.ready(), pair.inbox.ready()]);
+      expect(pair.sent).toEqual([]);
+      expect(pair.inbox.getState(request.messageId)).toMatchObject({ status: "failed", outcomeReport: "published" });
+      pair.inbox.stop();
+      pair.reporter.stop();
+    });
+
+    it("does not backfill terminal records written before the outcome-report marker", async () => {
+      const store = new MemoryRuntimeDurabilityStore();
+      const request = delivery();
+      await store.write(recordFor(request, "dead-letter"));
+      const pair = restartedPair(store);
+      await Promise.all([pair.reporter.ready(), pair.inbox.ready()]);
+      expect(pair.sent).toEqual([]);
+      expect(pair.reporter.pendingCount).toBe(0);
+      expect(pair.inbox.getState(request.messageId)).not.toHaveProperty("outcomeReport");
+      pair.inbox.stop();
+      pair.reporter.stop();
+    });
   });
 
   it("accepts scheduled origins on a v4 channel", async () => {

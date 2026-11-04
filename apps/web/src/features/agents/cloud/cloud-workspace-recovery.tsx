@@ -13,18 +13,12 @@ import { CloudProgressNotice } from "./cloud-progress-notice.js";
 export function CloudWorkspaceRecovery({ agentId, initialOpen = false }: { agentId: string; initialOpen?: boolean }) {
   const [open, setOpen] = useState(initialOpen);
   useEffect(() => {
-    if (initialOpen) setOpen(true);
+    setOpen(initialOpen);
   }, [initialOpen]);
   return (
     <div className="grid gap-3">
-      <CloudProgressNotice agentId={agentId} onRecover={() => setOpen(true)} />
-      {open ? (
-        <WorkspaceRecoveryPanel key={agentId} agentId={agentId} onClose={() => setOpen(false)} />
-      ) : (
-        <Button className="w-fit" size="compact" variant="ghost" onClick={() => setOpen(true)}>
-          {m.cloud_recovery_open()}
-        </Button>
-      )}
+      <CloudProgressNotice agentId={agentId} />
+      {open ? <WorkspaceRecoveryPanel key={agentId} agentId={agentId} onClose={() => setOpen(false)} /> : null}
     </div>
   );
 }

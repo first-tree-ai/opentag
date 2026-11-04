@@ -17,6 +17,7 @@ import {
   type AgentPromptRequest,
   type AgentProviderRunContext,
   type AgentProviderRunResult,
+  type AgentProviderSteerCustody,
   type AgentRunConfiguration,
   type AgentRuntimeBinding,
   type AgentRuntimeConfigurationOptionsRequest,
@@ -309,14 +310,18 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
    * next tool boundary; input that arrives after the last tool call runs right after the current
    * result. Either way the provider session already holds the earlier input, so the Run continues
    * until Claude Code has started every steered message and emitted a result after it.
+   *
+   * A written steer is not yet owned by the provider: the process can exit before Claude Code starts
+   * it. The returned custody reports whether `command_lifecycle` showed it started, so a Run that
+   * fails first lets the caller deliver the input again instead of treating it as processed.
    */
-  protected override async steerProvider(request: AgentSteerRequest): Promise<void> {
+  protected override async steerProvider(request: AgentSteerRequest): Promise<AgentProviderSteerCustody> {
     this.#processReady ??= deferredProcess();
     const process = await this.#processReady.promise;
     if (!process?.steer || this.#terminalClaimed || this.#providerFailure)
       throw new AgentRuntimeError("run_mismatch", "Claude Code settled before steer was accepted");
     try {
-      await process.steer({ ...claudeCodeUserMessage(request.input.items), uuid: randomUUID() });
+      return await process.steer({ ...claudeCodeUserMessage(request.input.items), uuid: randomUUID() });
     } catch (error) {
       throw new AgentRuntimeError("run_mismatch", "Claude Code did not accept the steer input", { cause: error });
     }

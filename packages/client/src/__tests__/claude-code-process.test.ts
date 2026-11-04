@@ -56,7 +56,7 @@ describe("ClaudeCodeProcess", () => {
       (message, terminal) => seen.push([message.type, terminal]),
       new AbortController().signal,
     );
-    await process.steer({ type: "user", uuid: "steer-1" });
+    const handle = await process.steer({ type: "user", uuid: "steer-1" });
     await expect(process.steer({ type: "user", uuid: "big", text: "x".repeat(8 * 1024 * 1024) })).rejects.toMatchObject(
       { code: "protocol" },
     );
@@ -65,11 +65,17 @@ describe("ClaudeCodeProcess", () => {
     child.stdout.write('{"type":"result"}\n');
     // A result before the steer started is not terminal: input can still be written.
     await process.send({ type: "control_response" });
+    // Written and queued is not started: the process could still exit without processing it.
+    expect(handle.started()).toBe(false);
+    // A lifecycle for a command this process did not steer (the prompt itself) changes nothing.
+    child.stdout.write('{"type":"command_lifecycle","command_uuid":"prompt","state":"started"}\n');
     child.stdout.write('{"type":"command_lifecycle","command_uuid":"steer-1","state":"started"}\n');
+    expect(handle.started()).toBe(true);
     child.stdout.write('{"type":"result"}\n');
     expect(seen).toEqual([
       ["command_lifecycle", false],
       ["result", false],
+      ["command_lifecycle", false],
       ["command_lifecycle", false],
       ["result", true],
     ]);
@@ -90,7 +96,7 @@ describe("ClaudeCodeProcess", () => {
       spawnProcess: () => child,
     });
     const run = process.execute({ type: "user", text: "work" }, () => undefined, new AbortController().signal);
-    await process.steer({ type: "user", uuid: "steer-1" });
+    const handle = await process.steer({ type: "user", uuid: "steer-1" });
     expect(writes).toHaveLength(1);
     child.stdout.write(
       `${JSON.stringify({ type: "control_response", response: { subtype: "success", request_id: "opentag_initialize" } })}\n`,
@@ -106,6 +112,7 @@ describe("ClaudeCodeProcess", () => {
     child.stdout.write('{"type":"result"}\n');
     child.emit("exit", 0, null);
     await expect(run).rejects.toMatchObject({ code: "exited" });
+    expect(handle.started()).toBe(false);
     await process.close();
   });
 

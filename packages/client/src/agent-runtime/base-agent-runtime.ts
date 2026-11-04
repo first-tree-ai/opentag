@@ -9,6 +9,7 @@ import type {
   AgentProviderRunContext,
   AgentProviderRunEvent,
   AgentProviderRunResult,
+  AgentProviderSteerCustody,
   AgentRunResult,
   AgentRuntime,
   AgentRuntimeBinding,
@@ -17,6 +18,8 @@ import type {
   AgentRuntimeEventSink,
   AgentRuntimeLifecycleState,
   AgentRuntimeManifest,
+  AgentSteerOutcome,
+  AgentSteerReceipt,
   AgentSteerRequest,
 } from "./types.js";
 import {
@@ -124,7 +127,7 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
     return record.promise;
   }
 
-  async steer(request: AgentSteerRequest): Promise<void> {
+  async steer(request: AgentSteerRequest): Promise<AgentSteerReceipt> {
     this.#assertOpen();
     if (this.capabilities.steer !== "supported") {
       throw new AgentRuntimeError("unsupported_capability", "this runtime does not support steer");
@@ -136,11 +139,16 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
     assertAgentInput(request.input);
     const snapshot = immutableSnapshot(request);
     const active = this.#requireActive(snapshot.expectedRunId);
-    await this.steerProvider(snapshot);
+    const custody = await this.steerProvider(snapshot);
     if (active.state !== "active" || this.#active !== active) {
-      throw new AgentRuntimeError("run_mismatch", "the active run completed before steer was accepted");
+      // Input the Provider already started belongs to the Run that just settled; refusing it would invite a replay.
+      if (!custody?.started()) {
+        throw new AgentRuntimeError("run_mismatch", "the active run completed before steer was accepted");
+      }
+      return steerReceipt(active.promise, custody);
     }
     await this.#dispatch({ type: "input_accepted", runId: active.request.runId, input: snapshot.input });
+    return steerReceipt(active.promise, custody);
   }
 
   async respond(response: AgentInteractionResponse): Promise<void> {
@@ -200,7 +208,11 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
     context: AgentProviderRunContext,
   ): Promise<AgentProviderRunResult>;
 
-  protected steerProvider(_request: AgentSteerRequest): Promise<void> {
+  /**
+   * Hands steer input to the Provider. Resolve with custody only when an acknowledged input can still
+   * be dropped before the Provider starts it; resolving without one asserts Provider ownership.
+   */
+  protected steerProvider(_request: AgentSteerRequest): Promise<AgentProviderSteerCustody | undefined> {
     return Promise.reject(new AgentRuntimeError("unsupported_capability", "this runtime does not support steer"));
   }
 
@@ -660,4 +672,13 @@ function immutableSnapshot<T>(value: T): T {
     ) as T;
   }
   return value;
+}
+
+function steerReceipt(run: Promise<AgentRunResult>, custody: AgentProviderSteerCustody | undefined): AgentSteerReceipt {
+  return { outcome: run.then((result) => steerOutcome(result, custody)) };
+}
+
+function steerOutcome(result: AgentRunResult, custody: AgentProviderSteerCustody | undefined): AgentSteerOutcome {
+  if (custody && !custody.started()) return "not_started";
+  return result.status === "completed" ? "processed" : "interrupted";
 }

@@ -68,9 +68,10 @@ class HarnessRuntime extends BaseAgentRuntime {
     return this.#options.execute(request, context, this);
   }
 
-  protected override async steerProvider(request: AgentSteerRequest): Promise<void> {
+  protected override async steerProvider(request: AgentSteerRequest): Promise<undefined> {
     this.steers.push(request);
     await this.#options.steer?.(request, this);
+    return undefined;
   }
 
   protected override async respondProvider(response: AgentInteractionResponse): Promise<void> {

@@ -31,6 +31,11 @@ Provider-specific configuration, binding, and protocol validation.
 - A Runtime owns one durable Provider session binding.
 - `prompt` requires an idle Runtime. `followUp` owns a strict FIFO queue.
 - One Run is active at a time. Every mutation carries an expected Run identity.
+- `steer` resolves with a receipt whose outcome settles with the joined Run: `processed` (the Run completed),
+  `not_started` (the Provider reports it never began the input, so delivering it again is safe), or `interrupted`
+  (it may have begun, but the Run did not complete). Claude Code writes steer input to stdin, where the process can
+  still exit before `command_lifecycle` reports it started, so it reports that start. Codex and Pi acknowledge steer
+  over RPC without a per-input start signal; their input counts as possibly started.
 - The Base Runtime serializes and awaits event delivery before settling a Run.
 - Provider terminal ingress may be claimed before queued translation finishes;
   public settlement still waits for the Provider execution to finish.

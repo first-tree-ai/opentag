@@ -8,7 +8,7 @@ import {
   SessionMessageDeliveryRequestV3Schema,
   type SessionMessageDeliveryResult,
 } from "@opentag/shared";
-import type { AgentInput, AgentRuntime } from "../agent-runtime/types.js";
+import type { AgentInput, AgentRuntime, AgentSteerOutcome, AgentSteerReceipt } from "../agent-runtime/types.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import type { AdmissionController } from "./admission-controller.js";
 import { ImCredentialEnvironmentError } from "./im-credential-environment-manager.js";
@@ -117,6 +117,8 @@ export class SessionMessageInbox {
   readonly #remembered = new Map<string, RememberedMessage>();
   readonly #abort = new AbortController();
   readonly #retryTimers = new Map<string, { cancel(): void }>();
+  /** Steered messages waiting for the Run they joined to settle. */
+  readonly #steerSettlements = new Set<Promise<void>>();
   readonly #readyPromise: Promise<void>;
   #queuedTotal = 0;
 
@@ -282,7 +284,7 @@ export class SessionMessageInbox {
   }
 
   async settled(): Promise<void> {
-    await Promise.allSettled([...this.#drains.values()]);
+    await Promise.allSettled([...this.#drains.values(), ...this.#steerSettlements]);
   }
 
   #startDrain(sessionId: string): void {
@@ -332,8 +334,9 @@ export class SessionMessageInbox {
 
   /**
    * Steers an accepted message into the Session's running Turn when its runtime accepts input
-   * mid-Turn. The running Turn already holds the Session's credentials and IM outbox target, so the
-   * message is delivered once the runtime accepts it; any refusal leaves it queued as before.
+   * mid-Turn. The running Turn already holds the Session's credentials and IM outbox target; any
+   * refusal leaves the message queued as before. An accepted steer is not yet a delivery: the record
+   * stays `running` until the joined Run settles and the runtime reports what became of the input.
    */
   async #steerIntoRunningTurn(sessionId: string, next: QueuedMessage): Promise<boolean> {
     const lookup = this.#runtimeManager.runtime;
@@ -352,8 +355,9 @@ export class SessionMessageInbox {
       if (!outboxContext) return false;
       turnContext = { sessionKind: "visible", outboxContext };
     }
+    let receipt: AgentSteerReceipt;
     try {
-      await runtime.steer({
+      receipt = await runtime.steer({
         expectedRunId: activeRunId,
         input: buildSessionMessageInput(next.request, this.#cliCommand, turnContext, new Date(this.#now())),
       });
@@ -361,18 +365,65 @@ export class SessionMessageInbox {
       return false;
     }
     const key = `${next.request.targetSessionId}:${next.request.messageId}`;
-    const current = this.#records.get(key);
+    let record = this.#records.get(key);
+    if (record) {
+      try {
+        // A restart before the joined Run settles recovers a `running` record like any interrupted Run.
+        record = await this.#transition(record, "running");
+      } catch {
+        // The record stays `accepted` on disk, so a restart redelivers it; this process still settles it below.
+        this.#logger.warn(
+          { code: "SESSION_MESSAGE_STEER_PERSISTENCE_FAILED", messageId: next.request.messageId },
+          "Steered Session message custody could not be recorded",
+        );
+      }
+    }
+    this.#remember(key, { hash: next.hash, status: "accepted" });
+    if (record) this.#trackSteered(record, next.hash, receipt);
+    return true;
+  }
+
+  #trackSteered(
+    record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
+    hash: string,
+    receipt: AgentSteerReceipt,
+  ): void {
+    const settlement = untilAborted(receipt.outcome, this.#abort.signal)
+      // Once stopped, the `running` record is recovered on the next start instead.
+      .then((outcome) => (outcome ? this.#settleSteered(record, hash, outcome) : undefined))
+      .finally(() => this.#steerSettlements.delete(settlement));
+    this.#steerSettlements.add(settlement);
+  }
+
+  /**
+   * Resolves a steered message once its joined Run settled:
+   * - `processed`: delivered.
+   * - `not_started`: the provider never began it, so it returns to the FIFO and is delivered again.
+   * - `interrupted`: the provider may have acted on it before the Run failed or was cancelled, so it
+   *   fails permanently instead of being replayed.
+   */
+  async #settleSteered(
+    record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
+    hash: string,
+    outcome: AgentSteerOutcome,
+  ): Promise<void> {
+    const messageId = record.payload.messageId;
+    if (outcome === "interrupted") {
+      await this.#handleFailure(record, hash, "prompt", steerInterruptedFailure(record.payload.requestId));
+      return;
+    }
+    const status = outcome === "processed" ? "succeeded" : "accepted";
+    let next = record;
     try {
-      if (current) await this.#transition(current, "succeeded");
+      next = await this.#transition(record, status);
     } catch {
-      // The input is already in the running Turn. Only a restart before this record is rewritten can redeliver it.
       this.#logger.warn(
-        { code: "SESSION_MESSAGE_STEER_PERSISTENCE_FAILED", messageId: next.request.messageId },
-        "Steered Session message could not be marked delivered",
+        { code: "SESSION_MESSAGE_STEER_PERSISTENCE_FAILED", messageId, outcome },
+        "Steered Session message outcome could not be recorded",
       );
     }
-    this.#remember(key, { hash: next.hash, status: "succeeded" });
-    return true;
+    this.#remember(record.key, { hash, status });
+    if (outcome === "not_started") this.#enqueue(next.payload, hash);
   }
 
   async #runMessage(
@@ -717,6 +768,36 @@ export class SessionMessageInbox {
       this.#remembered.delete(oldest);
     }
   }
+}
+
+function steerInterruptedFailure(requestId: string): DurableFailure {
+  return {
+    code: "session_message_steer_interrupted",
+    category: "dependency",
+    retryability: "never",
+    phase: "provider",
+    requestId,
+    message: "The Run ended after the provider may have started this steered Session message",
+  };
+}
+
+/** Resolves with the promise's value, or with `undefined` once the signal aborts first. */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T | undefined> {
+  if (signal.aborted) return Promise.resolve(undefined);
+  return new Promise<T | undefined>((resolve, reject) => {
+    const onAbort = () => resolve(undefined);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 function retryableAuthorityReason(reason: InputRejectReason): boolean {

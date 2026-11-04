@@ -1,5 +1,4 @@
 import type { RuntimeCredentialProvider, RuntimeExecutionSource } from "@opentag/shared";
-import { sql } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
 import { createInstrumentedFetch } from "../observability/external-call-logger.js";
 import type { PerformanceLogger } from "../observability/performance-logger.js";
@@ -8,6 +7,7 @@ import type { ConnectionRegistry, RuntimeControlIdentity } from "../runtime/conn
 import type { RuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
 import type { ApplicationCipher } from "../services/crypto.js";
 import { ImOutboundCapture } from "../services/im/im-outbound-capture.js";
+import { TaskService } from "../services/tasks/index.js";
 import { closeServerResources, startClosingServerResources } from "../shutdown.js";
 import { RuntimeCapabilityStore } from "./capability-store.js";
 import {
@@ -428,12 +428,13 @@ function resolveProviderFetch(
 }
 
 /**
- * Resolves an execution's Session and source to a stable Task anchor ID (`kind: "link"`) or a
- * plain non-clickable `Session <shortId>` label (`kind: "plain"`):
- * - A delivery execution resolves its own `deliveryId`'s `message_id` directly.
- * - A 1:1 thread or private-chat (`dm`) Session resolves to its `sessionId`.
- * - A non-delivery execution on a group `channel` Session (or a failed lookup) returns `plain` so
- *   it never links to an unrelated Task or a 404 route.
+ * Resolves an execution's Session to the Task anchor its `Session <shortId>` footer links to. A
+ * Task is one chat Session, and the Task routes resolve any Session id — a chat Session, or an
+ * internal Session through its creator chain — to its Task, so a Session links by its own id. It
+ * links only when that Task qualifies under the same rollup Task list and detail read
+ * (`TaskService.hasLinkableTask`): an ambient-only group channel Session, an internal Session rooted
+ * at one, a missing Session, or a failed lookup returns `plain`, so the footer never links to a 404
+ * route.
  */
 export async function resolveSessionTaskAnchor(
   database: DatabaseClient,
@@ -441,35 +442,8 @@ export async function resolveSessionTaskAnchor(
   logger?: Pick<ServiceLogger, "warn">,
 ): Promise<SessionTaskAnchorResolution> {
   try {
-    const deliveryJoin =
-      input.source?.kind === "delivery"
-        ? sql`left join im_message_deliveries d on d.id = ${input.source.deliveryId}::uuid and d.session_id = s.id`
-        : sql`left join im_message_deliveries d on false`;
-    const rows = await database.execute<
-      { kind: string; conversationKind: string; messageId: string | null; attention: string | null } & Record<
-        string,
-        unknown
-      >
-    >(sql`
-      select
-        s.kind,
-        s.conversation_kind as "conversationKind",
-        d.message_id::text as "messageId",
-        d.attention as "attention"
-      from sessions s
-      ${deliveryJoin}
-      where s.id = ${input.sessionId}::uuid
-      limit 1
-    `);
-    const row = [...rows][0];
-    if (!row) return { kind: "plain" };
-    if (row.kind === "thread" || (row.kind === "channel" && row.conversationKind === "dm")) {
-      return { kind: "link", taskAnchorId: row.messageId ?? input.sessionId };
-    }
-    if (row.messageId && row.attention === "direct") {
-      return { kind: "link", taskAnchorId: row.messageId };
-    }
-    return { kind: "plain" };
+    if (!(await new TaskService(database).hasLinkableTask(input.sessionId))) return { kind: "plain" };
+    return { kind: "link", taskAnchorId: input.sessionId };
   } catch (error) {
     logger?.warn(
       {

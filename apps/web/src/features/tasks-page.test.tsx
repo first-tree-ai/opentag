@@ -525,7 +525,7 @@ describe("Tasks view", () => {
   });
 
   it("stays an IM work-record view: no Cloud environment read, section, or controls", async () => {
-    // A Task is a work-record view organized by IM topic; it never queries or manages the runtime
+    // A Task is a work-record view of one IM Session; it never queries or manages the runtime
     // Cloud environments underneath, whatever the Agent's Computer kind.
     mockDetail(detail);
     const overview = vi.spyOn(browserApi, "agentCloudOverview");

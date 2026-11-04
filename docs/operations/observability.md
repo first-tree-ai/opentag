@@ -138,7 +138,7 @@ Each phase has `start` and `end` or `failure` records. `durationMs` measures the
 `elapsedMs` measures worker elapsed time, and `seq` orders worker records. All use process-local
 monotonic clocks; `receivedElapsedMs` is the parent's independent receive clock. Never subtract
 clocks across processes. The `worker_preparation` `end` record also attaches optional sub-phase
-durations (`proxyStartMs`, `contextTreeSyncMs`, and `skillsAssembleMs`) when reached. The parent
+durations (`proxyStartMs`, `contextTreePreparationMs`, and `skillsAssembleMs`) when reached. The parent
 `worker_end` summary uses `durationMs` for the entire native exec span (not the last RPC) and
 attaches `credentialOpenMs` for the parent-side credential bridge open latency. Existing
 RPC budgets, compaction handling, Turn deadlines, cancellation, retry, stdout completion, and report

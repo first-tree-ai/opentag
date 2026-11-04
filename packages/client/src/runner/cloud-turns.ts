@@ -2010,7 +2010,11 @@ export class CloudTurnRunner {
     if (!input.contextTrees.length || !openRelay.services?.some((service) => service.service === "context-tree"))
       return undefined;
     const pack = resolveContextTreePackage();
-    if (!pack) throw new Error("Context Tree package is unavailable");
+    if (!pack) {
+      // The Turn still runs; without a gateway URL the worker reports each source unavailable.
+      this.#log("Context Tree package is unavailable; opening the execution without the command gateway");
+      return undefined;
+    }
     const treeHome = "/workspace/.opentag/context-tree/home";
     const contextTreeGateway = new ContextTreeCommandGateway({
       parent: openRelay,

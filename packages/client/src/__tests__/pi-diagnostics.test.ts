@@ -299,7 +299,7 @@ describe("Cloud Pi diagnostics", () => {
       event: "end",
       durationMs: 45,
       proxyStartMs: 5,
-      contextTreeSyncMs: 25,
+      contextTreePreparationMs: 25,
       skillsAssembleMs: 15,
     });
     writer.finish();
@@ -311,7 +311,7 @@ describe("Cloud Pi diagnostics", () => {
         event: "end",
         durationMs: 45,
         proxyStartMs: 5,
-        contextTreeSyncMs: 25,
+        contextTreePreparationMs: 25,
         skillsAssembleMs: 15,
       }),
     );

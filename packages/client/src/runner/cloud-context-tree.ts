@@ -77,6 +77,30 @@ async function prepare(
   return { status: preparedConnections(input.contextTrees, project), binDirectory };
 }
 
+/**
+ * The Agent reads Context only through the packaged `context-tree-read` Skill and syncs only
+ * through the command gateway, so a source without either is reported unavailable rather than
+ * advertised with a read rule the Agent cannot follow.
+ */
+export function withContextTreeReadPath(
+  status: CloudContextTreeStatus,
+  readPath: { readonly skills: boolean; readonly gateway: boolean },
+): CloudContextTreeStatus {
+  const reason = !readPath.gateway ? "GATEWAY_UNAVAILABLE" : !readPath.skills ? "SKILLS_UNAVAILABLE" : undefined;
+  if (!reason || status.status !== "configured") return status;
+  return {
+    status: "configured",
+    connections: status.connections.map((connection) =>
+      connection.status === "available" ? { ...sourceOf(connection), status: "unavailable", reason } : connection,
+    ),
+  };
+}
+
+function sourceOf(connection: ContextTreeConnection & { readonly projectPath?: string }): ContextTreeConnection {
+  const { projectPath: _projectPath, ...source } = connection;
+  return source;
+}
+
 function failedPreparation(sources: readonly ContextTreeConnection[], reason: string): CloudContextTreePreparation {
   return {
     status: sources.length

@@ -114,7 +114,9 @@ Agent, in the foreground or background, on Local or Cloud. Preparation writes th
 configuration, the `context-tree` shim, and the packaged Skills, and supplies the managed GitHub
 transport. Missing managed authorization, a missing package, an unwritable shim, or a failed Skill
 installation reports each selected source as unavailable; Local retries an unwritable shim after a
-one-minute cooldown. Because the result depends only on the selection and this local state, it is
+one-minute cooldown. On Cloud, a Runner without the package opens the execution without the command
+gateway, and the Turn still runs; a source is advertised as available only when the gateway is
+present and the packaged Skills were assembled, otherwise it is reported unavailable. Because the result depends only on the selection and this local state, it is
 the same for every preparation of an unchanged selection.
 
 Managed synchronization and write commands route through a per-execution Context Tree command gateway in the trusted Local Daemon or Cloud Runner. Only its pinned CLI child receives a GitHub handle; the Agent receives a Unix socket or fixed Cloud loopback endpoint. The Server separately admits each command against the live parent, current Agent GitHub MCP authorization and exact selected tree. See [GitHub platform integration](github-platform-integration.md#context-tree-command-boundary).

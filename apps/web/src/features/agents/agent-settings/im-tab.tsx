@@ -125,11 +125,9 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                        */}
                       <section aria-label={m.im_messaging_app()} className="grid gap-4">
                         {binding ? (
-                          <>
-                            <Text as="h2" variant="heading">
-                              {m.im_messaging_app()}
-                            </Text>
-                          </>
+                          <Text as="h2" variant="heading">
+                            {m.im_messaging_app()}
+                          </Text>
                         ) : null}
                         {/* The same surface as other settings pages, so the page reads as one family. */}
                         <div className={MESSAGING_SURFACE}>

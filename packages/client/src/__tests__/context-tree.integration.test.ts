@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -11,7 +11,7 @@ const roots: string[] = [];
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
 });
-it("shares remote snapshots, writes through isolated worktrees, and preserves repository-local config", async () => {
+it("prepares without syncing; Agent-run syncs share remote snapshots and writes use isolated worktrees", async () => {
   const root = await realpath(await mkdtemp(join(tmpdir(), "ct-local-v1-")));
   roots.push(root);
   const pack = resolveContextTreePackage();
@@ -45,15 +45,27 @@ it("shares remote snapshots, writes through isolated worktrees, and preserves re
   );
   environment.PATH = `${bin}:${environment.PATH}`;
   const source = { kind: "git", repository: "acme/project", path: "docs", ref: "main" } as const;
-  const manager = new ContextTreeManager({ home: join(root, "host"), environment, sessionStartBudgetMs: 30_000 });
+  const manager = new ContextTreeManager({ home: join(root, "host"), environment });
   const workspace = join(root, "workspace");
   await mkdir(workspace);
   const repositoryConfig = '{"schemaVersion":3,"trees":[{"kind":"directory","path":"docs"}]}';
   await writeFile(join(workspace, ".context-tree.json"), repositoryConfig);
   const first = await manager.ensureAgent(workspace, "pi", [source]);
-  expect(first).toMatchObject({ connections: [{ status: "ready" }] });
-  if (first.status !== "configured" || first.connections[0]?.status !== "ready") throw new Error(JSON.stringify(first));
+  if (first.status !== "configured" || first.connections[0]?.status !== "available")
+    throw new Error(JSON.stringify(first));
   const ready = first.connections[0];
+  // Preparation is local: no repository cache or snapshot exists until the Agent syncs.
+  await expect(access(join(root, ".context-tree", "repositories"))).rejects.toMatchObject({ code: "ENOENT" });
+  const sync = async (projectPath: string) => {
+    const result = await runContextTreeCli(pack, ["sync", "--project-path", projectPath], {
+      env: environment,
+      network: true,
+    });
+    const entry = (result.payload as { connections: { ok: boolean; treeRoot: string }[] }).connections[0];
+    if (!entry?.ok) throw new Error(JSON.stringify(result.payload));
+    return entry.treeRoot;
+  };
+  const firstTree = await sync(ready.projectPath);
   const prepared = await runContextTreeCli(pack, ["write", "prepare", "--project-path", ready.projectPath], {
     env: environment,
   });
@@ -68,10 +80,11 @@ it("shares remote snapshots, writes through isolated worktrees, and preserves re
     ).failureCode,
   ).toBeUndefined();
   const reader = await manager.ensureAgent(join(root, "reader"), "pi", [source]);
-  if (reader.status !== "configured" || reader.connections[0]?.status !== "ready")
+  if (reader.status !== "configured" || reader.connections[0]?.status !== "available")
     throw new Error(JSON.stringify(reader));
-  expect(reader.connections[0].treePath).not.toBe(ready.treePath);
-  expect(await readFile(join(reader.connections[0].treePath, "decision.md"), "utf8")).toContain("Use small changes.");
+  const readerTree = await sync(reader.connections[0].projectPath);
+  expect(readerTree).not.toBe(firstTree);
+  expect(await readFile(join(readerTree, "decision.md"), "utf8")).toContain("Use small changes.");
   expect(await readFile(join(workspace, ".context-tree.json"), "utf8")).toBe(repositoryConfig);
   expect(await git("--git-dir", remote, "show", "main:code.txt")).toBe("unchanged");
 }, 60_000);

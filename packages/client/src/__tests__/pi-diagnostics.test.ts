@@ -335,7 +335,6 @@ describe("Cloud Pi diagnostics", () => {
           archiveBytes: 2048,
           workspaceBytes: 4096,
           entryCount: 12,
-          omittedCleanRepoCount: 1,
           sealed: true,
         });
         return "saved";
@@ -360,7 +359,6 @@ describe("Cloud Pi diagnostics", () => {
         archiveBytes: 2048,
         workspaceBytes: 4096,
         entryCount: 12,
-        omittedCleanRepoCount: 1,
         sealed: true,
       }),
     ]);

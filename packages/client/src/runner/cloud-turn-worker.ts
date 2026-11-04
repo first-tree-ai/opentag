@@ -372,8 +372,8 @@ function createTurnExecutionContext(
 }
 
 /**
- * Optional pre-run memory with its own small budget on top of the Turn execution bounds. It is
- * fully awaited, so a stop leaves no CLI child or `git` writing after the Turn stopped waiting.
+ * Optional pre-run memory with its own small budget on top of the Turn execution bounds. It only
+ * writes local configuration and the `context-tree` shim; the Agent syncs through the gateway.
  */
 function prepareTurnContextTree(
   request: RunnerCloudWorkerRequest,

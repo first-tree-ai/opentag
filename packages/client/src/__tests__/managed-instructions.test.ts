@@ -188,9 +188,9 @@ describe("renderManagedSystemPrompt Agent Home", () => {
 
     const unavailable = renderManagedSystemPrompt(snapshot, {
       ...session,
-      contextTree: { status: "unavailable", reason: "DIRTY_TREE" },
+      contextTree: { status: "unavailable", reason: "SHIM_UNAVAILABLE" },
     });
-    expect(unavailable).toContain("Context Tree unavailable (DIRTY_TREE)");
+    expect(unavailable).toContain("Context Tree unavailable (SHIM_UNAVAILABLE)");
     expect(unavailable).toContain("Do not assume earlier decisions were recorded");
     expect(unavailable).toContain("do not attempt to repair the tree yourself");
   });
@@ -214,9 +214,8 @@ it("attributes partial memory results to sources without disabling healthy trees
           path: ".",
           ref: "main",
           repository: "acme/team",
-          status: "ready",
+          status: "available",
           projectPath: "/managed/project",
-          treePath: "/trees/team",
         },
         {
           kind: "git" as const,
@@ -231,12 +230,12 @@ it("attributes partial memory results to sources without disabling healthy trees
   });
   expect(prompt).toContain("team — acme/team");
   expect(prompt).toContain("product — acme/product");
-  expect(prompt).toContain("Other ready trees remain usable");
+  expect(prompt).toContain("Other available trees remain usable");
   expect(prompt).toContain("exact tree selector for every write");
   expect(prompt).not.toContain("Durable memory is not active for this Session");
 });
 
-it("renders shared multi-tree instructions once while preserving each path and reason", () => {
+it("renders shared multi-tree instructions once while preserving each selector and reason", () => {
   const prompt = renderManagedSystemPrompt(snapshot, {
     ...session,
     contextTree: {
@@ -247,26 +246,16 @@ it("renders shared multi-tree instructions once while preserving each path and r
           path: ".",
           ref: "main",
           repository: "acme/team",
-          status: "ready",
+          status: "available",
           projectPath: "/managed/project",
-          treePath: "/trees/team",
         },
         {
           kind: "git" as const,
-          path: ".",
-          ref: "main",
+          path: "docs",
+          ref: "release",
           repository: "acme/product",
-          status: "ready",
+          status: "available",
           projectPath: "/managed/project",
-          treePath: "/trees/product",
-        },
-        {
-          kind: "git" as const,
-          path: ".",
-          ref: "main",
-          repository: "acme/pending",
-          status: "unavailable",
-          reason: "PREPARING",
         },
         {
           kind: "git" as const,
@@ -279,46 +268,41 @@ it("renders shared multi-tree instructions once while preserving each path and r
       ],
     },
   });
-  expect(prompt).toContain("Context Tree: /trees/team");
-  expect(prompt).toContain("Context Tree: /trees/product");
-  expect(prompt).toContain("pending — acme/pending");
-  expect(prompt).toContain("preparation is continuing");
+  expect(prompt).toContain("team — acme/team/. (main):");
+  expect(prompt).toContain("acme/product/docs (release):");
+  expect(prompt).toContain("Tree selector: ");
+  expect(prompt.match(/Use --project-path "\/managed\/project" for managed tree commands\./g)).toHaveLength(2);
   expect(prompt).toContain("GITHUB_PERMISSION");
+  expect(prompt.match(/context-tree sync --project-path "\/managed\/project"/g)).toHaveLength(1);
   expect(prompt.match(/context-tree-read and context-tree-write skills/g)).toHaveLength(1);
   expect(prompt.match(/Do not write to another Agent's member directory/g)).toHaveLength(1);
-  expect(prompt.match(/Other ready trees remain usable/g)).toHaveLength(1);
+  expect(prompt.match(/Other available trees remain usable/g)).toHaveLength(1);
 });
 
-it("keeps preparation guidance separate from failures in a configured tree list", () => {
-  const prompt = renderManagedSystemPrompt(snapshot, {
-    ...session,
-    contextTree: {
-      status: "configured",
-      connections: [
-        {
-          kind: "git" as const,
-          path: ".",
-          ref: "main",
-          repository: "acme/team",
-          status: "ready",
-          projectPath: "/managed/project",
-          treePath: "/trees/team",
-        },
-        {
-          kind: "git" as const,
-          path: ".",
-          ref: "main",
-          repository: "acme/pending",
-          status: "unavailable",
-          reason: "PREPARING",
-        },
-      ],
-    },
-  });
-  expect(prompt).toContain("preparation is continuing in the background");
-  expect(prompt).toContain("not active for this Session");
-  expect(prompt).toContain("Other ready trees remain usable");
-  expect(prompt).not.toContain("repair the tree");
+it("tells the Agent to sync through the read skill and carries no snapshot path or commit", () => {
+  for (const context of [session, cloudSession]) {
+    const prompt = renderManagedSystemPrompt(snapshot, {
+      ...context,
+      contextTree: {
+        status: "configured",
+        connections: [
+          {
+            kind: "git" as const,
+            path: "docs",
+            ref: "main",
+            repository: "acme/team",
+            status: "available",
+            projectPath: "/managed/project",
+          },
+        ],
+      },
+    });
+    expect(prompt).toContain("Read Context through the context-tree-read skill");
+    expect(prompt).toContain('`context-tree sync --project-path "/managed/project"`');
+    expect(prompt).toContain("keep the returned treeRoot for that task");
+    expect(prompt).not.toMatch(/synchronized at the start of this Turn|commit [0-9a-f]{7,}|\/snapshots\//);
+    expect(prompt).not.toContain("Context Tree: /");
+  }
 });
 
 describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
@@ -516,42 +500,34 @@ describe("renderManagedSystemPrompt Cloud environment", () => {
     expect(prompt).toContain("paste the MCP configuration into this chat");
   });
 
-  it("renders the current Context Tree truthfully with the Agent slug and exact path", () => {
+  it("renders the Cloud Context Tree with the Agent slug and project path", () => {
     const slugSnapshot: EffectiveRuntimeSnapshot = {
       ...snapshot,
       instructions: { ...snapshot.instructions, platform: "OpenTag Agent slug: tree-agent" },
     };
-    const ready = renderManagedSystemPrompt(slugSnapshot, {
+    const available = renderManagedSystemPrompt(slugSnapshot, {
       ...cloudSession,
       contextTree: {
-        status: "ready",
-        projectPath: "/managed/project",
-        treePath: "/ws/tree",
-        branch: "master",
-        sha: "a".repeat(40),
+        status: "configured",
+        connections: [
+          {
+            kind: "git" as const,
+            path: ".",
+            ref: "master",
+            repository: "acme/team",
+            status: "available",
+            projectPath: "/managed/project",
+          },
+        ],
       },
     });
-    expect(ready).toContain(
-      "Context Tree: /ws/tree — synchronized at the start of this Turn (branch master, commit aaaaaaaaaaaa).",
-    );
-    expect(ready).toContain("tree-agent");
-    expect(ready).toContain("members/tree-agent/");
-    expect(ready).toContain("Unpublished work remains in the prepared worktree.");
-
-    const dirty = renderManagedSystemPrompt(snapshot, {
-      ...cloudSession,
-      contextTree: { status: "stale", projectPath: "/managed/project", treePath: "/ws/tree", reason: "DIRTY_TREE" },
-    });
-    expect(dirty).toContain("Context Tree: /ws/tree");
-    expect(dirty).toContain("unpublished changes");
-    expect(dirty).toContain("do not reset or discard");
-
-    const stale = renderManagedSystemPrompt(snapshot, {
-      ...cloudSession,
-      contextTree: { status: "stale", projectPath: "/managed/project", treePath: "/ws/tree", reason: "TIMEOUT" },
-    });
-    expect(stale).toContain("may be outdated");
-    expect(stale).toContain("TIMEOUT");
+    expect(available).toContain('Use --project-path "/managed/project" for managed tree commands.');
+    expect(available).toContain("tree-agent");
+    expect(available).toContain("members/tree-agent/");
+    expect(available).toContain("Unpublished work remains in the prepared worktree.");
+    expect(available).toContain("may be outdated");
+    expect(available).toContain("do not reset or discard");
+    expect(available).toContain("Do not install native cleanup schedules");
 
     const unconfigured = renderManagedSystemPrompt(snapshot, {
       ...cloudSession,
@@ -578,30 +554,16 @@ describe("renderManagedSystemPrompt Cloud environment", () => {
             path: ".",
             ref: "main",
             repository: "acme/team",
-            status: "ready",
+            status: "available",
             projectPath: "/managed/project",
-            treePath: "/trees/team",
-            branch: "main",
-            sha: "a".repeat(40),
           },
           {
             kind: "git" as const,
             path: ".",
             ref: "main",
             repository: "acme/product",
-            status: "ready",
+            status: "available",
             projectPath: "/managed/project",
-            treePath: "/trees/product",
-          },
-          {
-            kind: "git" as const,
-            path: ".",
-            ref: "main",
-            repository: "acme/stale",
-            status: "stale",
-            projectPath: "/managed/project",
-            treePath: "/trees/stale",
-            reason: "DIRTY_TREE",
           },
           {
             kind: "git" as const,
@@ -625,12 +587,11 @@ describe("renderManagedSystemPrompt Cloud environment", () => {
     expect(prompt.match(/^## Context Trees$/gm)).toHaveLength(1);
     expect(prompt).not.toMatch(/^## Context Tree$/m);
     expect(prompt).toContain("team — acme/team");
-    expect(prompt).toContain("Context Tree: /trees/product");
-    expect(prompt).toContain("branch main, commit aaaaaaaaaaaa");
-    expect(prompt).toContain("Context Tree: /trees/stale");
-    expect(prompt).toContain("do not reset or discard");
+    expect(prompt).toContain("product — acme/product");
     expect(prompt).toContain("GITHUB_PERMISSION");
+    expect(prompt).toContain("TIMEOUT");
     expect(prompt.match(/context-tree-read and context-tree-write skills/g)).toHaveLength(1);
+    expect(prompt.match(/Read Context through the context-tree-read skill/g)).toHaveLength(1);
     expect(prompt.match(/Do not write to another Agent's member directory/g)).toHaveLength(1);
     expect(prompt.match(/Continue the task without those trees/g)).toHaveLength(1);
   });

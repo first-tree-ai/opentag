@@ -5,7 +5,7 @@ import {
   contextTreeSelector,
   SESSION_RUN_OUTCOME_NOTICE_HEADER,
 } from "@opentag/shared";
-import type { ContextTreeStatus as ManagedContextTreeStatus } from "./context-tree-connections.js";
+import type { ContextTreeResult, ContextTreeStatus as ManagedContextTreeStatus } from "./context-tree-connections.js";
 import { GITHUB_MCP_INSTRUCTIONS, renderProviderOutboxGuidance } from "./provider-outbox-instructions.js";
 
 export type ManagedEnvironment = "local" | "cloud";
@@ -252,9 +252,13 @@ function renderSessionCollaboration(context: ManagedSessionContext): readonly st
 }
 
 /**
- * The Context Tree section. The Agent is told plainly when durable memory is absent or stale, so
- * it cannot mistake a failed connection for an empty tree or a failed synchronization for the
- * newest published state.
+ * The Context Tree section. The Agent is told plainly when durable memory is absent or unavailable,
+ * so it cannot mistake a failed connection for an empty tree.
+ *
+ * OpenTag does not sync while preparing a Turn, so this section names only the selection and the
+ * project path. It never carries a snapshot path or commit: those change with every published
+ * revision and would invalidate the provider's prompt cache. The Agent obtains the current
+ * snapshot itself through `context-tree sync`, following the `context-tree-read` skill.
  */
 function renderContextTree(
   environment: ManagedEnvironment,
@@ -287,33 +291,11 @@ function renderContextTree(
   ];
 }
 
-function renderContextTreeFacts(
-  environment: ManagedEnvironment,
-  status: Exclude<ManagedContextTreeStatus, { status: "configured" }>,
-): readonly string[] {
-  if (status.status === "ready") {
-    if (environment === "cloud") {
-      return [
-        `Use --project-path ${JSON.stringify(status.projectPath)} for managed tree commands.`,
-        `Context Tree: ${status.treePath} — synchronized at the start of this Turn${
-          status.branch && status.sha ? ` (branch ${status.branch}, commit ${status.sha.slice(0, 12)})` : ""
-        }.`,
-      ];
-    }
-    return [
-      `Context Tree: ${status.treePath}`,
-      `Use --project-path ${JSON.stringify(status.projectPath)} for managed tree commands.`,
-    ];
-  }
-  if (status.status === "stale") {
-    return [
-      `Use --project-path ${JSON.stringify(status.projectPath)} for managed tree commands.`,
-      `Context Tree: ${status.treePath} — ${
-        status.reason === "DIRTY_TREE"
-          ? "the preserved checkout has unpublished changes"
-          : `this Turn's synchronization failed (${status.reason})`
-      }.`,
-    ];
+type ContextTreeEntryStatus = Exclude<ManagedContextTreeStatus, { status: "configured" }> | ContextTreeResult;
+
+function renderContextTreeFacts(environment: ManagedEnvironment, status: ContextTreeEntryStatus): readonly string[] {
+  if (status.status === "available") {
+    return [`Use --project-path ${JSON.stringify(status.projectPath)} for managed tree commands.`];
   }
   if (status.status === "unconfigured") {
     return environment === "cloud"
@@ -322,43 +304,34 @@ function renderContextTreeFacts(
         ]
       : ["Context Tree: disabled for this Agent. Connect one on the Agent's Context Tree page."];
   }
-  return [
-    status.reason === "PREPARING"
-      ? "Context Tree preparation is continuing in the background."
-      : `Context Tree unavailable (${status.reason}).`,
-  ];
+  return [`Context Tree unavailable (${status.reason}).`];
 }
 
 function renderContextTreeGuidance(
   environment: ManagedEnvironment,
   snapshot: EffectiveRuntimeSnapshot,
-  status: Exclude<ManagedContextTreeStatus, { status: "configured" }>,
+  status: ContextTreeEntryStatus,
 ): readonly string[] {
-  if (status.status === "ready") return renderReadyTreeGuidance(environment, snapshot);
-  if (status.status === "stale") return renderStaleTreeGuidance();
+  if (status.status === "available") return renderAvailableTreeGuidance(environment, snapshot, status.projectPath);
   if (status.status === "unconfigured") return renderUnconfiguredTreeGuidance(environment);
   return renderUnavailableTreeGuidance(environment, status.reason);
 }
 
-function renderReadyTreeGuidance(
+function renderAvailableTreeGuidance(
   environment: ManagedEnvironment,
   snapshot: EffectiveRuntimeSnapshot,
+  projectPath: string,
 ): readonly string[] {
   return [
-    "Ready Context Trees are connected on this Agent's Context Tree page.",
-    "Remote tree paths are read-only snapshots. Use context-tree write prepare for an isolated worktree, then write finish to commit and optionally publish. Never edit snapshots.",
+    "Available Context Trees are connected on this Agent's Context Tree page.",
+    `Read Context through the context-tree-read skill. At the start of each task, run \`context-tree sync --project-path ${JSON.stringify(projectPath)}\` and keep the returned treeRoot for that task; sync again at the next task boundary rather than reusing an earlier task's path.`,
+    "Returned tree paths are read-only snapshots. Use context-tree write prepare for an isolated worktree, then write finish to commit and optionally publish. Never edit snapshots.",
+    "If sync fails, report the failure. `context-tree sync --offline` returns the cached snapshot, which may be outdated; read it as stale context. Preserve existing write sessions and unpublished work; do not reset or discard them.",
     "Agents share published memory only when they select the same repository, directory, and branch. Unpublished work remains in the prepared worktree.",
     "Read relevant context before changing code, and record durable decisions using the context-tree-read and context-tree-write skills.",
     "Repository-owned directory trees use their own project configuration and normal host Git workflow.",
     ...(environment === "cloud" ? ["Do not install native cleanup schedules in this ephemeral sandbox."] : []),
     renderMemberDirectoryGuidance(environment, snapshot),
-    "",
-  ];
-}
-
-function renderStaleTreeGuidance(): readonly string[] {
-  return [
-    "The cached snapshot may be outdated. Read it as stale context. Preserve existing write sessions and unpublished work; do not reset or discard them. Retry sync when available.",
     "",
   ];
 }
@@ -375,25 +348,18 @@ function renderUnconfiguredTreeGuidance(environment: ManagedEnvironment): readon
 function renderUnavailableTreeGuidance(environment: ManagedEnvironment, reason: string): readonly string[] {
   if (environment === "cloud") {
     return [
-      "Unavailable trees are not active for this Turn; other ready trees remain usable. Continue the task without those trees. Do not assume earlier decisions were recorded, and do not attempt to repair, create, or connect a tree yourself. Any unpublished drafts from earlier Turns remain preserved in this Session's workspace.",
+      "Unavailable trees are not active for this Turn; other available trees remain usable. Continue the task without those trees. Do not assume earlier decisions were recorded, and do not attempt to repair, create, or connect a tree yourself. Any unpublished drafts from earlier Turns remain preserved in this Session's workspace.",
       ...(reason === "GITHUB_PERMISSION"
         ? [
             "The current execution does not grant this Session the selected repository, so the managed connection stays detached until the grant returns.",
-          ]
-        : []),
-      ...(reason === "DIRTY_TREE"
-        ? [
-            "The preserved checkout contains unpublished changes from an earlier Turn. They were left untouched; do not commit, reset, or discard them silently — report their presence.",
           ]
         : []),
       "",
     ];
   }
   return [
-    "Unavailable trees are not active for this Session. Other ready trees remain usable.",
-    reason === "PREPARING"
-      ? "Trees still preparing may become usable in a later Session."
-      : "Do not assume earlier decisions were recorded in unavailable trees, and do not attempt to repair the tree yourself.",
+    "Unavailable trees are not active for this Session. Other available trees remain usable.",
+    "Do not assume earlier decisions were recorded in unavailable trees, and do not attempt to repair the tree yourself.",
     "",
   ];
 }

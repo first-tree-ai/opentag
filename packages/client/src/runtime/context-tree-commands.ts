@@ -11,6 +11,7 @@ import {
   contextTreeSelector,
 } from "@opentag/shared";
 import { z } from "zod";
+import type { RuntimeProxyProvider } from "./runtime-credential-frames.js";
 import type { RuntimeCredentialRelay } from "./runtime-credential-relay.js";
 
 const LIMIT = 1024 * 1024;
@@ -45,7 +46,8 @@ export class ContextTreeCommandGateway {
   readonly #abort = new AbortController();
   #server?: http.Server;
   #directory?: string;
-  #relay?: RuntimeCredentialRelay;
+  /** Child relays of in-flight CLI calls; a gateway sync runs one per source concurrently. */
+  readonly #relays = new Set<RuntimeCredentialRelay>();
   #httpAbort?: AbortController;
   #busy = false;
   #settled?: Promise<void>;
@@ -58,9 +60,17 @@ export class ContextTreeCommandGateway {
   constructor(options: ContextTreeCommandOptions) {
     this.#options = options;
   }
-  get relay(): RuntimeCredentialRelay | undefined {
-    return this.#relay;
+  /**
+   * The child relay that owns `handle`, among the in-flight CLI children. A gateway sync runs one
+   * child per source with its own repository grant, so provider traffic must reach the relay whose
+   * handle the request carried; a request without a handle resolves only when one child is active.
+   */
+  relayFor(provider: RuntimeProxyProvider, handle?: string): RuntimeCredentialRelay | undefined {
+    const relays = [...this.#relays];
+    if (handle === undefined) return relays.length === 1 ? relays[0] : undefined;
+    return relays.find((relay) => relay.verifyLocalHandle(provider, handle));
   }
+
   get workspace(): string {
     return this.#options.workspace;
   }
@@ -191,25 +201,43 @@ export class ContextTreeCommandGateway {
     return result;
   }
 
+  /**
+   * Sync every configured source concurrently, one credentialed CLI child per source. Output keeps
+   * source order, and the first failing source in that order decides a failed result. A thrown
+   * failure stops the remaining children, and the call settles only after every child has.
+   */
   async #syncAll(offline: boolean, signal: AbortSignal): Promise<ContextTreeCommandResult> {
-    const results: unknown[] = [];
-    for (const source of this.#options.sources) {
-      const result = await this.#execute(
-        source,
-        [
-          "sync",
-          "--tree",
-          contextTreeSelector(source),
-          "--project-path",
-          this.#project(),
-          ...(offline ? ["--offline"] : []),
-        ],
-        signal,
-      );
-      if (result.code !== 0) return result;
-      results.push(...(JSON.parse(result.stdout) as { connections: unknown[] }).connections);
+    const siblings = new AbortController();
+    let cause: { error: unknown } | undefined;
+    const shared = AbortSignal.any([signal, siblings.signal]);
+    const settled = await Promise.allSettled(
+      this.#options.sources.map((source) =>
+        this.#execute(
+          source,
+          [
+            "sync",
+            "--tree",
+            contextTreeSelector(source),
+            "--project-path",
+            this.#project(),
+            ...(offline ? ["--offline"] : []),
+          ],
+          shared,
+        ).catch((error: unknown) => {
+          cause ??= { error };
+          siblings.abort(error);
+          throw error;
+        }),
+      ),
+    );
+    const connections: unknown[] = [];
+    for (const outcome of settled) {
+      // Report the failure that stopped the siblings, not a sibling's resulting abort.
+      if (outcome.status === "rejected") throw cause ? cause.error : outcome.reason;
+      if (outcome.value.code !== 0) return outcome.value;
+      connections.push(...(JSON.parse(outcome.value.stdout) as { connections: unknown[] }).connections);
     }
-    return { code: 0, stdout: JSON.stringify({ schemaVersion: 3, connections: results }), stderr: "" };
+    return { code: 0, stdout: JSON.stringify({ schemaVersion: 3, connections }), stderr: "" };
   }
 
   async #rememberSession(stdout: string, source: ContextTreeConnection): Promise<void> {
@@ -244,7 +272,7 @@ export class ContextTreeCommandGateway {
     this.#server?.closeAllConnections();
     if (this.#settled) await this.#settled;
     try {
-      await this.#relay?.close("context_tree_closed");
+      await Promise.all([...this.#relays].map((relay) => relay.close("context_tree_closed")));
     } finally {
       try {
         this.#server?.closeAllConnections();
@@ -315,7 +343,7 @@ export class ContextTreeCommandGateway {
     signal: AbortSignal,
   ): Promise<ContextTreeCommandResult> {
     const relay = await this.#options.parent.openContextTree(source, signal);
-    this.#relay = relay;
+    this.#relays.add(relay);
     try {
       const environment = {
         ...this.#options.environment(),
@@ -351,7 +379,7 @@ export class ContextTreeCommandGateway {
       if (Buffer.byteLength(JSON.stringify(result)) > LIMIT) throw new Error("Context Tree output exceeded its limit");
       return result;
     } finally {
-      this.#relay = undefined;
+      this.#relays.delete(relay);
       await relay.close("context_tree_complete");
     }
   }

@@ -198,7 +198,7 @@ describe("Context Tree command boundary", () => {
     await expect(gateway.run(["sync"])).rejects.toThrow("interrupted");
     expect(owner.openContextTree).toHaveBeenCalledWith(source, expect.any(AbortSignal));
     expect(owner.close).toHaveBeenCalledOnce();
-    expect(gateway.relay).toBeUndefined();
+    expect(gateway.relayFor("github")).toBeUndefined();
     owner.controller.abort();
     await expect(gateway.run(["sync"])).rejects.toThrow("unavailable");
   });
@@ -238,6 +238,118 @@ describe("Context Tree command boundary", () => {
       await gateway.close();
     },
   );
+
+  describe("multi-source sync", () => {
+    const sources = [source, { ...source, path: "notes" }, { ...source, path: "plans" }] as const;
+    function multiParent() {
+      const controller = new AbortController();
+      const children = sources.map((entry) => {
+        const handle = `handle-${entry.path}`;
+        return {
+          handle,
+          localHandleFor: () => handle,
+          verifyLocalHandle: (_provider: string, candidate: string) => candidate === handle,
+          close: vi.fn(async () => undefined),
+        };
+      });
+      const openContextTree = vi.fn(
+        async (entry: (typeof sources)[number]) => children[sources.findIndex((item) => item.path === entry.path)],
+      );
+      return {
+        children,
+        relay: { signal: controller.signal, openContextTree } as unknown as RuntimeCredentialRelay,
+      };
+    }
+    function deferred() {
+      let resolve!: (value: { code: number; stdout: string; stderr: string }) => void;
+      const promise = new Promise<{ code: number; stdout: string; stderr: string }>((done) => {
+        resolve = done;
+      });
+      return { promise, resolve };
+    }
+    const syncOutput = (path: string) =>
+      JSON.stringify({ schemaVersion: 3, connections: [{ ok: true, treeRoot: `/snapshots/${path}` }] });
+
+    it("runs one credentialed child per source concurrently and keeps source order", async () => {
+      const root = await directory();
+      const owner = multiParent();
+      const pending = new Map<string, ReturnType<typeof deferred>>();
+      const gateway = new ContextTreeCommandGateway({
+        parent: owner.relay,
+        sources,
+        workspace: root,
+        stateDirectory: join(root, "state"),
+        environment: () => ({}),
+        execute: async (_args, environment) => {
+          const result = deferred();
+          pending.set(environment.GH_TOKEN ?? "", result);
+          return result.promise;
+        },
+      });
+      const operation = gateway.run(["sync"]);
+      // Every child starts before any finishes.
+      await vi.waitFor(() => expect(pending.size).toBe(sources.length));
+      for (const child of owner.children) expect(gateway.relayFor("github", child.handle)).toBe(child);
+      expect(gateway.relayFor("github")).toBeUndefined();
+      expect(gateway.relayFor("github", "foreign-handle")).toBeUndefined();
+      for (const entry of [...sources].reverse()) {
+        pending.get(`handle-${entry.path}`)?.resolve({ code: 0, stdout: syncOutput(entry.path), stderr: "" });
+        await new Promise((done) => setTimeout(done, 1));
+      }
+      const result = await operation;
+      expect(result.code).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        schemaVersion: 3,
+        connections: sources.map((entry) => ({ ok: true, treeRoot: `/snapshots/${entry.path}` })),
+      });
+      for (const child of owner.children) expect(child.close).toHaveBeenCalledOnce();
+      expect(gateway.relayFor("github", owner.children[0]?.handle)).toBeUndefined();
+    });
+
+    it("returns the first failing source in source order after every child settles", async () => {
+      const root = await directory();
+      const owner = multiParent();
+      const gateway = new ContextTreeCommandGateway({
+        parent: owner.relay,
+        sources,
+        workspace: root,
+        stateDirectory: join(root, "state"),
+        environment: () => ({}),
+        execute: async (_args, environment) => {
+          const path = (environment.GH_TOKEN ?? "").replace("handle-", "");
+          // The later source fails first; the earlier source's failure still decides the result.
+          if (path === "notes") {
+            await new Promise((done) => setTimeout(done, 20));
+            return { code: 1, stdout: "{}", stderr: "notes failed" };
+          }
+          if (path === "plans") return { code: 1, stdout: "{}", stderr: "plans failed" };
+          return { code: 0, stdout: syncOutput(path), stderr: "" };
+        },
+      });
+      await expect(gateway.run(["sync"])).resolves.toEqual({ code: 1, stdout: "{}", stderr: "notes failed" });
+      for (const child of owner.children) expect(child.close).toHaveBeenCalledOnce();
+    });
+
+    it("stops sibling children when one child throws and reports that failure", async () => {
+      const root = await directory();
+      const owner = multiParent();
+      const gateway = new ContextTreeCommandGateway({
+        parent: owner.relay,
+        sources,
+        workspace: root,
+        stateDirectory: join(root, "state"),
+        environment: () => ({}),
+        execute: async (_args, environment, signal) => {
+          if (environment.GH_TOKEN === "handle-plans") throw new Error("plans crashed");
+          return new Promise<never>((_done, reject) =>
+            signal.addEventListener("abort", () => reject(new Error("sibling aborted")), { once: true }),
+          );
+        },
+      });
+      await expect(gateway.run(["sync"])).rejects.toThrow("plans crashed");
+      for (const child of owner.children) expect(child.close).toHaveBeenCalledOnce();
+    });
+  });
 
   it("bounds concurrent operations and does not replay a failed write", async () => {
     const root = await directory();

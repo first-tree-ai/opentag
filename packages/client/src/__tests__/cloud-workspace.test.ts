@@ -371,10 +371,11 @@ describe("Cloud workspace transfer", () => {
     expect(await readFile(join(runner.workspace, "work"), "utf8")).toBe("unsaved work");
   });
 
-  it("skips oversized read-only Context Tree caches on save and enforces the ceiling when a write session is active", async () => {
+  it("archives Context Tree caches without a write session, so an oversized cache hits the ceiling", async () => {
     const store = storageFixture();
     const runner = await client(store);
     await runner.client.initialize();
+    const baseline = store.object();
     const cache = join(runner.workspace, ".opentag/context-tree/home/.context-tree/repositories");
     await mkdir(cache, { recursive: true });
     const path = join(cache, "oversized.pack");
@@ -384,16 +385,6 @@ describe("Cloud workspace transfer", () => {
     } finally {
       await file.close();
     }
-    // Without an active write session, the read-only cache is skipped and save succeeds.
-    await runner.client.save();
-    expect(runner.client.pendingSave).toBe(false);
-    expect(runner.client.terminalFailure).toBe(false);
-
-    // With an active write session under sessions/, the cache is included and hits the ceiling.
-    const baseline = store.object();
-    const sessions = join(runner.workspace, ".opentag/context-tree/home/.context-tree/sessions");
-    await mkdir(sessions, { recursive: true });
-    await writeFile(join(sessions, "active.json"), '{"id":"active"}\n');
     await expect(runner.client.save()).rejects.toMatchObject({
       retryable: false,
       archiveErrorCode: "workspace-too-large",

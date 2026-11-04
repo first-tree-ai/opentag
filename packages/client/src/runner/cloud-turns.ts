@@ -2147,19 +2147,25 @@ export class CloudTurnRunner {
       adapter = await RuntimeProxyLoopbackAdapter.start({
         executionId: openRelay.executionId,
         localHandleFor: (provider) => {
-          const owner = provider === "github" ? contextTreeGateway?.relay : openRelay;
+          const owner = provider === "github" ? contextTreeGateway?.relayFor(provider) : openRelay;
           return owner?.providers.some((entryPoint) => entryPoint.provider === provider)
             ? owner.localHandleFor(provider)
             : undefined;
         },
         materialDir: join(privateDirectory, "adapter"),
         openStream: (request) => {
-          const owner = request.provider === "github" ? contextTreeGateway?.relay : openRelay;
+          const owner =
+            request.provider === "github"
+              ? contextTreeGateway?.relayFor(request.provider, request.localHandle)
+              : openRelay;
           if (!owner) throw new Error("Provider unavailable");
           return owner.openProviderStream(request);
         },
         verifyHandle: (provider, handle) =>
-          (provider === "github" ? contextTreeGateway?.relay : openRelay)?.verifyLocalHandle(provider, handle) ?? false,
+          (provider === "github" ? contextTreeGateway?.relayFor(provider, handle) : openRelay)?.verifyLocalHandle(
+            provider,
+            handle,
+          ) ?? false,
       });
       const inSandboxExecutionDir = `${CLOUD_EXECUTION_MOUNT}/${basename(publicDirectory)}`;
       contextTreeGateway = await this.#openContextTreeGateway(input, openRelay, inSandboxExecutionDir);

@@ -556,8 +556,6 @@ describe("SessionRuntimeManager", () => {
       const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
       const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
       const factory = new FakeFactory();
-      const treePath = resolve(home, "shared-context-tree");
-      const secondTreePath = resolve(home, "second-context-tree");
       const contextTree = {
         skillPaths: vi.fn(async () => []),
         ensureAgent: vi.fn(async () => ({
@@ -568,18 +566,16 @@ describe("SessionRuntimeManager", () => {
               path: ".",
               ref: "main",
               repository: "acme/team",
-              status: "ready" as const,
+              status: "available" as const,
               projectPath: "/managed/project",
-              treePath,
             },
             {
               kind: "git" as const,
               path: ".",
               ref: "main",
               repository: "acme/product",
-              status: "ready" as const,
+              status: "available" as const,
               projectPath: "/managed/project",
-              treePath: secondTreePath,
             },
             {
               kind: "git" as const,
@@ -623,7 +619,8 @@ describe("SessionRuntimeManager", () => {
         resolve(home, "slack"),
         ...(configFailure ? [] : [resolve(process.env.HOME as string, ".context-tree")]),
       ]);
-      expect(created?.systemPrompt).toContain(`Context Tree: ${treePath}`);
+      expect(created?.systemPrompt).toContain('Use --project-path "/managed/project" for managed tree commands.');
+      expect(created?.systemPrompt).toContain('context-tree sync --project-path "/managed/project"');
       expect(created?.systemPrompt).toContain("members/<your Agent slug>/");
       await manager.close();
     },
@@ -637,11 +634,7 @@ describe("SessionRuntimeManager", () => {
     const factory = new FakeFactory();
     const contextTree = {
       skillPaths: vi.fn(async () => []),
-      ensureAgent: vi.fn(async () => ({
-        status: "ready" as const,
-        projectPath: "/managed/project",
-        treePath: resolve(home, "tree"),
-      })),
+      ensureAgent: vi.fn(async () => ({ status: "unconfigured" as const })),
     };
     const environment = { GITHUB_TOKEN: undefined, HTTPS_PROXY: "http://127.0.0.1:43123" };
     const manager = new SessionRuntimeManager({
@@ -795,19 +788,26 @@ describe("SessionRuntimeManager", () => {
     await manager.close();
   });
 
-  it("does not repeat a managed tree already covered by the shared directory grant", async () => {
+  it("grants only the shared Context Tree home, where Agent-run syncs place snapshots", async () => {
     const home = await mkdtemp(resolve(tmpdir(), "opentag-context-tree-nested-"));
     homes.push(home);
     const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
     const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
     const factory = new FakeFactory();
-    const treePath = resolve(process.env.HOME as string, ".context-tree", "trees", "team");
     const contextTree = {
       skillPaths: vi.fn(async () => []),
       ensureAgent: vi.fn(async () => ({
-        status: "ready" as const,
-        projectPath: "/managed/project",
-        treePath,
+        status: "configured" as const,
+        connections: [
+          {
+            kind: "git" as const,
+            path: ".",
+            ref: "main",
+            repository: "acme/team",
+            status: "available" as const,
+            projectPath: "/managed/project",
+          },
+        ],
       })),
     };
     const manager = new SessionRuntimeManager({
@@ -834,7 +834,7 @@ describe("SessionRuntimeManager", () => {
       cwd,
       resolve(process.env.HOME as string, ".context-tree"),
     ]);
-    expect(factory.created[0]?.systemPrompt).toContain(`Context Tree: ${treePath}`);
+    expect(factory.created[0]?.systemPrompt).not.toContain(".context-tree/snapshots");
     await manager.close();
   });
 
@@ -872,40 +872,6 @@ describe("SessionRuntimeManager", () => {
     expect(created?.workspace.writableRoots).toEqual([cwd, resolve(process.env.HOME as string, ".context-tree")]);
     expect(created?.systemPrompt).toContain("Context Tree unavailable (DIRTY_TREE)");
     expect(created?.systemPrompt).toContain("Do not assume earlier decisions were recorded");
-    await manager.close();
-  });
-
-  it("starts a Session while Context Tree preparation continues in the background", async () => {
-    const home = await mkdtemp(resolve(tmpdir(), "opentag-context-tree-preparing-"));
-    homes.push(home);
-    const store = new SessionBindingStore({ home, providerArtifactIdentity: () => "a".repeat(64) });
-    const workspace = new AgentWorkspaceManager({ home, bindingStore: store });
-    const factory = new FakeFactory();
-    const manager = new SessionRuntimeManager({
-      bindingStore: store,
-      contextTree: {
-        skillPaths: vi.fn(async () => []),
-        ensureAgent: vi.fn(async () => ({ status: "unavailable" as const, reason: "PREPARING" })),
-      },
-      home,
-      providers: await providerRegistry(factory),
-      providerEnvironmentPath: () => "/tmp/provider-env.sh",
-      workspace,
-    });
-    const computerId = randomUUID();
-    const reconciler = new SessionReconciler({
-      installationId: computerId,
-      preparation: manager,
-      localPolicy: manager,
-    });
-    const request = reconcile(computerId, snapshot(1));
-
-    await expect(reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
-    await manager.ensureRuntime(request.sessionId);
-
-    expect(factory.created[0]?.systemPrompt).toContain("preparation is continuing in the background");
-    expect(factory.created[0]?.systemPrompt).toContain("not active for this Session");
-    expect(factory.created[0]?.systemPrompt).not.toContain("repair the tree");
     await manager.close();
   });
 

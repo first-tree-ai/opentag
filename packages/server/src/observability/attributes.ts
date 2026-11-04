@@ -1,5 +1,3 @@
-import { updateCurrentPerformanceContext } from "./performance-logger.js";
-
 export const OPENTAG_ATTR = {
   ACCOUNT_ID: "opentag.account.id",
   AGENT_ID: "opentag.agent.id",
@@ -69,14 +67,6 @@ export function runtimeAttrs(input: {
   attempt?: number;
   frameType?: string;
 }): Record<string, unknown> {
-  updateCurrentPerformanceContext({
-    ...(input.deliveryId ? { deliveryId: input.deliveryId } : {}),
-    ...(input.sessionId ? { sessionId: input.sessionId } : {}),
-    ...(input.agentId ? { agentId: input.agentId } : {}),
-    ...(input.computerId ? { computerId: input.computerId } : {}),
-    ...(input.sandboxId ? { sandboxId: input.sandboxId } : {}),
-    ...(input.environmentGeneration !== undefined ? { environmentGeneration: input.environmentGeneration } : {}),
-  });
   return {
     [OPENTAG_ATTR.REQUEST_ID]: input.requestId,
     [OPENTAG_ATTR.IM_DELIVERY_ID]: input.deliveryId,

@@ -215,7 +215,54 @@ describe("SessionMessageOutcomeReporter", () => {
     expect(sent).toEqual([]);
   });
 
-  it("gives up after the bounded retry age", async () => {
+  it("keeps retrying with the default policy until one day has passed", async () => {
+    const day = 24 * 60 * 60 * 1_000;
+    let now = 0;
+    const warn = vi.fn();
+    // A registered v3 peer answers every attempt with an immediate back-off, the fastest path to the attempt count.
+    const { connection } = fakeConnection(3);
+    const scheduler = manualScheduler();
+    const persistence = new MemoryRuntimeDurabilityStore();
+    const reporter = new SessionMessageOutcomeReporter({
+      connection,
+      logger: { warn },
+      now: () => now,
+      persistence,
+      scheduler,
+    });
+    await reporter.report(outcome());
+    await flush();
+    const deadline = day - 60_000;
+    let retries = 0;
+    for (;;) {
+      const next = scheduler.tasks.find((entry) => !entry.cancelled);
+      if (!next || now + next.delay > deadline) break;
+      scheduler.tasks.splice(scheduler.tasks.indexOf(next), 1);
+      now += next.delay;
+      next.task();
+      await flush();
+      retries += 1;
+    }
+    // 23h59m in: well past any 200-attempt cap, still pending and not dead-lettered.
+    expect(retries).toBeGreaterThan(200);
+    expect(reporter.pendingCount).toBe(1);
+    expect(warn).not.toHaveBeenCalled();
+    const [stored] = await persistence.list("session-message-outcome");
+    expect(stored?.status).toBe("retryable");
+
+    now = day;
+    scheduler.run(() => true);
+    await flush();
+    expect(reporter.pendingCount).toBe(0);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "SESSION_MESSAGE_OUTCOME_UNDELIVERED" }),
+      expect.any(String),
+    );
+    expect((await persistence.list("session-message-outcome"))[0]?.status).toBe("dead-letter");
+    reporter.stop();
+  });
+
+  it("gives up on a custom attempt cap before the retry age", async () => {
     let now = 0;
     const warn = vi.fn();
     const { connection } = fakeConnection(3);
@@ -224,11 +271,12 @@ describe("SessionMessageOutcomeReporter", () => {
       connection,
       logger: { warn },
       now: () => now,
-      retryPolicy: { baseDelayMs: 1, maxDelayMs: 1, maxAttempts: 2, maxAgeMs: 1_000 },
+      retryPolicy: { baseDelayMs: 1, maxDelayMs: 1, maxAttempts: 2, maxAgeMs: 24 * 60 * 60 * 1_000 },
       scheduler,
     });
     await reporter.report(outcome());
     await flush();
+    expect(reporter.pendingCount).toBe(1);
     now = 10;
     scheduler.run(() => true);
     await flush();

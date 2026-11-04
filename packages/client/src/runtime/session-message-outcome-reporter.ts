@@ -24,11 +24,14 @@ export type SessionMessageOutcomeInput = Omit<SessionMessageOutcomeReport, "type
 /**
  * Creator notices are worth delivering long after the Run ended (the creator may be busy or its
  * Computer briefly offline), so the reporter keeps retrying for a day with a bounded backoff.
+ * The age is the only default exhaustion condition: an attempt cap would end the day early when
+ * the Server answers `retry` immediately or the peer is below collaboration v4 (the 5-minute
+ * backoff ceiling alone needs ~294 attempts to span 24 hours).
  */
 export const SESSION_MESSAGE_OUTCOME_RETRY_POLICY: RuntimeRetryPolicy = {
   baseDelayMs: 5_000,
   maxAgeMs: 24 * 60 * 60 * 1_000,
-  maxAttempts: 200,
+  maxAttempts: Number.POSITIVE_INFINITY,
   maxDelayMs: 5 * 60 * 1_000,
 };
 /** A report without any Server answer in this window is resent. */

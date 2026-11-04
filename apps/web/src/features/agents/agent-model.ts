@@ -158,6 +158,19 @@ function computerDependencyState(
   return computer.connectionStatus === "online" ? "ready" : "action_required";
 }
 
+function computerDependency(
+  agent: AgentSummary,
+  computer: AccountComputerSummary | undefined,
+): AgentAvailability["dependencies"]["computer"] {
+  return {
+    // Not bound is a fact the Server states, so it is never reported as evidence we could not read:
+    // one is answered by binding a Computer and the other by waiting for a read to succeed.
+    state: computerDependencyState(agent, computer),
+    lastConfirmedAt: computer?.lastSeenAt ?? null,
+    ...(computer?.connectionStatus === "disconnected" ? { disconnected: true as const } : {}),
+  };
+}
+
 export function projectAgentAvailability(
   agent: AgentSummary,
   computer: AccountComputerSummary | undefined,
@@ -172,13 +185,7 @@ export function projectAgentAvailability(
   const runtimeDependency = agentRuntimeDependency(agent, computer, cloudRuntime);
   const handoffState = handoffDependencyState(binding, handoff, bindingEvidenceConfirmed, handoffEvidenceConfirmed);
   const dependencies: AgentAvailability["dependencies"] = {
-    computer: {
-      // Not bound is a fact the Server states, so it is never reported as evidence we could not read:
-      // one is answered by binding a Computer and the other by waiting for a read to succeed.
-      state: computerDependencyState(agent, computer),
-      lastConfirmedAt: computer?.lastSeenAt ?? null,
-      ...(computer?.connectionStatus === "disconnected" ? { disconnected: true as const } : {}),
-    },
+    computer: computerDependency(agent, computer),
     runtime: runtimeDependency,
     handoff: handoffDependency(handoffState, binding, handoff),
     channel: {

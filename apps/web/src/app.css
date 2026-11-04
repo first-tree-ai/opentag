@@ -207,6 +207,19 @@ body {
 .app-agent-menu [role="separator"] {
   margin: 4px;
 }
+/*
+ * The Agent list scrolls inside the switcher once it outgrows the space below the trigger. The
+ * reserved 8rem keeps the separator, All Agents, and New Agent (44px touch rows) in view.
+ */
+.app-agent-menu-list {
+  max-height: calc(var(--available-height, 100vh) - 8rem);
+  overflow-y: auto;
+  border-radius: 6px;
+}
+.app-agent-menu-list:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: -2px;
+}
 .app-content-frame {
   max-width: var(--ui-frame-width);
   padding: 40px clamp(24px, 5vw, 100px);

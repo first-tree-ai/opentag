@@ -13,7 +13,6 @@ export const queryKeys = {
   me: () => ["me"] as const,
   authProviders: () => ["authProviders"] as const,
   internalToolsOffered: () => ["internalToolsOffered"] as const,
-  internalNavigationVisibility: () => ["internalNavigationVisibility"] as const,
   /** The Account's Computers. The request takes no argument — the Server scopes it to the session. */
   computers: () => ["computers"] as const,
   cloudAvailability: () => ["cloudAvailability"] as const,

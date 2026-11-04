@@ -145,10 +145,16 @@ export class SlackConfigurationService {
     publicOrigin: string,
     officialSigningSecret?: string,
   ): Promise<SlackConfigurationView> {
-    await this.#imBindings.assertCanManage(callerUserId, agentId);
-    const agent = await this.#agent(agentId, this.#database, false);
-    const current = await this.#current(agentId, this.#database, false);
-    const binding = (await this.#imBindings.getConfigForAgent(callerUserId, agentId)) ?? null;
+    const { agent, current, binding, material } = await this.#imBindings.readForAgent(
+      callerUserId,
+      agentId,
+      async (transaction) => ({
+        agent: await this.#agent(agentId, transaction, false),
+        current: await this.#current(agentId, transaction, false),
+        binding: (await this.#imBindings.getConfigForAgent(callerUserId, agentId, transaction)) ?? null,
+        material: await readSlackConfigurationMaterial(transaction, this.#cipher, agentId),
+      }),
+    );
     const result: SlackConfigurationView = {
       agentDisplayName: agent.displayName,
       eventsUrl: new URL(agentSlackEventsPath(agentId), publicOrigin).toString(),
@@ -163,7 +169,6 @@ export class SlackConfigurationService {
     if (agent.computerId === null) return { ...result, blockedReason: "AGENT_COMPUTER_NOT_BOUND" };
     if (!current) return { ...result, allowedIntent: "create", expectedMessaging: { kind: "unbound" } };
     if (current.provider !== "slack") return { ...result, blockedReason: "IM_BINDING_UNBIND_REQUIRED" };
-    const material = await readSlackConfigurationMaterial(this.#database, this.#cipher, agentId);
     if (!material) return { ...result, blockedReason: "SLACK_CREDENTIALS_UNAVAILABLE" };
     if (
       material.generation !== current.credentialGeneration ||

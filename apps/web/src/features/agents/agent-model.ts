@@ -2,6 +2,7 @@ import type {
   AccountComputerSummary,
   AgentDetail,
   AgentListItem as AgentListApiItem,
+  AgentStatusSnapshot,
   AgentSummary,
   CloudAvailability,
   ImBindingHandoffStatus,
@@ -69,6 +70,7 @@ export type AgentAvailability = {
 };
 
 export type AgentListItem = AgentListApiItem & {
+  serverStatus?: AgentStatusSnapshot;
   availability: AgentAvailability;
   evidenceConfirmed: boolean;
 };
@@ -82,6 +84,7 @@ export function agentDetailFromListItem(item: AgentListApiItem): AgentDetail {
 export type DetailEvidence<T> = { kind: "ready"; value: T | undefined } | { kind: "unconfirmed" };
 
 export type AgentDetailView = AgentDetail & {
+  serverStatus?: AgentStatusSnapshot;
   availability: AgentAvailability;
   messaging: DetailEvidence<ImBindingSummary>;
   /** The bound Computer's exact kind when the Account read confirmed it; Cloud-only settings rely on it. */
@@ -322,4 +325,121 @@ export function markAgentDetailUnconfirmed(agent: AgentDetailView): AgentDetailV
   };
 }
 
-export type AgentStatusSource = Pick<AgentListItem, "activity" | "availability">;
+export type AgentStatusSource = Pick<AgentListItem, "activity" | "availability" | "serverStatus">;
+
+const statusReasons: Record<NonNullable<AgentStatusSnapshot["reason"]>, AgentAvailability["reason"]> = {
+  agent_paused: "agent_suspended",
+  computer_access_required: "computer_unconfirmed",
+  computer_not_bound: "computer_not_bound",
+  computer_offline: "computer_offline",
+  first_validation: "handoff_checking",
+  legacy_checking: "handoff_checking",
+  runtime_unavailable: "runtime_unavailable",
+  runtime_check_timed_out: "runtime_unavailable",
+  self_check_report_stale: "runtime_unavailable",
+  im_not_connected: "im_not_connected",
+  im_provisioning: "im_provisioning",
+  im_reauthorization_required: "im_reauthorization_required",
+  im_error: "im_error",
+  messaging_cli_unavailable: "handoff_unavailable",
+  messaging_cli_check_timed_out: "handoff_unavailable",
+  credential_validation_failed: "handoff_unavailable",
+  credential_validation_timeout: "handoff_unavailable",
+  credential_rate_limited: "handoff_unavailable",
+};
+function availabilityState(status: AgentStatusSnapshot): AgentAvailability["state"] {
+  if (status.state === "ready") return "ready";
+  if (status.state === "initializing" || status.reason === "im_provisioning") return "setting_up";
+  if (status.reason === "im_not_connected") return "not_connected";
+  return status.reason === "agent_paused" ? "suspended" : "action_required";
+}
+
+function messagingStateFromStatus(status: AgentStatusSnapshot): AgentAvailability["dependencies"]["handoff"]["state"] {
+  switch (status.reason) {
+    case null:
+      return status.state === "ready" ? "ready" : "unconfirmed";
+    case "im_not_connected":
+      return "not_connected";
+    case "im_provisioning":
+      return "setting_up";
+    case "im_reauthorization_required":
+    case "im_error":
+    case "messaging_cli_unavailable":
+    case "messaging_cli_check_timed_out":
+    case "credential_validation_failed":
+    case "credential_validation_timeout":
+    case "credential_rate_limited":
+      return "action_required";
+    case "computer_not_bound":
+    case "computer_access_required":
+    case "computer_offline":
+    case "agent_paused":
+    case "runtime_unavailable":
+    case "runtime_check_timed_out":
+    case "self_check_report_stale":
+    case "first_validation":
+    case "legacy_checking":
+      return "unconfirmed";
+  }
+}
+
+export function availabilityFromStatus(status: AgentStatusSnapshot): AgentAvailability {
+  const reason = status.reason === null ? null : statusReasons[status.reason];
+  const messagingState = messagingStateFromStatus(status);
+  return {
+    state: availabilityState(status),
+    reason,
+    lastConfirmedAt: status.checkedAt,
+    dependencies: {
+      computer: {
+        state: !status.computer ? "not_bound" : status.computer.online ? "ready" : "action_required",
+        lastConfirmedAt: status.computer?.lastSeenAt ?? null,
+      },
+      runtime: {
+        provider: status.runtimeProvider,
+        status: status.runtimeStatus,
+        ...(status.cloud ? { cloud: status.cloud } : {}),
+      },
+      handoff: {
+        state: messagingState,
+        lastConfirmedAt: messagingState === "unconfirmed" ? null : status.checkedAt,
+      },
+      channel: {
+        state:
+          messagingState === "unconfirmed"
+            ? "unconfirmed"
+            : status.messaging?.bindingState === "active"
+              ? "connected"
+              : "not_connected",
+        provider: status.messaging?.provider ?? null,
+        botDisplayName: status.messaging?.bot.displayName ?? null,
+      },
+    },
+  };
+}
+
+export function applyAgentStatus<T extends AgentDetail>(agent: T, status: AgentStatusSnapshot) {
+  return {
+    ...agent,
+    status: status.agentStatus,
+    runtimeProvider: status.runtimeProvider,
+    updatedAt: status.agentUpdatedAt,
+    computer: status.computer
+      ? {
+          computerId: status.computer.computerId,
+          displayName: status.computer.displayName,
+          platform: status.computer.platform,
+        }
+      : null,
+    serverStatus: status,
+    availability: availabilityFromStatus(status),
+    evidenceConfirmed: true,
+    messaging: { kind: "ready" as const, value: status.messaging ?? undefined },
+    ...(status.computer
+      ? {
+          computerKind: status.computer.kind,
+          computerConnectionStatus: status.computer.online ? ("online" as const) : ("offline" as const),
+        }
+      : {}),
+  };
+}

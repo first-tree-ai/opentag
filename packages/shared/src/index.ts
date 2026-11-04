@@ -12,8 +12,6 @@ export {
   COMPUTER_ACCESS_CAPABILITY_HEADER,
   type CompleteAccountSetupRequest,
   CompleteAccountSetupRequestSchema,
-  type InternalNavigationVisibility,
-  InternalNavigationVisibilitySchema,
   type ListAccountComputersResponse,
   ListAccountComputersResponseSchema,
 } from "./account.js";
@@ -81,6 +79,7 @@ export {
 export * from "./agent-permissions.js";
 export * from "./agent-self.js";
 export * from "./agent-setup.js";
+export * from "./agent-status.js";
 export {
   type AuthIdentityProvider,
   AuthIdentityProviderSchema,
@@ -558,6 +557,7 @@ export {
   RUNTIME_IM_HISTORY_MAX_BYTES,
   RUNTIME_IM_RESOURCE_MAX_COUNT,
   RUNTIME_INSTRUCTIONS_MAX_BYTES,
+  RUNTIME_INTERNAL_SESSION_DEFAULT_MAX_DURATION_MS,
   RUNTIME_MAX_DURATION_MS,
   RUNTIME_MVP_RETAINED_REPORT_LIMIT,
   RUNTIME_OUTGOING_REPLY_MAX_COUNT,
@@ -615,6 +615,7 @@ export {
   renderPlatformInstructions,
   requiredTurnReportVersion,
   runtimeUsageTotalTokens,
+  SESSION_RUN_OUTCOME_NOTICE_HEADER,
   type ServerRuntimeBusinessFrame,
   ServerRuntimeBusinessFrameSchema,
   type SessionMessageDeliveryRequest,
@@ -623,6 +624,13 @@ export {
   SessionMessageDeliveryRequestV3Schema,
   type SessionMessageDeliveryResult,
   SessionMessageDeliveryResultSchema,
+  type SessionMessageOutcomeReport,
+  SessionMessageOutcomeReportSchema,
+  type SessionMessageOutcomeResult,
+  SessionMessageOutcomeResultSchema,
+  type SessionMessageRunOutcome,
+  SessionMessageRunOutcomeReasonSchema,
+  SessionMessageRunOutcomeSchema,
   type SessionReconcileRequest,
   SessionReconcileRequestSchema,
   type SessionReconcileResult,
@@ -699,6 +707,7 @@ export {
   RUNTIME_REQUIRED_SERVER_CAPABILITIES,
   RUNTIME_SERVER_CAPABILITY_OFFERS,
   RUNTIME_SESSION_COLLABORATION_MESSAGE_VERSION,
+  RUNTIME_SESSION_COLLABORATION_RUN_OUTCOME_VERSION,
   RUNTIME_SESSION_COLLABORATION_SCHEDULED_VERSION,
   RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
   RUNTIME_V0_CAPABILITIES,
@@ -747,6 +756,18 @@ export {
   type ServerWelcomeV2Frame,
   ServerWelcomeV2FrameSchema,
 } from "./runtime-protocol.js";
+export {
+  RUNTIME_CREDENTIAL_CHECK_INTERVAL_MS,
+  RUNTIME_SELF_CHECK_INITIAL_TIMEOUT_MS,
+  RUNTIME_SELF_CHECK_INTERVAL_MS,
+  RUNTIME_SELF_CHECK_STALE_MS,
+  type RuntimeCredentialFailureHint,
+  RuntimeCredentialFailureHintSchema,
+  type RuntimeSelfCheckReport,
+  RuntimeSelfCheckReportSchema,
+  type RuntimeSelfCheckRequest,
+  RuntimeSelfCheckRequestSchema,
+} from "./runtime-self-check.js";
 export * from "./sandbox.js";
 export * from "./schedules.js";
 export {

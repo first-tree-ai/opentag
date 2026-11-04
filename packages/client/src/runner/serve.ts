@@ -8,6 +8,7 @@ import {
   RUNNER_CLOUD_DELIVERY_VERSION,
   RUNNER_REUSE_VERSION,
   RUNNER_SESSION_COLLABORATION_V2,
+  RUNNER_SESSION_COLLABORATION_V3,
   RUNNER_SESSION_COLLABORATION_VERSION,
   RUNNER_WORKSPACE_VERSION,
   RUNNER_WS_PROTOCOL_VERSION,
@@ -253,6 +254,25 @@ const RUNNER_STATE_SEGMENT_MAX = 32;
  * for any accepted Sandbox name, while the deterministic hash
  * keeps one distinct durable journal/private root per Sandbox.
  */
+/**
+ * The settlement failure reason is a collaboration-v3 field: a channel that negotiated a lower
+ * version keeps receiving the exact v1/v2 settled shape its strict schema accepts.
+ */
+export function negotiatedRunnerClientFrame(
+  frame: RunnerClientFrame,
+  sessionCollaborationVersion: number,
+): RunnerClientFrame {
+  if (
+    frame.type === "session:message:settled" &&
+    frame.reason !== undefined &&
+    sessionCollaborationVersion < RUNNER_SESSION_COLLABORATION_V3
+  ) {
+    const { reason: _reason, ...legacy } = frame;
+    return legacy;
+  }
+  return frame;
+}
+
 export function runnerStateDirectorySegment(sandboxName: string): string {
   if (sandboxName.length <= RUNNER_STATE_SEGMENT_MAX) return sandboxName;
   const digest = createHash("sha256").update(sandboxName).digest("hex").slice(0, 8);
@@ -487,7 +507,7 @@ class RunnerChannelBridge implements CloudCredentialChannel {
    * Server did not echo the capability). The exact number is the fence: a scheduled-origin
    * dispatch requires version 2, an ordinary one version 1 — never a bare eligible boolean.
    */
-  sessionCollaborationVersion: 0 | 1 | 2 = 0;
+  sessionCollaborationVersion: 0 | 1 | 2 | 3 = 0;
 
   /** True only when the Server echoed the E8 Session-collaboration capability at the same welcome. */
   get sessionCollaborationEnabled(): boolean {
@@ -498,7 +518,7 @@ class RunnerChannelBridge implements CloudCredentialChannel {
 
   sendFrame(frame: RunnerClientFrame): void {
     if (!this.sendFn) throw new Error("The Runner control channel is not connected");
-    this.sendFn(frame);
+    this.sendFn(negotiatedRunnerClientFrame(frame, this.sessionCollaborationVersion));
   }
 
   onCredentialFrame(listener: (frame: RuntimeCredentialServerFrame) => void): () => void {
@@ -1103,11 +1123,12 @@ async function serveOnce(
         turnActivityVersion: 1,
         contextTreeExecutionVersion: 1,
         /*
-         * This build speaks Session collaboration v2 (scheduled origin). An older Server whose
-         * auth schema only admits v1 fails the strict handshake; a foundation Server that parses
-         * but does not echo simply leaves collaboration off — the Runner never pretends.
+         * This build speaks Session collaboration v3 (scheduled origin plus the settlement failure
+         * reason). An older Server whose auth schema does not admit v3 fails the strict handshake;
+         * a foundation Server that parses but does not echo simply leaves collaboration off — the
+         * Runner never pretends.
          */
-        sessionCollaborationVersion: RUNNER_SESSION_COLLABORATION_V2,
+        sessionCollaborationVersion: RUNNER_SESSION_COLLABORATION_V3,
         ...(config.workspacePersistence ? { workspaceVersion: RUNNER_WORKSPACE_VERSION, renewExpired: true } : {}),
         ...(state.controlToken && config.workspacePersistence
           ? { controlToken: state.controlToken, reuseVersion: RUNNER_REUSE_VERSION }
@@ -1621,7 +1642,8 @@ function runnerWelcomeRejection(
   return undefined;
 }
 
-function negotiatedRunnerSessionCollaborationVersion(data: RunnerWelcomeFrame): 0 | 1 | 2 {
+function negotiatedRunnerSessionCollaborationVersion(data: RunnerWelcomeFrame): 0 | 1 | 2 | 3 {
+  if (data.sessionCollaborationVersion === RUNNER_SESSION_COLLABORATION_V3) return RUNNER_SESSION_COLLABORATION_V3;
   if (data.sessionCollaborationVersion === RUNNER_SESSION_COLLABORATION_V2) return RUNNER_SESSION_COLLABORATION_V2;
   if (data.sessionCollaborationVersion === RUNNER_SESSION_COLLABORATION_VERSION) {
     return RUNNER_SESSION_COLLABORATION_VERSION;

@@ -24,9 +24,13 @@ export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
   const computer = agentRuntimeIssue(agent) ?? agentComputerStatus(agent);
   const binding = agent.messaging.kind === "ready" ? agent.messaging.value : undefined;
   const provider = runtimeProviderName(agent.runtimeProvider);
-  const computerIdentity = agent.computer
-    ? `${agent.computer.displayName} · ${platformLabel(agent.computer.platform)} · ${provider}`
-    : provider;
+  // The Cloud is named as such: its machine name and platform are openTag's, not the reader's.
+  const cloud = agent.computerKind === "cloud";
+  const computerIdentity = cloud
+    ? `${m.agents_computer_cloud()} · ${provider}`
+    : agent.computer
+      ? `${agent.computer.displayName} · ${platformLabel(agent.computer.platform)} · ${provider}`
+      : provider;
   const messagingIdentity = binding ? messagingChannelLabel(agent, binding) : "";
   return (
     <section
@@ -54,7 +58,12 @@ export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
           fullIdentity={computerIdentity}
           identity={
             <>
-              {agent.computer ? (
+              {cloud ? (
+                <>
+                  <span className="truncate">{m.agents_computer_cloud()}</span>
+                  <span aria-hidden="true">·</span>
+                </>
+              ) : agent.computer ? (
                 <>
                   <span className="truncate">{agent.computer.displayName}</span>
                   <span className="hidden shrink-0 @min-[24rem]/agent-status:inline">
@@ -137,7 +146,7 @@ function AgentStatusRow({
           className={triggerClassName}
           aria-label={m.agents_status_action_label({ name, status: accessibleStatus, action: status.action.label })}
           title={fullIdentity ? `${fullIdentity} · ${status.label}` : undefined}
-          state={{ agent, returnAgentId: agent.id, returnLabel: agent.displayName }}
+          state={{ agent, returnAgentId: agent.id }}
           {...status.action.link}
         >
           {content}

@@ -22,6 +22,16 @@ describe("MCP onboarding", () => {
       expect(await dialog.findByRole("button", { name: `Add: ${title}` })).toBeTruthy();
   });
 
+  it("offers Discover and a custom connector inline from the empty state", async () => {
+    stub([]);
+    wrap(<McpPage agentId={AGENT_ID} />);
+    const inline = await screen.findByRole("button", { name: "Discover a connector" });
+    await waitFor(() => expect(inline.hasAttribute("disabled")).toBe(false));
+    expect(screen.getByRole("button", { name: "add a custom one" })).toBeTruthy();
+    fireEvent.click(inline);
+    expect(await screen.findByRole("dialog", { name: "Discover" })).toBeTruthy();
+  });
+
   it.each(["Google Drive", "Gmail"])("starts adding %s directly and retains the search on failure", async (title) => {
     stub([]);
     const create = vi.spyOn(browserApi, "createMcpServer").mockRejectedValue(new ApiError(503, "Fixture unavailable"));

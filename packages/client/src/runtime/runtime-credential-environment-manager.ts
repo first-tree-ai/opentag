@@ -268,6 +268,11 @@ export class RuntimeCredentialEnvironmentManager {
     return { ...environment, ...providerRoutingEnvironment(environment) };
   }
 
+  /** IM outbox context of the Session's live execution, so input steered into it names the same target. */
+  outboxContextForSession(sessionId: string): RuntimeImOutboxContext | undefined {
+    return this.#proxyExecutions.get(sessionId)?.outboxContext;
+  }
+
   /** Current execution id for a Session, when a proxy execution is active. */
   executionIdForSession(sessionId: string): string | undefined {
     return this.#proxyExecutions.get(sessionId)?.executionId;

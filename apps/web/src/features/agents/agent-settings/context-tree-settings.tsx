@@ -1,6 +1,7 @@
 import {
   type AgentAdminConfig,
   CONTEXT_TREES_MAX,
+  type ContextTreeAvailabilityResponse,
   ContextTreeBranchSchema,
   type ContextTreeConnection,
   ContextTreeConnectionSchema,
@@ -214,10 +215,7 @@ function ContextTreeSettingsForm({
   }
   return (
     <div className="grid gap-6">
-      <PageHeader
-        title={m.agent_settings_context_tree_title()}
-        description={m.agent_settings_context_tree_description()}
-      />
+      <PageHeader title={m.agent_settings_context_tree_title()} />
       {refreshNotice}
       <ContextTreeCollection
         agentId={config.id}
@@ -244,18 +242,14 @@ function ContextTreeSettingsForm({
           <ContextTreeResult agentId={config.id} result={result} cloud={cloud} repository={resultSource?.repository} />
         ) : null}
       </div>
-      <Dialog
-        open={mode !== undefined}
-        busy={pending}
-        title={
-          activeMode === "connect"
-            ? m.agent_settings_context_tree_connect_existing()
-            : m.agent_settings_context_tree_create_new()
-        }
-        description={formGuidance(activeMode, linkedRef)}
+      <ContextTreeConnectDialog
+        agentId={config.id}
+        mode={mode}
+        pending={pending}
+        repositoryInput={repositoryInput}
+        ownerInput={ownerInput}
+        returnFocus={returnFocus}
         onClose={closeForm}
-        initialFocusRef={activeMode === "connect" ? repositoryInput : ownerInput}
-        returnFocusRef={returnFocus}
       >
         <form
           className="grid gap-4"
@@ -265,6 +259,7 @@ function ContextTreeSettingsForm({
             submit();
           }}
         >
+          <ContextTreeFormGuidance mode={activeMode} linkedRef={linkedRef} />
           {activeMode === "connect" ? (
             <ConnectTreeFields
               {...{
@@ -313,7 +308,7 @@ function ContextTreeSettingsForm({
             </Button>
           </div>
         </form>
-      </Dialog>
+      </ContextTreeConnectDialog>
       <DisconnectTreeDialog
         agentId={config.id}
         target={disconnectTarget}
@@ -332,6 +327,117 @@ function ContextTreeSettingsForm({
           if (disconnectTarget && !unconfirmed) void run("disconnect", disconnectTarget);
         }}
       />
+    </div>
+  );
+}
+
+function ContextTreeConnectDialog({
+  agentId,
+  mode,
+  pending,
+  repositoryInput,
+  ownerInput,
+  returnFocus,
+  onClose,
+  children,
+}: {
+  agentId: string;
+  mode?: TreeAction;
+  pending: boolean;
+  repositoryInput: RefObject<HTMLInputElement | null>;
+  ownerInput: RefObject<HTMLInputElement | null>;
+  returnFocus: RefObject<HTMLElement | null>;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const activeMode = mode ?? "connect";
+  const inputRef = activeMode === "connect" ? repositoryInput : ownerInput;
+  return (
+    <Dialog
+      open={mode !== undefined}
+      busy={pending}
+      title={
+        activeMode === "connect"
+          ? m.agent_settings_context_tree_connect_existing()
+          : m.agent_settings_context_tree_create_new()
+      }
+      onClose={onClose}
+      initialFocusRef={inputRef}
+      returnFocusRef={returnFocus}
+    >
+      {mode ? (
+        <ContextTreeFormGate agentId={agentId} mode={mode} inputRef={inputRef} onClose={onClose}>
+          {children}
+        </ContextTreeFormGate>
+      ) : null}
+    </Dialog>
+  );
+}
+
+function ContextTreeFormGuidance({ mode, linkedRef }: { mode: TreeAction; linkedRef?: string }) {
+  return <p className="text-sm text-kumo-subtle">{formGuidance(mode, linkedRef)}</p>;
+}
+
+function ContextTreeFormGate({
+  agentId,
+  mode,
+  inputRef,
+  onClose,
+  children,
+}: {
+  agentId: string;
+  mode: TreeAction;
+  inputRef: RefObject<HTMLInputElement | null>;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const [availability, setAvailability] = useState<ContextTreeAvailabilityResponse | "error">();
+  useEffect(() => {
+    if (availability !== undefined) return;
+    let active = true;
+    void browserApi.contextTreeAvailability(agentId).then(
+      (response) => {
+        if (active) setAvailability(response);
+      },
+      () => {
+        if (active) setAvailability("error");
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [agentId, availability]);
+  const ready =
+    availability !== undefined &&
+    availability !== "error" &&
+    availability.status === "ready" &&
+    (mode === "connect" || !availability.readOnly);
+  useEffect(() => {
+    if (ready) inputRef.current?.focus();
+  }, [ready, inputRef]);
+  if (ready) return children;
+  return (
+    <div className="grid gap-4">
+      {availability === undefined ? (
+        <p role="status">{m.agent_settings_context_tree_checking()}</p>
+      ) : availability === "error" ? (
+        <Banner variant="error" role="alert" description={m.agent_settings_context_tree_check_failed()} />
+      ) : availability.status === "failed" ? (
+        <ContextTreeResult agentId={agentId} result={availability} cloud={false} />
+      ) : (
+        <>
+          <Banner variant="error" role="alert" description={m.agent_settings_context_tree_read_only()} />
+          <ContextTreeConnectorLink agentId={agentId} />
+        </>
+      )}
+      <div className="flex flex-wrap justify-end gap-3 border-t border-kumo-line pt-4">
+        <Button variant="secondary" onClick={onClose}>
+          {m.common_cancel()}
+        </Button>
+        <Button onClick={() => setAvailability(undefined)} disabled={availability === undefined}>
+          {m.common_retry()}
+        </Button>
+      </div>
     </div>
   );
 }
@@ -890,16 +996,10 @@ function ContextTreeResult({
         </Collapsible.Root>
       ) : null}
       <div className="flex flex-wrap items-center gap-3 text-sm">
-        {result.code === "authentication_required" ? (
-          <Link
-            {...agentMcpLink(agentId)}
-            target="_blank"
-            rel="noopener noreferrer"
-            title={m.agent_settings_context_tree_settings_link_hint()}
-            className="text-kumo-link underline underline-offset-4"
-          >
-            {m.agent_settings_context_tree_connector_settings()}
-          </Link>
+        {["authentication_required", "github_connector_disabled", "github_connector_unsupported"].includes(
+          result.code,
+        ) ? (
+          <ContextTreeConnectorLink agentId={agentId} />
         ) : null}
         {repository ? (
           <a
@@ -918,6 +1018,20 @@ function ContextTreeResult({
         ) : null}
       </div>
     </div>
+  );
+}
+
+function ContextTreeConnectorLink({ agentId }: { agentId: string }) {
+  return (
+    <Link
+      {...agentMcpLink(agentId)}
+      target="_blank"
+      rel="noopener noreferrer"
+      title={m.agent_settings_context_tree_settings_link_hint()}
+      className="text-kumo-link underline underline-offset-4"
+    >
+      {m.agent_settings_context_tree_connector_settings()}
+    </Link>
   );
 }
 

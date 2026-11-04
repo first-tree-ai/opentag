@@ -335,9 +335,7 @@ function internalToolsFixtureResponse(input: {
   method: string | undefined;
   offered: boolean | undefined;
   path: string;
-  readNavigation: () => { integrations: boolean };
   resetSetup: () => void;
-  writeNavigation: (value: { integrations: boolean }) => void;
 }): Response | undefined {
   if (input.path === "/api/v1/cloud/billing/usage") return json({ enabled: false });
   if (input.path === "/api/v1/cloud/billing") return json({ enabled: false });
@@ -357,11 +355,7 @@ function internalToolsFixtureResponse(input: {
     input.resetSetup();
     return new Response(null, { status: 204 });
   }
-  if (input.path !== "/api/v1/internal/navigation-visibility" || !input.offered) return undefined;
-  if (input.method === "PUT") {
-    input.writeNavigation(JSON.parse(String(input.body)) as { integrations: boolean });
-  }
-  return json(input.readNavigation());
+  return undefined;
 }
 
 function slackFixtureBinding(options: { bound?: boolean; provider?: "slack" | "feishu" }) {
@@ -467,7 +461,6 @@ export function installApi(
     /** Fails only the handoff read, so the binding stays readable and `handoff_unconfirmed` is reachable. */
     handoffEvidenceFails?: boolean;
     initialStatus?: "active" | "suspended";
-    internalNavigationVisibility?: { integrations: boolean };
     internalToolsOffered?: boolean;
     provider?: "feishu" | "slack";
     runtimeProvider?: AgentRuntimeProvider;
@@ -497,7 +490,6 @@ export function installApi(
   } = {},
 ) {
   let lifecycleStatus = options.initialStatus ?? "active";
-  let internalNavigationVisibility = options.internalNavigationVisibility ?? { integrations: false };
   // Mutable, because binding a Computer is the thing under test: the Agent starts without one and
   // the Server answers differently once the reader has chosen.
   let agentUnbound = options.agentUnbound ?? false;
@@ -632,12 +624,8 @@ export function installApi(
       method: init?.method,
       offered: options.internalToolsOffered,
       path,
-      readNavigation: () => internalNavigationVisibility,
       resetSetup: () => {
         setupCompletedAt = null;
-      },
-      writeNavigation: (value) => {
-        internalNavigationVisibility = value;
       },
     });
     if (internalToolsResponse) return internalToolsResponse;
@@ -696,6 +684,9 @@ export function installApi(
       return json({ task: taskSummary, turns: { items: storedTaskTurns, nextCursor: null } });
     }
     if (path === `/api/v1/sessions/${taskSessionId}/detail/turns`) {
+      return json({ items: [], nextCursor: null });
+    }
+    if (path === `/api/v1/sessions/${taskSessionId}/detail/internal-sessions`) {
       return json({ items: [], nextCursor: null });
     }
 

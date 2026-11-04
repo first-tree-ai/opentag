@@ -124,6 +124,15 @@ The default `legacy` mode can configure and authorize connectors in the Web App,
 the execution that delivers MCP tools to the Provider. Codex and Claude Code retain their normal
 per-action approval settings.
 
+Both IM Turns and Session messages pass the current execution's service grants to the Provider.
+In proxy mode, Local internal Sessions open their own execution for an accepted Session message
+over a connection that negotiated Session collaboration. They receive only their Agent's authorized
+platform services, without inheriting the visible Session's IM provider credentials or outbox.
+Legacy-mode internal Sessions retain their credential-free execution path. An older Server that
+refuses the internal execution leaves the message without managed services and emits a bounded
+warning; it supplies no replacement credentials. Each message prepares
+and closes its own execution; a new Session or runtime snapshot does not reuse a previous bearer.
+
 ### Pi and Cloud runtime delivery
 
 Pi uses extensions for MCP. OpenTag pins `pi-mcp-adapter` 2.36.0 and explicitly loads its gateway
@@ -1149,6 +1158,15 @@ and credentials, without being registered in the platform catalog or sent to the
 Native MCP startup and tool limits remain Claude's responsibility, including the operator's
 `MCP_TIMEOUT` setting. Run deadlines and cancellation continue to bound the owned Provider process.
 
+A separate `claude mcp list` command reads that command's native configuration; it does not inherit
+the running Provider's supplementary `--mcp-config` argument. It cannot establish whether the
+platform gateway reached the current Run. Check the execution grant, the private launch configuration,
+and that process's MCP catalog in sequence. Managed GitHub tools use
+`mcp__g<10 hex characters>__github__<toolName>`, rather than a bare `mcp__github__` prefix.
+An enabled mount and successful probe describe management-plane readiness; they do not prove that
+a particular execution received or initialized its gateway. Native Git and `gh` credentials remain
+independent and are not a fallback source of platform authorization.
+
 ### Codex: rebinding the thread per run
 
 Codex spawns one App Server per Session runtime. Native direct and plugin-discovered MCP services
@@ -1461,11 +1479,16 @@ save remains a local form error; it does not turn into a tool-probe failure on t
 The Connectors page keeps its existing layout and actions. **Discover** opens the service directory;
 **Add custom** opens a compact **Add custom connector** dialog. The Chinese entry labels are
 **发现** and **自定义**, and the custom dialog title is **添加自定义连接器**. The custom dialog contains:
-An input with localized URL guidance and **Connect**, with dismissal through the header close button
-or Escape. **Connector URL** remains its screen-reader label; opening focuses the input. There is
-no source switch, name field, authentication picker, or header editor in this entry flow. Discover,
-manual configuration, and configuration import remain implementation capabilities rather than entry
-points in this dialog.
+- a **Connector address** (**连接器地址**) field, which is also its accessible name;
+- an **Authentication** (**认证方式**) choice of **Account sign-in** (**账户登录**, the default),
+  **API key or token** (**API 密钥或令牌**), or **No authentication** (**无需认证**); choosing a key reveals
+  its field;
+- collapsed **Advanced settings** (**高级设置**) for headers;
+- **Connect** (**连接**), which becomes **Retry** after a failed attempt.
+It is dismissed through the header close button or Escape. There is no source switch or name field.
+With Account sign-in, Connect first tries the address; when the service refuses it, authorization opens
+in its own window. Discover, manual configuration, and configuration import remain implementation
+capabilities rather than entry points in this dialog.
 
 Web installations retain an explicit mount and independent tool snapshot per Agent. Add custom does
 not list the Account pool. With new OAuth reuse enabled, both Add custom and Discover perform the
@@ -1584,9 +1607,11 @@ Add custom opens the custom connector form for empty and populated Agents alike;
 Discover, manual-configuration, or import source switch. Initial focus stays on the dialog title,
 leaving the address field idle until the user selects it. Dismissing the form returns focus to Add custom.
 The standalone directory owns its add state.
-The empty state matches Skills: a centered 32px connection icon, the heading **No connectors yet**,
-and concise guidance directly on the page background. Connector choices stay in Discover; there are
-no recommendation cards, example tasks, or duplicate browse actions on the management page.
+The empty state matches Skills and Memory: a centered 32px connection icon, the heading **No connectors
+yet** (尚未添加连接器), and one sentence whose phrases are the first actions, **Discover a connector**
+(opens Discover) **or add a custom one** (opens Add custom), directly on the page background. Connector
+choices stay in Discover; there are no recommendation cards, example tasks, or duplicate browse
+actions on the management page.
 Asana's V2 MCP server requires a pre-registered OAuth application; Linear and Airtable support dynamic registration.
 See [Asana's integration requirements](https://developers.asana.com/docs/integrating-with-asanas-mcp-server),
 [Linear's MCP setup](https://linear.app/docs/mcp), and

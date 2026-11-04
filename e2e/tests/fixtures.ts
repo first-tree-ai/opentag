@@ -137,14 +137,16 @@ async function startDaemon(
       throw new Error(`Computer connect code failed with HTTP ${response.status()}: ${await response.text()}`);
     const payload = (await response.json()) as { bootstrapCommand: string };
     const match =
-      /\b(?:computer\s+)?connect --server\s+'?([^\s']+)'?\s+--\s+'?(otcc_(?:[A-Za-z0-9_-]{32}|[A-Za-z0-9_-]{43}))'?(?:\s|$)/u.exec(
+      /\b(?:computer\s+)?connect --server\s+'?([^\s']+)'?(?:\s+--computer\s+'?([^\s']+?)'?)?\s+--\s+'?(otcc_(?:[A-Za-z0-9_-]{32}|[A-Za-z0-9_-]{43}))'?(?:\s|$)/u.exec(
         payload.bootstrapCommand,
       );
-    if (!match?.[2]) throw new Error(`Unexpected computer connect command: ${payload.bootstrapCommand}`);
+    if (!match?.[3]) throw new Error(`Unexpected computer connect command: ${payload.bootstrapCommand}`);
+    // A repair command names the Computer it restores (`--computer <id>`); pass it on like the real command.
+    const computerArgs = match[2] ? ["--computer", match[2]] : [];
     const cli = join(repositoryRoot, "apps/cli/dist/cli/index.mjs");
     await execFileAsync(
       process.execPath,
-      [cli, "computer", "connect", "--no-start", "--server", baseURL, "--", match[2]],
+      [cli, "computer", "connect", "--no-start", "--server", baseURL, ...computerArgs, "--", match[3]],
       {
         env: { ...process.env, HOME: home, OPENTAG_HOME: openTagHome },
       },
@@ -233,6 +235,17 @@ export type ExpectedDiagnostic = {
   code?: string;
 };
 
+/**
+ * The journey daemon runs stub provider CLIs that cannot list native models, so the Model page's
+ * local runtime-options read answers 503 there. The page handles it (the model can be typed), so
+ * every journey page allows that one diagnostic.
+ */
+const STUB_RUNTIME_OPTIONS_UNAVAILABLE: ExpectedDiagnostic = {
+  routeTemplate: "/api/v1/agents/:id/runtime-options",
+  status: 503,
+  code: "SERVICE_UNAVAILABLE",
+};
+
 const pageExpectedDiagnostics = new WeakMap<object, ExpectedDiagnostic[]>();
 
 export function allowExpectedDiagnostic(page: Page, ...diagnostics: ExpectedDiagnostic[]): void {
@@ -243,6 +256,7 @@ export function allowExpectedDiagnostic(page: Page, ...diagnostics: ExpectedDiag
 
 const browserTest = base.extend({
   page: async ({ page }, use, testInfo) => {
+    allowExpectedDiagnostic(page, STUB_RUNTIME_OPTIONS_UNAVAILABLE);
     const browserErrors: string[] = [];
     page.on("console", (message) => {
       // Chromium reports this CSP fallback as console.error even though it is emitted by the

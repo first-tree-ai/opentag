@@ -51,5 +51,4 @@ dismissed reviews revoke approval, and the existing policy still accepts
 approvals of earlier commits after a push. No branch protection or ruleset is
 configured by this workflow.
 
-Local verification and its live-platform boundary are recorded in
-[ownership gate verification](https://github.com/first-tree-ai/opentag/blob/main/testing/verification/ownership-gate.md).
+Keep task verification results and live-platform limitations in the task's GitHub PR or Issue.

@@ -1,4 +1,4 @@
-import type { EffectiveRuntimeSnapshot } from "@opentag/shared";
+import { type EffectiveRuntimeSnapshot, SESSION_RUN_OUTCOME_NOTICE_HEADER } from "@opentag/shared";
 import { describe, expect, it } from "vitest";
 import { type ManagedSessionContext, renderManagedSystemPrompt } from "../runtime/managed-instructions.js";
 
@@ -342,6 +342,28 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
       expect(prompt).not.toContain("optionally");
       expect(prompt).not.toContain("unnecessary");
       expect(prompt).toContain("OpenTag internal Sessions and Provider-native subagents are separate mechanisms");
+      expect(prompt).toContain(
+        "Long-running delegated or multi-step work is the exception: post a short new IM message at each meaningful milestone (started, key finding, blocked and needs input, done).",
+      );
+      expect(prompt).toContain("Never edit an earlier message for progress, because edits do not notify");
+      expect(prompt).toContain("Short work stays silent until the final reply.");
+      expect(prompt).toContain(
+        "Long work adds only the milestone messages described above, and its final result, which is the done milestone, is still one self-contained message.",
+      );
+      expect(prompt).toContain(
+        "The done milestone is the one self-contained final result, not a separate completion message, and a start notice that was already sent, such as a scheduled task's start notification, counts as started.",
+      );
+    }
+    for (const [prompt, cli] of [
+      [local, "opentag-dev"],
+      [cloud, "opentag"],
+    ] as const) {
+      expect(prompt).toContain("You are a visible Session. Handle quick work directly.");
+      expect(prompt).toContain(
+        `roughly over 10 minutes) or that should continue on its own, create an OpenTag internal Session with \`${cli} session create\` and a \`--max-duration-ms\` sized to the task, reply in IM promptly that the work has started, and publish the result when the child reports back.`,
+      );
+      expect(prompt).toContain("use them only for short, bounded side tasks within the current Run.");
+      expect(prompt).toContain(`use ${cli} session create; do not substitute a Provider-native subagent.`);
     }
     expect(local).toContain("Current Session: session-1");
     expect(cloud).toContain("Current Session: cloud-session-1");
@@ -358,8 +380,12 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
       expect(prompt).toContain("Session kind: internal");
       expect(prompt).toContain("do not publish directly to IM");
       expect(prompt).toContain(
-        "report progress, questions, and the final result to the creating or coordinating Session",
+        `Report to the creating or coordinating Session with \`${base.cliCommand} session send\`: milestones only when useful`,
       );
+      expect(prompt).toContain("questions, and the final result.");
+      expect(prompt).toContain("You may create further internal Sessions");
+      expect(prompt).not.toContain("Handle quick work directly");
+      expect(prompt).not.toContain("post a short new IM message at each meaningful milestone");
       expect(prompt).toContain("Creator Session: session-parent-1");
       expect(prompt).not.toContain("emoji");
       expect(prompt).not.toContain("be warm and natural");
@@ -404,6 +430,14 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
         "Session collaboration commands are unavailable because managed Session context is missing.",
       );
       expect(unavailable).not.toContain("session create --message");
+      expect(unavailable).toContain("You are a visible Session. Handle quick work directly.");
+      expect(unavailable).toContain("OpenTag internal Sessions are unavailable in this Run");
+      expect(unavailable).toContain("this conversation stays busy until it finishes");
+      expect(unavailable).toContain("split it into parts the user can request in separate messages");
+      expect(unavailable).toContain("use them only for short, bounded side tasks within the current Run");
+      expect(unavailable).toContain("post a short new IM message at each meaningful milestone");
+      expect(unavailable).not.toContain("use Provider-native subagents when available");
+      expect(unavailable).not.toContain("create an OpenTag internal Session with");
     }
 
     const local = renderManagedSystemPrompt(snapshot, session);
@@ -415,6 +449,7 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
     expect(local).toContain("An accepted result means the target accepted the message for processing");
     expect(local).toContain("retry with the same messageId and exactly the same semantic input");
     expect(local).not.toContain("its final text is not automatically returned to its parent");
+    expect(local).toContain("pass `--max-duration-ms` with headroom");
 
     const cloud = renderManagedSystemPrompt(snapshot, cloudSession);
     expect(cloud).toContain("Session collaboration is available through these commands:");
@@ -426,6 +461,19 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
     expect(cloud).toContain("An accepted result means the target accepted the message for processing");
     expect(cloud).toContain("retry with the same messageId and exactly the same semantic input");
     expect(cloud).toContain("its final text is not automatically returned to its parent");
+    expect(cloud).toContain("pass `--max-duration-ms` with headroom");
+
+    // Both environments explain the Server-written creator notice and how to continue the child.
+    for (const [prompt, cli] of [
+      [local, "opentag-dev"],
+      [cloud, "opentag"],
+    ] as const) {
+      expect(prompt).toContain(
+        `A message that begins with "${SESSION_RUN_OUTCOME_NOTICE_HEADER}" is written by openTag`,
+      );
+      expect(prompt).toContain("openTag does not rerun it");
+      expect(prompt).toContain(`\`${cli} session send <child-session-id> --message <text>\``);
+    }
   });
 
   it("renders session-specific instructions from the snapshot on both environments", () => {

@@ -104,6 +104,36 @@ scanned, using the existing durable-work transaction. A conflicting update is ne
 nor acknowledged; an identical terminal replay remains acknowledgeable. Busy/grant cleanup follows
 a successful or identical commit and names that exact Turn, preserving newer work.
 
+On a Runner collaboration-v3 channel, the settled frame also carries the Run's failure reason (for
+example `turn_timeout`), journaled with the immutable settlement. A Runner sends it only after a
+v3 welcome; a Server that negotiated v1 or v2 receives the exact older frame. After a non-completed
+terminal commit (new or identical replay), the Server notifies an internal child's creator and
+withholds that settlement's ack until the notice has a final answer, so the journaled settlement
+remains the replay owner; see
+[Run outcome notices](../messaging/internal-session-collaboration.md#run-outcome-notices).
+
+While that ack is withheld, the settling allocation (Sandbox, environment generation and resource
+name) stays in the Session-work reclaim barrier. The custody is held before the record turns
+terminal, so idle reclamation and same-account borrow see no gap. It is released only when the ack
+is handed to the exact current connection of that allocation: the original one, or the connection
+that receives the replayed settlement. A detach before the ack keeps the barrier until the replay
+is acknowledged. Each settlement handler (the original and every replay) holds its own share of the
+custody: a handler whose terminal commit lost, such as a stale connection racing its replay, drops
+only its own share, and the exact ack ends every share. The barrier reads the durable rows first
+and checks the custody after those reads, so a settlement that commits while the barrier is reading
+is still seen. The custody never pins a replacement allocation, and a retired allocation's
+custody is dropped with its journal. There is no timeout, matching the durable barrier: a Runner
+that never returns is handled by allocation-loss recovery.
+
+The custody is in Server memory. After a Server restart the Runner replays the journaled settlement
+on reconnect, which holds the custody again. A borrow needs a ready Runner, and a
+workspace-persistent Runner replays before it reports ready. The Server handles a connection's
+frames in order, so the barrier is back before any borrow can see the Runner. An idle claim made
+while the Runner is away still needs a sealed workspace before release. The Runner's seal drains
+its journal and waits for every settlement ack, so the release cannot destroy an unacknowledged
+settlement. A v3 Runner
+image requires a v3 Server, so the Server must be deployed first, as with earlier versions.
+
 Cloud delivery still uses one Server owner. E8 adds no cross-Server routing or independent task queue.
 Local Session collaboration keeps its current behavior and trust boundary.
 

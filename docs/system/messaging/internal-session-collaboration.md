@@ -39,7 +39,15 @@ the daemon user's files.
 `session create` atomically creates an internal child Session and its first message. `session send` addresses an
 existing Session in the same Agent and conversation scope. Both accept an optional `--message-id` for an explicit retry;
 reuse the same ID and identical semantic input after an uncertain result. `accepted` means the target accepted the
-message into its bounded FIFO, not that the task completed.
+message into its bounded FIFO, not that the task completed. On a Local Computer, a message whose target Session is
+running a Turn on a steer-capable runtime is steered into that Turn instead of waiting for it to end. Runtime acceptance
+is not delivery: the durable record stays `running` until that Turn's Run settles. It becomes `succeeded` when the Run
+completed; returns to the FIFO when the provider reports that it never started the input (Claude Code `command_lifecycle`),
+so the message is delivered again as its own Run; and fails permanently without replay when the provider may have started
+it but the Run failed or was cancelled. Codex and Pi report no per-input start, so their acknowledged steer counts as
+possibly started. A restart while the record is `running` recovers it like any interrupted Session message Run. A message
+that arrives while the target runs another Session message, or whose runtime cannot steer, still waits in the FIFO. The
+Cloud Session message path is unchanged.
 
 Within each existing create/send transaction, authorization locks the source Agent, binding,
 Sessions in ID order (`FOR NO KEY UPDATE`), placements in Session ID order, then Computers in ID order.
@@ -64,18 +72,44 @@ task, and outcome writes update only projections still referring to that message
 Internal Sessions inherit their Agent's available tools and default Runtime configuration. Local Sessions also share the
 Agent workspace. Cloud Sessions have independent Sandbox workspaces and Pi histories; see
 [Cloud Context Tree and Session collaboration](../cloud/cloud-context.md) for the Cloud boundaries. A creation command may
-override the model, reasoning effort, or maximum Run duration. Internal Sessions do not receive IM delivery or the
+override the model, reasoning effort, or maximum Run duration. Without a duration override, an internal Session's Run
+budget is the larger of 2 hours and its Agent's configured budget (30 minutes when unset), because delegated work such
+as coding usually outlasts an IM reply; channel and thread Sessions keep the Agent budget. A Run that exceeds its
+budget is aborted as `turn_timeout`, so managed instructions tell the creating Session to estimate the task and pass
+`--max-duration-ms` with headroom, up to the 24-hour maximum. Internal Sessions do not receive IM delivery or the
 temporary `OPENTAG_PROVIDER_ENV_FILE`; they report through `opentag session send`. Both visible and internal Sessions
 receive role-aware managed instructions and may create further internal Sessions.
 
 Local and Cloud use the same managed system-prompt renderer and Session context interface. Shared Session behavior is
 defined once; workspace persistence, isolation, and Context Tree facts are rendered for the execution environment.
-For eligible human IM inputs, the Server owns the working reaction and terminal error-card projection, including durable cleanup and safe recovery. Visible Sessions keep normal progress silent and publish their final result through the provider CLI. Observer copies and internal Sessions do not publish IM reactions or replies for that input. See [IM feedback and recovery](im-feedback.md) for eligibility, batching, failure handling, and recovery authority.
+For eligible human IM inputs, the Server owns the working reaction and terminal error-card projection, including durable cleanup and safe recovery. Visible Sessions keep normal progress silent and publish their final result through the provider CLI; long-running delegated or multi-step work also posts milestone messages, described below. Observer copies and internal Sessions do not publish IM reactions or replies for that input. See [IM feedback and recovery](im-feedback.md) for eligibility, batching, failure handling, and recovery authority.
 
 openTag internal Sessions are distinct from Provider-native subagents. When a person explicitly requests an openTag
 internal Session, the visible Session uses `opentag session create` rather than substituting a Provider-native subagent.
-openTag does not otherwise impose one automatic routing policy between direct work, Provider-native subagents, and
-internal Sessions.
+
+Beyond that rule, delegation is a managed-instruction convention, not a platform routing policy. A visible Session
+handles quick work directly. Work likely to take long — multi-step coding, debugging, test runs, or broad research,
+roughly over 10 minutes — or work that should continue on its own goes to an internal Session created with a
+`--max-duration-ms` sized to the task; the visible Session replies promptly that the work has started and publishes the
+result when the child reports back. A visible Session's own Run shares one time budget, is aborted on timeout, and
+holds the IM conversation until it ends. Provider-native subagents run inside that Run, are not visible in openTag,
+and do not survive a daemon restart, so they remain for short, bounded side tasks within the current Run. Internal
+Sessions may still delegate further.
+
+Session collaboration can be unavailable to a visible Session — Cloud omits it when the request carries no
+`sessionCollaboration` proof, and Local when it reconciles without the Session-collaboration capability or managed
+Session context. The visible Session then still handles quick work directly and keeps Provider-native subagents to
+short, bounded side tasks. It does long work directly in the current Run: it replies promptly that the work has started
+and that the conversation stays busy until it finishes, posts milestones, and, because the Run budget still applies,
+says so when the work may not fit and splits it into parts the user can request in separate messages.
+
+For long-running delegated or multi-step work, the visible Session posts a short new IM message at each meaningful
+milestone — started, key finding, blocked and needs input, done — rather than editing one message, because IM clients do
+not notify on edits. Routine check-ins are not milestones, and short work stays silent until the final reply. The done
+milestone is the one self-contained final result, not a separate completion message, and a start notice already sent —
+such as a scheduled task's fixed start notification — satisfies started, so the convention never adds the completion
+notices scheduled-task metadata forbids. Internal Sessions never publish to IM; they report milestones to their creator
+through `opentag session send` only when useful, along with questions and the final result.
 
 When a SessionMessage returns to a visible channel or thread Session, that callback Run retains the visible Session's IM
 authority. Credential grant v2 atomically supplies a temporary provider credential environment and a non-secret default
@@ -84,6 +118,56 @@ publishes any user-facing result through the official provider CLI during that c
 child's text automatically. Channel callbacks target the existing chat or channel, while thread callbacks retain the
 existing thread scope. Internal targets never receive provider credentials or outbox context.
 
+## Run outcome notices
+
+`accepted` and `session list` describe delivery only. When an internal Session's Run ends without completing, the
+Server tells the Session that created it (`created_by_session_id`):
+
+- Local: a Run that reaches its maximum duration fails terminally with `turn_timeout` and is never rerun from scratch.
+  Other permanent failures and exhausted retries are also terminal. The daemon then reports the outcome with
+  `session:message:outcome`. Reports are kept in a local durable file and resent until the Server gives a final
+  answer or one day passes. The terminal inbox record and an `outcomeReport: pending` marker are written in one
+  record write; the marker becomes `published` once the report is durable in the reporter's file. On startup a
+  terminal record still marked `pending` (for example after a crash between the two writes) hands its report over
+  again, and the child is never rerun. Terminal records written before the marker existed carry no marker and are
+  not backfilled. The Server-backed Runtime durability adapter does not store the marker. A steered message follows
+  its steer receipt: `interrupted` takes this same terminal path (reason `session_message_steer_interrupted`, never
+  replayed), `processed` succeeds, and `not_started` returns to the FIFO with no report. Eligibility is unchanged, so
+  a message steered into a visible Session's IM Turn produces no notice.
+- Cloud: the Runner's `session:message:settled` frame carries the failure `reason` (for example `turn_timeout`) on a
+  collaboration-v3 channel. Every non-completed outcome (`failed`, `cancelled`, `unknown`) produces a notice. The
+  Server makes up to three delivery attempts, 30 seconds apart. The notice's source authority is the settling
+  connection, and `session:message:settled:ack` lets the Runner delete its journaled settlement, so the Server sends
+  that ack only after the notice has a final answer (or the three attempts are spent), and only on the
+  still-current connection. If the Runner detaches or the Server stops first, the settlement stays journaled; the
+  Runner replays it to the next connection, which commits it as `already_recorded` and notifies again under the same
+  notice ID. The wait runs outside the Runner's frame handling. Until that ack reaches the exact connection, the
+  settling allocation stays in the Sandbox reclaim barrier, so idle reclamation or borrow cannot delete the journal;
+  see [Cloud context](../cloud/cloud-context.md).
+
+The notice is an ordinary SessionMessage from the child to its creator. It uses the existing authorization, lock order,
+activity projection, and delivery, including the visible-Session callback rules. A visible creator's callback Run
+decides what to tell the user; openTag does not forward anything to IM. The text starts with
+`[openTag notice] Internal Session Run did not complete` (`SESSION_RUN_OUTCOME_NOTICE_HEADER`). A notice means the
+child's done milestone, its final result sent with `opentag session send`, will not arrive on its own. It names the child,
+the reported message, the outcome, and a stable reason code, never provider output. It also says that the child keeps
+its context and that `opentag session send <child-session-id>` continues it. Managed instructions describe the
+header so the creator knows the message comes from openTag, not from the child.
+
+Safety rules:
+
+- The source authority is the reporting connection: the Local Computer's current connection, or the exact Cloud Runner
+  connection that settled the Run. A stale or superseded connection gets `stale_generation`.
+- The reported message must be a stored SessionMessage addressed to an active internal Session that has a creator.
+  Completed Runs, visible targets, ended children, and unknown messages are ignored. An ended creator rejects the
+  notice through normal authorization.
+- The notice ID is UUIDv5 over the child Session and reported message IDs. Report retries, Runner settlement replays,
+  and concurrent reports converge on one `session_messages` row; an accepted notice is never delivered again.
+- Notices only go to the creator, so they move up the creation tree and never return to the child. If the creator's
+  own Run fails while handling a notice, its creator may be notified in turn, ending at the visible root.
+
+No schema change is involved: notices reuse `session_messages` and the existing closure activity projection.
+
 The Server stores authorized logical messages and their latest observed delivery outcome for idempotency and conflict
 detection. The managed Local Runtime uses its existing bounded inbox and durable-work store, including its recovery and
 retry policy; acceptance does not mean completion or exactly-once external side effects. Cloud uses the allocation and
@@ -91,7 +175,11 @@ execution boundaries described in [Cloud Context](../cloud/cloud-context.md). Ag
 provide no `end`; administrative lifecycle invalidation may still set the existing `sessions.ended_at` field, and it
 marks the matching closure rows inactive in the same transaction through `services/sessions/session-closure.ts`.
 
-The Local CLI transport requires `runtime.sessionCollaboration` capability version 2. Visible callback delivery also requires
+The Local CLI transport requires `runtime.sessionCollaboration` capability version 2. Version 3 adds scheduled
+origins. Version 4 adds the Client Run outcome report. The Client sends `session:message:outcome` only on a connection
+that negotiated 4 or later; against an older Server it keeps the report pending (bounded) and never sends the frame.
+The Server answers `unsupported_capability` to a report on a connection below version 4. An older Client never reports,
+so its timed-out child produces no notice. Version checks use `>=`. Visible callback delivery also requires
 `runtime.imCredentialGrant` version 2. A new Server reports `outbox_unavailable` before delivery when the target Client is
 older; a new Client connected to an older Server rejects the delivery before acknowledging it so the same logical message
 remains retryable. Both upgrade directions fail closed before the callback Run instead of silently removing its IM outbox.

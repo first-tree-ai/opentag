@@ -241,7 +241,7 @@
   "onboarding_v2_runtime_sign_in_follow": "，按提示完成登录。",
   "onboarding_v2_runtime_sign_in_open_terminal": "在 {computerName} 上打开终端。",
   "onboarding_v2_runtime_sign_in_run": "运行",
-  "onboarding_v2_setup_computer_rebind": "{computerName} 属于其他账户。请为 {name} 选择当前账户中的电脑。",
+  "onboarding_v2_setup_computer_rebind": "{computerName} 属于其他账户，无法替换 {name} 已有的电脑绑定。要使用其他电脑，请创建新 Agent。",
   "onboarding_v2_setup_load_failed": "无法读取你的 Agent 的设置状态。",
   "onboarding_v2_setup_messaging_computer_attention": "使用这台电脑上的 Agent 修复 {provider} 连接，然后重新检查。",
   "onboarding_v2_setup_messaging_confirming_computer": "正在确认这台电脑可以连接到 {provider}…",

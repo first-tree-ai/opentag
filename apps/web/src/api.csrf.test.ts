@@ -55,6 +55,7 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   authProviders: [],
   completeSetup: [ID],
   agents: [],
+  agentStatuses: [[ID]],
   tasks: [{}],
   taskDetail: [ID],
   taskTurns: [ID],
@@ -110,13 +111,12 @@ const INVOCATIONS: Record<string, readonly unknown[]> = {
   agentCloudOverview: [ID],
   cloudWorkspaceStatus: [ID],
   releaseCloudWorkspace: [ID, { environmentGeneration: 1 }],
-  internalNavigationVisibility: [],
-  updateInternalNavigationVisibility: [{ tasks: true }],
   updateTaskTitle: [ID, { title: "A task" }],
   cancelTask: [ID],
   computerConnectCodeStatus: [ID],
   rebindAgentComputer: [ID, ID],
   testAgentRuntime: [ID, { provider: "codex" }],
+  contextTreeAvailability: [ID],
   contextTreeOperation: [
     ID,
     {

@@ -13,7 +13,6 @@ export const queryKeys = {
   me: () => ["me"] as const,
   authProviders: () => ["authProviders"] as const,
   internalToolsOffered: () => ["internalToolsOffered"] as const,
-  internalNavigationVisibility: () => ["internalNavigationVisibility"] as const,
   /** The Account's Computers. The request takes no argument — the Server scopes it to the session. */
   computers: () => ["computers"] as const,
   cloudAvailability: () => ["cloudAvailability"] as const,
@@ -50,6 +49,8 @@ export const queryKeys = {
     detail: (taskId: string) => ["tasks", taskId, "detail"] as const,
     /** One Task's captured outbound replies, a sibling of its detail with its own cursor. */
     replies: (taskId: string) => ["tasks", taskId, "replies"] as const,
+    /** One Task's internal Sessions, a sibling of its detail paged with their own cursor. */
+    internalSessions: (taskId: string) => ["tasks", taskId, "internalSessions"] as const,
   },
 
   feishuSetupAttempt: (attemptId: string) => ["feishuSetupAttempts", attemptId] as const,

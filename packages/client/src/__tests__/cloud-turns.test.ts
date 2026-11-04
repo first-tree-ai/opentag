@@ -1738,6 +1738,7 @@ describe("CloudTurnRunner", () => {
     expect(report?.executionEffects).toBe("may_have_occurred");
     await waitFor(() => h.runner.activeDeliveryId === undefined, "failed turn to settle");
     expect(h.runner.hasPendingWork).toBe(true);
+    expect(h.runner.resumeAfterFailedRelease()).toBe(false);
     // Every later attempt is refused instead of silently reusing the unverified namespace.
     const second = cloudDeliveryFixture({ sessionId: h.delivery.sessionId });
     await h.runner.handleDeliveryRun(runFrame(second));
@@ -2732,10 +2733,30 @@ describe("CloudTurnRunner", () => {
   it("ignores a delivery:run that arrives after the runner was closed", async () => {
     const h = harness();
     await h.runner.close();
-    // A draining allocation must not acknowledge new work: the Server keeps the unaccepted input.
+    expect(h.runner.resumeAfterFailedRelease()).toBe(false);
+    // A closed allocation must not acknowledge new work: the Server keeps the unaccepted input.
     await h.runner.handleDeliveryRun(runFrame(h.delivery));
     expect(h.sent).toHaveLength(0);
     expect(await h.journal.list()).toHaveLength(0);
+  });
+
+  it("keeps admission paused after a failed drain until the original receipt is retired", async () => {
+    const h = harness();
+    await h.runner.handleDeliveryRun(runFrame(h.delivery));
+    await expect(h.runner.drainForRelease(-1)).rejects.toThrow("Release reports were not acknowledged");
+    expect(h.runner.resumeAfterFailedRelease()).toBe(false);
+    expect((await h.journal.read(h.delivery.deliveryId))?.phase).toBe("received");
+    await h.runner.handleVerified({
+      type: "delivery:verified",
+      requestId: h.delivery.requestId,
+      status: "rejected",
+      code: "delivery_not_pending",
+    });
+    await h.runner.drainForRelease(1_000);
+    expect(h.runner.resumeAfterFailedRelease()).toBe(true);
+    expect(await h.journal.list()).toHaveLength(0);
+    expect(h.workerInputs).toHaveLength(0);
+    await h.runner.close();
   });
 
   it("reports a started entry unknown while releasing and never executes it", async () => {
@@ -2756,6 +2777,7 @@ describe("CloudTurnRunner", () => {
       async () => (await h.journal.read(h.delivery.deliveryId))?.phase === "reported",
       "unknown release report",
     );
+    expect(h.runner.resumeAfterFailedRelease()).toBe(false);
     const entry = await h.journal.read(h.delivery.deliveryId);
     if (entry?.kind !== "delivery" || !entry.report) throw new Error("missing durable release report");
     expect(entry.report).toMatchObject({
@@ -2773,6 +2795,9 @@ describe("CloudTurnRunner", () => {
     await draining;
     expect(await h.journal.list()).toEqual([]);
     expect(h.workerInputs).toHaveLength(0);
+    expect(h.runner.resumeAfterFailedRelease()).toBe(true);
+    await h.runner.close();
+    expect(h.runner.resumeAfterFailedRelease()).toBe(false);
   });
 
   it("answers a recovery query for an unknown delivery and re-sends a journaled report", async () => {

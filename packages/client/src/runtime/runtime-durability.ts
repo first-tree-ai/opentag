@@ -10,7 +10,11 @@ import {
 import { ensurePrivateDirectory, readDurableJson, writeDurableJson } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 
-export type DurableWorkKind = "session-message" | "turn-report";
+/**
+ * `session-message-outcome` holds Run outcome reports for creator notices. It is a Local-only kind:
+ * the reporter always uses a local store, never the Server durable-work API.
+ */
+export type DurableWorkKind = "session-message" | "session-message-outcome" | "turn-report";
 export type DurableWorkStatus = "accepted" | "running" | "succeeded" | "retryable" | "failed" | "dead-letter";
 /** The durable state machine stores taxonomy retry policy, not a second retry enum. */
 export type DurableRetryability = ErrorRetryability;
@@ -143,6 +147,14 @@ export interface DurableWorkRecord<T = unknown> {
   readonly kind: DurableWorkKind;
   readonly lastError?: DurableFailure;
   readonly nextAttemptAt?: number;
+  /**
+   * Session-message only: the creator-notice intent written in the SAME record write as the
+   * terminal `failed`/`dead-letter` transition. `pending` means the Run outcome has not yet been
+   * handed to the durable outcome reporter; hydration re-derives the report from the terminal
+   * record. `published` means the reporter owns it. Absent on records written before the marker
+   * existed, which are deliberately not backfilled.
+   */
+  readonly outcomeReport?: "pending" | "published";
   readonly payload: T;
   readonly status: DurableWorkStatus;
   readonly updatedAt: number;

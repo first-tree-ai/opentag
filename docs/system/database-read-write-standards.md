@@ -192,8 +192,8 @@ source and test evidence, minimum change, cost, benefit, and preserved business
 semantics. A deliberately misused helper in a test demonstrates an API risk;
 it does not prove a production caller made that mistake.
 
-Keep run evidence in `testing/` or the local review record rather than adding
-dated status, PR history, or issue lists to this standards page. Follow
+Keep run evidence outside the source repository and retain useful redacted results in the task's GitHub PR or Issue.
+Do not add dated status, PR history, or issue lists to this standards page. Follow
 [Local validation](https://github.com/first-tree-ai/opentag/blob/main/DEVELOPMENT.md#local-validation); do not repeat
 unchanged successful checks merely to complete a review. Distinguish source
 changes, checks, merge, deployment, and actual acceptance.

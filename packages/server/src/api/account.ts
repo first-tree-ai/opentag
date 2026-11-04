@@ -19,9 +19,13 @@ import {
   AccountSetupCompletionSchema,
   AccountSetupResetRequestSchema,
   AGENT_ACTIVITY_TASK_COUNT_HEADER,
+  AGENT_STATUS_HEADER,
+  AGENT_STATUS_PATH,
+  AGENT_STATUS_VERSION,
   AgentAdminConfigSchema,
   AgentCreationIntentIdSchema,
   AgentCreationIntentResultSchema,
+  AgentStatusQuerySchema,
   type ChannelName,
   CLOUD_IDENTITY_CAPABILITY_HEADER,
   type CloudAvailability,
@@ -34,8 +38,6 @@ import {
   ComputerConnectCodeStatusSchema,
   CreateAgentRequestSchema,
   HTTP_PATHS,
-  type InternalNavigationVisibility,
-  InternalNavigationVisibilitySchema,
   type ListAccountComputersResponse,
   ListAccountComputersResponseSchema,
   ListAgentsResponseSchema,
@@ -68,6 +70,7 @@ import {
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
+import type { AgentStatusService } from "../services/agents/agent-status-service.js";
 import type { AgentService } from "../services/agents/index.js";
 import { AuthServiceError, type UserAuthService } from "../services/auth/index.js";
 import {
@@ -148,6 +151,7 @@ export interface AccountRoutesOptions {
    */
   cloudModelOptions?: () => Promise<CloudModelOptions>;
   agentService?: AgentService;
+  agentStatusService?: AgentStatusService;
   computerConnectCode?: { downloadBaseUrl: string; environment: ChannelName; publicUrl: string };
   computerService?: ComputerService;
   sandboxService?: SandboxService;
@@ -162,7 +166,6 @@ export interface AccountRoutesOptions {
    */
   setupResetService?: AccountSetupResetService;
   /** Process-wide preview state; absent everywhere the internal tools are absent. */
-  internalNavigationService?: InternalNavigationVisibilityService | undefined;
   taskService?: TaskService;
   accountSetupService?: AccountSetupService;
 }
@@ -173,11 +176,6 @@ export interface AccountSetupResetService {
   readonly enabled: boolean;
   reboard(accountId: string): Promise<void>;
   resetOnboarding(accountId: string): Promise<void>;
-}
-
-export interface InternalNavigationVisibilityService {
-  read(): InternalNavigationVisibility;
-  update(value: InternalNavigationVisibility): InternalNavigationVisibility;
 }
 
 function accountId(request: FastifyRequest): string {
@@ -196,6 +194,14 @@ export function registerAccountRoutes(
   options: AccountRoutesOptions,
 ): void {
   const preHandler = createUserAuthPreHandler(authService, options.authOptions ?? {});
+
+  if (options.agentStatusService) {
+    const statuses = options.agentStatusService;
+    app.get(AGENT_STATUS_PATH, { preHandler }, async (request, reply) => {
+      const { ids } = parseRequest(AgentStatusQuerySchema, request.query);
+      return reply.header("Cache-Control", "private, no-store").send(await statuses.read(accountId(request), ids));
+    });
+  }
 
   app.get(HTTP_PATHS.accountCloudComputer, { preHandler }, async (_request, reply) => {
     const availability = options.cloudAvailability?.() ?? {
@@ -243,6 +249,9 @@ export function registerAccountRoutes(
       const includeTaskCount = requestsAgentActivityTaskCount(request.headers[AGENT_ACTIVITY_TASK_COUNT_HEADER]);
       return reply.code(200).send(
         ListAgentsResponseSchema.parse({
+          ...(options.agentStatusService && request.headers[AGENT_STATUS_HEADER] === AGENT_STATUS_VERSION
+            ? { statusVersion: 1 }
+            : {}),
           agents: response.agents.map((agent) => ({
             ...agent,
             activity: projectAgentActivityForClient(agent.activity, includeTaskCount),
@@ -567,25 +576,6 @@ export function registerAccountRoutes(
       if (mode === "all") await setupResetService.resetOnboarding(account);
       else await setupResetService.reboard(account);
       return reply.code(204).send();
-    });
-  }
-
-  if (options.internalNavigationService) {
-    const internalNavigationService = options.internalNavigationService;
-
-    app.get(HTTP_PATHS.internalNavigationVisibility, { preHandler }, async (_request, reply) =>
-      reply
-        .header("Cache-Control", "no-store")
-        .code(200)
-        .send(InternalNavigationVisibilitySchema.parse(internalNavigationService.read())),
-    );
-
-    app.put(HTTP_PATHS.internalNavigationVisibility, { preHandler }, async (request, reply) => {
-      const input = parseRequest(InternalNavigationVisibilitySchema, request.body);
-      return reply
-        .header("Cache-Control", "no-store")
-        .code(200)
-        .send(InternalNavigationVisibilitySchema.parse(internalNavigationService.update(input)));
     });
   }
 }

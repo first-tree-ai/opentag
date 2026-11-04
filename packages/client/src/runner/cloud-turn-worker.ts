@@ -301,7 +301,7 @@ export interface CloudTurnPiFactory {
 }
 
 export interface CloudTurnPiRuntime {
-  steer?(request: import("../agent-runtime/types.js").AgentSteerRequest): Promise<void>;
+  steer?(request: import("../agent-runtime/types.js").AgentSteerRequest): Promise<unknown>;
   prompt(request: AgentPromptRequest): Promise<AgentRunResult>;
   close(): Promise<void>;
 }

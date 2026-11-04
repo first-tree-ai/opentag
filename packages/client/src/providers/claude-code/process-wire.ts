@@ -40,11 +40,29 @@ export interface ClaudeCodeProcessResult {
   readonly stderr: string;
 }
 
+/**
+ * `terminal` is false for a `result` that still has steered user input pending in Claude Code's
+ * command queue: the CLI will process that input after this result and emit another one.
+ */
+export type ClaudeCodeMessageListener = (message: Readonly<Record<string, unknown>>, terminal?: boolean) => void;
+
+export interface ClaudeCodeSteerHandle {
+  /** True once Claude Code reported `command_lifecycle` `started` (or `completed`) for this input. */
+  started(): boolean;
+}
+
 export interface ClaudeCodeProcessClient {
   send?(message: Readonly<Record<string, unknown>>): Promise<void>;
+  /**
+   * Writes a user message with a `uuid` into the running query. Claude Code queues it and attaches
+   * it at the next tool boundary, or processes it after the current result; `command_lifecycle`
+   * reports it as `started` once the model receives it. Until then the process can still exit
+   * without ever processing it, so the returned handle reports whether that start was observed.
+   */
+  steer?(message: Readonly<Record<string, unknown>> & { readonly uuid: string }): Promise<ClaudeCodeSteerHandle>;
   execute(
     input: Readonly<Record<string, unknown>>,
-    onMessage: (message: Readonly<Record<string, unknown>>) => void,
+    onMessage: ClaudeCodeMessageListener,
     signal: AbortSignal,
   ): Promise<ClaudeCodeProcessResult>;
   interrupt(): Promise<void>;
@@ -63,7 +81,7 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
   #resolveExit: (() => void) | undefined;
   #buffer = Buffer.alloc(0);
   #stderr = Buffer.alloc(0);
-  #listener?: (message: Readonly<Record<string, unknown>>) => void;
+  #listener?: ClaudeCodeMessageListener;
   #resolveExecution?: (result: ClaudeCodeProcessResult) => void;
   #rejectExecution?: (error: Error) => void;
   #execution?: Promise<ClaudeCodeProcessResult>;
@@ -76,6 +94,10 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
   readonly #permissionControl: boolean;
   #pendingInput?: string;
   #initializeTimer?: ReturnType<typeof setTimeout>;
+  /** Steered command uuids written to stdin that Claude Code has not yet started. */
+  readonly #pendingSteers = new Set<string>();
+  /** Steered command uuids Claude Code reported as started. */
+  readonly #startedSteers = new Set<string>();
 
   constructor(options: ClaudeCodeSpawnOptions) {
     this.#permissionControl = options.args.includes("--permission-prompt-tool");
@@ -121,7 +143,7 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
 
   execute(
     input: Readonly<Record<string, unknown>>,
-    onMessage: (message: Readonly<Record<string, unknown>>) => void,
+    onMessage: ClaudeCodeMessageListener,
     signal: AbortSignal,
   ): Promise<ClaudeCodeProcessResult> {
     if (this.#execution) return Promise.reject(new ClaudeCodeProcessError("protocol", "Claude Code already ran"));
@@ -175,6 +197,30 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
     );
   }
 
+  async steer(message: Readonly<Record<string, unknown>> & { readonly uuid: string }): Promise<ClaudeCodeSteerHandle> {
+    if (!this.#execution || this.#failure || this.#closed || this.#terminalReceived)
+      throw new ClaudeCodeProcessError("exited", "Claude Code is closed");
+    const line = `${JSON.stringify(message)}\n`;
+    if (Buffer.byteLength(line) > this.#maxLineBytes)
+      throw new ClaudeCodeProcessError("protocol", "Claude Code input exceeds the JSONL line limit");
+    // Registered before the write so a result racing the write still waits for this input.
+    this.#pendingSteers.add(message.uuid);
+    const handle: ClaudeCodeSteerHandle = { started: () => this.#startedSteers.has(message.uuid) };
+    if (this.#pendingInput !== undefined) {
+      // Permission initialization has not finished: keep the steer behind the original prompt.
+      this.#pendingInput += line;
+      return handle;
+    }
+    await new Promise<void>((resolve, reject) =>
+      this.#child.stdin.write(line, (error) => {
+        if (!error) return resolve();
+        this.#pendingSteers.delete(message.uuid);
+        reject(new ClaudeCodeProcessError("write", "Claude Code steer input could not be written"));
+      }),
+    );
+    return handle;
+  }
+
   async close(graceMs = 1_000): Promise<void> {
     if (this.#closed) return this.#exit;
     this.#closing = true;
@@ -222,8 +268,16 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
   }
 
   #deliverMessage(parsed: Record<string, unknown>): void {
+    if (
+      parsed.type === "command_lifecycle" &&
+      typeof parsed.command_uuid === "string" &&
+      (parsed.state === "started" || parsed.state === "completed") &&
+      this.#pendingSteers.delete(parsed.command_uuid)
+    )
+      this.#startedSteers.add(parsed.command_uuid);
+    const terminal = parsed.type === "result" && this.#pendingSteers.size === 0;
     try {
-      this.#listener?.(parsed);
+      this.#listener?.(parsed, terminal);
     } catch (error) {
       this.#logger.debug(
         { code: "protocol_listener_failed", error: String(error) },
@@ -234,7 +288,7 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
       );
       return;
     }
-    if (parsed.type === "result") {
+    if (terminal) {
       this.#terminalReceived = true;
       this.#closing = true;
       signalWatchedProcess(this.#child, "SIGTERM");

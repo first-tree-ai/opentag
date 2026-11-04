@@ -22,7 +22,13 @@ function socket(): WebSocket & { send: ReturnType<typeof vi.fn> } {
 
 async function registered(
   registry: ConnectionRegistry,
-  options: { capabilities?: boolean; prewarm?: boolean; computerId?: string; reconcileVersion?: 1 | 2 } = {},
+  options: {
+    capabilities?: boolean;
+    prewarm?: boolean;
+    computerId?: string;
+    reconcileVersion?: 1 | 2;
+    selfCheck?: boolean;
+  } = {},
 ) {
   const computerId = options.computerId ?? randomUUID();
   const instanceId = randomUUID();
@@ -37,10 +43,12 @@ async function registered(
       computerId,
       lastHeartbeatAt: Date.now(),
       socket: runtimeSocket,
+      providerReadinessProviders: options.selfCheck ? ["codex"] : undefined,
       negotiatedCapabilities:
         options.capabilities === false
           ? {}
           : {
+              ...(options.selfCheck ? { [RUNTIME_CAPABILITY.selfCheckHeartbeat]: 1 } : {}),
               [RUNTIME_CAPABILITY.providerCliReconcile]: options.reconcileVersion ?? 1,
               ...(options.prewarm === false ? {} : { [RUNTIME_CAPABILITY.providerCliPrewarm]: 1 }),
             },
@@ -73,6 +81,74 @@ function contextOf(connection: Awaited<ReturnType<typeof registered>>, overrides
 }
 
 describe("ProviderCliReconcileOwner", () => {
+  it("publishes a bounded credential timeout, waits for actual work to settle, and does not validate on demand reads", async () => {
+    vi.useFakeTimers();
+    const registry = new ConnectionRegistry();
+    const agentId = randomUUID(),
+      integrationId = randomUUID();
+    let release!: (value: {
+      expectedIdentity: typeof identity;
+      grant: { provider: "slack"; botAccessToken: string };
+    }) => void;
+    const gate = new Promise<{
+      expectedIdentity: typeof identity;
+      grant: { provider: "slack"; botAccessToken: string };
+    }>((resolve) => {
+      release = resolve;
+    });
+    const bindings = {
+      listActiveProviderCliRequirements: vi.fn(async () => [
+        { agentId, integrationId, provider: "slack" as const, credentialGeneration: 1, expectedIdentity: identity },
+      ]),
+      issueIntegrationCliValidationGrant: vi.fn(() => gate),
+    };
+    const owner = new ProviderCliReconcileOwner(registry, bindings, { grantTtlMs: 15_000 });
+    try {
+      const connection = await registered(registry, { selfCheck: true });
+      await owner.onComputerRegistered(connection);
+      const frames = () => connection.socket.send.mock.calls.map((call) => JSON.parse(call[0] as string));
+      const requirement = frames().find((frame) => frame.type === "provider-cli:requirement");
+      const request = frames().find((frame) => frame.type === "runtime:self-check");
+      const context = {
+        ...contextOf(connection),
+        negotiatedCapabilities: { [RUNTIME_CAPABILITY.selfCheckHeartbeat]: 1 },
+      };
+      await owner.businessOptions().handle(
+        {
+          type: "runtime:self-check:report",
+          requestId: randomUUID(),
+          selfCheckId: request.requestId,
+          sequence: 1,
+          checkedAt: new Date().toISOString(),
+          problems: [],
+          providerReadiness: [{ provider: "codex", status: "ready" }],
+          imCliReadiness: [{ provider: "slack", status: "ready" }],
+        },
+        context,
+      );
+      const handling = owner
+        .businessOptions()
+        .handle({ ...requirement, type: "provider-cli:artifact:status", status: "ready" }, context);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(bindings.issueIntegrationCliValidationGrant).toHaveBeenCalledOnce();
+      await owner.ensureActiveReadiness({ agentId, computerId: connection.computerId });
+      expect(bindings.listActiveProviderCliRequirements).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(registry.providerCliCredentialReadiness(connection.computerId)[0]?.observation).toMatchObject({
+        status: "needs_attention",
+        timedOut: true,
+      });
+      await owner.prepareComputer({ agentId, computerId: connection.computerId, runtimeProvider: "codex" });
+      expect(bindings.issueIntegrationCliValidationGrant).toHaveBeenCalledOnce();
+      release({ expectedIdentity: identity, grant: { provider: "slack", botAccessToken: "test-token" } });
+      await handling;
+      expect(frames().filter((frame) => frame.type === "provider-cli:validation:grant")).toHaveLength(0);
+    } finally {
+      await owner.close();
+      vi.useRealTimers();
+    }
+  });
+
   it("does not send unknown frames to old Clients and reports upgrade_required", async () => {
     const registry = new ConnectionRegistry();
     const bindings = {

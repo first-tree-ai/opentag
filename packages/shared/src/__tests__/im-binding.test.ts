@@ -98,7 +98,7 @@ describe("IM binding contracts", () => {
     ).toEqual([...SLACK_REQUIRED_BOT_SCOPES]);
     expect(
       markdownScopeList(
-        readFileSync(join(docsRoot, "../testing/slack-live-acceptance.md"), "utf8"),
+        readFileSync(join(docsRoot, "../testing/regression/slack.md"), "utf8"),
         "Exact required bot scopes, in contract order:",
       ),
     ).toEqual([...SLACK_REQUIRED_BOT_SCOPES]);

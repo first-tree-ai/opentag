@@ -2,10 +2,11 @@ import type {
   AccountComputerSummary,
   AgentDetail,
   AgentListItem as AgentListApiItem,
+  AgentStatusSnapshot,
   ImBindingHandoffStatus,
   ImBindingSummary,
 } from "@opentag/shared/browser";
-import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import { type UseQueryResult, useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import { browserApi } from "../../api.js";
 import { queryKeys } from "../../query/keys.js";
 import { LIVE_REFETCH_INTERVAL_MS, liveResourceQueryOptions } from "../../query/live.js";
@@ -15,6 +16,7 @@ import {
   refusalOutranks,
   resourceSuccessObservation,
   type TerminalResourceObservation,
+  terminalResourceError,
   terminalResourceObservation,
 } from "../../query/session-cache.js";
 import type { LoadState } from "../resource/resource-state.js";
@@ -27,6 +29,7 @@ import {
 import type { AgentCloudRuntimeEvidence, AgentDetailView, AgentListItem } from "./agent-model.js";
 import {
   agentDetailFromListItem,
+  applyAgentStatus,
   isHandoffChecking,
   markAgentDetailUnconfirmed,
   markAgentListUnconfirmed,
@@ -115,6 +118,37 @@ export function handoffRefetchInterval(query: {
 
 const handoffQueryOptions = { ...liveResourceQueryOptions, refetchInterval: handoffRefetchInterval };
 
+export const AGENT_STATUS_REFETCH_INTERVAL_MS = 10_000;
+
+function useAgentStatuses(accountId: string, ids: readonly string[], enabled: boolean) {
+  const queryClient = useQueryClient();
+  const sorted = [...ids].sort();
+  const batches: string[][] = [];
+  for (let offset = 0; offset < sorted.length; offset += 100) batches.push(sorted.slice(offset, offset + 100));
+  const queries = useQueries({
+    queries: batches.map((batch) => ({
+      queryKey: ["agent-statuses", accountId, ...batch],
+      queryFn: () => browserApi.agentStatuses(batch),
+      enabled,
+      ...liveResourceQueryOptions,
+      staleTime: AGENT_STATUS_REFETCH_INTERVAL_MS,
+      refetchInterval: AGENT_STATUS_REFETCH_INTERVAL_MS,
+      refetchIntervalInBackground: false,
+    })),
+  });
+  const error =
+    queries
+      .map(
+        (query, index) =>
+          terminalResourceError(queryClient, ["agent-statuses", accountId, ...(batches[index] ?? [])]) ?? query.error,
+      )
+      .find(Boolean) ?? null;
+  const statuses = new Map<string, AgentStatusSnapshot>(
+    queries.flatMap((query) => query.data?.statuses ?? []).map((status) => [status.agentId, status]),
+  );
+  return { queries, error, statuses };
+}
+
 /** The Account's Computers. One cache entry, so every surface that needs them shares one read. */
 export function useComputersQuery(
   watched = false,
@@ -157,18 +191,20 @@ export function useAgentIdentityList(
   );
 }
 
-export function useImBindingQuery(agentId: string, watched = true) {
+export function useImBindingQuery(agentId: string, watched = true, enabled = true) {
   return useQuery({
     queryKey: queryKeys.agents.imBinding(agentId),
     queryFn: () => readImBinding(agentId),
+    enabled,
     ...(watched ? liveResourceQueryOptions : { staleTime: liveResourceQueryOptions.staleTime }),
   });
 }
 
-export function useImBindingHandoffQuery(agentId: string, watched = true) {
+export function useImBindingHandoffQuery(agentId: string, watched = true, enabled = true) {
   return useQuery({
     queryKey: queryKeys.agents.imBindingHandoff(agentId),
     queryFn: () => readImBindingHandoff(agentId),
+    enabled,
     ...(watched ? handoffQueryOptions : { staleTime: liveResourceQueryOptions.staleTime }),
   });
 }
@@ -183,9 +219,15 @@ export function useImBindingHandoffQuery(agentId: string, watched = true) {
  */
 export function useAgentListView(accountId: string): LoadState<{ agents: AgentListItem[] }> {
   const agentsQuery = useAgentListQuery(accountId);
-  const computersQuery = useComputersQuery(true);
+  const modern = agentsQuery.data?.statusVersion === 1;
+  const computersQuery = useComputersQuery(true, agentsQuery.isFetched && !modern);
   const agents = agentsQuery.data?.agents ?? [];
-  const evidenceOffered = isConfirmedQuerySuccess(computersQuery);
+  const statusRead = useAgentStatuses(
+    accountId,
+    agents.map((agent) => agent.id),
+    modern,
+  );
+  const evidenceOffered = !modern && isConfirmedQuerySuccess(computersQuery);
   const cloudRuntime = useCloudRuntimeEvidence(
     evidenceOffered &&
       agents.some((agent) =>
@@ -213,6 +255,20 @@ export function useAgentListView(accountId: string): LoadState<{ agents: AgentLi
   });
 
   const agentsError = usePersistedSettledError(queryKeys.agents.list(accountId), agentsQuery);
+  if (modern) return presentModernAgentList(agents, statusRead, agentsError);
+  return presentLegacyAgentList(agentsQuery, computersQuery, bindings, handoffs, cloudRuntime, agentsError);
+}
+
+function presentLegacyAgentList(
+  agentsQuery: ReturnType<typeof useAgentListQuery>,
+  computersQuery: ReturnType<typeof useComputersQuery>,
+  bindings: UseQueryResult<ImBindingSummary | null>[],
+  handoffs: UseQueryResult<ImBindingHandoffStatus | null>[],
+  cloudRuntime: AgentCloudRuntimeEvidence,
+  agentsError: Error | null,
+): LoadState<{ agents: AgentListItem[] }> {
+  const agents = agentsQuery.data?.agents ?? [];
+  const evidenceOffered = isConfirmedQuerySuccess(computersQuery);
 
   // A terminal response is an answer about the list itself, so it outranks the reads still settling
   // beside it as well as any rows the cache still holds.
@@ -250,6 +306,22 @@ export function useAgentListView(accountId: string): LoadState<{ agents: AgentLi
   return toResourceState({ data: view, error: agentsError, isError: agentsError !== null }, markAgentListUnconfirmed);
 }
 
+function presentModernAgentList(
+  agents: readonly AgentListApiItem[],
+  statusRead: ReturnType<typeof useAgentStatuses>,
+  agentsError: Error | null,
+): LoadState<{ agents: AgentListItem[] }> {
+  const error = statusRead.error ?? agentsError;
+  if (error && isTerminalResourceError(error)) return { kind: "error", error };
+  if (statusRead.queries.some((query) => !query.isFetched)) return { kind: "loading" };
+  if (agents.some((agent) => !statusRead.statuses.has(agent.id)))
+    return { kind: "error", error: error ?? new Error("Agent status is unavailable") };
+  const value: { agents: AgentListItem[] } = {
+    agents: agents.map((agent) => applyAgentStatus(agent, statusRead.statuses.get(agent.id) as AgentStatusSnapshot)),
+  };
+  return toResourceState({ data: value, error, isError: error !== null }, markAgentListUnconfirmed);
+}
+
 /**
  * One Agent, assembled the same way. The Agent's own read is the one that decides whether the page
  * has anything to show; the Computer, binding and handoff reads each contribute evidence and are
@@ -273,6 +345,8 @@ export function useAgentDetailView(
   const queryClient = useQueryClient();
   const watch = watched ? liveResourceQueryOptions : { staleTime: liveResourceQueryOptions.staleTime };
   const listQuery = useAgentListQuery(accountId ?? "", Boolean(accountId));
+  const modern = listQuery.data?.statusVersion === 1;
+  const statusRead = useAgentStatuses(accountId ?? "", [agentId], modern);
   const listed = listQuery.data?.agents.find((agent) => agent.id === agentId);
   const detailKey = queryKeys.agents.detail(agentId);
   /*
@@ -283,11 +357,12 @@ export function useAgentDetailView(
   const listSuccess = resourceSuccessObservation(queryClient, queryKeys.agents.list(accountId ?? ""));
   const detailSuccess = resourceSuccessObservation(queryClient, detailKey);
   const detailRefusal = terminalResourceObservation(queryClient, detailKey);
-  const listedUsable = Boolean(
-    listed &&
-      isConfirmedQuerySuccess(listQuery) &&
-      !refusalOutranks(detailRefusal, listSuccess) &&
-      !observedAfter(detailSuccess, listSuccess),
+  const listedUsable = canReuseListRow(
+    listed,
+    isConfirmedQuerySuccess(listQuery),
+    detailRefusal,
+    listSuccess,
+    detailSuccess,
   );
   const listSettled = !accountId || listQuery.isFetched;
   const agentQuery = useQuery({
@@ -296,43 +371,33 @@ export function useAgentDetailView(
     enabled: listSettled && !listedUsable,
     ...watch,
   });
-  const computersQuery = useComputersQuery(watched);
-  const bindingQuery = useImBindingQuery(agentId, watched);
-  const handoffQuery = useImBindingHandoffQuery(agentId, watched);
+  const legacyEnabled = listSettled && !modern;
+  const computersQuery = useComputersQuery(watched, legacyEnabled);
+  const bindingQuery = useImBindingQuery(agentId, watched, legacyEnabled);
+  const handoffQuery = useImBindingHandoffQuery(agentId, watched, legacyEnabled);
   const projectedAgent = listedUsable ? listed : agentQuery.data;
   const cloudRuntime = useCloudRuntimeEvidence(
-    isConfirmedQuerySuccess(computersQuery) &&
-      computersQuery.data?.computers.some(
-        (computer) => computer.computerId === projectedAgent?.computer?.computerId && computer.kind === "cloud",
-      ) === true,
+    legacyEnabled && isCloudAgentComputer(computersQuery, projectedAgent),
     watched,
   );
   const listError = usePersistedSettledError(queryKeys.agents.list(accountId ?? ""), listQuery);
   const detailError = usePersistedSettledError(detailKey, agentQuery);
+  if (modern)
+    return presentModernAgentDetail(projectedAgent, agentId, statusRead, statusRead.error ?? detailError ?? listError);
 
   /*
    * Waiting on the first read of each, not on whether one is in flight now. A re-read must not put
    * the page back into loading: doing so unmounts what the page is showing, and anything below that
    * reads the same evidence would be remounted into re-reading it, which never settles.
    */
-  const evidenceSettling = !computersQuery.isFetched || !bindingQuery.isFetched || !handoffQuery.isFetched;
-  const bindingConfirmed = isConfirmedQuerySuccess(bindingQuery);
-  const handoffConfirmed = isConfirmedQuerySuccess(handoffQuery);
-  const computersConfirmed = isConfirmedQuerySuccess(computersQuery);
   return presentAgentDetailView({
     agentData: agentQuery.data,
     agentFetched: agentQuery.isFetched,
-    binding: bindingConfirmed ? (bindingQuery.data ?? undefined) : undefined,
-    bindingConfirmed,
-    computers: computersConfirmed ? computersQuery.data?.computers : undefined,
-    computersConfirmed,
+    ...legacyEvidence(computersQuery, bindingQuery, handoffQuery),
     cloudRuntime,
     detailError,
     detailRefusal,
     detailSuccess,
-    evidenceSettling,
-    handoff: handoffConfirmed ? (handoffQuery.data ?? undefined) : undefined,
-    handoffConfirmed,
     initialAgent,
     listError,
     listSettled,
@@ -340,6 +405,59 @@ export function useAgentDetailView(
     listed,
     listedUsable,
   });
+}
+
+function legacyEvidence(
+  computers: ReturnType<typeof useComputersQuery>,
+  binding: ReturnType<typeof useImBindingQuery>,
+  handoff: ReturnType<typeof useImBindingHandoffQuery>,
+) {
+  const computersConfirmed = isConfirmedQuerySuccess(computers),
+    bindingConfirmed = isConfirmedQuerySuccess(binding),
+    handoffConfirmed = isConfirmedQuerySuccess(handoff);
+  return {
+    evidenceSettling: !computers.isFetched || !binding.isFetched || !handoff.isFetched,
+    computers: computersConfirmed ? computers.data?.computers : undefined,
+    computersConfirmed,
+    binding: bindingConfirmed ? (binding.data ?? undefined) : undefined,
+    bindingConfirmed,
+    handoff: handoffConfirmed ? (handoff.data ?? undefined) : undefined,
+    handoffConfirmed,
+  };
+}
+
+function presentModernAgentDetail(
+  projectedAgent: AgentDetail | undefined,
+  agentId: string,
+  statusRead: ReturnType<typeof useAgentStatuses>,
+  error: Error | null,
+): LoadState<AgentDetailView> {
+  if (error && isTerminalResourceError(error)) return { kind: "error", error };
+  const status = statusRead.statuses.get(agentId);
+  if (!projectedAgent || !status) return error ? { kind: "error", error } : { kind: "loading" };
+  const value: AgentDetailView = applyAgentStatus(projectedAgent, status);
+  return toResourceState({ data: value, error, isError: error !== null }, markAgentDetailUnconfirmed);
+}
+
+function isCloudAgentComputer(query: ReturnType<typeof useComputersQuery>, agent: AgentDetail | undefined): boolean {
+  return (
+    isConfirmedQuerySuccess(query) &&
+    query.data?.computers.some(
+      (computer) => computer.computerId === agent?.computer?.computerId && computer.kind === "cloud",
+    ) === true
+  );
+}
+
+function canReuseListRow(
+  listed: AgentListApiItem | undefined,
+  confirmed: boolean,
+  refusal: TerminalResourceObservation | undefined,
+  listSuccess: ResourceObservation | undefined,
+  detailSuccess: ResourceObservation | undefined,
+): boolean {
+  return Boolean(
+    listed && confirmed && !refusalOutranks(refusal, listSuccess) && !observedAfter(detailSuccess, listSuccess),
+  );
 }
 
 function detailDisplayError(

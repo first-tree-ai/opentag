@@ -24,6 +24,7 @@ import { AgentService } from "../../services/agents/agent-service.js";
 import { ApplicationCipher } from "../../services/crypto.js";
 import { ImBindingService } from "../../services/im-bindings/im-binding-service.js";
 import { deferred } from "../support/deferred.js";
+import { transferLegacyAgentFixture } from "../support/legacy-agent-fixture.js";
 import { createFixture, turnReport } from "./im-recovery-locks-fixture.js";
 import { startMigratedTestDatabase } from "./migrated-test-database.js";
 
@@ -262,7 +263,7 @@ it("ignores the old Session's manifest after an actual Account transfer", async 
   await h.custody.claimRetainedReports(h.request, [h.claim], h.f.context);
   expect(await h.custody.recordTurn(h.report, h.f.context)).toBe("recorded");
   expect(
-    await new AgentService(actor().database).transferToAccount({
+    await transferLegacyAgentFixture(actor().database, {
       agentId: h.f.agentId,
       targetAccountId,
       slack: "disable",

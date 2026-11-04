@@ -21,6 +21,7 @@ import type {
   AgentRuntimeBinding,
   AgentRuntimeEventSink,
   AgentRuntimeFactory,
+  AgentSteerReceipt,
   AgentSteerRequest,
   CreateAgentRuntimeRequest,
   ResumeAgentRuntimeRequest,
@@ -1946,7 +1947,9 @@ class FakeRuntime implements AgentRuntime {
     return this.prompt(request);
   }
 
-  async steer(_request: AgentSteerRequest): Promise<void> {}
+  async steer(_request: AgentSteerRequest): Promise<AgentSteerReceipt> {
+    return { outcome: Promise.resolve("processed") };
+  }
   async respond(_response: AgentInteractionResponse): Promise<void> {}
   async abort(_request: AgentAbortRequest): Promise<void> {}
   async waitForIdle(): Promise<void> {}

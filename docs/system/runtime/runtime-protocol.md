@@ -183,3 +183,44 @@ hash. Categorized Cloud delivery reports require a future Cloud protocol extensi
 `runtime.contextTreeExecution` version 1 gates both the `context-tree` service request/grant and the optional execution-open `contextTree` selector with `parentExecutionId`. A parent receives only the pure `context-tree:git` service. A separate short-lived child receives the GitHub provider binding after exact parent and authoritative tree checks. Ordinary executions never receive GitHub bindings or acquire GitHub credentials.
 
 Runner authentication advertises `contextTreeExecutionVersion: 1`; the Server echoes the supported version and includes it in the Cloud runtime fence. Local capability negotiation follows the ordinary runtime offer. Emit the new service or selector only after Server support is established. Deploy the Server before updated Clients and Runner images. Old peers retain IM/MCP behavior but require an upgrade for managed Context Tree commands.
+
+## Local self-check heartbeat
+
+The composed daemon offers `runtime.selfCheckHeartbeat` version 1. The Server requests a fresh
+`runtime:self-check` epoch on registration and explicit Check again. Completed reports carry that
+epoch, an increasing sequence, a checked-at timestamp, runtime observations and messaging CLI
+observations. The current connection fence and epoch reject late results. Exact duplicate reports
+do not renew freshness. A new check retains the previous complete result while actual work runs.
+Runtime checks are shared by Computer and Provider; credential checks remain scoped to Agent,
+binding and credential generation.
+
+The daemon checks local runtime and CLI state every 30 seconds and publishes completed results
+immediately. Each component has a ten-second logical deadline. A timeout reports a named problem;
+the owner retains the actual work until settlement, preventing overlapping probes and joining it
+on shutdown. Freshness starts at registration even if no first report is accepted. A missing completed report
+becomes stale after 75 seconds; heartbeats and rejected reports do not extend that deadline. Heartbeats run every
+30 seconds independently of the previous acknowledgement, with at most three outstanding IDs.
+Delayed and out-of-order acknowledgements keep their exact connection fence. Read-time presence
+uses a monotonic 90-second deadline; the stale socket sweep runs at most five seconds apart.
+
+Credential validation runs on registration or a changed binding generation, explicit Check again,
+a scoped authentication-failure hint, and a ten-minute timer. A new-protocol validation episode
+makes one external attempt within the existing 15-second grant budget and the provider's ten-second
+request deadline. It does not add automatic retry attempts. Rate limiting sets a ten-minute cooldown;
+manual checks and hints cannot bypass it. Current scoped proxy HTTP 401 responses and Slack's
+recognized revoked/invalid authentication responses trigger a debounced recheck, without changing
+or replaying the original operation. The first check can expose a neutral initialization for at most
+15 seconds. Later checks preserve the previous complete answer until they settle, including an
+explicit timeout failure. A reconnect may reuse one unexpired credential result only for the same
+Computer, installation, binding and credential generation, until its original ten-minute expiry.
+Offline presence always overrides it. No readiness survives Server restart.
+
+The implementation uses the existing single-replica in-memory registry. There is no Redis status
+store. Status never grants execution authority: Account ownership, active machine credentials,
+current connection and binding generations are still checked at their owning boundaries. Peers
+without the capability retain the existing preparation, readiness TTL and demand-refresh protocol.
+
+The foreground web status poll is ten seconds. A local change is ordinarily visible within roughly
+30 seconds to the next probe, ten seconds for the probe and ten seconds for the next poll, plus
+transport delay. Credential changes without an explicit hint can take ten minutes plus validation
+and polling time. These are cadence bounds, not a guarantee against network or service outages.

@@ -158,7 +158,7 @@ checks directly. Normal pre-push hooks subsequently passed format, lint, `pnpm c
 dependency builds selected by Turbo. Agent Runtime coverage and PostgreSQL integration tests were not run because their
 implementation and database behavior are unchanged.
 
-The coordinator subsequently adopted the reviewed controller and completed the first candidate's real Feishu DM,
-memory and file checks. See the [redacted live acceptance record](live-acceptance.md) for the exact running revision,
-results and remaining second-candidate acceptance. The implementation task did not operate the shared instance; adoption
+The coordinator subsequently adopted the reviewed controller and completed serial real Feishu checks on two candidate
+application revisions. See the [redacted live acceptance record](live-acceptance.md) for the exact controller/source
+revisions, build identities, DM/memory/file outcomes and native attachment byte verification. The implementation task did not operate the shared instance; adoption
 and live observations belong to the coordinator. CI's complete regression matrix remains separate from this evidence.

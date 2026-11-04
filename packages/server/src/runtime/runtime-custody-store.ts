@@ -6,7 +6,7 @@ import type {
   TurnReportRequest,
   TurnReportResult,
 } from "@opentag/shared";
-import { and, eq, inArray, isNull, or } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, or } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
 import {
   agents,
@@ -629,7 +629,31 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
         .limit(1)
         .for("no key update", { of: sessions });
       if (!session) return;
-      for (const claim of claims) await this.#claimRetainedReport(transaction, request, claim, context);
+      const [placement] = await transaction
+        .select({ computerId: sessionPlacements.computerId, generation: sessionPlacements.generation })
+        .from(sessionPlacements)
+        .where(eq(sessionPlacements.sessionId, request.sessionId))
+        .for("update");
+      if (
+        !placement ||
+        placement.computerId !== context.computerId ||
+        placement.generation !== request.placementGeneration
+      ) {
+        return;
+      }
+      const scopes = await this.#deliveryScopes(
+        transaction,
+        claims.map((claim) => claim.deliveryId),
+        request.sessionId,
+        true,
+      );
+      const claimsById = new Map(claims.map((claim) => [claim.deliveryId, claim]));
+      for (const scope of scopes) {
+        const claim = claimsById.get(scope.delivery.id);
+        if (claim && retainedClaimMatches(scope, claim, request, context)) {
+          await this.#restoreRetainedDelivery(transaction, scope, claim, context);
+        }
+      }
     });
   }
 
@@ -639,6 +663,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
     claim: NonNullable<SessionReconcileResult["retainedReports"]>[number],
     context: RuntimeBusinessContext,
   ): Promise<void> {
+    if (scope.delivery.reportedAt !== null) return;
     if (scope.delivery.state === "pending" || scope.delivery.state === "expired") {
       await settleRetainedBatch(transaction, scope.delivery, this.#now());
       const restored = await transaction
@@ -667,11 +692,24 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       return;
     }
     if (scope.delivery.state !== "accepted" || scope.delivery.turnId !== claim.turnId) return;
-    await transaction
-      .update(imMessageDeliveries)
-      .set({ reportOwnerInstanceId: context.instanceId, resultHash: claim.resultHash })
-      .where(eq(imMessageDeliveries.id, claim.deliveryId));
-    if (!scope.delivery.reportedAt) await startImFeedback(transaction, claim.deliveryId, this.#now());
+    if (scope.delivery.reportOwnerInstanceId !== context.instanceId || scope.delivery.resultHash !== claim.resultHash) {
+      const [claimed] = await transaction
+        .update(imMessageDeliveries)
+        .set({ reportOwnerInstanceId: context.instanceId, resultHash: claim.resultHash })
+        .where(
+          and(
+            eq(imMessageDeliveries.id, claim.deliveryId),
+            eq(imMessageDeliveries.sessionId, scope.session.id),
+            eq(imMessageDeliveries.state, "accepted"),
+            eq(imMessageDeliveries.turnId, claim.turnId),
+            isNull(imMessageDeliveries.reportedAt),
+            or(isNull(imMessageDeliveries.resultHash), eq(imMessageDeliveries.resultHash, claim.resultHash)),
+          ),
+        )
+        .returning({ id: imMessageDeliveries.id });
+      if (!claimed) return;
+    }
+    await startImFeedback(transaction, claim.deliveryId, this.#now());
   }
 
   async getDelivery(deliveryId: string): Promise<AcceptedDeliveryRecord | undefined> {
@@ -763,17 +801,6 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
     return status;
   }
 
-  async #claimRetainedReport(
-    transaction: DatabaseTransaction,
-    request: SessionReconcileRequest,
-    claim: NonNullable<SessionReconcileResult["retainedReports"]>[number],
-    context: RuntimeBusinessContext,
-  ): Promise<void> {
-    const scope = await this.#deliveryScope(transaction, claim.deliveryId, request.sessionId);
-    if (!scope || !retainedClaimMatches(scope, claim, request, context)) return;
-    await this.#restoreRetainedDelivery(transaction, scope, claim, context);
-  }
-
   async #dispatchAdmission(
     transaction: DatabaseTransaction,
     scope: DeliveryScope,
@@ -808,20 +835,11 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
     return Boolean(target && absorbedTargetMatches(scope, target, turnId, context));
   }
 
-  async #deliveryScope(
-    transaction: DatabaseTransaction,
-    deliveryId: string,
-    expectedSessionId?: string,
-  ): Promise<DeliveryScope | undefined> {
+  async #deliveryScope(transaction: DatabaseTransaction, deliveryId: string): Promise<DeliveryScope | undefined> {
     const [identity] = await transaction
       .select({ sessionId: imMessageDeliveries.sessionId })
       .from(imMessageDeliveries)
-      .where(
-        and(
-          eq(imMessageDeliveries.id, deliveryId),
-          expectedSessionId ? eq(imMessageDeliveries.sessionId, expectedSessionId) : undefined,
-        ),
-      )
+      .where(eq(imMessageDeliveries.id, deliveryId))
       .limit(1);
     if (!identity) return undefined;
     const [placement] = await transaction
@@ -831,7 +849,17 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       .limit(1)
       .for("update");
     if (!placement) return undefined;
-    const [scope] = await transaction
+    const [scope] = await this.#deliveryScopes(transaction, [deliveryId], identity.sessionId);
+    return scope;
+  }
+
+  async #deliveryScopes(
+    transaction: DatabaseTransaction,
+    deliveryIds: string[],
+    sessionId: string,
+    unreportedOnly = false,
+  ): Promise<DeliveryScope[]> {
+    return transaction
       .select({
         delivery: imMessageDeliveries,
         message: imMessages,
@@ -849,13 +877,13 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
       .where(
         and(
-          eq(imMessageDeliveries.id, deliveryId),
-          expectedSessionId ? eq(imMessageDeliveries.sessionId, expectedSessionId) : undefined,
+          inArray(imMessageDeliveries.id, deliveryIds),
+          eq(imMessageDeliveries.sessionId, sessionId),
+          unreportedOnly ? isNull(imMessageDeliveries.reportedAt) : undefined,
         ),
       )
-      .limit(1)
+      .orderBy(asc(imMessageDeliveries.id))
       .for("update", { of: imMessageDeliveries });
-    return scope;
   }
 
   async #writeSteered(

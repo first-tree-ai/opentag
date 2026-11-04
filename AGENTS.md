@@ -96,8 +96,11 @@ Test plans, acceptance runs, UI screenshots, and validation evidence belong in `
 ## Database read/write design
 
 Follow [Database read/write standards](docs/system/database-read-write-standards.md) when changing or reviewing persistence.
-Before implementing or approving a database or read/write design, present the concrete proposal for human confirmation,
-including schema, query paths, authorization, consistency, and retention semantics. Investigation may proceed first.
+Before implementing or approving database schema changes or migrations (tables, columns, indexes, or constraints),
+present the concrete proposal for human confirmation, including query paths, authorization, consistency, and retention
+semantics. Investigation may proceed first. Query, read/write-path, and lock changes without schema changes or migrations
+may proceed under existing task authorization without separate database-design confirmation. Preserve the applicable
+standards and existing authorization boundaries for production operations, data cleanup, and deployment.
 
 ## Code and Git conventions
 

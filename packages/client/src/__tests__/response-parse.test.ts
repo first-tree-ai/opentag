@@ -77,7 +77,13 @@ describe("parseResponseIgnoringUnknownKeys", () => {
       { items: [{ ...item, status: "archived" }] },
       { items: [{ ...item, activity: { state: "sleeping" } }] },
     ]) {
-      expect(parseResponseIgnoringUnknownKeys(schema, broken)).toMatchObject({ success: false, reason: "invalid" });
+      expect(parseResponseIgnoringUnknownKeys(schema, broken)).toMatchObject({
+        success: false,
+        reason: "invalid",
+        issues: expect.arrayContaining([
+          expect.objectContaining({ path: expect.any(Array), code: expect.any(String) }),
+        ]),
+      });
     }
   });
 

@@ -95,6 +95,9 @@ describe("completion Bot handoff", () => {
     expect(link.getAttribute("href")).toBe("https://slack.com/app_redirect?app=A_DEMO&team=T_DEMO");
     expect(link.getAttribute("target")).toBe("_blank");
     expect(screen.getByText("Actual team Bot")).toBeTruthy();
+    expect(screen.queryByRole("textbox")).toBeNull();
+    expect(screen.queryByRole("button", { name: /Copy request|Action list|Short update/ })).toBeNull();
+    expect(screen.queryByText(/Hello|verify delivery|Try a small task/)).toBeNull();
     expect(readBinding).toHaveBeenCalledExactlyOnceWith(SETUP_AGENT_ID);
     expect(writeText).not.toHaveBeenCalled();
     expect(onOpenAgent).not.toHaveBeenCalled();
@@ -115,7 +118,7 @@ describe("completion Bot handoff", () => {
     const link = await screen.findByRole("link", { name: "Open Bot in Lark" });
     expect(link.getAttribute("href")).toBe("https://applink.feishu.cn/client/bot/open?appId=cli_demo");
     fireEvent.click(screen.getByRole("button", { name: "Can’t open the Bot?" }));
-    expect(await screen.findByText(/search for “Actual team Bot”/)).toBeTruthy();
+    expect(await screen.findByText(/Search for “Actual team Bot”/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Copy Bot name" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("Actual team Bot"));
   });
@@ -130,7 +133,7 @@ describe("completion Bot handoff", () => {
     );
     expect(await screen.findByRole("button", { name: "Copy Bot name" })).toBeTruthy();
     expect(screen.queryByRole("link")).toBeNull();
-    expect(screen.getByText(/ask the app administrator to check your access/)).toBeTruthy();
+    expect(screen.getByText(/Search for “Actual team Bot” in Lark/)).toBeTruthy();
   });
 
   it.each([
@@ -162,7 +165,7 @@ describe("completion Bot handoff", () => {
             };
       render(<CompletionHandoff agentId={SETUP_AGENT_ID} messaging={READY} readBinding={readBinding} />);
       expect(await screen.findByText(/View this Agent and check its messaging settings/)).toBeTruthy();
-      expect(screen.getByRole("textbox", { name: "Your request" })).toBeTruthy();
+      expect(screen.queryByRole("textbox")).toBeNull();
       expect(screen.queryByRole("link")).toBeNull();
     },
   );
@@ -200,28 +203,25 @@ describe("completion Bot handoff", () => {
     expect(screen.queryByText("New Bot")).toBeNull();
   });
 
-  it("preserves each edited example and copies only on an explicit click, with manual-copy guidance on failure", async () => {
+  it("copies the real Bot name only on request and offers manual copying after clipboard failure", async () => {
     const writeText = stubClipboard();
-    render(<CompletionHandoff agentId={SETUP_AGENT_ID} messaging={READY} readBinding={undefined} />);
-    const input = screen.getByRole("textbox", { name: "Your request" }) as HTMLTextAreaElement;
-    expect(input.value).toContain("Mark missing information");
-    fireEvent.change(input, { target: { value: "My edited action list" } });
-    fireEvent.click(screen.getByRole("button", { name: "Short update" }));
-    expect(input.value).toContain("Review comments are still pending");
-    fireEvent.change(input, { target: { value: "My edited update" } });
-    fireEvent.click(screen.getByRole("button", { name: "Action list" }));
-    expect(input.value).toBe("My edited action list");
-    expect(writeText).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Copy request" }));
-    expect(await screen.findByText("Copied.")).toBeTruthy();
-    expect(writeText).toHaveBeenCalledExactlyOnceWith("My edited action list");
-    fireEvent.click(screen.getByRole("button", { name: "Short update" }));
-    expect(input.value).toBe("My edited update");
-    expect(screen.queryByText("Copied.")).toBeNull();
     writeText.mockRejectedValueOnce(new Error("clipboard refused"));
-    fireEvent.click(screen.getByRole("button", { name: "Copy request" }));
-    expect(await screen.findByText("Could not copy. Select the text and copy it manually.")).toBeTruthy();
-    expect(input.value).toBe("My edited update");
+    render(
+      <CompletionHandoff
+        agentId={SETUP_AGENT_ID}
+        messaging={{ ...READY, provider: "feishu" }}
+        readBinding={async () => feishuBinding("lark")}
+      />,
+    );
+    const copy = await screen.findByRole("button", { name: "Copy Bot name" });
+    expect(writeText).not.toHaveBeenCalled();
+    fireEvent.click(copy);
+    expect(await screen.findByText("Could not copy. Select the name and copy it manually.")).toBeTruthy();
+    expect(screen.getByText("Actual team Bot")).toBeTruthy();
+    fireEvent.click(copy);
+    expect(await screen.findByText("Copied.")).toBeTruthy();
+    expect(writeText).toHaveBeenCalledTimes(2);
+    expect(writeText.mock.calls.every(([value]) => value === "Actual team Bot")).toBe(true);
   });
 
   it("does not mount the handoff during preparation or explicit reboard review", () => {

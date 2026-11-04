@@ -1,6 +1,5 @@
 import type { CloudAvailability, ImProvider } from "@opentag/shared/browser";
 import { type FormEvent, type ReactNode, useId, useState } from "react";
-import { spaceScriptBoundary } from "../i18n/format.js";
 import { messagingProviderLabel } from "../im/provider-label.js";
 import * as m from "../paraglide/messages.js";
 import { Button, Icon, KumoInputControl, StatusIndicator, Text } from "../ui/design-system.js";
@@ -384,23 +383,6 @@ export function AgentStep({
   );
 }
 
-function doneDescription(name: string, provider?: ImProvider): string {
-  return provider === "slack"
-    ? m.onboarding_v2_done_description_slack({ provider: messagingProviderLabel(provider) })
-    : provider
-      ? spaceScriptBoundary(
-          m.onboarding_v2_done_description({ mention: name, provider: messagingProviderLabel(provider) }),
-        )
-      : m.onboarding_v2_done_description_any_app({ name });
-}
-
-function deliveryCheckDescription(provider: ImProvider | undefined, fallback: string): string {
-  if (provider === "slack") return m.im_slack_delivery_check({ provider: messagingProviderLabel("slack") });
-  if (provider === "feishu")
-    return m.onboarding_v2_connection_feishu_test({ provider: messagingProviderLabel("feishu") });
-  return fallback;
-}
-
 export function DoneStep({
   action,
   completion,
@@ -416,7 +398,6 @@ export function DoneStep({
   provider?: ImProvider;
   presentation?: "default" | "settings";
 }) {
-  const description = doneDescription(name, provider);
   const finishAction =
     completion || action ? (
       <CompletionAction completion={completion} action={action} secondary={Boolean(handoff)} />
@@ -443,10 +424,7 @@ export function DoneStep({
               )}
               <StatusIndicator label={m.im_connected()} tone="success" />
             </div>
-            <p role="status" className={HINT}>
-              {m.onboarding_v2_connection_ready_checks()}
-            </p>
-            {handoff ?? <p className={HINT}>{deliveryCheckDescription(provider, description)}</p>}
+            {handoff}
           </div>
           {finishAction ? (
             <div className="otv2-connection-card__footer otv2-connection-card__footer--finish">{finishAction}</div>
@@ -467,8 +445,8 @@ export function DoneStep({
         <Text as="h1" size="lg" variant="heading">
           {m.onboarding_v2_done_title({ name })}
         </Text>
-        <p className="text-kumo-subtle m-0">{description}</p>
       </header>
+      {handoff}
       {finishAction}
     </section>
   );

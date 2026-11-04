@@ -168,20 +168,21 @@ workspace styling. The steps say only what the rows and controls do not:
 The completion screen stays visible until the user navigates away. Its primary action opens the
 connected Bot conversation using the current binding's provider identity. Slack reuses its App/Team
 redirect; a confirmed Feishu workspace uses the documented Bot AppLink. Lark and unknown workspace
-brands use the actual Bot name with search and copy guidance until their Bot link contract is confirmed.
-Direct entries also offer that search fallback and explain that the app administrator handles missing access.
+brands use the actual Bot name with search and copy guidance; locale never selects a link domain.
+Direct entries also offer a short, collapsible search/name-copy fallback.
 Identity is read through the existing Account-authorized binding configuration API only after readiness;
 an Agent, provider, binding or credential-generation mismatch never exposes the previous Bot's entry.
 Unavailable identity says to check the Agent's messaging settings and keeps management navigation usable.
 **View agent** (**查看 Agent** in Chinese) remains a secondary action opening the exact Agent overview.
 Global navigation provides the return to the Agent list; completion does not duplicate it or redirect automatically.
 
-Completion offers two editable text-only requests: making an action list and summarizing a short work
-update. Each uses only supplied input; missing owners or deadlines stay unconfirmed. Switching examples
-preserves edits. Copying reports success or explains manual copying when clipboard access fails. The
-person opens the Bot, pastes and sends the request themselves; setup never sends a message or executes
-an example. Guidance suggests a follow-up in the same conversation, where the person can return later.
-Authorization and readiness, actual message exchange, and a useful result remain separate facts.
+The Web completion surface only hands off to the Bot: readiness, actual Bot identity, one prominent
+conversation entry, a short failure fallback and secondary management. It contains no tutorial, starter
+requests, editable request form, follow-up coaching or Hello/delivery-test instructions. Name copying
+reports success or explains manual copying when clipboard access fails. Opening the entry is an explicit
+user action; setup never sends a message. The supported provider link is a handoff whose actual App,
+workspace and private conversation destination require native acceptance; a browser landing alone is
+not that evidence. Readiness, actual message exchange and a useful result remain separate facts.
 
 Cloud Agent home shows save-failure guidance without a recovery entry or workspace controls.
 The notice identifies the problem, directs the reader to their administrator and warns against

@@ -1,90 +1,83 @@
-# First Agent completion handoff
+# Completion handoff revision verification
 
 Supports the [Web UI contract](../../docs/system/web/web-ui-contract.md).
 
-## Real baseline
+## Scope
 
-The coordinator captured the existing, ready test Agent's actual completion screen
-before implementation. This was an admitted Account, not a cold-start Account or
-an unfamiliar-user observation. The screen showed Connected, readiness/Hello
-instructions and View agent; it offered no direct Bot entry or useful example.
+The Web only hands off to a real Bot conversation: ready state, actual identity,
+one prominent conversation action, a short collapsible search/name-copy fallback
+and secondary View agent. It contains no starter examples, editable request form,
+follow-up coaching or Hello/delivery-test tutorial. No message is sent by the Web.
 
-| Evidence | Recorded value |
-| --- | --- |
-| Running source | `968890cc7b763f06a0f4e111612f2c6ff1a341d8` |
-| Build identity | `76ed87ac-c5c6-499b-8132-f16f14425d33` |
-| Served/local Web index SHA-256 | `fedaef5fb506f46d5fb7a3f82b24a1f3d59f2b630047480560402bd1f5d95f2f` |
-| Viewport / locale | 1920 × 958, DPR 2, English |
-| Development base | `d50c96e9de8930146b5e5aff1c9f5c5c22c01e1a` |
+IM first-DM/help options are separate research in
+[first-agent-handoff-im-research.md](first-agent-handoff-im-research.md).
+No IM menu, event, permission, welcome send or new persistence semantics is implemented.
 
-The completion component, setup page/adapter, onboarding stylesheet and catalogs
-have no diff between the running source and development base. This makes their
-completion UI comparable; it does not make the entire builds identical.
-Private screenshots, App IDs, account identifiers and machine information remain
-outside Git.
+## Revision baseline and early presentation
 
-The coordinator reported that the fixed three-note request produced the correct
-owners/dates and marked missing information pending. Its follow-up retained the
-open questions; View agent returned to the exact overview. The official Feishu
-AppLink landing identified the correct Bot, but native launch was not verified.
-The desktop was released before implementation. No after screenshot exists yet.
+The coordinator captured the real prior implementation at
+`3346789e55849a3a1970dd99e92b48e4df6b833f`, build
+`ea24fc5e-2280-42a7-8455-b6533b3bcc96`, at 1920 × 958 CSS pixels, DPR 1, English.
+The served Web index matched that build (SHA-256
+`35da7347f019f8600fde7bdc7f6a69deea649c701f2242dc472ba43fc64de07b`).
+It included the now-rejected request form. Its earlier functional checks do not
+accept that product direction or validate this revision. The coordinator presented
+that actual page and the smaller handoff concept before this revision began.
 
-## Scope and overlap
+The older source `968890cc` baseline used DPR 2; it is historical context, not a
+pixel-identical revision comparison. These are existing-Account/Agent runs and
+coordinator operations, not cold-start or novice-usability evidence. Private
+originals, App IDs, account identifiers and host details remain outside Git.
 
-The change only adds the completion handoff and its optional existing-API identity
-read. Unknown brands use the actual Bot name without inventing a URL. Direct links
-also retain a search fallback. Examples are editable and copied only on request;
-the person sends them in IM. No messaging, runtime, schema or analytics behavior changes.
+## Provider entry boundary
 
-Reviewed open PR heads: [1250](https://github.com/first-tree-ai/opentag/pull/1250)
-`128d72b3`, [1034](https://github.com/first-tree-ai/opentag/pull/1034) `d7f2ccbe`,
-and [1249](https://github.com/first-tree-ai/opentag/pull/1249) `5a10aa3b`.
-Their Agent home, settings and Slack configuration interactions are outside scope.
-Only the onboarding catalog/test and Web contract overlap need reconciliation.
+[Slack's official redirect](https://docs.slack.dev/interactivity/deep-linking/) backs
+the existing App/Team helper. The [official Feishu Bot AppLink](https://open.feishu.cn/document/uAjLw4CM/uYjL24iN/applink-protocol/supported-protocol/open-a-bot)
+opens the identified Bot conversation when it is available to the user. Retain the
+supported HTTPS handoff; do not invent a native URI or infer its brand from locale.
+Unknown/unconfirmed entries retain real-name search instead of a fabricated link.
 
-[Slack's official route](https://docs.slack.dev/interactivity/deep-linking/) backs
-the existing App/Team helper. An [official Feishu tutorial search excerpt](https://open.larkoffice.com/document/develop-an-echo-bot/introduction)
-backs the Feishu Bot AppLink and application-name search within the app's availability
-scope; direct extraction returned no readable body. Lark's Bot URL remains unconfirmed.
-Documentation or a successful landing is not native-client acceptance.
+A browser landing, opening the App, or an already-open DM does not prove that the
+button reached the correct private conversation. Prior observations included a
+browser confirmation and correct DM, and a later inconclusive search dialog.
+The revised candidate needs the stricter non-chat-start check below. System
+confirmation and extra landing-page clicks must be recorded separately.
 
-## Acceptance still required
+## Coordinator acceptance for the revised candidate
 
-The coordinator repeats the same dedicated scenario and fixed input at the same
-viewport on an approved candidate build. No data reset or new environment is needed.
+1. Serve the exact committed candidate through the approved coordinator flow.
+   Record source/build and served Web artifact identity. Use the admitted owning
+   Account and exact existing Agent setup route; do not reset data or use creation
+   or reboard flags to simulate a new user.
+2. Capture the revised completion against the real `3346789e` baseline. Confirm
+   ready state, actual Bot name, one prominent Bot action and secondary View agent.
+   No request input, example selector, task coaching or Hello instruction remains.
+3. Begin native entry from a known non-chat state. Click the actual Web button and
+   record each browser landing click and external-App confirmation. Require the
+   correct App/workspace/Bot private conversation with usable input; a profile,
+   search dialog, group or App window alone does not pass. Record inconclusive
+   observations without inventing a failure or success.
+4. Expand the short fallback, verify the actual Bot name and name copying, then
+   return to the Web. View agent must open the exact Agent overview. The page does
+   not auto-navigate or send anything.
+5. Present redacted real before/after captures and actual results before delivery
+   claims. Match viewport and disclose DPR differences. Verify responsive/keyboard
+   behavior separately before claiming it; do not generalize one provider's run to
+   other brands or infer a first-time welcome from an existing DM.
 
-1. Open the existing Agent's exact setup route with its admitted owning Account.
-   Record the served Web artifact and Server/runtime versions. Do not use creation
-   or review/reboard flags to simulate a first user.
-2. Capture the changed completion. Verify one prominent Bot action and secondary
-   View agent; copy/edit both examples and confirm no message is sent automatically.
-3. Open the correct provider Bot. Record native launch separately from a browser
-   landing. Expand the search fallback and verify the real Bot name/access guidance.
-4. The person sends the original fixed three-note action-list request and follow-up.
-   Verify provided facts, missing values and conversation continuity. Product examples
-   use replaceable relative dates; the acceptance packet keeps its fixed input.
-5. Return to the Web and open the exact Agent overview. Present redacted real
-   before/after images, outcomes and PR together. Never commit sensitive raw images.
-
-Cold-start creation, novice comprehension, other providers' native launch and visual
-or responsive acceptance remain separate, unverified claims. This development task
-performs no desktop/browser automation or shared-instance operations.
+The coordinator alone operates the desktop/shared acceptance service. This task
+performs no browser automation, service switch, provider setup or test messages.
 
 ## Local validation
 
-- Focused completion/setup/preview, route-boundary and i18n regressions: the broad
-  run passed 25 of 27 files; two completion tests still required the replaced Hello
-  instruction. After updating those assertions and adding an adapter-through-page
-  regression, all three affected files passed (153 tests). Together with the
-  unchanged passing files, the final behavior has 393 passing tests across 27 files.
-- `pnpm --filter @opentag/web typecheck` passed.
-- `pnpm build` passed all eight workspace builds and the bundle report, preparing
-  package exports for normal pre-push typechecking as well as bundling the new
-  completion imports and generated messages. Existing TypeScript API and web chunk
-  size warnings remain.
-- `pnpm check` and `git diff --check` passed. No lint or complexity gate was relaxed.
+Fresh completion/setup/preview, route-boundary and i18n regressions passed all
+393 tests across 27 files. These cover the reduced surface, absence of request
+inputs/coaching, real-name copying and its failure guidance, identity/late-result
+fences and existing setup/reboard behavior. Web typechecking, the affected Web
+build and bundle report passed; the build retains its existing chunk-size warning.
 
-Normal pre-commit/pre-push hooks remain enabled. Server/database integration and
-Agent Runtime coverage were not run because this is a Web-only change with no
-schema, messaging or runtime behavior change. Local checks do not establish CI,
-formal review or native/visual acceptance.
+Run `pnpm check` before committing and retain normal Git hooks. Server/database
+and Agent Runtime suites are outside this Web-only local scope unless implementation
+crosses those boundaries. Previous-head CI and functional checks are historical
+evidence only. New-head CI, formal review and actual native/visual acceptance remain
+separate requirements.

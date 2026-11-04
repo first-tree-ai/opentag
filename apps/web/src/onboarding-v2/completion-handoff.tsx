@@ -1,10 +1,10 @@
 import type { AgentSetupMessagingState, ImBindingAdminDetail } from "@opentag/shared/browser";
-import { useEffect, useId, useState } from "react";
+import { useEffect, useState } from "react";
 import { spaceScriptBoundary } from "../i18n/format.js";
 import { messagingProviderLabel } from "../im/provider-label.js";
 import { slackBotConversationUrl } from "../im/slack-app-manifest.js";
 import * as m from "../paraglide/messages.js";
-import { Button, buttonClassName, Collapsible, Icon, InputArea, Text } from "../ui/design-system.js";
+import { Button, buttonClassName, Collapsible, Icon } from "../ui/design-system.js";
 import type { AgentSetupAdapter } from "./setup-adapter.js";
 
 type ReadyMessaging = Extract<AgentSetupMessagingState, { kind: "ready" }>;
@@ -102,7 +102,6 @@ export function CompletionHandoff({
         ) : null}
         {botName ? <BotSearch key={botName} name={botName} provider={provider} collapsed={Boolean(href)} /> : null}
       </div>
-      <StarterRequests provider={provider} />
     </div>
   );
 }
@@ -124,54 +123,6 @@ function BotSearch({ name, provider, collapsed }: { name: string; provider: stri
       </Collapsible.Trigger>
       <Collapsible.Panel className="pt-3">{content}</Collapsible.Panel>
     </Collapsible.Root>
-  );
-}
-
-function StarterRequests({ provider }: { provider: string }) {
-  const inputId = useId();
-  const [selected, setSelected] = useState(0);
-  const [drafts, setDrafts] = useState<string[]>(() => [
-    m.onboarding_v2_handoff_actions_prompt(),
-    m.onboarding_v2_handoff_summary_prompt(),
-  ]);
-  const value = drafts[selected] ?? "";
-  const labels = [m.onboarding_v2_handoff_actions(), m.onboarding_v2_handoff_summary()];
-  return (
-    <section className="grid min-w-0 gap-3 border-t border-kumo-line pt-4">
-      <Text as="h2" variant="heading" headingSize="body">
-        {m.onboarding_v2_handoff_try()}
-      </Text>
-      <p className="text-sm text-kumo-subtle">
-        {spaceScriptBoundary(m.onboarding_v2_handoff_instructions({ provider }))}
-      </p>
-      <fieldset className="flex flex-wrap gap-2 border-0 p-0 m-0" aria-label={m.onboarding_v2_handoff_choose()}>
-        {labels.map((label, index) => (
-          <Button
-            key={label}
-            variant={selected === index ? "secondary" : "ghost"}
-            aria-pressed={selected === index}
-            onClick={() => setSelected(index)}
-          >
-            {label}
-          </Button>
-        ))}
-      </fieldset>
-      <label className="text-sm" htmlFor={inputId}>
-        {m.onboarding_v2_handoff_request()}
-      </label>
-      <InputArea
-        id={inputId}
-        rows={6}
-        value={value}
-        onChange={(event) =>
-          setDrafts(drafts.map((draft, index) => (index === selected ? event.currentTarget.value : draft)))
-        }
-      />
-      <div className="flex flex-wrap items-start gap-3">
-        <CopyText key={`${selected}:${value}`} value={value} label={m.onboarding_v2_handoff_copy_request()} />
-      </div>
-      <p className="text-sm text-kumo-subtle">{m.onboarding_v2_handoff_follow_up()}</p>
-    </section>
   );
 }
 

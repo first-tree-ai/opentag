@@ -36,3 +36,21 @@ it("normalizes ordering without mutation and bounds source count", () => {
   expect(ContextTreesSchema.safeParse(sources).success).toBe(false);
   expect(normalizeContextTrees(sources)).toEqual(normalizeContextTrees([...sources].reverse()));
 });
+
+it("keeps Context Tree availability responses minimal and rejects credential-shaped data", async () => {
+  const { ContextTreeAvailabilityResponseSchema } = await import("../context-tree-operation.js");
+  expect(ContextTreeAvailabilityResponseSchema.parse({ status: "ready", readOnly: true })).toEqual({
+    status: "ready",
+    readOnly: true,
+  });
+  expect(
+    ContextTreeAvailabilityResponseSchema.safeParse({
+      status: "ready",
+      readOnly: false,
+      accessToken: "must-not-be-returned",
+    }).success,
+  ).toBe(false);
+  expect(
+    ContextTreeAvailabilityResponseSchema.safeParse({ status: "completed", repository: "acme/memory" }).success,
+  ).toBe(false);
+});

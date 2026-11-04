@@ -138,8 +138,14 @@ describe("SkillsPage", () => {
     wrap(<SkillsPage agentId={AGENT_ID} />);
 
     expect(await screen.findByRole("heading", { level: 2, name: "No Skills yet" })).toBeTruthy();
-    expect(screen.getByText("Import a skill from a URL or upload a file to get started.")).toBeTruthy();
     const chooseFile = vi.spyOn(fileInput(), "click");
+    // The empty state's sentence offers both first actions in place.
+    fireEvent.click(screen.getByRole("button", { name: "upload a file" }));
+    expect(chooseFile).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("button", { name: "Install from a link" }));
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    chooseFile.mockClear();
     fireEvent.click(screen.getByRole("button", { name: "Import skill" }) as HTMLButtonElement);
     fireEvent.click(await screen.findByRole("menuitem", { name: "Upload file" }));
     expect(chooseFile).toHaveBeenCalledOnce();

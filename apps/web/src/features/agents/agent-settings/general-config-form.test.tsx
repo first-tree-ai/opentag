@@ -90,11 +90,27 @@ describe("GeneralConfigForm", () => {
     fireEvent.change(displayName, { target: { value: "Draft name" } });
 
     fireEvent.submit(form);
-    expect((screen.getByRole("button", { name: "Saving…" }) as HTMLButtonElement).disabled).toBe(true);
+    const saving = screen.getByRole("button", { name: "Saving…" }) as HTMLButtonElement;
+    expect(saving.disabled).toBe(false);
+    expect(saving.getAttribute("aria-busy")).toBe("true");
     fireEvent.submit(form);
     expect(updateAgent).toHaveBeenCalledOnce();
 
     release?.({ ...config, displayName: "Draft name", revision: 5 });
     await waitFor(() => expect(screen.queryByRole("button", { name: "Saving…" })).toBeNull());
+  });
+
+  it("keeps keyboard focus in the form after the save bar goes away", async () => {
+    const updated = { ...config, displayName: "Reviewer Bot", revision: 5 };
+    vi.spyOn(browserApi, "updateAgent").mockResolvedValue(updated);
+    render(<GeneralConfigForm initialConfig={config} onAgentChanged={vi.fn()} />);
+    const displayName = screen.getByLabelText("Display name");
+    fireEvent.change(displayName, { target: { value: "Reviewer Bot" } });
+    const save = screen.getByRole("button", { name: "Save changes" });
+    save.focus();
+    fireEvent.click(save);
+
+    await screen.findByText("Name saved.");
+    await waitFor(() => expect(document.activeElement).toBe(displayName));
   });
 });

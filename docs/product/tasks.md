@@ -123,6 +123,21 @@ The Web reads these in four groups (Queued, Running, Completed, Failed) for filt
 neutral **Cancelled** label rather than Completed. Why: the Account withdrew it before it ran, and
 "Completed" would claim work that never happened.
 
+### Message handling and failure recovery
+
+Task status remains a projection over existing message and delivery records. The precedence and
+terminal distinctions above, topic ordering, placement fences, immutable reports and delivery
+idempotency remain authoritative; there is no new Task-status table or independent execution state.
+New input follows the existing Session path: a runtime that supports steer may accept it into the
+running Turn; an unsupported runtime leaves it queued until the current Turn settles. The Server
+does not force interruption or replay an accepted Turn.
+
+New failure targets can use plain messages through the feedback rollout described in
+[IM task feedback](../system/messaging/im-feedback.md). New Task Retry admissions are disabled;
+the person sends a new message through the ordinary admission path. Previously admitted Retry
+attempts and authenticated workspace save/discard recovery retain their original identities,
+reports and confirmation requirements.
+
 Each detail Turn exposes `delivery.isRunning` from the same effective predicate as the list. The Web
 shows progress only when that value is true; persisted `accepted` alone does not prove liveness.
 An unreported inactive Turn, including data from older servers that omit the field, shows that no

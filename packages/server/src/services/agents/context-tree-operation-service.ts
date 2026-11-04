@@ -34,7 +34,6 @@ export class ContextTreeOperationService {
     const connections = config.runtimeConfig.contextTrees;
     const unchanged = attachmentOutcome(config, input);
     if (unchanged) return unchanged;
-    if (connections.length > 0 && config.status !== "suspended") return { status: "failed", code: "pause_required" };
     const prepared: PreparedContextTreeOperation =
       input.action === "disconnect"
         ? { result: { status: "completed", repository: null } }

@@ -239,7 +239,7 @@ describe("AgentSetupPage stages", () => {
       const issue = vi.spyOn(memory.computerAdapter.connect, "issue");
       renderSetup(memory.adapter, { computerAdapter: memory.computerAdapter });
       await settle(12);
-      expect(screen.getByRole("button", { name: "Copy for Agent" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
       expect(screen.queryByRole("button", { name: /Use this computer:/ })).toBeNull();
       expect(issue).toHaveBeenCalledOnce();
       expect(issue.mock.calls[0]?.[0]).toMatchObject({ mode: "repair", target: { computerId: SETUP_COMPUTER_ID } });
@@ -253,7 +253,7 @@ describe("AgentSetupPage stages", () => {
       });
       expect((await memory.computerAdapter.inventory.computers()).computers).toHaveLength(1);
       expect(issue).toHaveBeenCalledOnce();
-      expect(screen.queryByRole("button", { name: "Copy for Agent" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
     },
   );
 
@@ -368,14 +368,13 @@ describe("AgentSetupPage stages", () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
     renderSetup(memory.adapter);
     await settle();
-    expect(screen.getByRole("button", { name: "Copy for Agent" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Get connection help" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Assistant requested a repair?" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Repair connection" })).toBeNull();
     expect(screen.getByText("Waiting for Review Mac to reconnect…")).toBeTruthy();
     // The code-expiry hint stays beside the recovery command (C5).
     expect(screen.getByText(/^Expires in /)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Show full instructions" }));
     expect(screen.getByRole("region", { name: "Restore connection" }).textContent).toContain("repair-code");
     expect(issue).toHaveBeenCalledExactlyOnceWith({
       mode: "repair",

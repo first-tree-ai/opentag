@@ -116,6 +116,12 @@ before anyone types. Why: a rule the reader only discovers by failing wastes an 
 it in the error adds reading without new information. Create stays disabled until a Local Agent's runtime is chosen;
 no runtime is preselected, because the reader's computer may not have it.
 
+Creating an Agent always starts with the type step (Local or Cloud), even when the deployment cannot run Cloud
+Agents. When the availability check answers that Cloud is unavailable, the Cloud card stays in place, disabled, with an
+**Temporarily unavailable** (**暂不可用**) badge and a line saying the Agent can still run on the reader's own computer; Local
+stays the default. A failed check says so and offers Try again instead of claiming Cloud is unavailable. Why: the
+step tells the reader Cloud exists as an option, which skipping straight to the Local form would hide.
+
 First-time setup stays full-screen throughout its current journey, even when Account admission completes before
 Computer or messaging setup. An Account-scoped, tab-local layout marker preserves this presentation across reloads
 and external authorization; leaving setup or signing out clears it. If browser storage is unavailable, the current
@@ -132,6 +138,11 @@ Why: the Agent type (Local or Cloud) is fixed once chosen, because switching it 
 or Cloud preparation already made for it. A single exit in a fixed place, the top-right Back to Agents, replaces a
 step-by-step Back and a separate Set up later that each led somewhere different. The Agent list is where every
 unfinished setup can be resumed.
+
+After setup the same holds for an Agent's Computer, runtime, and messaging channel. They cannot be moved; to change
+one, the person creates a new Agent and adds it to the conversation. Why: an Agent's Sessions are bound to that
+channel, runtime, and the Computer's local storage, so a move is costly and risky (see
+[Agent, Session, and Computer model](../agent-session-computer-model.md)).
 
 When the Agent's runtime is installed but signed out, the setup page's runtime row offers **Sign in** (**去登录**). It
 expands the terminal steps for that computer: open a terminal on it, run `claude` and enter `/login` for Claude Code,
@@ -151,6 +162,21 @@ cannot be repeated; failed or uncertain mutations cause status reads rather than
 Running, queued and unknown work also requires confirmation before save/release interrupts it;
 rows without a recorded save failure use a plain save/release label. Discard confirmation explains unsaved-file loss and that external effects are not undone. A
 failed inventory read never becomes an empty list, and revoked access hides cached resources.
+
+## Paused Agent settings
+
+> **Planned — not yet implemented.** Tracking: #1233
+
+Pausing an Agent does not change which of its settings its owner can read. Every settings page of a paused Agent
+(name, messaging, Computer, model and instructions, Context Tree, Skills, connectors, and pause or delete) shows its
+current configuration, and the settings overview, the Agent page's status card, and the Agent list show the real
+messaging status. Actions that a paused Agent cannot take stay disabled with a reason in place rather than hiding the
+page. Why: an operator often pauses an Agent precisely to inspect its configuration or prepare a change, and a
+configuration they cannot see gives them nothing to decide from.
+
+This replaces the current behavior for messaging only. Today the Server refuses every messaging-binding read for a
+paused Agent as not found, so the messaging page shows that refusal and the overview, status card, and list show the
+messaging status as unavailable. The other settings pages are already readable while paused.
 
 ## Layout and responsive acceptance
 
@@ -185,6 +211,9 @@ request deduplication and error presentation remain. Offline overrides other dep
 credential initialization is neutral for at most 15 seconds; completed failures, stale reports and
 check timeouts name the problem. Rechecks retain the last complete result at the Server. The
 Agent's Work row still describes running Tasks separately from availability.
+
+See [Agent status pipeline](../runtime/computer-status-pipeline.md) for the single-replica evidence
+model. Older Servers without negotiated metadata use the legacy read path.
 
 UI changes must be checked at these representative widths when the surface can render there:
 

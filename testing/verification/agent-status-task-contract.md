@@ -31,9 +31,17 @@ PostgreSQL tests use isolated local migrated databases. No real message is repla
 | Shared unit suite | 812 passed | Schemas, public export snapshot and existing contracts |
 | Server unit suite | 5,055 passed, 16 skipped, no failures | Status, configuration, feedback, credential/proxy and adjacent authority paths |
 | Agent Runtime coverage | 823 passed; 100% statements, branches, functions and lines | Actual-work ownership, deadlines, epoch refresh and existing runtime behavior |
-| Client connection/composition subset | 116 passed | Heartbeat acknowledgements, self-check and composition |
+| CLI suite after base sync | 801 passed | CLI consumers and the updated Computer repair command |
+| Full Client suite | 3,024 passed, 6 skipped | Runtime, local process boundaries, heartbeat acknowledgements and composition |
 | Web changed-surface subset | 113 passed | Modern batching, legacy fallback, setup and immutable configuration |
-| Final PostgreSQL suite | Pending final readback | Migration and persistence regression |
+| Full PostgreSQL suite | 1,399 passed; two timing/connection failures; both owning files passed in a serial 33-test rerun | Migration and persistence regression |
+
+The broad suites ran on feature commit `5ab28aec5` over base `bfcde09f9`. After integrating
+`main@69344cf3c`, affected validation passed: Server API/command/status tests (46), Web
+Computer/setup/status tests (267), CLI tests (801), and the Context Tree integration cases (2).
+Additional Context Tree checks cover Server unit behavior, shared parsing and Web settings.
+Build, type checks and repository checks were rerun for that combination. No package manifest or
+lockfile changed during the base sync.
 
 The status tests cover 100 IDs with at most three SELECTs per snapshot, authorization failures,
 one whole-snapshot retry on a connection-fence race, stale/duplicate self-check reports, monotonic
@@ -46,6 +54,12 @@ new Retry refusal, and idempotent completion of an already admitted Retry. Confi
 edited-unbound binding, same-target no-op, replacement rejection through compatibility APIs, and
 legacy ownership/custody fixtures. Legacy-fixture helpers construct historical state only; production
 services keep the new immutable-identity checks.
+
+The full two-worker PostgreSQL run covered all 126 files (1,401 tests). One 4,096-Session/max-1-pool
+stop hit the existing 30-second dispatch budget, and one Session-collaboration fixture could not
+connect to local PostgreSQL within its connection timeout. Re-running both complete files serially
+passed all 33 tests, without changing product deadlines or skipping cases. The migration cases and
+new status batch cases passed in the broad run. The broad run itself is recorded as failed, not green.
 
 The first broad Web run identified six outdated assertions/fixtures for the intentional behavior;
 the owning seven-file, 113-test subset passed after correction. CI owns the complete final regression

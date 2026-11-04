@@ -36,6 +36,15 @@ A workspace failure pauses that Session rather than the entire Agent. New input 
 Saving or discarding files does not undo messages, pull requests, or other external operations. The existing Runner
 owns automatic save retries; this feedback layer adds no automatic save or task retry loop.
 
+### Plain failure messages
+
+New failure targets can use plain messages with a cause, effects warning and authenticated details
+link. The rollout flag defaults to off and each target retains its original format; see Message
+format compatibility below. New Task Retry admissions are disabled, including old card callbacks.
+A new message follows ordinary admission and can be steered when the runtime supports it, or stays
+queued otherwise. Existing admitted retries and workspace save/discard keep their original recovery
+and confirmation semantics.
+
 ## Account operations
 
 Card links open an authenticated Account page. Opening a URL and refreshing details are read-only. The page shows

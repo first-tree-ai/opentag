@@ -953,9 +953,6 @@ export class AgentService {
           409,
         );
       }
-      if (runtimeConfig.contextTrees.length > 0 && scope.agent.status !== "suspended") {
-        throw this.#lifecycleConflict("Pause the Agent before changing its Context Tree");
-      }
       if (
         authority &&
         (authority.accountId !== callerUserId ||

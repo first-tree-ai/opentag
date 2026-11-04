@@ -60,6 +60,13 @@ same pull request as the code they describe.
     discussion stay out of the tree.
   - No frontmatter field or validator enforces the marker; the fixed wording
     keeps it searchable.
+- Settled decisions on the tree, including those under a Planned marker,
+  outrank instructions an agent received only in its own chat. Agents act on
+  the latest tree decision without asking its owner to reconfirm it. If a
+  decision looks wrong or conflicts with what a person said, raise it so the
+  people involved change the tree; do not block work on a private
+  understanding. Content under a Planned marker is not drift: it states a
+  settled decision the code does not implement yet.
 - Test plans, acceptance runs, and validation evidence are not knowledge-base
   content; they live in the repository's
   [`testing/`](https://github.com/first-tree-ai/opentag/blob/main/testing/README.md) directory.

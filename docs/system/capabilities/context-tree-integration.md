@@ -58,15 +58,18 @@ Initial settings read failures retain the page identity and offer explicit retry
 A transient refresh failure retains the existing collection and form draft, marks the data unconfirmed,
 and disables writes until a successful read. Connector and restriction-recovery links open a new tab so
 an in-progress form stays available in the original tab. Terminal authorization/resource failures hide stale settings.
-Invalid directories associate their error with the field. Restriction notices describe pause and offline
-requirements together and link to existing Agent/Computer settings without automatically pausing an Agent.
+Invalid directories associate their error with the field. The offline restriction notice links to the
+existing Computer settings.
 
 Failed settings operations display an error banner and the current Agent's Connector or repository destination. When the server has no GitHub MCP OAuth client
 configured, the message asks the server administrator to configure it; this does not
 mean the bound Computer needs an update.
 
-Operations carry expected Agent/runtime revisions. Changing a
-nonempty selection requires a paused Agent. Disconnect only changes the selection;
+Operations carry expected Agent/runtime revisions. Connecting and disconnecting do not require
+pausing the Agent. A saved change advances the Agent revision, so it applies to the next turn
+like any other Agent settings change; a turn already running keeps the prompt and workspace it
+started with, while its later Context Tree commands fail closed against the stale revision and
+never reach a tree outside the current selection. Disconnect only changes the selection;
 it preserves cached content and unpublished work. Connecting an already selected source
 and disconnecting an absent source are idempotent.
 Repository creation never adopts or overwrites an existing repository. Remote writes are

@@ -84,6 +84,22 @@ version while another is being installed.
 - An already-connected computer still consumes the code, and both the web page and the CLI show the same plain
   “connected” result as a fresh connection. Whether anything changed is an internal detail the reader cannot act on.
 
+The connect logic lives in the command, not in prose around it. The command checks the existing installation,
+upgrades it, repairs or confirms an existing connection, and stops on conflicts, so the text the web hands out is the
+command itself, led by one inert line for an Agent:
+
+```sh
+: 'openTag: connect this computer to my account. Run the next line as-is in a terminal on this computer and report its output.'
+<connect command>
+```
+
+The same two lines work pasted into a terminal and pasted to an Agent, so there is one artifact to explain and test,
+and a person and an Agent get the same behavior. The first line is the POSIX null command `:` rather than a `#`
+comment, because macOS zsh leaves `interactive_comments` off and a pasted `#` line fails with `command not found`.
+A repair command adds `--computer <id>`: the CLI stops with a plain message, before using the code, when this home is
+connected to a different Computer on that Server, so no "make sure you are on the right computer" prose is needed. A
+home with no connection (lost identity) may be that Computer and continues.
+
 The request fields `machineToken` and `reportOutcome` are optional. The Server
 answers `outcome` (and may omit the token) only to Clients that sent
 `reportOutcome`, so older Clients keep their strict response shape; a newer
@@ -114,6 +130,17 @@ After a Client accepts custody, it starts or resumes only the Provider pinned by
 the effective runtime snapshot; missing credentials and other start failures
 settle the Turn as typed, recoverable `not_started` failures. The Client never
 falls back to a different Provider.
+
+### Status state outside the Server process
+
+> **Planned — not yet implemented.** Tracking: #1215
+
+Server services keep no in-process state, so the Server can run as more than one instance. High-frequency state that
+can be lost, such as the Computer, runtime and messaging-channel sub-statuses, goes to a TTL key-value cache (Redis,
+about one minute); durable data goes to PostgreSQL. A Computer is offline after three missed heartbeats (90 seconds),
+which voids its other sub-statuses, and the Agent status is derived on read rather than stored; see
+[Agent status pipeline](runtime/computer-status-pipeline.md). This replaces the expiring per-connection observations
+described above.
 
 ## Explicit Web runtime test
 

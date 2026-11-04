@@ -82,6 +82,11 @@ The five-minute preparation limit does not change the short Server startup migra
 `opentag doctor` and the portable installer only report static account-global installation state. They do not install,
 repair, validate credentials, or infer login/subscription state.
 
+Feishu credential validation runs only the native bot-info identity probe and sets
+`LARKSUITE_CLI_REMOTE_META=off` for that process. The CLI's optional background API-definition
+refresh is unnecessary for identity validation. Validation-purpose proxy capabilities permit bot
+info only; API-definition metadata remains available to normal execution-purpose capabilities.
+
 For every valid visible Session Turn that may write to IM, including an IM delivery or an internal-collaboration callback,
 the Client creates a private `0600` environment file and passes only its path as `OPENTAG_PROVIDER_ENV_FILE`. The Agent
 calls the official `lark-cli` or `slack api` command directly; the managed launcher loads its credentials automatically.

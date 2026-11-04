@@ -131,6 +131,46 @@ function captureFetch(payload: unknown = { ok: true, ts: "1710000000.000100" }):
 }
 
 describe("ImProviderProxyAdapter operation registration", () => {
+  it("validates Feishu bot identity while rejecting metadata and business operations in validation", async () => {
+    const { calls, fetchImpl } = captureFetch({ code: 0, bot: { open_id: "ou_bot" } });
+    const { instance } = adapter({ provider: "feishu", fetchImpl });
+    const auth = authorization({
+      provider: "feishu",
+      purpose: "validation",
+      resolveMaterial: async () => ({ kind: "bearer", token: "synthetic-token", origin: "https://open.feishu.cn" }),
+    });
+    const identity = await instance.handle(
+      request({ provider: "feishu", method: "GET", path: "/open-apis/bot/v3/info" }),
+      auth,
+    );
+    expect(JSON.parse(await readBody(identity.body))).toEqual({ code: 0, bot: { open_id: "ou_bot" } });
+    expect(calls).toHaveLength(1);
+    for (const [method, path, code] of [
+      ["GET", "/api/tools/open/api_definition?protocol=meta&client_version=1.0.92", "validation_scope"],
+      ["GET", "/open-apis/im/v1/chats", "validation_scope"],
+      ["POST", "/open-apis/im/v1/messages", "validation_scope"],
+      ["POST", "/api/tools/open/api_definition", "operation_not_registered"],
+      ["GET", "/api/tools/open/unknown", "operation_not_registered"],
+    ] as const) {
+      await expect(instance.handle(request({ provider: "feishu", method, path }), auth)).rejects.toMatchObject({
+        code,
+      });
+    }
+    expect(calls).toHaveLength(1);
+    const metadata = await instance.handle(
+      request({
+        provider: "feishu",
+        method: "GET",
+        path: "/api/tools/open/api_definition?protocol=meta&client_version=1.0.92",
+      }),
+      { ...auth, purpose: "execution" },
+    );
+    expect(metadata.status).toBe(200);
+    expect(calls.at(-1)?.url).toBe(
+      "https://open.feishu.cn/api/tools/open/api_definition?protocol=meta&client_version=1.0.92",
+    );
+  });
+
   it("rejects unregistered methods, paths, and providers", async () => {
     const { instance } = adapter();
     await expect(instance.handle(request({ method: "GET" }), authorization())).rejects.toMatchObject({

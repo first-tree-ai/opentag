@@ -277,6 +277,12 @@ When `OPENTAG_PERF_LOG_ENABLED` is `true` (the default), the Server emits paired
 - **Database queries (`perfCategory="db"`)** — Every executed Drizzle and `postgres.js` query (`operation="db.query"`), transaction (`operation="db.transaction"`), and savepoint (`operation="db.savepoint"`). Lazy queries that are never awaited and `no_pipeline` readiness probes do not emit records. Records carry `sqlCommand`, `dbTarget`, `paramCount`, `rowCount`, `inTransaction`, and `sqlState` on error, without logging raw SQL text or bound parameters.
 - **External service calls (`perfCategory="external"`)** — Outbound requests through `ExternalCallPolicy` (Feishu and Slack), `McpOutboundFetcher`, GitHub API and proxy transports, Cloud Model and Web Routers, Cloud Run Admin and GCP Metadata Server, S3/GCS object stores, remote Skill sources, and Error Reporting. Streaming responses settle on body EOF or body error rather than header arrival. User-configured or user-content URLs (MCP, Skill sources, Slack file downloads, provider proxy) log `httpMethod` and `targetHost` only; `targetPath` is included only for fixed, server-owned API route templates.
 
+Provider proxy stream failure warnings retain registered IM adapter failure codes, including
+`validation_scope`, `operation_not_registered`, and body/header rejection codes, alongside the
+existing transport and GitHub allowlists. Unknown codes use `upstream_unavailable`. These warnings
+contain only provider and controlled code; they omit raw error messages, paths, headers, bodies,
+capabilities, and identities.
+
 Every started operation generates a unique `callId` and records `startedAt` (ISO-8601 UTC). Its matching
 settlement record carries the same `callId` and `startedAt` plus `endedAt` (ISO-8601 UTC) and monotonic
 `durationMs`. Nested operations propagate `requestId`, `parentCallId`, `callerOperation`, `sandboxId`,

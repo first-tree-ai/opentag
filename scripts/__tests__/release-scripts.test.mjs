@@ -3,7 +3,13 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { classifyRegistryLookup, parseCheckNpmArguments, verifyPublishedCoordinate } from "../check-npm-version.mjs";
+import {
+  classifyRegistryLookup,
+  NPM_PUBLISH_WAIT_DEADLINE_MS,
+  NPM_PUBLISH_WAIT_INTERVAL_MS,
+  parseCheckNpmArguments,
+  verifyPublishedCoordinate,
+} from "../check-npm-version.mjs";
 import { assertCurrentStagingRevision } from "../check-staging-revision.mjs";
 import { prepareCliRelease } from "../prepare-cli-release.mjs";
 import {
@@ -306,6 +312,9 @@ test("parses check-npm-version arguments including --require-published", () => {
 });
 
 test("verifyPublishedCoordinate waits for async npm visibility and fails closed on persistent E404 or mismatches", async () => {
+  assert.equal(NPM_PUBLISH_WAIT_DEADLINE_MS, 30 * 60 * 1000);
+  assert.equal(NPM_PUBLISH_WAIT_INTERVAL_MS, 15_000);
+
   const immediateCalls = [];
   const immediateSleep = [];
   await verifyPublishedCoordinate({

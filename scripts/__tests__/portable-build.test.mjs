@@ -392,6 +392,7 @@ test("channel pointers are single-writer, monotonic, and ordered installer-first
     assert.ok(publishIndex > 0 && verifyIndex > publishIndex, `${verifyStep} must follow ${publishStep}`);
     assert.ok(portableIndex > verifyIndex, `${verifyStep} must run before ${portableStep}`);
     const verifyBlock = workflow.slice(verifyIndex, portableIndex);
+    assert.match(verifyBlock, /timeout-minutes: 35/);
     assert.match(verifyBlock, /node scripts\/check-npm-version\.mjs/);
     assert.match(verifyBlock, /--require-published/);
   }

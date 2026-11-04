@@ -31,14 +31,17 @@ export function classifyRegistryLookup({ status, stdout, stderr, expectedGitHead
   throw new Error(`npm registry lookup failed: ${stderr.trim() || `exit status ${status}`}`);
 }
 
+export const NPM_PUBLISH_WAIT_DEADLINE_MS = 30 * 60 * 1000;
+export const NPM_PUBLISH_WAIT_INTERVAL_MS = 15_000;
+
 export async function verifyPublishedCoordinate({
   packageName,
   version,
   expectedGitHead,
   npmView = (args) => spawnSync("npm", ["view", ...args], { encoding: "utf8", timeout: 60_000 }),
   sleep = delay,
-  deadlineMs = 5 * 60 * 1000,
-  intervalMs = 15_000,
+  deadlineMs = NPM_PUBLISH_WAIT_DEADLINE_MS,
+  intervalMs = NPM_PUBLISH_WAIT_INTERVAL_MS,
   now = Date.now,
 }) {
   const deadline = now() + deadlineMs;

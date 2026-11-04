@@ -12,7 +12,7 @@ import {
   type TurnReportRequest,
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, type TestContext, vi } from "vitest";
 import {
   agents,
   computers,
@@ -2556,47 +2556,35 @@ describe("ImDeliveryWorker database workflow", () => {
     },
   );
 
-  it("retries an always-timing-out delivery a bounded number of times, then settles it once", async () => {
-    vi.useFakeTimers({ now: new Date("2026-09-01T00:00:00.000Z") });
-    try {
-      const fixture = await workerFixture(unit);
-      const diagnostic = vi.fn();
-      const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture, { deliveryHang: true });
-      const worker = new ImDeliveryWorker({
-        database: unit.database,
-        domain: domain as never,
-        assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
-        registry: fixture.registry,
-        operationTimeoutMs: 100,
-        onDiagnostic: diagnostic,
-      });
-      // One more iteration than the cap proves the settled row is never claimed again.
-      for (let attempt = 0; attempt < 12; attempt += 1) {
-        const running = worker.runOnce();
-        await vi.advanceTimersByTimeAsync(1_100);
-        await running;
-        await vi.advanceTimersByTimeAsync(31_000);
-      }
-      const [row] = await unit.database
-        .select()
-        .from(imMessageDeliveries)
-        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
-      expect(row).toMatchObject({
-        state: "terminal_rejected",
-        reason: "retry_exhausted",
-        lastErrorCode: "IM_DELIVERY_TERMINAL",
-        dispatchRequestId: null,
-      });
-      expect(domain.requestDelivery).toHaveBeenCalledTimes(8);
-      const codes = diagnosticCodes(diagnostic);
-      // One line per failure run plus the single terminal line, however many attempts it took.
-      expect(codes.filter((code) => code === "IM_DELIVERY_OPERATION_TIMEOUT")).toHaveLength(1);
-      expect(codes.filter((code) => code === "IM_DELIVERY_RETRY_EXHAUSTED")).toHaveLength(1);
-      expect(codes.filter((code) => code === "IM_DELIVERY_OPERATION_LATE_SETTLE").length).toBeLessThanOrEqual(8);
-      expect(codes).toHaveLength(codes.filter((code) => code.startsWith("IM_DELIVERY_")).length);
-    } finally {
-      vi.useRealTimers();
-    }
+  it("retries an always-timing-out delivery a bounded number of times, then settles it once", async ({
+    onTestFinished,
+  }) => {
+    await withDeliveryTimeouts(
+      unit,
+      onTestFinished,
+      "2026-09-01T00:00:00.000Z",
+      async ({ fixture, domain, diagnostic, attempt }) => {
+        // One more iteration than the cap proves the settled row is never claimed again.
+        for (let index = 0; index < 9; index += 1) await attempt();
+        const [row] = await unit.database
+          .select()
+          .from(imMessageDeliveries)
+          .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+        expect(row).toMatchObject({
+          state: "terminal_rejected",
+          reason: "retry_exhausted",
+          lastErrorCode: "IM_DELIVERY_TERMINAL",
+          dispatchRequestId: null,
+        });
+        expect(domain.requestDelivery).toHaveBeenCalledTimes(8);
+        const codes = diagnosticCodes(diagnostic);
+        // One line per failure run plus the single terminal line, however many attempts it took.
+        expect(codes.filter((code) => code === "IM_DELIVERY_OPERATION_TIMEOUT")).toHaveLength(1);
+        expect(codes.filter((code) => code === "IM_DELIVERY_RETRY_EXHAUSTED")).toHaveLength(1);
+        expect(codes.filter((code) => code === "IM_DELIVERY_OPERATION_LATE_SETTLE").length).toBeLessThanOrEqual(8);
+        expect(codes).toHaveLength(codes.filter((code) => code.startsWith("IM_DELIVERY_")).length);
+      },
+    );
   });
 
   it("parks a correlated timed-out dispatch so a late acceptance can still record its Turn", async () => {
@@ -2718,128 +2706,108 @@ describe("ImDeliveryWorker database workflow", () => {
     expect(diagnosticCodes(diagnostic)).not.toContain("IM_DELIVERY_RETRY_EXHAUSTED");
   });
 
-  it("keeps the consecutive-timeout run across a dispatch release and settles on the next timeout", async () => {
-    vi.useFakeTimers({ now: new Date("2026-09-04T00:00:00.000Z") });
-    try {
-      const fixture = await workerFixture(unit);
-      const clock = Date.now();
-      const hash = computeDirectInputHash(fixture.request);
-      // One timed-out dispatch is still frozen, and the run stands at seven.
-      await unit.database
-        .update(imMessageDeliveries)
-        .set({
-          attemptCount: 7,
+  it("keeps the consecutive-timeout run across a dispatch release and settles on the next timeout", async ({
+    onTestFinished,
+  }) => {
+    await withDeliveryTimeouts(
+      unit,
+      onTestFinished,
+      "2026-09-04T00:00:00.000Z",
+      async ({ fixture, diagnostic, attempt }) => {
+        const clock = Date.now();
+        const hash = computeDirectInputHash(fixture.request);
+        // One timed-out dispatch is still frozen, and the run stands at seven.
+        await unit.database
+          .update(imMessageDeliveries)
+          .set({
+            attemptCount: 7,
+            lastErrorCode: "IM_DELIVERY_OPERATION_TIMEOUT_7",
+            dispatchRequestId: fixture.request.requestId,
+            dispatchInputHash: hash,
+            dispatchPayload: fixture.request,
+            nextAttemptAt: new Date(clock - 1),
+          })
+          .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+        const readAttempt = async () => {
+          await attempt();
+          const [row] = await unit.database
+            .select()
+            .from(imMessageDeliveries)
+            .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+          return row;
+        };
+
+        // The reconcile releases the unusable dispatch, and the release keeps the timeout run.
+        expect(await readAttempt()).toMatchObject({
+          state: "pending",
+          dispatchRequestId: null,
           lastErrorCode: "IM_DELIVERY_OPERATION_TIMEOUT_7",
-          dispatchRequestId: fixture.request.requestId,
-          dispatchInputHash: hash,
-          dispatchPayload: fixture.request,
-          nextAttemptAt: new Date(clock - 1),
-        })
-        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
-      const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture, { deliveryHang: true });
-      const diagnostic = vi.fn();
-      const worker = new ImDeliveryWorker({
-        database: unit.database,
-        domain: domain as never,
-        assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
-        registry: fixture.registry,
-        operationTimeoutMs: 100,
-        onDiagnostic: diagnostic,
-      });
-      const attempt = async () => {
-        const running = worker.runOnce();
-        await vi.advanceTimersByTimeAsync(1_100);
-        await running;
-        await vi.advanceTimersByTimeAsync(31_000);
-        const [row] = await unit.database
+        });
+        // The next attempt spends the eighth budget and settles.
+        expect(await readAttempt()).toMatchObject({ state: "terminal_rejected", reason: "retry_exhausted" });
+        expect(diagnosticCodes(diagnostic)).toContain("IM_DELIVERY_RETRY_EXHAUSTED");
+      },
+    );
+  });
+
+  it("counts consecutive operation timeouts instead of claims before it settles a delivery", async ({
+    onTestFinished,
+  }) => {
+    await withDeliveryTimeouts(
+      unit,
+      onTestFinished,
+      "2026-09-02T00:00:00.000Z",
+      async ({ fixture, domain, diagnostic, attempt }) => {
+        // Seven unrelated failures already spent the attempt counter; none of them was a timeout.
+        await unit.database
+          .update(imMessageDeliveries)
+          .set({
+            attemptCount: 7,
+            lastErrorCode: "IM_DELIVERY_CLOUD_CAPACITY_WAITING",
+            nextAttemptAt: new Date(Date.now() - 1),
+          })
+          .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+        const readAttempt = async () => {
+          await attempt();
+          const [row] = await unit.database
+            .select({ state: imMessageDeliveries.state, code: imMessageDeliveries.lastErrorCode })
+            .from(imMessageDeliveries)
+            .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+          return row;
+        };
+
+        // The first timeout of this delivery is not the eighth consecutive timeout.
+        expect(await readAttempt()).toMatchObject({
+          state: "pending",
+          code: "IM_DELIVERY_OPERATION_TIMEOUT",
+        });
+        // The streak is durable and keeps counting, and the diagnostic stays canonical.
+        expect(await readAttempt()).toMatchObject({
+          state: "pending",
+          code: "IM_DELIVERY_OPERATION_TIMEOUT_2",
+        });
+        for (let rest = 0; rest < 4; rest += 1) await readAttempt();
+        expect(await readAttempt()).toMatchObject({
+          state: "pending",
+          code: "IM_DELIVERY_OPERATION_TIMEOUT_7",
+        });
+        expect(await readAttempt()).toMatchObject({
+          state: "terminal_rejected",
+        });
+        const [settled] = await unit.database
           .select()
           .from(imMessageDeliveries)
           .where(eq(imMessageDeliveries.id, fixture.deliveryId));
-        return row;
-      };
-
-      // The reconcile releases the unusable dispatch, and the release keeps the timeout run.
-      expect(await attempt()).toMatchObject({
-        state: "pending",
-        dispatchRequestId: null,
-        lastErrorCode: "IM_DELIVERY_OPERATION_TIMEOUT_7",
-      });
-      // The next attempt spends the eighth budget and settles.
-      expect(await attempt()).toMatchObject({ state: "terminal_rejected", reason: "retry_exhausted" });
-      expect(diagnosticCodes(diagnostic)).toContain("IM_DELIVERY_RETRY_EXHAUSTED");
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("counts consecutive operation timeouts instead of claims before it settles a delivery", async () => {
-    vi.useFakeTimers({ now: new Date("2026-09-02T00:00:00.000Z") });
-    try {
-      const fixture = await workerFixture(unit);
-      // Seven unrelated failures already spent the attempt counter; none of them was a timeout.
-      await unit.database
-        .update(imMessageDeliveries)
-        .set({
-          attemptCount: 7,
-          lastErrorCode: "IM_DELIVERY_CLOUD_CAPACITY_WAITING",
-          nextAttemptAt: new Date(Date.now() - 1),
-        })
-        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
-      const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture, { deliveryHang: true });
-      const diagnostic = vi.fn();
-      const worker = new ImDeliveryWorker({
-        database: unit.database,
-        domain: domain as never,
-        assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
-        registry: fixture.registry,
-        operationTimeoutMs: 100,
-        onDiagnostic: diagnostic,
-      });
-      const attempt = async () => {
-        const running = worker.runOnce();
-        await vi.advanceTimersByTimeAsync(1_100);
-        await running;
-        await vi.advanceTimersByTimeAsync(31_000);
-        const [row] = await unit.database
-          .select({ state: imMessageDeliveries.state, code: imMessageDeliveries.lastErrorCode })
-          .from(imMessageDeliveries)
-          .where(eq(imMessageDeliveries.id, fixture.deliveryId));
-        return row;
-      };
-
-      // The first timeout of this delivery is not the eighth consecutive timeout.
-      expect(await attempt()).toMatchObject({
-        state: "pending",
-        code: "IM_DELIVERY_OPERATION_TIMEOUT",
-      });
-      // The streak is durable and keeps counting, and the diagnostic stays canonical.
-      expect(await attempt()).toMatchObject({
-        state: "pending",
-        code: "IM_DELIVERY_OPERATION_TIMEOUT_2",
-      });
-      for (let rest = 0; rest < 4; rest += 1) await attempt();
-      expect(await attempt()).toMatchObject({
-        state: "pending",
-        code: "IM_DELIVERY_OPERATION_TIMEOUT_7",
-      });
-      expect(await attempt()).toMatchObject({
-        state: "terminal_rejected",
-      });
-      const [settled] = await unit.database
-        .select()
-        .from(imMessageDeliveries)
-        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
-      expect(settled).toMatchObject({
-        state: "terminal_rejected",
-        reason: "retry_exhausted",
-        lastErrorCode: "IM_DELIVERY_TERMINAL",
-      });
-      expect(domain.requestDelivery).toHaveBeenCalledTimes(8);
-      expect(diagnosticCodes(diagnostic).filter((code) => code === "IM_DELIVERY_OPERATION_TIMEOUT")).toHaveLength(1);
-      expect(diagnosticCodes(diagnostic).filter((code) => code === "IM_DELIVERY_RETRY_EXHAUSTED")).toHaveLength(1);
-    } finally {
-      vi.useRealTimers();
-    }
+        expect(settled).toMatchObject({
+          state: "terminal_rejected",
+          reason: "retry_exhausted",
+          lastErrorCode: "IM_DELIVERY_TERMINAL",
+        });
+        expect(domain.requestDelivery).toHaveBeenCalledTimes(8);
+        expect(diagnosticCodes(diagnostic).filter((code) => code === "IM_DELIVERY_OPERATION_TIMEOUT")).toHaveLength(1);
+        expect(diagnosticCodes(diagnostic).filter((code) => code === "IM_DELIVERY_RETRY_EXHAUSTED")).toHaveLength(1);
+      },
+    );
   });
 
   it("backs off a permanently absent runtime and settles the owed Turn when no report can be truthful", async () => {
@@ -3492,6 +3460,67 @@ async function cloudFollowUpFixture(unit: UnitDatabase, userId: string) {
   return { agentId, computerId, sessionId, rootDeliveryId, followUpDeliveryId };
 }
 
+async function withDeliveryTimeouts(
+  unit: UnitDatabase,
+  onTestFinished: TestContext["onTestFinished"],
+  now: string,
+  test: (context: {
+    fixture: Awaited<ReturnType<typeof workerFixture>>;
+    domain: ReturnType<typeof fakeDomain>;
+    diagnostic: ReturnType<typeof vi.fn>;
+    attempt: () => Promise<void>;
+  }) => Promise<void>,
+): Promise<void> {
+  vi.useFakeTimers({ now: new Date(now) });
+  const cleanup = new AbortController();
+  let worker: ImDeliveryWorker | undefined;
+  const body = (async () => {
+    const fixture = await workerFixture(unit);
+    cleanup.signal.throwIfAborted();
+    const diagnostic = vi.fn();
+    const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture, {
+      deliveryHangUntil: cleanup.signal,
+    });
+    const activeWorker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: domain as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+      registry: fixture.registry,
+      operationTimeoutMs: 100,
+      onDiagnostic: diagnostic,
+    });
+    worker = activeWorker;
+    await test({
+      fixture,
+      domain,
+      diagnostic,
+      attempt: async () => {
+        cleanup.signal.throwIfAborted();
+        const outcomes = await Promise.allSettled([activeWorker.runOnce(), vi.advanceTimersByTimeAsync(1_100)]);
+        cleanup.signal.throwIfAborted();
+        for (const outcome of outcomes) {
+          if (outcome.status === "rejected") throw outcome.reason;
+        }
+        vi.setSystemTime(Date.now() + 31_000);
+      },
+    });
+  })();
+  const finished = body.finally(async () => {
+    cleanup.abort();
+    await worker?.stop();
+  });
+  onTestFinished(async () => {
+    cleanup.abort();
+    try {
+      await Promise.allSettled([finished]);
+      expect(vi.isFakeTimers()).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  await finished;
+}
+
 function fakeDomain(
   custody: PostgresRuntimeCustodyStore,
   fixture: Awaited<ReturnType<typeof workerFixture>>,
@@ -3505,7 +3534,7 @@ function fakeDomain(
     steerStatus?: string;
     steerReason?: string;
     steerFailure?: boolean;
-    deliveryHang?: boolean;
+    deliveryHangUntil?: AbortSignal;
     onDelivery?: (request: DirectImMessageDeliveryRequest) => void;
     onEvent?: (event: string) => void;
   } = {},
@@ -3537,7 +3566,13 @@ function fakeDomain(
         options.onEvent?.("delivery");
         options.onDelivery?.(request);
         onDispatched?.();
-        if (options.deliveryHang) await new Promise<void>(() => undefined);
+        const hang = options.deliveryHangUntil;
+        if (hang) {
+          await new Promise<void>((_resolve, reject) => {
+            if (hang.aborted) reject(hang.reason);
+            else hang.addEventListener("abort", () => reject(hang.reason), { once: true });
+          });
+        }
         if (options.deliveryFailure) throw new Error("delivery failed");
         const hash = computeDirectInputHash(request);
         await custody.beginDeliveryDispatch(request, hash, {

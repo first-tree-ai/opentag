@@ -131,23 +131,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                         ) : null}
                         {/* The same surface as other settings pages, so the page reads as one family. */}
                         <div className={MESSAGING_SURFACE}>
-                          {binding ? (
-                            <div
-                              className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-3"
-                              data-ui="messaging-app-identity"
-                            >
-                              <ProviderIcon className="size-6" provider={binding.provider} />
-                              <span className="grid min-w-0 justify-items-start gap-1">
-                                <strong className="text-base font-semibold text-kumo-strong">
-                                  {binding.bot.displayName ?? messagingProviderLabel(binding.provider)}
-                                </strong>
-                                <StatusIndicator
-                                  label={messagingConnectionLabel(binding)}
-                                  tone={messagingConnectionTone(binding)}
-                                />
-                              </span>
-                            </div>
-                          ) : null}
+                          {binding ? <MessagingAppIdentity binding={binding} /> : null}
                           <MessagingConnectionActions
                             agent={agent}
                             binding={binding}
@@ -367,6 +351,19 @@ function TriggerModeOption({
   );
 }
 
+/** Why openTag stopped connecting this binding, and what fixes it; nothing for any other state. */
+function connectionFailureMessage(binding: ImBindingSummary): string | undefined {
+  if (binding.bindingState !== "error" || !binding.connectionFailure) return undefined;
+  const provider = messagingProviderLabel(binding.provider);
+  const message = {
+    credentials_rejected: m.im_connection_failure_credentials_rejected(),
+    app_unavailable: m.im_connection_failure_app_unavailable({ provider }),
+    connection_rejected: m.im_connection_failure_connection_rejected({ provider }),
+    bot_mismatch: m.im_connection_failure_bot_mismatch(),
+  }[binding.connectionFailure];
+  return spaceScriptBoundary(message);
+}
+
 function messagingRecoveryLabel(binding: ImBindingSummary): string | undefined {
   if (binding.bindingState === "reauthorization_required") return m.im_update_permissions();
   if (binding.bindingState === "error" || binding.bindingState === "disabled") return m.im_reconnect();
@@ -379,4 +376,27 @@ function triggerModeExplanation(provider: ImBindingSummary["provider"]): string 
 
 function triggerModeDescription(receiveMode: AgentSummary["receiveMode"]): string {
   return receiveMode === "all_message" ? m.im_every_message_description() : m.im_mentions_only_description();
+}
+
+/** The connected app's identity, its connection state, and why a failed connection failed. */
+function MessagingAppIdentity({ binding }: { binding: ImBindingSummary }) {
+  const failure = connectionFailureMessage(binding);
+  return (
+    <>
+      <div className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-3" data-ui="messaging-app-identity">
+        <ProviderIcon className="size-6" provider={binding.provider} />
+        <span className="grid min-w-0 justify-items-start gap-1">
+          <strong className="text-base font-semibold text-kumo-strong">
+            {binding.bot.displayName ?? messagingProviderLabel(binding.provider)}
+          </strong>
+          <StatusIndicator label={messagingConnectionLabel(binding)} tone={messagingConnectionTone(binding)} />
+        </span>
+      </div>
+      {failure ? (
+        <p className="text-sm text-kumo-default" data-ui="messaging-connection-failure">
+          {failure}
+        </p>
+      ) : null}
+    </>
+  );
 }

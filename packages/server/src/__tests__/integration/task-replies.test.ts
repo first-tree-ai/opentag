@@ -578,6 +578,52 @@ describe("Task replies subresource", () => {
     await value.sql.end();
   });
 
+  it("keeps a native-thread reply stored by the earlier capture, without threadId, in its original root Task", async () => {
+    const value = await accountFixture();
+    const binding = await bind(value.database, value.agent.id, "feishu", "ou_bot");
+    const rootAnchor = await inboundMessage(value.database, {
+      bindingId: binding.id,
+      channelId: "oc_legacy_group",
+      externalMessageId: "om_root",
+      providerContext: { provider: "feishu", chatType: "group" },
+      occurredAt: new Date("2026-09-22T01:00:00.000Z"),
+    });
+    await captureFeishuReply(value.database, binding.id, {
+      messageId: "om_first",
+      chatId: "oc_legacy_group",
+      text: "First thread reply",
+      rootId: "om_root",
+      parentId: "om_root",
+      threadId: "omt_native",
+      createTime: String(Date.parse("2026-09-22T01:01:00.000Z")),
+    });
+    // The row the earlier capture stored for a reply to om_first whose response omitted thread_id and
+    // root_id: thread key and root resolved from the stored parent, but no threadId recorded.
+    await value.database.insert(imMessages).values({
+      imBindingId: binding.id,
+      providerEventId: null,
+      channelId: "oc_legacy_group",
+      externalMessageId: "om_legacy_second",
+      providerRevisionKey: OUTBOUND_CREATED_REVISION_KEY,
+      operation: "created",
+      direction: "outbound",
+      threadKey: "omt_native",
+      replyToExternalId: "om_first",
+      authorKind: "bot",
+      authorExternalId: "ou_bot",
+      authorDisplayName: null,
+      content: { version: 1, fallbackText: "Legacy second reply", blocks: [], truncated: false },
+      providerContext: { provider: "feishu", parentId: "om_first", rootId: "om_root" },
+      occurredAt: new Date("2026-09-22T01:02:00.000Z"),
+      receivedAt: new Date("2026-09-22T01:02:00.000Z"),
+    });
+
+    const service = new TaskService(value.database);
+    const replies = await service.listReplies(value.bootstrap.userId, rootAnchor.id, { limit: 20 });
+    expect(replies.items.map((item) => item.externalMessageId)).toEqual(["om_legacy_second", "om_first"]);
+    await value.sql.end();
+  });
+
   it("paginates replies that share an instant by native identity without duplicates", async () => {
     const value = await accountFixture();
     const binding = await bind(value.database, value.agent.id, "feishu", "ou_bot");

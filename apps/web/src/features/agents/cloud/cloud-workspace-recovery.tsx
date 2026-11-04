@@ -119,7 +119,8 @@ function WorkspaceRecoveryPanel({ agentId, onClose }: { agentId: string; onClose
   const rows = terminalError ? [] : (query.data?.pages.flatMap((page) => page.sessions) ?? []);
   const canAct = query.isSuccess && !query.isError && !settledError && !busy;
   return (
-    <section aria-labelledby={headingId} className="grid gap-4 rounded-lg border border-kumo-line p-4">
+    // It opens inside the Agent's recovery section, whose border already frames it.
+    <section aria-labelledby={headingId} className="grid gap-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <Text as="h2" id={headingId} variant="heading">
           {m.cloud_recovery_title()}

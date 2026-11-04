@@ -130,7 +130,7 @@ interface PendingBase<TRequest, TResult> {
 interface PendingReconcile extends PendingBase<SessionReconcileRequest, SessionReconcileResult> {
   kind: "reconcile";
   onResult?: PreparedSessionReconcile["onResult"];
-  completing?: boolean;
+  completing?: Promise<void>;
 }
 
 interface PendingDelivery extends PendingBase<DirectImMessageDeliveryRequest, ImMessageDeliveryResult> {
@@ -305,6 +305,7 @@ export class RuntimeDomainOwner {
     onDispatched?: () => void,
     admission?: RuntimeDispatchAdmission<SessionReconcileResult>,
     signal?: AbortSignal,
+    options: { joinSettlement?: boolean } = {},
   ): Promise<SessionReconcileResult> {
     if (this.#closed)
       return Promise.reject(new RuntimeDomainRequestError("stopped", "The runtime domain owner stopped"));
@@ -336,6 +337,8 @@ export class RuntimeDomainOwner {
               undefined,
               admissionDispatched,
               signal,
+              undefined,
+              options.joinSettlement,
             ) as Promise<SessionReconcileResult>,
           onDispatched,
         );
@@ -366,6 +369,7 @@ export class RuntimeDomainOwner {
                   admissionDispatched,
                   signal,
                   prepared.onResult,
+                  options.joinSettlement,
                 ) as Promise<SessionReconcileResult>,
               onDispatched,
             ),
@@ -882,6 +886,7 @@ export class RuntimeDomainOwner {
     onDispatched?: () => void,
     signal?: AbortSignal,
     onReconcileResult?: PreparedSessionReconcile["onResult"],
+    joinReconcileSettlement = false,
   ): Promise<SessionReconcileResult | ImMessageDeliveryResult | RuntimeImSteerResult | SessionMessageDeliveryResult> {
     this.#assertRunning();
     const existing = this.#pending.get(request.requestId);
@@ -972,6 +977,24 @@ export class RuntimeDomainOwner {
     const pending = createPendingRequest(kind, base, inputHash, semanticHash, onReconcileResult);
     this.#pending.set(request.requestId, pending);
     const dispatch = this.#registry.send(computerId, instanceId, request);
+    if (pending.kind === "reconcile" && signal && joinReconcileSettlement) {
+      const abort = () => {
+        if (this.#pending.get(request.requestId) !== pending || pending.completing) return;
+        this.#pending.delete(request.requestId);
+        clearTimeout(timer);
+        // A cancelled waiter still owns an admitted send until its actual callback settles.
+        void dispatch.then(
+          () => pending.reject(signal.reason),
+          () => pending.reject(signal.reason),
+        );
+      };
+      signal.addEventListener("abort", abort, { once: true });
+      void promise.then(
+        () => signal.removeEventListener("abort", abort),
+        () => signal.removeEventListener("abort", abort),
+      );
+      if (signal.aborted) abort();
+    }
     void this.#track(
       dispatch
         .then(() => onDispatched?.())
@@ -1011,6 +1034,12 @@ export class RuntimeDomainOwner {
           );
         }),
     );
+    if (pending.kind === "reconcile" && signal && joinReconcileSettlement) {
+      return promise.finally(async () => {
+        await dispatch.catch(() => undefined);
+        await pending.completing;
+      });
+    }
     return promise;
   }
 
@@ -1029,7 +1058,16 @@ export class RuntimeDomainOwner {
     ) {
       return;
     }
-    pending.completing = true;
+    pending.completing = Promise.resolve().then(() => this.#processReconcileResult(pending, result, context));
+    await pending.completing;
+  }
+
+  async #processReconcileResult(
+    pending: PendingReconcile,
+    result: SessionReconcileResult,
+    context: RuntimeBusinessContext,
+  ): Promise<void> {
+    const requestId = pending.request.requestId;
     try {
       if (result.status !== "rejected") {
         await this.#custody.claimRetainedReports(pending.request, result.retainedReports ?? [], context);

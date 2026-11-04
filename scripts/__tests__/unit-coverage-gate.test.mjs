@@ -224,14 +224,75 @@ test("a diff with no executable changes passes explicitly", () => {
       "+// new comment",
       "",
     ].join("\n"),
-    coverage: {},
+    // Measured, with nothing executable on the changed line.
+    coverage: { "src/example.ts": { path: "src/example.ts", s: {}, statementMap: {} } },
     repositoryRoot: "/repo",
     threshold: 80,
   });
   assert.equal(result.total, 0);
   assert.equal(result.covered, 0);
   assert.equal(result.passed, true);
+  assert.deepEqual(result.unmeasured, []);
   assert.equal(result.reason, "no executable changed lines");
+});
+
+const typeOnlyFile = "packages/shared/src/types.ts";
+const typeOnlyDiff = [
+  `--- a/${typeOnlyFile}`,
+  `+++ b/${typeOnlyFile}`,
+  "@@ -0,0 +1,2 @@",
+  "+export type Value = string;",
+  "+export interface Shape { readonly value: Value }",
+];
+
+test("a type-only change in an unmeasured file fails closed beside a covered change", () => {
+  // Diluted: one covered executable line elsewhere makes the percentage 100%. The type-only file
+  // has no executable line, but the provider reports even such a file with an empty statement map,
+  // so its missing entry means it was not measured.
+  const covered = "packages/shared/src/covered.ts";
+  const diff = [
+    `--- a/${covered}`,
+    `+++ b/${covered}`,
+    "@@ -0,0 +1 @@",
+    "+export const value = 1;",
+    ...typeOnlyDiff,
+    "",
+  ].join("\n");
+  const coverage = {
+    [covered]: {
+      path: covered,
+      s: { 0: 1 },
+      statementMap: { 0: { start: { line: 1, column: 0 }, end: { line: 1, column: 20 } } },
+    },
+  };
+  const result = evaluatePatchCoverage({ diff, coverage, repositoryRoot: "/repo", threshold: 80 });
+  assert.equal(result.total, 1);
+  assert.equal(result.percent, 100);
+  assert.equal(result.passed, false);
+  assert.deepEqual(result.unmeasured, [typeOnlyFile]);
+});
+
+test("an all-type-only patch in an unmeasured file fails closed despite zero executable lines", () => {
+  const result = evaluatePatchCoverage({
+    diff: [...typeOnlyDiff, ""].join("\n"),
+    coverage: {},
+    repositoryRoot: "/repo",
+    threshold: 80,
+  });
+  assert.equal(result.total, 0);
+  assert.equal(result.reason, "no executable changed lines");
+  assert.equal(result.passed, false);
+  assert.deepEqual(result.unmeasured, [typeOnlyFile]);
+
+  // The same patch against the empty entry the provider emits for a type-only file passes.
+  const measured = evaluatePatchCoverage({
+    diff: [...typeOnlyDiff, ""].join("\n"),
+    coverage: { [typeOnlyFile]: { path: typeOnlyFile, s: {}, statementMap: {} } },
+    repositoryRoot: "/repo",
+    threshold: 80,
+  });
+  assert.equal(measured.passed, true);
+  assert.deepEqual(measured.unmeasured, []);
 });
 
 test("supported script extensions are included while coverage artifacts remain excluded", () => {

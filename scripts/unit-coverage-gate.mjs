@@ -174,7 +174,9 @@ function evaluateChangedFile({ file, lines, lineHits }) {
       uncovered.push(`${file}:${line}`);
     }
   }
-  return { covered, total, uncovered, unmeasured: !instrumented && total > 0 };
+  // A judged file without an entry was not measured, whatever its changed lines contain: the provider
+  // reports a type-only file too, with an empty statement map, so its absence is the failure itself.
+  return { covered, total, uncovered, unmeasured: !instrumented };
 }
 
 export function evaluatePatchCoverage({ diff, coverage, repositoryRoot, threshold = 80 }) {
@@ -197,12 +199,22 @@ export function evaluatePatchCoverage({ diff, coverage, repositoryRoot, threshol
     if (result.unmeasured) unmeasured.push(file);
   }
 
+  // A changed file the run should have measured but did not blocks on its own, whatever the
+  // percentage, and even when nothing in the patch is executable: neither a covered remainder nor an
+  // all-declaration patch may hide a package that stopped being measured.
+  const measured = unmeasured.length === 0;
   if (total === 0) {
-    return { covered: 0, passed: true, percent: 100, reason: "no executable changed lines", total, uncovered };
+    return {
+      covered: 0,
+      passed: measured,
+      percent: 100,
+      reason: "no executable changed lines",
+      total,
+      uncovered,
+      unmeasured,
+    };
   }
 
   const percent = (covered / total) * 100;
-  // A changed file the run should have measured but did not blocks on its own, whatever the
-  // percentage: a covered remainder of the patch must not hide a package that stopped being measured.
-  return { covered, passed: percent >= threshold && unmeasured.length === 0, percent, total, uncovered, unmeasured };
+  return { covered, passed: percent >= threshold && measured, percent, total, uncovered, unmeasured };
 }

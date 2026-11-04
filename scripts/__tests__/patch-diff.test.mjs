@@ -218,6 +218,21 @@ test("the workflow's inline gate program fails an uncovered changed line and pas
       `a covered changed line must pass the gate:\nstdout:\n${covered.stdout}\nstderr:\n${covered.stderr}`,
     );
     assert.match(covered.stdout, /Patch coverage: 1\/1 lines/, "the nonzero denominator must survive a pass too");
+
+    // A type-only change has no executable line; with its file missing from the report, the
+    // workflow must fail rather than take the no-executable-lines pass.
+    await writeFile(join(repository, sourceFile), "export const original = 1;\nexport type Added = string;\n");
+    git(repository, ["add", "."]);
+    git(repository, ["commit", "-m", "make the change type-only"]);
+    await writeFile(join(repository, "coverage/unit/coverage-final.json"), JSON.stringify({}));
+    const unmeasured = runWorkflowProgram();
+    assert.equal(
+      unmeasured.status,
+      1,
+      `an unmeasured type-only change must fail the gate:\nstdout:\n${unmeasured.stdout}\nstderr:\n${unmeasured.stderr}`,
+    );
+    assert.match(unmeasured.stdout, /did not measure:\npackages\/shared\/src\/workflow-gate-fixture\.ts/);
+    assert.doesNotMatch(unmeasured.stdout, /explicit pass/);
   });
 });
 

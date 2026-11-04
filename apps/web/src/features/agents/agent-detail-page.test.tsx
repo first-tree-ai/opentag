@@ -150,3 +150,34 @@ describe("Agent home for a Cloud-bound Agent", () => {
     expect(screen.getAllByRole("button", { name: "Recover workspace" })).not.toHaveLength(0);
   });
 });
+
+describe("Agent home status card", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  function stubActivity(activity: AgentDetail["activity"]) {
+    stubCloudAgent();
+    vi.mocked(browserApi.agent).mockResolvedValue({ ...agent, activity });
+    vi.mocked(browserApi.agents).mockResolvedValue({
+      agents: [{ ...agent, activity, usage: { windowDays: 30, tasks: 0, failed: 0, tokens: 0 } }],
+    });
+  }
+
+  it("shows the running-Task line the Agent list shows, as its own first row", async () => {
+    stubActivity({ state: "working", startedAt: TIME, runningTaskCount: 2 });
+    await renderAgentHome();
+    const status = await screen.findByRole("region", { name: "Agent status" });
+    await waitFor(() =>
+      expect(status.querySelector('[data-ui="agent-status-activity"]')?.textContent).toBe("2 tasks running"),
+    );
+    const rows = [...status.querySelectorAll("li")].map((row) => row.getAttribute("data-ui"));
+    expect(rows[0]).toBe("agent-status-work");
+    expect(status.querySelector('[data-ui="agent-status-work"]')?.textContent).toContain("Work");
+  });
+
+  it("adds no row for an idle Agent that is not ready, as the list row says nothing then", async () => {
+    stubActivity({ state: "idle" });
+    await renderAgentHome();
+    const status = await screen.findByRole("region", { name: "Agent status" });
+    expect(status.querySelector('[data-ui="agent-status-work"]')).toBeNull();
+  });
+});

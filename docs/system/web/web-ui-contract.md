@@ -180,7 +180,9 @@ confirmed runtime problem still comes first, as the dependency the Agent needs b
 alone adds a quiet **Refreshing status** note under its held status; there is no page-level notice. A flickering
 status or a page-wide error reads as an outage when only one Agent's check is late, so the list keeps what it last
 knew and flags only the row whose answer is overdue. The Agent's own
-page keeps the exact current dependency states. The Server already bounds what it holds: a local Computer without a
+page keeps the exact current dependency states. Its status card starts with a **Work** row carrying the same
+running-Task or **Waiting** line as the list row, so the home answers what the Agent is doing as the list does; as its
+own row it never reads as a fact about the Computer or messaging below it. The Server already bounds what it holds: a local Computer without a
 heartbeat for 90 seconds reads as offline, and runtime and messaging observations expire on their own TTLs, so held
 list statuses converge on the Server's next settled answer.
 

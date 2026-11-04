@@ -7,6 +7,7 @@
   "agent_settings_ask_for_approval": "操作前请求批准",
   "agent_settings_ask_for_approval_description": "关闭后，此本地 Agent 无需请求批准即可运行命令、访问文件和使用网络。对后续工作生效。",
   "agent_settings_back_to": "返回 {label}",
+  "agent_settings_back_to_overview": "返回概览",
   "agent_settings_cancel_action": "取消",
   "agent_settings_change_action": "更改",
   "agent_settings_change_model_title": "更改模型",

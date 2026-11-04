@@ -7,6 +7,7 @@
   "agent_settings_ask_for_approval": "Ask for approval",
   "agent_settings_ask_for_approval_description": "When off, this local Agent can run commands, access files, and use the network without asking. Applies to future work.",
   "agent_settings_back_to": "Back to {label}",
+  "agent_settings_back_to_overview": "Back to Overview",
   "agent_settings_cancel_action": "Cancel",
   "agent_settings_change_action": "Change",
   "agent_settings_change_model_title": "Change model",

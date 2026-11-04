@@ -45,13 +45,16 @@ export function AgentSettingsPage({ agentId, section }: { agentId: string; secti
          * The Agent's home is named by its place in the navigation, not by the Agent's name: a long
          * name made the back link wrap, and the name is already beside it.
          */
-        const backLabel = selected && !returnAgentId ? m.agent_settings_title() : m.shell_overview();
+        const backText =
+          selected && !returnAgentId
+            ? m.agent_settings_back_to({ label: m.agent_settings_title() })
+            : m.agent_settings_back_to_overview();
         return (
           <section className="grid gap-6">
             <div className="grid gap-4">
               <Link className="inline-flex w-fit items-center gap-2 text-sm text-kumo-link" {...back}>
                 <Icon name="arrow-left" />
-                {m.agent_settings_back_to({ label: backLabel })}
+                {backText}
               </Link>
               <div className="min-w-0">
                 <AgentSettingsContent
@@ -184,7 +187,7 @@ export function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
                         const fix = agentSettingsFix(agent, item.key);
                         return (
                           <div
-                            className="relative flex items-center gap-3 border-b border-kumo-line p-4 transition-colors last:border-b-0 hover:bg-kumo-tint has-[a:first-child:focus-visible]:bg-kumo-tint"
+                            className="relative flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-kumo-line p-4 transition-colors last:border-b-0 hover:bg-kumo-tint has-[a:first-child:focus-visible]:bg-kumo-tint"
                             key={item.key}
                           >
                             <Link
@@ -196,7 +199,8 @@ export function AgentSettingsOverview({ agent }: { agent: AgentDetailView }) {
                             </Link>
                             {fix ? (
                               <Link
-                                className="relative z-10 shrink-0 text-sm font-medium text-kumo-link underline-offset-4 hover:underline"
+                                // On phones the fix takes its own line under the summary, so the summary keeps its width.
+                                className="relative z-10 shrink-0 text-sm font-medium text-kumo-link underline-offset-4 hover:underline max-[640px]:order-last max-[640px]:basis-full max-[640px]:pl-11"
                                 aria-label={m.agent_settings_fix_label({ action: fix.label, section: item.label() })}
                                 data-ui="agent-settings-fix"
                                 state={{ agent, returnAgentId: agent.id }}

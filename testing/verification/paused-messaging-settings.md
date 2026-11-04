@@ -38,7 +38,12 @@ The expanded three-file PostgreSQL run completed with 124 passing and 5 failing 
 `im-binding.test.ts` delivery/history/placement cases. A clean checkout of the exact base, with the same locked
 dependencies and the five failing cases selected, reproduced the history timeout and pending-placement deadlock
 (2 failed, 3 passed). A first candidate recheck was blocked during PostgreSQL startup, before any test ran.
-The full expanded suite is therefore not reported green; complete regression remains a CI gate.
+After integrating `bfcde09f9f7aec9d469fa4d00ec8dee9de403183`, the current-base binding/settings/custom-Slack run
+finished with 130 passed and one delivery-admission timeout failure, followed by a worker cleanup rejection. That
+single failing case passed when selected alone on both the candidate and clean main. The later
+`260cdc370148048080da868f3cc8cf19602296af` base update changes documentation only. Server build/type checks and
+repository checks passed after the runtime base update; the documentation-only merge was checked too. The full
+expanded suite is not reported green; complete regression remains a CI gate.
 
 ## Browser evidence
 

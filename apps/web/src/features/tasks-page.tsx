@@ -23,6 +23,7 @@ import {
 } from "../ui/design-system.js";
 import { ProviderIcon } from "../ui/provider-icon.js";
 import { AgentAvatar } from "./agents/agent-avatar.js";
+import type { AgentDependencyStatus } from "./agents/agent-presentation.js";
 import { agentTaskDetailLink, agentTasksLink } from "./agents/agent-routes.js";
 import {
   liveRefreshErrors,
@@ -261,7 +262,18 @@ export function TasksPage({ agentId, showExamples = false }: { agentId?: string;
  * The Agent home list. It reads the Agent's own Tasks from the server rather than filtering a
  * an Account-wide page, so paging past the first page cannot hide this Agent's older Tasks.
  */
-export function AgentTasksSection({ agentId }: { agentId: string }) {
+export function AgentTasksSection({
+  agentId,
+  connectChannel,
+}: {
+  agentId: string;
+  /*
+   * The way to the Agent's messaging connection when it has none. Work reaches an Agent only
+   * through a chat, so with no channel the empty list offers that connection instead of asking the
+   * reader to message an Agent nobody can reach yet.
+   */
+  connectChannel?: NonNullable<AgentDependencyStatus["action"]>;
+}) {
   /*
    * Keyed by the Agent, so the route reusing this component for a different `:agentId` reads a
    * different entry rather than a load that has to be told apart from the one before it. An append
@@ -302,9 +314,7 @@ export function AgentTasksSection({ agentId }: { agentId: string }) {
         <Text as="h2" id="agent-tasks-heading" variant="heading">
           {m.tasks_title()}
         </Text>
-        <Link className="text-sm text-kumo-link" {...agentTasksLink(agentId)}>
-          {m.tasks_view_all()}
-        </Link>
+        <AgentTasksViewAll agentId={agentId} hasTasks={tasks.length > 0} />
       </div>
       {!unavailable && tasksQuery.isPending ? (
         <p className="text-sm text-kumo-subtle" role="status">
@@ -318,9 +328,7 @@ export function AgentTasksSection({ agentId }: { agentId: string }) {
       ) : null}
       {refreshError ? <ResourceRefreshStatus error={refreshError} onRetry={() => void tasksQuery.refetch()} /> : null}
       {!unavailable && tasksQuery.data && tasks.length === 0 ? (
-        <p className="text-sm text-kumo-subtle" role="status">
-          {m.tasks_no_tasks_yet_detail()}
-        </p>
+        <AgentTasksEmpty connectChannel={connectChannel} />
       ) : null}
       {!unavailable && tasks.length > 0 ? (
         <>
@@ -1020,4 +1028,31 @@ function asError(value: unknown): Error {
 
 function taskFilterKey(agentId: string | undefined) {
   return `tasks:${agentId ?? "examples"}`;
+}
+
+/** "View all" opens the same empty list when there is nothing yet, so it waits for a first Task. */
+function AgentTasksViewAll({ agentId, hasTasks }: { agentId: string; hasTasks: boolean }) {
+  if (!hasTasks) return null;
+  return (
+    <Link className="text-sm text-kumo-link" {...agentTasksLink(agentId)}>
+      {m.tasks_view_all()}
+    </Link>
+  );
+}
+
+function AgentTasksEmpty({ connectChannel }: { connectChannel?: NonNullable<AgentDependencyStatus["action"]> }) {
+  return (
+    <p className="text-sm text-kumo-subtle" role="status">
+      {connectChannel ? (
+        <>
+          {m.tasks_no_channel_detail()}{" "}
+          <Link className="text-kumo-link underline underline-offset-4" {...connectChannel.link}>
+            {connectChannel.label}
+          </Link>
+        </>
+      ) : (
+        m.tasks_no_tasks_yet_detail()
+      )}
+    </p>
+  );
 }

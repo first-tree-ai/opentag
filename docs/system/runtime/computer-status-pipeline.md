@@ -1,232 +1,168 @@
 ---
-title: "Computer status pipeline (proposed)"
-description: "Proposed redesign of how a Computer's self-check reaches the Web: one 30-second heartbeat that carries the latest check results, Server state that keeps only the latest report, and a steady 10-second Web refresh."
+title: "Agent status pipeline (decided)"
+description: "Decided direction for Agent status: Computer offline after three missed heartbeats overrides everything, three sub-statuses kept in Redis, Agent status derived on read, and a Web that reads the Server directly every 10 seconds while visible."
 ---
 
-# Computer status pipeline (proposed)
+# Agent status pipeline (decided)
 
-Status: proposal for engineering review. Nothing here is implemented yet; the current behaviour is described in
+Status: decided; not implemented yet. The current behaviour is described in
 [Runtime protocol compatibility](runtime-protocol.md), [Direct Provider CLI](../messaging/direct-provider-cli.md), and
-the [Web UI contract](../web/web-ui-contract.md).
+the [Web UI contract](../web/web-ui-contract.md). Those pages change with the implementation.
 
 ## Why
 
-The Web is an admin console. An administrator configures Agents there and reads whether each Agent can work. That
-reading has to be timely and steady, and should cost as little machinery as possible.
+The Web is an admin console. An admin configures Agents there and reads whether each Agent can work, so that reading
+has to be timely and steady at minimal complexity.
 
-Today it is neither, because of one root cause: several kinds of evidence expire on their own clocks, and an expired
-answer becomes an "uncertain" state (`checking` from the Server, `unconfirmed` in the Web). Each layer added a
-workaround for that state:
-
-- per-kind expiry windows (60, 120 and 300 seconds) with exemptions;
+Today readiness evidence expires on separate clocks: 60 seconds for Provider readiness, 120 for messaging CLI
+credentials and 300 for the CLI artifact. An expired answer becomes an uncertain state (`checking` from the Server,
+`unconfirmed` in the Web), and that uncertain state is the root of the layered workarounds:
 - a sealed preparation that ignores heartbeats;
-- server-triggered re-validation on reads;
-- a Web hold that keeps the last settled status, plus a "Refreshing status" note;
+- re-validation on reads;
+- a Web hold with a "Refreshing status" note;
 - a re-check on entry.
 
-The proposal removes the uncertain state at its source. The Computer always reports a definite result for every check,
-the Server keeps only the latest report, and the Web shows what the Server holds.
+The decided direction removes the uncertain state instead of working around it.
 
-## Target behaviour
+## Decisions
 
-### Status vocabulary
+### Computer offline overrides everything
 
-An Agent's Computer leg reads exactly one of three kinds:
+- A Computer is offline after three missed heartbeats (90 seconds at the 30-second cadence), or as soon as its socket
+  closes.
+- Offline is the top-priority status. While the Computer is offline, every other sub-status is void, and every Agent
+  on it reads **Computer offline**.
 
-1. **Ready.**
-2. **A named problem.** For example: Pi not installed, Codex sign-in required, messaging CLI missing, credentials
-   rejected, or a check timed out.
-3. **Computer offline.**
+### Three sub-statuses in Redis; Agent status derived on read
 
-No status means "checking", "unconfirmed" or "refreshing".
+- **Storage:** the Server stores three sub-statuses per Agent's dependencies in **Redis**. Each report overwrites the
+  previous one; no history is kept.
+  - Computer (online/offline and last heartbeat);
+  - runtime (Provider readiness on that Computer);
+  - messaging channel (binding, messaging CLI and credentials).
+- **Not stored:** the aggregated Agent status. It is derived on every read from the three sub-statuses, with Computer
+  offline taking precedence.
+- **Vocabulary:** an Agent reads exactly one of three kinds: ready, a named problem, or Computer offline. No status
+  means "checking", "unconfirmed" or "refreshing".
+- **Restart:** after a Server restart, a Computer reads offline until its next report arrives.
 
-### Computer (daemon)
+### Web reads the Server directly
 
-One loop runs every 30 seconds on a fixed cadence:
+- The Web keeps no status cache of its own and no anti-flicker hold. It shows what the Server returns.
+  - Removed: `observeAgentListStatus`, `transientSince`, `AGENT_STATUS_REFRESHING_AFTER_MS`, and the
+    **Refreshing status** / "状态刷新中" copy.
+  - Removed: any re-check on entry.
+  - Kept: the setup page's explicit **Check again** button (`POST /agents/:id/setup/refresh`).
+- **Agent status** refetches every 10 seconds, and only while the tab is in the foreground.
+- **Usage, MCP and Skill pages** refetch every 30 seconds.
+- **Latency:**
+  - a change on the Computer shows within 30 seconds (next heartbeat) plus 10 seconds (next refetch);
+  - a clean disconnect shows within one refetch;
+  - a crash shows within 90 seconds.
 
-1. Run the local self-check.
-2. Send the full result in the heartbeat.
+## Facts from today's code the implementation must account for
 
-The two parts of the self-check are refreshed differently, because only some of them are cheap and local.
+Each was checked against `main`.
 
-**Re-checked locally on every tick:**
-- runtime/Provider readiness for each installed Provider;
-- the messaging CLI artifact (installed, version, launcher).
+**Storage:**
+- OpenTag runs no Redis today. The lockfile mentions `@upstash/redis` only as an optional peer of `drizzle-orm`, and
+  no service, compose file or configuration starts one.
+- Readiness evidence lives in memory in `ConnectionRegistry`, one entry per Computer. Nothing about readiness is
+  persisted. The database keeps only presence (`currentInstanceId`, `lastSeenAt`).
 
-**Re-validated on events and on a slow timer:**
-- Messaging CLI credentials are validated against the real Feishu or Slack API with Server-issued grant material.
-  Running that every 30 seconds would need standing grants and would call those APIs continuously from every Computer.
-- They are therefore re-validated on:
-  - `computer:register`;
-  - a binding change;
-  - **Check again** (`POST /agents/:id/setup/refresh`);
-  - a 10-minute timer.
-- Between validations the heartbeat repeats the last credential result.
+**Heartbeat:**
+- The heartbeat is not a fixed interval. The client re-arms it only after `heartbeat:result` returns, so the period is
+  30 seconds plus the round trip plus the Server's write.
+- The local probe runs on its own 30-second timer (half the 60-second capability window).
 
-**Rules for every check:**
-- Every individual check has its own timeout. A check that times out reports a named "check timed out" result for
-  that item. The heartbeat is still sent on time.
-- No check ever reports `checking`.
-- Every heartbeat carries the latest value of all four parts (runtime/Provider, CLI artifact, CLI credential, and the
-  capability set), each with its own `checkedAt`, so freshness is visible without being a state of its own.
+**Credentials:**
+- Messaging CLI credentials are never re-checked by the daemon on a timer. The Server starts each validation with
+  grant material valid for 15 seconds, and the check calls the real Feishu or Slack API.
 
-### Server
+**Offline and restart:**
+- After a Server restart, the database still reads a Computer as online for up to 90 seconds with no socket.
+- The first evidence after reconnect comes from `computer:register`.
+- The registry's dead-socket sweep runs every 90 seconds, so a dead socket can linger for up to about 180 seconds.
 
-**What it stores:**
-- In memory, per Computer (the existing `ConnectionRegistry` entry), only the latest heartbeat's full state. Each
-  heartbeat overwrites the previous one.
-- `computer:register` counts as the first heartbeat of a connection.
-- Nothing about readiness is persisted. The database keeps only presence (`currentInstanceId`, `lastSeenAt`), as today.
+**Preparation and terminal results:**
+- A sealed preparation ignores heartbeat readiness until a matching result, a reconnect, or a new preparation. Its
+  5-minute quarantine keeps the seal.
+- An artifact `unavailable` and a credential `needs_attention` never expire, and are treated as terminal after three
+  retries.
 
-**What it removes:**
-- The per-kind expiry windows: `RUNTIME_CLIENT_CAPABILITY_TTL_MS` (60s), `RUNTIME_PROVIDER_CLI_CREDENTIAL_TTL_MS`
-  (120s), `RUNTIME_PROVIDER_CLI_ARTIFACT_TTL_MS` (300s).
-- Every projection that turns missing evidence into `checking` or credential `unconfirmed`.
-- The sealed preparation and its 5-minute quarantine. Today a seal makes heartbeats ignored until a matching result
-  arrives, a reconnect happens, or a new preparation starts, so a Computer can get stuck.
-- The "unavailable never expires" rule. Today an artifact `unavailable` and a credential `needs_attention` are kept
-  forever and treated as terminal after three retries. Under this proposal the latest check result is simply what is
-  shown.
+**What does not depend on readiness:**
+- Turn delivery does not need fresh readiness evidence. It needs only a current registry instance and negotiated
+  capabilities, and the daemon re-checks the Provider locally before each Turn.
 
-**When a Computer is offline:**
-- It is offline when its socket closes, or when it has sent no heartbeat for 90 seconds.
-- Offline is decided from `lastSeenAt` within 90 seconds, as today. The registry's dead-socket sweep, which today
-  runs only every 90 seconds, tightens so a dead socket cannot linger for up to about 180 seconds.
-- All of an offline Computer's Agents read **Computer offline**.
-- **Server restart:** a Computer with no registry entry reads offline. Today the database still says online for up
-  to 90 seconds after a restart while no socket exists. Its state returns with the first `computer:register` after
-  reconnect.
+## Open points for the owner
 
-### Web
+These came out of verification. They are proposals, not decisions.
 
-**Refresh:**
-- Status queries refetch every 10 seconds while the page is visible, immediately on focus, and not in background tabs
-  (TanStack's `refetchIntervalInBackground` stays off).
-- This uses a dedicated status constant. The shared `LIVE_REFETCH_INTERVAL_MS` (30 seconds) also drives usage, MCP,
-  Skills, Tasks and Cloud pages, which keep their cadence.
-- The setup page's own 2-second loop stops while the tab is hidden; today it keeps running.
+- **Redis:** OpenTag has no Redis. Introducing it means deployment, local development, the UX sandbox and CI fixtures.
+  Should Redis be required, or is there a fallback for single-instance deployments?
+- **Check cadence per part:**
+  - Runtime/Provider readiness and the CLI artifact are cheap local checks and can run on every 30-second tick.
+  - Credentials are not local. Proposal: re-validate on register, on a binding change, on **Check again**, and on a
+    10-minute timer, with each check's own timeout.
+  - Every report carries each part's `checkedAt`.
+  - A timed-out check reports a named "check timed out" result for that item rather than `checking`.
+- **Fixed-cadence heartbeat:** send every 30 seconds rather than re-arming after each reply, so "three missed
+  heartbeats" means 90 seconds.
+- **Older daemons:** every connected daemon is protocol v2, and the heartbeat frame schema is strict.
+  - A new payload needs a negotiated capability, proposed name `runtime.selfCheckHeartbeat`, following the existing
+    `channelTarget` pattern.
+  - A daemon that does not negotiate it keeps today's requirement/grant frames until the support window ends. Its
+    missing results should read as "update the openTag CLI on this computer", a named problem.
+- **Credentials that break between validations:** revocations the Server observes from the provider already surface
+  as a named problem (Slack `tokens_revoked` moves the binding to "reauthorization required"). An authentication
+  failure the Agent hits while sending through the messaging CLI during a Turn does not feed back into status today.
+  Should it?
+- **Readers of today's expiry windows:** these move to "sub-status in Redis or Computer offline".
 
-**What it removes:**
-- The anti-flicker hold: `observeAgentListStatus`, `steadyAgentListItem`, `transientSince`,
-  `AGENT_STATUS_REFRESHING_AFTER_MS`.
-- The **Refreshing status** / "状态刷新中" copy.
-- The `unconfirmed` / `checking` projections in `agent-model.ts` and `agent-presentation.ts`. A failed read keeps the
-  last successful data with the existing refresh-error notice instead of inventing a status.
-- Any re-check on entry. The setup page keeps its explicit **Check again** button (`POST /agents/:id/setup/refresh`).
-
-### Latency
-
-- A change on the Computer is visible in the Web within 30 seconds (next heartbeat) plus 10 seconds (next refetch).
-- A clean disconnect is visible within one refetch.
-- A crashed or unplugged Computer is visible within 90 seconds.
-
-## Compatibility with older daemons
-
-Every connected daemon is runtime protocol v2; v1 is already refused. The heartbeat frame schema is strict, so the new
-payload cannot be added silently.
-
-**New capability (name for review):**
-- Add a negotiated capability, proposed name `runtime.selfCheckHeartbeat`, to `RUNTIME_CAPABILITY` and both offers.
-- A daemon sends the full self-check and its fixed 30-second loop only when the capability was negotiated. This
-  follows the existing pattern where `heartbeat:result.channelTarget` is sent only after `runtime.channelTarget` was
-  negotiated.
-
-**How a daemon that did not negotiate it is treated:**
-- It keeps today's frames: heartbeat with runtime and IM-CLI readiness, and separate `provider-cli:artifact:status`,
-  `provider-cli:prewarm:result` and `provider-cli:validation:result` frames in reply to Server requirement and grant
-  frames.
-- The Server keeps today's requirement/grant flow and evidence path only for such connections. It maps their results
-  onto the three-kind vocabulary:
-  - expired or missing evidence becomes a named problem asking to update the openTag CLI on that computer, not an
-    uncertain state.
-- The legacy path is removed after the support window for older CLI releases ends.
-
-**What does not change:**
-- Turn delivery does not depend on readiness freshness. The delivery worker requires only a current registry instance
-  and negotiated capabilities, and the daemon re-checks the Provider locally before each Turn. Removing the expiry
-  windows does not change routing.
-
-## What else reads today's expiry windows
-
-These consumers must move to "latest report or offline":
-
-| Consumer | Today | Proposed |
+| Consumer | Today | After |
 | --- | --- | --- |
-| Agent status (list, home) | 60s runtime expiry; missing evidence reads `checking` / `unconfirmed` | Latest report; three kinds |
-| Agent setup | Stages `waiting` / `needs-runtime`; IM CLI gate needs `ready` with a non-null `observedAt` | Same stages, from the latest report; no `waiting` from missing evidence |
-| IM handoff readiness | Artifact (300s) and credential (120s) expiry; phases `preparing_cli` / `checking_credentials`; re-validation on reads | Latest artifact and credential results; no re-validation on reads |
-| Feishu activation gating (`connection-manager.ts`) | Runtime readiness via the 60s expiry | Latest report |
-| Computers list | Readiness projection with `checking` fallback | Latest report or offline |
-| CLI (`runtime:unconfirmed`) | Reported from the CLI's own probe | Reports the latest result or a named problem |
-| MCP | Does not read readiness; shares the 30s live cadence | Unchanged |
-| Cloud Agents / Computers | Readiness from deployment Cloud availability, not the registry | Unchanged |
+| Agent status (list, home) | 60s runtime expiry; missing evidence reads `checking` / `unconfirmed` | Derived on read from the three sub-statuses |
+| Agent setup | Stages `waiting` / `needs-runtime`; IM CLI gate needs `ready` with a non-null `observedAt` | Same stages from the stored sub-statuses |
+| IM handoff readiness | Artifact (300s) and credential (120s) expiry; phases `preparing_cli` / `checking_credentials`; re-validation on reads | Stored messaging sub-status; no re-validation on reads |
+| Feishu activation gating (`connection-manager.ts`) | Runtime readiness via the 60s expiry | Stored runtime sub-status |
+| Computers list | Readiness projection with a `checking` fallback | Stored sub-status or offline |
+| CLI (`runtime:unconfirmed`) | Reported from the CLI's own probe | Latest result or a named problem |
+| MCP | Does not read readiness | Unchanged; 30-second refetch |
+| Cloud Agents / Computers | Readiness from deployment Cloud availability | Unchanged |
 
-## Credentials that break between validations
-
-Revocations the Server observes from the provider already surface as a named problem. For example, Slack
-`tokens_revoked` moves the binding to "reauthorization required", which the Web shows as **Update permissions**.
-
-An authentication failure that the Agent hits while sending through the messaging CLI during a Turn does not feed
-back into readiness today. It is listed as an open question below rather than designed here.
-
-## Files to change
+## Files that change
 
 **shared:**
-- `packages/shared/src/runtime-protocol.ts`: the new capability and offer; an optional heartbeat field for the full
-  self-check; retire the expiry constants.
-- `packages/shared/src/computer.ts`: readiness status values. These are public API, so keep the wire values for older
-  peers and stop producing `checking`.
-- `packages/shared/src/runtime-domain.ts`: Provider CLI frames.
-- `packages/shared/src/agent-setup.ts` and `im-binding.ts`, if the setup states and handoff phases change.
-- The package index and browser export.
+- `packages/shared/src/runtime-protocol.ts`: retire the expiry constants; the new heartbeat capability and payload.
+- `packages/shared/src/computer.ts`: readiness status values. These are public API, so keep the wire values for
+  older peers and stop producing `checking`.
+- `packages/shared/src/runtime-domain.ts`, `agent-setup.ts`, `im-binding.ts`.
 
 **client:**
-- `packages/client/src/runtime/runtime-connection.ts`: the fixed-cadence heartbeat builder; remove the client-side
-  60-second expiry per observation.
-- `packages/client/src/runtime/client-runtime-composition.ts`: fold the 30-second capability/probe timer into the
-  heartbeat loop; a deadline per check; no `publishChecking`.
-- `packages/client/src/runtime/provider-cli/reconciler.ts` and `validation-runner.ts`: an artifact check on every
-  tick; credential validation on events plus the 10-minute timer, with its own timeout.
+- `packages/client/src/runtime/runtime-connection.ts` and `client-runtime-composition.ts`: one fixed-cadence loop;
+  a deadline per check.
+- `packages/client/src/runtime/provider-cli/reconciler.ts` and `validation-runner.ts`.
 - `apps/cli/src/core/computer/preparation.ts` and `runtime-probe.ts`.
 
 **server:**
-- `packages/server/src/runtime/connection-registry.ts`: latest-report storage; remove the expiry logic, seal,
-  quarantine and terminal exemptions.
-- `packages/server/src/runtime/runtime-session.ts`: heartbeat parse and capability gating.
-- `packages/server/src/api/runtime.ts`: the dead-socket sweep.
-- `packages/server/src/runtime/provider-cli-reconcile-owner.ts`: keep the requirement/grant flow for legacy
-  connections only.
+- Redis client and configuration (new).
+- `packages/server/src/runtime/connection-registry.ts` and `runtime-session.ts`; `packages/server/src/api/runtime.ts`
+  (the sweep).
+- `packages/server/src/runtime/provider-cli-reconcile-owner.ts`.
 - `packages/server/src/services/computers/provider-readiness.ts`, `cloud-computer.ts`, `computer-service.ts`.
-- `packages/server/src/index.ts`: the readiness and handoff wiring that today supplies `checking` / `unconfirmed`.
-- `packages/server/src/services/im-bindings/im-binding-provider-cli.ts`, `im-binding-service.ts`.
-- `packages/server/src/services/im-bindings/feishu/connection-manager.ts`, `setup-service.ts`.
-- `packages/server/src/services/agents/agent-setup-service.ts`.
-- `packages/server/src/api/account.ts`, `api/provider-cli-reason.ts`.
+- `packages/server/src/index.ts`: readiness and handoff wiring.
+- `packages/server/src/services/im-bindings/im-binding-provider-cli.ts`, `im-binding-service.ts`, and
+  `feishu/connection-manager.ts`, `feishu/setup-service.ts`.
+- `packages/server/src/services/agents/agent-setup-service.ts`, `api/account.ts`, `api/provider-cli-reason.ts`.
 
 **web:**
-- `apps/web/src/query/live.ts`: a dedicated 10-second status cadence.
+- `apps/web/src/query/live.ts`: a 10-second foreground status cadence; 30 seconds for usage, MCP and Skills.
 - `apps/web/src/features/agents/agent-list-status.ts` (removed), `agents-page.tsx`, `agent-model.ts`,
-  `agent-presentation.ts`, `agent-queries.ts` (the 2-second / 90-second handoff polling).
-- `apps/web/src/onboarding-v2/agent-setup-page.tsx`, `preparation-readiness.ts`, `messaging-readiness-copy.ts`, and
-  the setup lab model and page.
-- `apps/web/src/im/slack-custom-app.tsx`.
-- `apps/web/messages/agents/{en,zh}.json`: remove the refreshing and checking copy.
+  `agent-presentation.ts`, `agent-queries.ts`.
+- `apps/web/src/onboarding-v2/agent-setup-page.tsx` and the setup readiness helpers; `apps/web/src/im/slack-custom-app.tsx`.
+- `apps/web/messages/agents/{en,zh}.json`.
 
 **docs:**
-- `docs/system/runtime/runtime-protocol.md`: the capability, heartbeat schema and readiness sections.
-- `docs/system/messaging/direct-provider-cli.md`: terminal observation and periodic inspection.
-- `docs/system/web/web-ui-contract.md`: the status hold, Refreshing status, and expiry statements.
-- `docs/system/agent-session-computer-model.md`.
-- `docs/system/web/computer-connection-controls.md`.
-- `docs/product/cloud-computer.md` and `docs/system/capabilities/mcp-server-integration.md`, where they cite the
-  30-second live cadence.
-- `apps/cli/README.md`.
-
-## Open questions for reviewers
-
-- **Capability name:** `runtime.selfCheckHeartbeat` is a placeholder.
-- **Credential failures during Turns:** should a messaging-CLI authentication failure during a Turn feed back as a
-  named credential problem before the next scheduled validation, and through which channel?
-- **Support window:** how long the legacy evidence path stays for daemons that did not negotiate the capability.
-- **Timeouts:** the per-check timeout values (today 10 seconds for Provider probes and CLI validation) and whether a
-  timed-out item should be retried within the same tick.
+- `runtime-protocol.md`, `messaging/direct-provider-cli.md`, `web/web-ui-contract.md`,
+  `agent-session-computer-model.md`, `web/computer-connection-controls.md`, and the pages citing the 30-second live
+  cadence.

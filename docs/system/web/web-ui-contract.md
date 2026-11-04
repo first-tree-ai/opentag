@@ -133,6 +133,11 @@ or Cloud preparation already made for it. A single exit in a fixed place, the to
 step-by-step Back and a separate Set up later that each led somewhere different. The Agent list is where every
 unfinished setup can be resumed.
 
+Decided direction (not yet implemented): after setup the same holds for an Agent's Computer, runtime, and messaging
+channel. They cannot be moved; to change one, the person creates a new Agent and adds it to the conversation. Why: an
+Agent's Sessions are bound to that channel, runtime, and the Computer's local storage, so a move is costly and risky
+(see [Agent, Session, and Computer model](../agent-session-computer-model.md)).
+
 When the Agent's runtime is installed but signed out, the setup page's runtime row offers **Sign in** (**去登录**). It
 expands the terminal steps for that computer: open a terminal on it, run `claude` and enter `/login` for Claude Code,
 or run `codex login` for Codex. The page's existing Check again follows. The commands are short enough to type, so they show as inline code with no copy control. The Agent list row and the

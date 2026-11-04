@@ -167,6 +167,7 @@ describe("RuntimeDomainOwner", () => {
           undefined,
           undefined,
           abort.signal,
+          { joinSettlement: true },
         )
         .catch((error: unknown) => {
           settled = true;
@@ -202,7 +203,9 @@ describe("RuntimeDomainOwner", () => {
       const request = reconcileRequest(f.computerId);
       let settled = false;
       const pending = f.owner
-        .requestReconcile(f.computerId, f.instanceId, request, undefined, undefined, abort.signal)
+        .requestReconcile(f.computerId, f.instanceId, request, undefined, undefined, abort.signal, {
+          joinSettlement: true,
+        })
         .then(
           (result) => {
             settled = true;

@@ -127,8 +127,10 @@ reconcile waiter. The worker also retains one local owner per delivery until its
 a scheduler timeout or grace expiry does not release that owner or admit duplicate local recovery.
 No transaction spans the Runtime wait.
 
-A reconcile cancellation removes its pending waiter and joins its admitted send callback. Result
-processing already admitted before cancellation remains owned until it finishes. Cancellation does
+Accepted recovery explicitly opts into joined reconcile settlement. Cancellation removes its
+pending waiter and joins its admitted send callback. Result processing already admitted before
+cancellation remains owned until it finishes, including after the native request deadline. Other
+reconcile callers retain their existing bounded waiter and owner-drain contracts. Cancellation does
 not cancel the Client Turn, erase custody, or prevent an authentic report from recording. Shutdown
 drops queued recovery without a synthetic saturation failure; its lease expires for another worker.
 A failed renewal likewise leaves the existing lease to expire rather than rewriting a newer owner.

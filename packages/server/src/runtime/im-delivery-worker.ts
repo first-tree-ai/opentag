@@ -1347,6 +1347,7 @@ export class ImDeliveryWorker {
         undefined,
         undefined,
         signal,
+        { joinSettlement: true },
       );
     } catch {
       signal.throwIfAborted();

@@ -35,6 +35,7 @@ const state = vi.hoisted(() => ({
   stopSignal: undefined as AbortSignal | undefined,
   sessionCliPrepareReconcile: vi.fn(),
   imBindingOptions: undefined as unknown,
+  ensureActiveReadiness: vi.fn().mockResolvedValue(undefined),
   imBindingGetAgentComputerId: vi.fn(),
   feishuConnectionOptions: undefined as unknown,
   feishuConnectionStart: vi.fn(),
@@ -148,8 +149,8 @@ vi.mock("../runtime/im-delivery-worker.js", () => ({
 vi.mock("../runtime/agent-runtime-test-owner.js", () => ({ AgentRuntimeTestOwner: class {} }));
 vi.mock("../runtime/provider-cli-reconcile-owner.js", () => ({
   ProviderCliReconcileOwner: class {
-    ensureActiveReadiness() {
-      return Promise.resolve();
+    ensureActiveReadiness(input: unknown) {
+      return state.ensureActiveReadiness(input);
     }
     onAgentPlacementChanged() {
       return Promise.resolve();
@@ -591,7 +592,13 @@ describe("Server startup", () => {
 
     const imCliReadiness = (
       state.imBindingOptions as {
-        imCliReadiness(agentId: string, provider: "feishu" | "slack"): Promise<unknown>;
+        imCliReadiness(
+          agentId: string,
+          provider: "feishu" | "slack",
+          integrationId?: string,
+          generation?: number,
+          refresh?: boolean,
+        ): Promise<unknown>;
       }
     ).imCliReadiness;
     state.registryImCliReadiness.mockReturnValue([
@@ -612,6 +619,24 @@ describe("Server startup", () => {
     await expect(imCliReadiness("agent-1", "slack")).resolves.toBe("checking");
     state.imBindingGetAgentComputerId.mockResolvedValueOnce(undefined);
     await expect(imCliReadiness("agent-1", "slack")).resolves.toBe("unavailable");
+
+    state.ensureActiveReadiness.mockClear();
+    await imCliReadiness("agent-1", "slack", undefined, undefined, false);
+    const credentialReadiness = (
+      state.imBindingOptions as {
+        credentialExecutionReadiness(
+          agentId: string,
+          provider: "feishu" | "slack",
+          integrationId?: string,
+          generation?: number,
+          refresh?: boolean,
+        ): Promise<unknown>;
+      }
+    ).credentialExecutionReadiness;
+    await credentialReadiness("agent-1", "slack", undefined, undefined, false);
+    expect(state.ensureActiveReadiness).not.toHaveBeenCalled();
+    await imCliReadiness("agent-1", "slack");
+    expect(state.ensureActiveReadiness).toHaveBeenCalledWith({ agentId: "agent-1", computerId: "computer-1" });
 
     const agentRuntimeReadiness = (
       state.imBindingOptions as { agentRuntimeReadiness(agentId: string): Promise<string> }

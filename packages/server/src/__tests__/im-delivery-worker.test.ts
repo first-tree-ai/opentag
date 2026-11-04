@@ -987,6 +987,7 @@ describe("ImDeliveryWorker database workflow", () => {
           undefined,
           undefined,
           expect.any(AbortSignal),
+          { joinSettlement: true },
         );
         expect(domain.requestReconcile.mock.calls[0]?.[2]).not.toHaveProperty("runtime");
       } else {

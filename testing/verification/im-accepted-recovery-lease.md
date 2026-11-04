@@ -52,10 +52,18 @@ pnpm check
 
 ## Local result
 
-On the integrated `179783208a2bca86a582d00039a05893a0fdaf35` base, 272 focused unit tests
-and 41 PostgreSQL integration tests pass. The repository patch-coverage evaluator measures 199
-changed executable lines, all covered by the focused unit run. Repository checks and Server type
-checking pass. These counts describe local checks; CI and review remain required before merge.
+On the integrated `1f5a25527996a4ce7bbba61f2fb8ac97acc381c2` base, 272 focused unit tests
+and 41 PostgreSQL integration tests pass. The repository patch-coverage evaluator measures 203
+changed executable lines, all covered by the focused unit run. Repository checks and full-workspace
+type checking pass. These counts describe local checks; CI and current-head review remain required.
+
+Joined settlement is explicitly requested only by accepted recovery. The existing lifecycle stop
+path keeps its bounded waiter and separately drained owner. The three stop regressions exposed
+by the first CI run pass after scoping this option. The complete lifecycle suite passes 17 of 18
+cases locally; its 4096-Session, max-one pool case still reaches the existing 30-second dispatch
+budget, matching the separately tracked #1264 investigation. No budget or concurrency is changed.
+The first CI run also failed an unchanged Client legacy-report recovery assertion; all 52 tests in
+that file pass locally. Its CI-only cause remains unconfirmed, and no Client source/test is changed.
 
 ## Boundaries
 

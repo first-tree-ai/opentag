@@ -34,6 +34,7 @@ interface FeishuSetupProps {
   presentation?: "dialog" | "inline";
   returnFocusRef?: RefObject<HTMLElement | null>;
   restoreSavedAttempt?: boolean;
+  readOnly?: boolean;
 }
 
 interface FeishuSetupError {
@@ -53,11 +54,13 @@ export function FeishuSetup({
   presentation = "inline",
   returnFocusRef,
   restoreSavedAttempt,
+  readOnly = false,
 }: FeishuSetupProps) {
   return (
     <FeishuSetupLifecycle
       agentId={agentId}
-      key={agentId}
+      key={`${agentId}:${readOnly}`}
+      readOnly={readOnly}
       onSuccess={onSuccess}
       presentation={presentation}
       returnFocusRef={returnFocusRef}
@@ -75,6 +78,7 @@ function FeishuSetupLifecycle({
   presentation = "inline",
   returnFocusRef,
   restoreSavedAttempt,
+  readOnly = false,
 }: FeishuSetupProps) {
   const queryClient = useQueryClient();
   const [attempt, setAttempt] = useState<FeishuSetupAttempt>();
@@ -126,6 +130,7 @@ function FeishuSetupLifecycle({
 
   const start = useCallback(
     async (intent: FeishuSetupIntent = "create") => {
+      if (readOnly) return false;
       const current = attemptRef.current;
       if (creatingRef.current || checkingActivationRef.current || cancelingRef.current) return false;
       userStartedRef.current = true;
@@ -177,7 +182,7 @@ function FeishuSetupLifecycle({
         }
       }
     },
-    [agentId, presentation, cancelStartedAttempt],
+    [agentId, presentation, cancelStartedAttempt, readOnly],
   );
 
   const acceptObservation = useCallback(
@@ -262,6 +267,7 @@ function FeishuSetupLifecycle({
   }, [pollTarget, acceptObservation, queryClient]);
 
   async function checkActivation() {
+    if (readOnly) return;
     const current = attemptRef.current;
     if (
       !current?.activation ||
@@ -292,6 +298,11 @@ function FeishuSetupLifecycle({
   }
 
   async function cancelActiveAttempt() {
+    if (readOnly) return;
+    await cancelWritableAttempt();
+  }
+
+  async function cancelWritableAttempt() {
     const current = attemptRef.current;
     if (!current && creatingRef.current) {
       cancelAfterStartRef.current = true;
@@ -327,6 +338,10 @@ function FeishuSetupLifecycle({
   }
 
   function closeDialog() {
+    if (readOnly) {
+      setDialogOpen(false);
+      return;
+    }
     const current = attemptRef.current;
     if ((!current && creatingRef.current) || current?.state === "awaiting_user") {
       void cancelActiveAttempt();
@@ -351,8 +366,11 @@ function FeishuSetupLifecycle({
   const feedback =
     presentation === "dialog" ? (
       <FeishuSetupDialog
+        readOnly={readOnly}
         attempt={attempt}
-        busy={canceling || checkingActivation || (attempt?.state === "validating" && !attempt.activation)}
+        busy={
+          !readOnly && (canceling || checkingActivation || (attempt?.state === "validating" && !attempt.activation))
+        }
         checkingActivation={checkingActivation}
         onCheckActivation={() => void checkActivation()}
         onCancelActivation={() => void cancelActiveAttempt()}
@@ -371,7 +389,7 @@ function FeishuSetupLifecycle({
             attempt={attempt}
             onRetry={start}
             checkingActivation={checkingActivation}
-            disabled={canceling || checkingActivation}
+            disabled={readOnly || canceling || checkingActivation}
             onCheckActivation={() => void checkActivation()}
             onCancelActivation={() => void cancelActiveAttempt()}
           />
@@ -402,6 +420,7 @@ function isRestorableAttempt(attempt: FeishuSetupAttempt): boolean {
 }
 
 function FeishuSetupDialog({
+  readOnly,
   checkingActivation,
   onCheckActivation,
   onCancelActivation,
@@ -415,6 +434,7 @@ function FeishuSetupDialog({
   open,
   returnFocusRef,
 }: {
+  readOnly?: boolean;
   checkingActivation: boolean;
   onCheckActivation: () => void;
   onCancelActivation: () => void;
@@ -436,7 +456,7 @@ function FeishuSetupDialog({
           activation={attempt.activation}
           expiresAt={attempt.expiresAt}
           checking={checkingActivation}
-          disabled={busy}
+          disabled={readOnly || busy}
           onCheck={onCheckActivation}
           onCancel={onCancelActivation}
         />
@@ -451,6 +471,7 @@ function FeishuSetupDialog({
         onClose={onClose}
       >
         <FeishuSetupDialogContent
+          readOnly={readOnly}
           disabled={busy}
           checkingActivation={checkingActivation}
           onCheckActivation={onCheckActivation}
@@ -468,6 +489,7 @@ function FeishuSetupDialog({
 }
 
 function FeishuSetupDialogContent({
+  readOnly,
   disabled,
   checkingActivation,
   onCheckActivation,
@@ -479,6 +501,7 @@ function FeishuSetupDialogContent({
   onClose,
   onRetry,
 }: {
+  readOnly?: boolean;
   disabled: boolean;
   checkingActivation: boolean;
   onCheckActivation: () => void;
@@ -506,7 +529,7 @@ function FeishuSetupDialogContent({
             activation={attempt.activation}
             expiresAt={attempt.expiresAt}
             checking={checkingActivation}
-            disabled={disabled}
+            disabled={readOnly || disabled}
             onCheck={onCheckActivation}
             onCancel={onCancelActivation}
           />
@@ -529,7 +552,9 @@ function FeishuSetupDialogContent({
           <Button variant="ghost" onClick={onClose}>
             {m.common_close()}
           </Button>
-          <Button onClick={() => void onRetry(intent)}>{setupRetryLabel(attempt)}</Button>
+          <Button disabled={readOnly || disabled} onClick={() => void onRetry(intent)}>
+            {setupRetryLabel(attempt)}
+          </Button>
         </div>
       ) : null}
     </div>

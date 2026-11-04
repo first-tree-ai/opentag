@@ -32,7 +32,13 @@ function fixture({ marker = false } = {}) {
 
 function finishFixture(
   fixtureData,
-  { changeMirror = false, changeOutsideMarker = false, text = "Updated text.", bigSource = false } = {},
+  {
+    changeMirror = false,
+    changeOutsideMarker = false,
+    text = "Updated text.",
+    bigSource = false,
+    bigNestedMarkdown = false,
+  } = {},
 ) {
   const canonicalPath = join(fixtureData.root, fixtureData.canonicalPath);
   const current = readFileSync(canonicalPath, "utf8");
@@ -45,6 +51,11 @@ function finishFixture(
     // A >1 MiB tracked text change outside Markdown must not enter the diff the policy reads.
     writeFileSync(join(fixtureData.root, "payload.txt"), `${"x".repeat(1_400_000)}\n`);
     staged.push("payload.txt");
+  }
+  if (bigNestedMarkdown) {
+    mkdirSync(join(fixtureData.root, "testing"));
+    writeFileSync(join(fixtureData.root, "testing/history.md"), `${"x".repeat(1_400_000)}\n`);
+    staged.push("testing/history.md");
   }
   runGit(fixtureData.root, "add", ...staged);
   runGit(fixtureData.root, "commit", "--quiet", "-m", "change docs");
@@ -155,6 +166,23 @@ test("a >1 MiB non-Markdown change does not mask a missing mirror", () => {
     rmSync(fixtureData.root, { recursive: true, force: true });
   }
 });
+
+for (const changeMirror of [true, false]) {
+  test(`a >1 MiB nested Markdown change preserves the root mirror verdict (${changeMirror})`, () => {
+    const fixtureData = fixture();
+    try {
+      const head = finishFixture(fixtureData, { changeMirror, bigNestedMarkdown: true });
+      const result = runChecker(fixtureData.root, fixtureData.base, head);
+      if (changeMirror) assert.equal(result.status, 0, `${result.stdout}${result.stderr}`);
+      else {
+        assert.notEqual(result.status, 0, `${result.stdout}${result.stderr}`);
+        assert.match(result.stderr, /canonical guide\.md changed without mirror guide\.zh-CN\.md/);
+      }
+    } finally {
+      rmSync(fixtureData.root, { recursive: true, force: true });
+    }
+  });
+}
 
 test("knowledge-base pages under docs/ need no Chinese mirror", async () => {
   const { expectedMirrorPath } = await import("../check-doc-mirrors.mjs");

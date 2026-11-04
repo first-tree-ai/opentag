@@ -133,10 +133,12 @@ or Cloud preparation already made for it. A single exit in a fixed place, the to
 step-by-step Back and a separate Set up later that each led somewhere different. The Agent list is where every
 unfinished setup can be resumed.
 
-Decided direction (not yet implemented): after setup the same holds for an Agent's Computer, runtime, and messaging
-channel. They cannot be moved; to change one, the person creates a new Agent and adds it to the conversation. Why: an
-Agent's Sessions are bound to that channel, runtime, and the Computer's local storage, so a move is costly and risky
-(see [Agent, Session, and Computer model](../agent-session-computer-model.md)).
+> **Planned — not yet implemented.** Tracking: #1215
+
+After setup the same holds for an Agent's Computer, runtime, and messaging channel. They cannot be moved; to change
+one, the person creates a new Agent and adds it to the conversation. Why: an Agent's Sessions are bound to that
+channel, runtime, and the Computer's local storage, so a move is costly and risky (see
+[Agent, Session, and Computer model](../agent-session-computer-model.md)).
 
 When the Agent's runtime is installed but signed out, the setup page's runtime row offers **Sign in** (**去登录**). It
 expands the terminal steps for that computer: open a terminal on it, run `claude` and enter `/login` for Claude Code,
@@ -190,6 +192,13 @@ running-Task or **Waiting** line as the list row, so the home answers what the A
 own row it never reads as a fact about the Computer or messaging below it. The Server already bounds what it holds: a local Computer without a
 heartbeat for 90 seconds reads as offline, and runtime and messaging observations expire on their own TTLs, so held
 list statuses converge on the Server's next settled answer.
+
+> **Planned — not yet implemented.** Tracking: #1215
+
+Agent status will come straight from the Server, which derives it on read; see
+[Agent status pipeline](../runtime/computer-status-pipeline.md). The Web keeps no hold and no **Refreshing status**
+note, and refetches Agent status every 10 seconds while the tab is in the foreground. This replaces the held-status
+behaviour described above.
 
 UI changes must be checked at these representative widths when the surface can render there:
 

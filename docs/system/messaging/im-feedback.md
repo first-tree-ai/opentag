@@ -36,10 +36,15 @@ A workspace failure pauses that Session rather than the entire Agent. New input 
 Saving or discarding files does not undo messages, pull requests, or other external operations. The existing Runner
 owns automatic save retries; this feedback layer adds no automatic save or task retry loop.
 
-Decided direction (not yet implemented): the failure card becomes a plain error message, and its task Retry button
-is removed. The person retries by sending a new message, which takes the same path as any other message and is
-injected into the Agent's running Session. Why: one way to start work is simpler and safer than a second retry path
-with its own eligibility rules.
+### Plain failure messages
+
+> **Planned — not yet implemented.** Tracking: #1215
+
+Every failure is posted as a plain message, not an interactive card. There is no split into retryable and
+non-retryable failures and no Retry button; the person retries by sending a new message, which takes the same path as
+any other message and is steered into the Agent's running Session. This replaces the error cards above and the task
+Retry described below. Why: one way to start work is simpler and safer than a second retry path with its own
+eligibility rules.
 
 ## Account operations
 

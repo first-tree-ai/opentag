@@ -18,6 +18,6 @@ one Provider-neutral contract, and negotiates its protocol with the Server.
   rules, and IM approval requests.
 - **[Agent self-configuration](agent-self-configuration.md)** — what an Agent
   may change about itself through the CLI.
-- **[Agent status pipeline (decided)](computer-status-pipeline.md)** — decided
-  direction: Computer offline after three missed heartbeats overrides everything,
-  three sub-statuses in Redis, Agent status derived on read, a 10-second Web read.
+- **[Agent status pipeline](computer-status-pipeline.md)** — planned: Computer
+  offline after three missed heartbeats overrides everything, three sub-statuses
+  in a TTL cache, Agent status derived on read, a 10-second Web read.

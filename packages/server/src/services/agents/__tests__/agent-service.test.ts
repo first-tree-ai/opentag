@@ -21,6 +21,7 @@ import { CloudCallStore } from "../../cloud-call-store.js";
 import { CloudUsageService } from "../../cloud-usage.js";
 import { EffectiveRuntimeSnapshotAssembler } from "../../runtime-config/effective-runtime-snapshot-assembler.js";
 import { DEFAULT_AGENT_RUNTIME_CONFIG } from "../../runtime-config/index.js";
+import { TaskService } from "../../tasks/index.js";
 import { AGENT_USAGE_EXCEPTION_BATCH_SIZE } from "../agent-usage.js";
 import { AGENT_ACTIVITY_READ_LIMIT, AGENT_ACTIVITY_RECOVERY_WINDOW_HOURS, AgentService } from "../index.js";
 
@@ -798,6 +799,41 @@ describe("AgentService", () => {
       runningTaskCount: 1,
       queuedTaskCount: 1,
     });
+  });
+
+  it("does not count a topic whose own Session ended, as the Task list reads it ended", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id, "ended-topic-agent");
+    const binding = await createBinding(created.id);
+    const channel = await createSession(binding.id);
+    const root = await createTopicDelivery(channel, { state: "accepted" });
+    // The topic moved to a thread Session, which then ended; it is not revived by a later message.
+    const [thread] = await unitDatabase.database
+      .insert(sessions)
+      .values({
+        imBindingId: binding.id,
+        channelId: channel.channelId,
+        conversationKind: "channel",
+        kind: "thread",
+        threadKey: root.externalMessageId,
+        createdAt: NOW,
+        endedAt: NOW,
+      })
+      .returning();
+    if (!thread) throw new Error("Thread Session fixture was not created");
+    // An unmentioned follow-up in that thread waits as an ambient copy in the live channel Session.
+    await createTopicDelivery(channel, { state: "pending", attention: "ambient", threadKey: root.externalMessageId });
+    await unitDatabase.database
+      .update(imMessageDeliveries)
+      .set({ reportedAt: NOW, turnReport: report(), resultHash: "a".repeat(64) })
+      .where(eq(imMessageDeliveries.state, "accepted"));
+
+    const tasks = await new TaskService(unitDatabase.database, { now: () => NOW }).list(bootstrap.userId, {
+      limit: 10,
+    });
+    expect(tasks.tasks.map((task) => task.status)).toEqual(["ended"]);
+    const listed = await service.listForAccount(bootstrap.userId);
+    expect(listed.agents[0]?.activity).toEqual({ state: "idle" });
   });
 
   it("does not count queued Tasks of an inactive binding", async () => {

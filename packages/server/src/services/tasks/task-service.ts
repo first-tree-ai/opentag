@@ -41,8 +41,10 @@ import {
   relatedSessionCtes,
   type TopicScope,
   topicCtes,
+  topicEndedAt,
   topicKeyExpression,
   topicPageCtes,
+  topicSessionJoins,
 } from "./task-sql.js";
 
 export { TaskQueryError } from "./task-error.js";
@@ -803,7 +805,7 @@ export class TaskService {
         p.chat_mode as "chatMode",
         p.group_message_type as "groupMessageType",
         p.anchor_at as "createdAt",
-        case when ts.id is not null then ts.ended_at else cs.ended_at end as "endedAt",
+        ${topicEndedAt} as "endedAt",
         ts.manual_title as "manualTitle",
         ts.generated_title as "generatedTitle",
         p.last_activity_at as "lastActivityAt",
@@ -821,15 +823,7 @@ export class TaskService {
       from page p
       inner join scoped_bindings sb on sb.binding_id = p.im_binding_id
       left join channels ch on ch.im_binding_id = p.im_binding_id and ch.channel_id = p.channel_id
-      left join channel_sessions cs on cs.im_binding_id = p.im_binding_id and cs.channel_id = p.channel_id
-      left join lateral (
-        select ts.id, ts.manual_title, ts.generated_title, ts.ended_at
-        from topic_sessions ts
-        where ts.im_binding_id = p.im_binding_id
-          and ts.channel_id = p.channel_id
-          and (ts.topic_key = p.topic_key or (ts.topic_key is null and p.topic_key is null))
-        limit 1
-      ) ts on true
+      ${topicSessionJoins("p")}
       left join lateral (
         select m.content
         from im_messages m

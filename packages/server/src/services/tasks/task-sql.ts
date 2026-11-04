@@ -341,36 +341,72 @@ export function topicCtes(input: TopicQueryInput): SQL {
 }
 
 /**
- * The number of Queued Tasks per Agent, read by the Task list's own rules: a Task is a topic with a
- * direct delivery, a running execution outranks a pending one, and only a pending delivery in a live
- * Session of an active binding counts as waiting. The seed is the pending deliveries themselves, read
- * first through the pending-state index: starting from the Agent's Sessions instead would walk every
- * Internal Session of a busy binding. The topic chain then classifies only the channels that hold
- * waiting work, so a channel with nothing pending is never read.
+ * The Session a topic reads its title and ended state from: the topic's own thread or private-chat
+ * Session when it has one, and the channel's Session otherwise. `topic` names a relation carrying
+ * `im_binding_id`, `channel_id` and `topic_key`; the joins add `ts` and `cs`, which `topicEndedAt`
+ * reads, so every Task read applies the same "ended" rule.
+ */
+export function topicSessionJoins(topic: string): SQL {
+  const t = sql.raw(topic);
+  return sql`
+    left join channel_sessions cs on cs.im_binding_id = ${t}.im_binding_id and cs.channel_id = ${t}.channel_id
+    left join lateral (
+      select ts.id, ts.manual_title, ts.generated_title, ts.ended_at
+      from topic_sessions ts
+      where ts.im_binding_id = ${t}.im_binding_id
+        and ts.channel_id = ${t}.channel_id
+        and (ts.topic_key = ${t}.topic_key or (ts.topic_key is null and ${t}.topic_key is null))
+      limit 1
+    ) ts on true
+  `;
+}
+
+/** When the topic's Session ended, read through `topicSessionJoins`; NULL while it is live. */
+export const topicEndedAt: SQL = sql`case when ts.id is not null then ts.ended_at else cs.ended_at end`;
+
+/**
+ * The number of Queued Tasks per Agent, read by the Task list's own rules and precedence: a Task is a
+ * topic with a direct delivery; Ended (the Session the topic reads from has ended) outranks Running,
+ * which outranks Queued; and only a pending delivery in a live Session of an active binding makes a
+ * topic wait.
+ *
+ * The seed is scoped before anything else is read: the requested Agents' active bindings, their live
+ * channel and thread Sessions through the two partial active-Session indexes, and a pending delivery
+ * in each through `im_message_deliveries_overflow_idx`, whose leading `session_id` serves the probe.
+ * The read therefore grows with the Agents' live conversations, never with another Account's queue or
+ * with the Internal Sessions a busy binding accumulates. The topic chain then classifies only the
+ * channels that hold waiting work.
  */
 export function queuedTaskCountsByAgent(input: { accountId: string; agentIds: readonly string[]; now: Date }): SQL {
   const agentIds = sql.join(
     input.agentIds.map((agentId) => sql`${agentId}::uuid`),
     sql`, `,
   );
+  const liveSessions = (kind: "channel" | "thread") => sql`
+    select s.id, s.im_binding_id, s.channel_id
+    from im_bindings b
+    inner join sessions s on s.im_binding_id = b.id
+    where b.agent_id in (${agentIds})
+      and b.status = 'active'
+      and s.kind = ${sql.raw(`'${kind}'`)}
+      and s.ended_at is null
+  `;
   return sql`
-    with pending as materialized (
-      select distinct s.im_binding_id, s.channel_id
-      from im_message_deliveries d
-      inner join sessions s on s.id = d.session_id
-      where d.state = 'pending'
-        and s.ended_at is null
+    with live_sessions as (
+      ${liveSessions("channel")}
+      union all
+      ${liveSessions("thread")}
     ),
-    pending_channels as (
-      select p.im_binding_id, p.channel_id
-      from pending p
-      inner join im_bindings b on b.id = p.im_binding_id
-      where b.status = 'active'
-        and b.agent_id in (${agentIds})
+    pending_channels as materialized (
+      select distinct ls.im_binding_id, ls.channel_id
+      from live_sessions ls
+      where exists (
+        select 1 from im_message_deliveries d where d.session_id = ls.id and d.state = 'pending'
+      )
     ),
     ${topicCtes({ accountId: input.accountId, now: input.now, channelsFrom: "pending_channels" })},
     queued_topics as (
-      select e.im_binding_id
+      select e.im_binding_id, e.channel_id, e.topic_key
       from executions e
       inner join sessions es on es.id = e.session_id
       group by e.im_binding_id, e.channel_id, e.topic_key
@@ -381,6 +417,8 @@ export function queuedTaskCountsByAgent(input: { accountId: string; agentIds: re
     select sb.agent_id as "agentId", count(*)::int as "queuedTaskCount"
     from queued_topics q
     inner join scoped_bindings sb on sb.binding_id = q.im_binding_id
+    ${topicSessionJoins("q")}
+    where ${topicEndedAt} is null
     group by sb.agent_id
   `;
 }

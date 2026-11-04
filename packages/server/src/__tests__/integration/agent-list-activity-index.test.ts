@@ -1,6 +1,6 @@
 /**
  * The Agent list's two unreported-accepted reads must use the partial index that exists for them, and
- * its queued-Task read must start from the pending-state index.
+ * its queued-Task read must be scoped to the listed Agents before it reads a pending delivery.
  *
  * Without it, the reads join every Session of a binding to answer "which Turns are still unreported?", which
  * cost 100,001 probes for one hot Agent in the 100k-row benchmark. This suite runs the real service, captures
@@ -19,6 +19,7 @@ import {
   imMessages,
   sessionPlacements,
   sessions,
+  users,
 } from "../../db/schema/index.js";
 import { AgentService } from "../../services/agents/index.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
@@ -97,7 +98,7 @@ describe("Agent list unreported-accepted index", () => {
     }
   }, 60_000);
 
-  it("counts queued Tasks through the pending-state index", async () => {
+  it("scopes the queued read to the listed Agents before it reads any pending delivery", async () => {
     const client = createDatabaseClient(testDatabase.databaseUrl);
     const queries: { query: string; params: unknown[] }[] = [];
     try {
@@ -105,6 +106,30 @@ describe("Agent list unreported-accepted index", () => {
         schema,
         logger: { logQuery: (query, params) => queries.push({ query, params }) },
       });
+      // Another Account's Agent with a deep queue: its backlog must not be read for this Account's list.
+      const [neighbour] = await database
+        .insert(users)
+        .values({ email: `neighbour-${randomUUID()}@example.test`, displayName: "Neighbour", setupCompletedAt: NOW })
+        .returning({ id: users.id });
+      if (!neighbour) throw new Error("Neighbour fixture missing");
+      const noisy = await activityFixture(database, "noisy", neighbour.id);
+      await client.sql.unsafe(
+        `
+        with queued as (
+          insert into im_messages(im_binding_id,provider_event_id,channel_id,external_message_id,provider_revision_key,
+            operation,direction,author_kind,author_external_id,content,provider_context,occurred_at)
+          select s.im_binding_id,'noise-event-'||n,s.channel_id,'noise-'||n,'1','created','inbound','human','human',
+            '{"version":1,"fallbackText":"noise","blocks":[],"truncated":false}'::jsonb,'{"provider":"feishu"}'::jsonb,$2
+          from sessions s, generate_series(1, ${NOISY_BACKLOG}) n
+          where s.id = $1
+          returning id
+        )
+        insert into im_message_deliveries(message_id,session_id,attention,state,placement_generation,next_attempt_at,expires_at)
+        select id,$1,'direct','pending',1,$2,$3 from queued
+        `,
+        [noisy.session.id, NOW.toISOString(), new Date(NOW.getTime() + 86_400_000).toISOString()],
+      );
+
       const { owner, agents, agent, session, message } = await activityFixture(database, "queued");
       // A message still waiting for delivery: the Task list reads this Task as Queued.
       await database.insert(imMessageDeliveries).values({
@@ -116,6 +141,7 @@ describe("Agent list unreported-accepted index", () => {
         nextAttemptAt: NOW,
         expiresAt: new Date(NOW.getTime() + 86_400_000),
       });
+      await client.sql.unsafe("analyze");
 
       queries.length = 0;
       const listed = await agents.listForAccount(owner.userId);
@@ -123,33 +149,79 @@ describe("Agent list unreported-accepted index", () => {
         state: "idle",
         queuedTaskCount: 1,
       });
-
-      // The queued read seeds the Task topic chain from the pending deliveries alone.
       const queued = queries.filter((entry) => entry.query.includes("pending_channels"));
+      // The neighbour's backlog is one private chat, so it is one queued Task however deep it is.
+      expect((await noisy.agents.listForAccount(neighbour.id)).agents[0]?.activity).toEqual({
+        state: "idle",
+        queuedTaskCount: 1,
+      });
+
+      // Under the default planner, the seed that finds waiting work never touches the neighbour's backlog.
+      // (The topic chain after it reads only the channels the seed returned; on a table this small the
+      // planner may still scan it whole, which the benchmark-sized fixture does not.)
       expect(queued).toHaveLength(1);
-      await client.sql.unsafe("set enable_seqscan = off");
       for (const statement of queued) {
-        const plan = await client.sql.unsafe(`explain (format json) ${statement.query}`, statement.params as never[]);
-        expect(JSON.stringify(plan)).toContain("im_message_deliveries_pending_idx");
+        const [explained] = await client.sql.unsafe(
+          `explain (analyze, format json) ${statement.query}`,
+          statement.params as never[],
+        );
+        const seed = findSubplan(explained?.["QUERY PLAN"], "CTE pending_channels");
+        const deliveryRowsRead = rowsRead(seed, "im_message_deliveries");
+        expect(deliveryRowsRead).toBeLessThan(10);
       }
-      await client.sql.unsafe("reset enable_seqscan");
     } finally {
       await client.sql.end();
     }
   }, 60_000);
 });
 
+const NOISY_BACKLOG = 2_000;
+
+interface PlanNode {
+  "Subplan Name"?: string;
+  "Relation Name"?: string;
+  "Actual Rows"?: number;
+  "Actual Loops"?: number;
+  "Rows Removed by Filter"?: number;
+  "Rows Removed by Index Recheck"?: number;
+  Plans?: PlanNode[];
+}
+
+/** The plan node of one named subplan, such as a CTE. */
+function findSubplan(plan: unknown, name: string): PlanNode {
+  const search = (node: PlanNode): PlanNode | undefined =>
+    node["Subplan Name"] === name ? node : (node.Plans ?? []).map(search).find((found) => found !== undefined);
+  const root = (plan as { Plan: PlanNode }[] | undefined)?.[0]?.Plan;
+  const found = root ? search(root) : undefined;
+  if (!found) throw new Error(`EXPLAIN has no ${name}`);
+  return found;
+}
+
+/** Rows a plan subtree read from one table: those its scans returned plus those their filters discarded. */
+function rowsRead(node: PlanNode, relation: string): number {
+  const loops = node["Actual Loops"] ?? 1;
+  const own =
+    node["Relation Name"] === relation
+      ? ((node["Actual Rows"] ?? 0) +
+          (node["Rows Removed by Filter"] ?? 0) +
+          (node["Rows Removed by Index Recheck"] ?? 0)) *
+        loops
+      : 0;
+  return own + (node.Plans ?? []).reduce((total, child) => total + rowsRead(child, relation), 0);
+}
+
 type ActivityDatabase = ReturnType<typeof drizzle<typeof schema>>;
 let owner: Awaited<ReturnType<typeof bootstrapInitialAdmin>> | undefined;
 
 /** One Agent with an active binding, one live Session, and one inbound message to deliver. */
-async function activityFixture(database: ActivityDatabase, name: string) {
-  // The database has one bootstrapped Account; every fixture Agent belongs to it.
+async function activityFixture(database: ActivityDatabase, name: string, ownerUserId?: string) {
+  // The database has one bootstrapped Account; every fixture Agent belongs to it unless named otherwise.
   owner ??= await bootstrapInitialAdmin(database, { displayName: "Owner", email: "index@example.test" });
+  const accountId = ownerUserId ?? owner.userId;
   const [computer] = await database
     .insert(computers)
     .values({
-      ownerAccountId: owner.userId,
+      ownerAccountId: accountId,
       currentInstallationId: randomUUID(),
       currentInstanceId: randomUUID(),
       displayName: "box",
@@ -162,7 +234,7 @@ async function activityFixture(database: ActivityDatabase, name: string) {
     .returning({ id: computers.id });
   if (!computer) throw new Error("Computer fixture missing");
   const agents = new AgentService(database, { now: () => NOW });
-  const agent = await agents.createForAccount(owner.userId, {
+  const agent = await agents.createForAccount(accountId, {
     computerId: computer.id,
     runtimeProvider: "codex",
     name,

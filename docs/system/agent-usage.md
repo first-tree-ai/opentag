@@ -93,8 +93,10 @@ work in progress is a fact whatever the status.
 Every activity state also carries `queuedTaskCount` when it is positive: the number of Tasks the Task list reads as
 Queued, counted by the same topic rules. A Task is a topic `(binding, channel, topic key)` that somebody addressed
 directly, so two top-level requests in one group channel are two Tasks although they share the channel Session, and a
-message the Agent only overheard is not one. Running outranks Queued, so a running topic with a pending follow-up is
-counted as running, not waiting. Only a pending delivery in a live Session of an active binding makes a topic wait. The
+message the Agent only overheard is not one. The Task list's precedence applies: a topic whose own Session ended reads
+as ended even when a later overheard message waits in the live channel Session, and Running outranks Queued, so a
+running topic with a pending follow-up is counted as running, not waiting. Only a pending delivery in a live Session
+of an active binding makes a topic wait. The
 row and the Agent home show it as "N tasks waiting" on every status, beside any running count. Why: queued work behind
 an offline Computer, a paused Agent, or a runtime problem is exactly what an admin needs to see to judge that the Agent
 is stuck; without it the row read as quiet.
@@ -106,12 +108,15 @@ activity strictly, so each keeps receiving the shape it was released with.
 Three reads answer these questions over the Agent's IM bindings. The two running reads use
 `im_message_deliveries_unreported_accepted_idx` — partial on `state = 'accepted' and reported_at is null` — as their
 access path; without it they join every Session of a binding to reach an answer, which is proportional to the Agent's
-history rather than to the Turns actually outstanding. The queued read starts from `im_message_deliveries_pending_idx`:
-the pending deliveries name the channels holding waiting work, and the Task topic chain classifies only those channels.
-It never reads a channel with nothing pending, and starting from the Agent's Sessions instead would walk every Internal
-Session of a busy binding. A channel with waiting work is read as far as its Tasks reach, as the Task list reads it,
-so the hottest conversation holding a pending message is what the read is checked against the 500 ms single-query
-budget for.
+history rather than to the Turns actually outstanding. The queued read is scoped to the listed Agents before it reads
+a delivery: it takes their active bindings, their live channel and thread Sessions through the partial
+`sessions_active_channel_unique` and `sessions_active_thread_unique` indexes, and probes each for a pending delivery
+through `im_message_deliveries_overflow_idx`, whose leading `session_id` serves the probe. It therefore grows with the
+Agents' live conversations, never with another Account's queue or with the Internal Sessions a busy binding
+accumulates; starting from `im_message_deliveries_pending_idx` instead would read every Account's pending work first.
+The Task topic chain then classifies only the channels holding waiting work and reads each as far as its Tasks reach,
+as the Task list does, so the hottest conversation holding a pending message is what the read is checked against the
+500 ms single-query budget for.
 
 The list reads the Agent projection, the activity, and the 30-day usage totals in one read-only `repeatable read`
 snapshot for the same reason as the detail read: the Agent query is the authorization, and the reads it enables are

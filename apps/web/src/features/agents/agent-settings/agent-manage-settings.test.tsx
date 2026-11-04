@@ -293,6 +293,27 @@ describe("Agent lifecycle actions", () => {
     expect((await screen.findByRole("alert")).textContent).toBe("Couldn’t pause this Agent. Try again.");
   });
 
+  it("keeps focus on the lifecycle button while pausing and moves it to Resume", async () => {
+    let settle: ((value: typeof activeConfig) => void) | undefined;
+    const suspend = vi.spyOn(browserApi, "suspendAgent").mockReturnValue(new Promise((resolve) => (settle = resolve)));
+    await renderInRouter(
+      <AgentManageSettings agent={idleActiveAgent} initialConfig={activeConfig} onAgentChanged={vi.fn()} />,
+    );
+    const button = screen.getByRole("button", { name: "Pause Agent" }) as HTMLButtonElement;
+    button.focus();
+    fireEvent.click(button);
+
+    const busy = screen.getByRole("button", { name: "Pausing…" }) as HTMLButtonElement;
+    expect(busy.disabled).toBe(false);
+    expect(busy.getAttribute("aria-busy")).toBe("true");
+    fireEvent.click(busy);
+    expect(suspend).toHaveBeenCalledOnce();
+
+    settle?.({ ...activeConfig, status: "suspended" });
+    const resume = await screen.findByRole("button", { name: "Resume Agent" });
+    expect(document.activeElement).toBe(resume);
+  });
+
   it("does not make an unchanged peer list row newer than that peer's detail", async () => {
     stubEvidence();
     const peerId = "22222222-2222-4222-8222-222222222222";

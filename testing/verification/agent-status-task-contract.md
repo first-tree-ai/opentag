@@ -138,3 +138,16 @@ The review correction subsets passed 193 Server and 197 Web cases. A native Post
 the existing local server: both Providers exposed the disconnected identity to its owner, refused a
 foreign owner with 404, and rolled every fixture back. A readback verified no probe users remained;
 no temporary container was started. The script and machine-specific log stay outside the repository.
+
+After integrating `main@d50c96e9d`, the affected Server subset passed all 278 cases and the Web
+subset passed all 226. Build (8 packages), root type checks (12 packages) and repository checks
+passed. There was no package-manifest or lockfile change. The disconnected Settings recovery also
+passed a Chromium check at 320/390/768/1440 px: no replacement/connection controls, no horizontal
+overflow, no unexpected API endpoints or page errors, and zero axe violations. See
+[390 px](agent-status-task-contract/messaging-disconnected-390.png),
+[1440 px](agent-status-task-contract/messaging-disconnected-1440.png), and the
+[browser readback](agent-status-task-contract/review-browser.json).
+
+The older `db9e74d91` CI run passed 1,401 PostgreSQL cases and failed its 4,096-Session/max-1-pool
+stop deadline case. That red result is not waived by these local checks; the next head needs a
+fresh CI result and fresh review of the four corrected contracts.

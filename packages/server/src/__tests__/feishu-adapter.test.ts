@@ -1155,7 +1155,7 @@ describe("FeishuConnectionManager", () => {
           imBindings.id,
           (
             await value.imBindings.getFeishuConnectionMaterial(
-              (await value.imBindings.listFeishuConnectionIds(undefined))[0] ?? "",
+              (await value.imBindings.listFeishuConnectionIds(undefined))[0]?.imBindingId ?? "",
             )
           )?.imBindingId ?? "",
         ),

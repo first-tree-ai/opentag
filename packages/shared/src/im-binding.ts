@@ -149,6 +149,18 @@ export const ImBindingIdentitySchema = z.discriminatedUnion("provider", [
     .strict(),
 ]);
 
+/**
+ * Why openTag stopped connecting a binding it marked `error`: Feishu refused the App's credentials,
+ * the App is disabled or not installed, Feishu refused its long connection, or a different Bot
+ * answers. Absent when the binding is not `error` or the stored reason is not one of these.
+ */
+export const ImBindingConnectionFailureSchema = z.enum([
+  "credentials_rejected",
+  "app_unavailable",
+  "connection_rejected",
+  "bot_mismatch",
+]);
+
 export const ImBindingSummarySchema = z
   .object({
     id: z.string().uuid(),
@@ -165,6 +177,7 @@ export const ImBindingSummarySchema = z
     lastInboundAt: z.string().datetime().nullable(),
     lastValidatedAt: z.string().datetime().nullable(),
     lastRuntimeObservationAt: z.string().datetime().nullable(),
+    connectionFailure: ImBindingConnectionFailureSchema.optional(),
   })
   .strict();
 
@@ -469,6 +482,7 @@ export type ImBindingUnbindRequiredDetail = z.infer<typeof ImBindingUnbindRequir
 export type ImBindingMessagingExpectation = z.infer<typeof ImBindingMessagingExpectationSchema>;
 export type SlackOAuthReturnSurface = z.infer<typeof SlackOAuthReturnSurfaceSchema>;
 export type ImBindingSummary = z.infer<typeof ImBindingSummarySchema>;
+export type ImBindingConnectionFailure = z.infer<typeof ImBindingConnectionFailureSchema>;
 export type ImBindingHandoffStatus = z.infer<typeof ImBindingHandoffStatusSchema>;
 export type ProviderCliHandoffPhase = z.infer<typeof ProviderCliHandoffPhaseSchema>;
 export type ProviderCliHandoffProgress = z.infer<typeof ProviderCliHandoffProgressSchema>;

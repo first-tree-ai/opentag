@@ -7,6 +7,8 @@ contents, and machine-specific operational logs outside the repository.
 
 ## Plans and harnesses
 
+- [Exclusive local IM acceptance control](local-im-control/README.md)
+
 - [SQL caller remediation and progress](sql-caller-remediation.md)
 
 - [Web product regression catalogue](web-product-regression/README.md)

@@ -347,6 +347,7 @@
   "ImAttentionSchema",
   "ImAuthorKindSchema",
   "ImBindingAdminDetailSchema",
+  "ImBindingConnectionFailureSchema",
   "ImBindingCredentialStatusSchema",
   "ImBindingDiagnosticsSchema",
   "ImBindingHandoffStatusSchema",

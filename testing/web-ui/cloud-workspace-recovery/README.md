@@ -30,3 +30,24 @@ contract tests in `apps/web/src/__tests__/api-cloud-workspace.test.ts`.
 - [Minimum width, Simplified Chinese](zh-320.png)
 - [Discard confirmation, Simplified Chinese](zh-390-discard.png)
 - [Current-work interruption confirmation, Simplified Chinese](zh-390-save-confirm.png)
+
+## Ordinary surface and explicit diagnostics (2026-11-04)
+
+The complete production Web bundle was checked with deterministic Account HTTP fixtures in both
+English and Simplified Chinese at 320, 390, 768 and 1440 pixels. These checks replace the ordinary
+recovery-entry expectations above; the earlier panel safety evidence remains relevant.
+
+- Ordinary Cloud Agent home retains the failure notice, Tasks, status and usage, with no recovery
+  link, recovery button or save/release/discard controls.
+- The notice directs the reader to their administrator, warns against resending completed requests,
+  and does not promise automatic recovery.
+- `?recovery=true` explicitly opens **Workspace diagnostics**. Discard still requires confirmation
+  of permanent unsaved-file loss. Keyboard cancellation and closing the panel cause no mutation.
+- Navigating from diagnostics to the ordinary overview closes the tools; browser Back explicitly
+  reopens them. This was checked in both locales at desktop width and in the component regression.
+- No page overflow, browser errors, unmatched API fixtures or axe violations occurred in the ordinary
+  page or discard dialog. All tested paths issued zero mutation requests.
+
+See [results](ordinary-surface-check.json), [ordinary desktop](ordinary-en-1440.png),
+[ordinary minimum-width page](ordinary-zh-320.png), and [diagnostic confirmation](diagnostics-zh-390-confirm.png).
+The fixtures do not establish live Runner, GCS, completed-effect reconciliation or incident recovery.

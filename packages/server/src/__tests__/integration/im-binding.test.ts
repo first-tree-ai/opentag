@@ -6729,7 +6729,9 @@ describe("IM binding persistence", () => {
         bindingState: "reauthorization_required",
         handoffReady: false,
       });
-      await expect(value.imBindingService.listFeishuConnectionIds(undefined)).resolves.toContain(legacy.id);
+      expect((await value.imBindingService.listFeishuConnectionIds(undefined)).map((row) => row.imBindingId)).toContain(
+        legacy.id,
+      );
       await expect(value.imBindingService.getFeishuConnectionMaterial(legacy.id)).resolves.toMatchObject({
         appSecret: "legacy-secret",
         generation: 1,
@@ -7116,10 +7118,10 @@ describe("IM binding persistence", () => {
       );
 
       const first = await value.imBindingService.listFeishuConnectionIds(undefined, 100);
-      const second = await value.imBindingService.listFeishuConnectionIds(first.at(-1), 100);
+      const second = await value.imBindingService.listFeishuConnectionIds(first.at(-1)?.imBindingId, 100);
       expect(first).toHaveLength(100);
       expect(second).toHaveLength(1);
-      expect(new Set([...first, ...second]).size).toBe(101);
+      expect(new Set([...first, ...second].map((candidate) => candidate.imBindingId)).size).toBe(101);
     } finally {
       await value.sql.end();
     }

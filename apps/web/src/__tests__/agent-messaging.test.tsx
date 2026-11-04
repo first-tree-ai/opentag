@@ -148,6 +148,38 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.getByRole("button", { name: "Connect Slack" })).toBeTruthy();
   });
 
+  it("says why a stopped Lark binding stopped and offers one way to reconnect it", async () => {
+    installApi({ bound: true, bindingConnectionFailure: "credentials_rejected" });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    render(<App />);
+
+    expect(await screen.findByText("Connection failed")).toBeTruthy();
+    expect(
+      screen.getByText("The application credentials are no longer valid. Reconnect to authorize it again."),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Reconnect" })).toBeTruthy();
+  });
+
+  it("names the provider when a stopped app is disabled, in both languages", async () => {
+    installApi({ bound: true, bindingConnectionFailure: "app_unavailable" });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    const rendered = render(<App />);
+    expect(
+      await screen.findByText(
+        "This application is disabled or not installed in Lark. Enable it there, then reconnect.",
+      ),
+    ).toBeTruthy();
+    rendered.unmount();
+    await withLocaleAsync("zh", async () => {
+      resetWebAppState();
+      installApi({ bound: true, bindingConnectionFailure: "app_unavailable" });
+      window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+      render(<App />);
+      expect(await screen.findByText("此应用在飞书中已停用或未安装。启用后请重新连接。")).toBeTruthy();
+      expect(screen.getByText("连接失败")).toBeTruthy();
+    });
+  });
+
   it("keeps an existing Slack binding manageable when OAuth is unavailable", async () => {
     installApi({ bound: true, provider: "slack", slackOAuthAvailable: false });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);

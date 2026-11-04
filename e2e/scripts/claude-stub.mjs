@@ -12,11 +12,14 @@ if (args[0] === "--version") {
 }
 if (args[0] === "--help") {
   process.stdout.write(
-    "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --append-system-prompt\n",
+    // Every capability the provider reads from real `claude --help` before it starts a turn.
+    "stream-json --session-id --resume --mcp-config --strict-mcp-config --allowedTools --append-system-prompt --permission-prompt-tool --permission-mode acceptEdits\n",
   );
   process.exit(0);
 }
-if (args[0] === "auth") {
+// The provider reads credentials with `claude --setting-sources user auth status --json`.
+const command = args[0] === "--setting-sources" ? args[2] : args[0];
+if (command === "auth") {
   process.stdout.write('{"loggedIn":true}\n');
   process.exit(0);
 }

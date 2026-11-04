@@ -73,15 +73,22 @@ table, resource pool or lifecycle state. Existing idle reclamation remains in fo
 
 ## Recovery and release
 
-The Cloud Agent page offers a collapsed **Recover workspace** panel. Its direct destination is
-`/agents/<agentId>?recovery=true`. The panel lists conversation references and their current
-state using the existing paginated Account overview. It remains available when a Turn checkpoint
-failure has no release-error marker. Opening it does not allocate, release or discard anything.
+The ordinary Cloud Agent page shows save-failure guidance without a workspace recovery entry or
+save, release, or discard controls. It tells the reader that affected conversations may be paused,
+to contact their administrator, and not to resend completed requests. The notice does not claim
+that recovery succeeded or that lost progress is certain.
+
+Guided troubleshooting retains workspace diagnostics at the explicit destination
+`/agents/<agentId>?recovery=true`; this is a presentation choice, not an additional permission
+boundary. The existing Account authorization still applies. The panel lists conversation references
+and their current state using the existing paginated Account overview, including Turn checkpoint
+failures without a release-error marker. Opening it only reads status.
 **Retry save and release** stops current work, saves the workspace, then releases the environment.
-Rows without a recorded save failure use **Save and release** rather than implying a previous
-failure. Running, queued and unknown work requires confirmation that release interrupts execution.
-**Discard changes and release** is available only when the Server permits it and requires a second
-confirmation of permanent unsaved-file loss. Neither action replays a task or undoes external effects.
+Rows without a recorded save failure use **Save and release**. Running, queued and unknown work
+requires confirmation that release interrupts execution. **Discard changes and release** remains
+available only when the Server permits it and requires a second confirmation of permanent
+unsaved-file loss. Neither action replays a task or undoes external effects. Hiding the ordinary
+entry does not add automatic discard, task replay, or a new recovery policy.
 
 Use the existing task cancellation and Sandbox stop operations. Saving and releasing waits for
 archive persistence and verified deletion. A failed save retains the allocation and enables

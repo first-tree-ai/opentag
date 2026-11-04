@@ -9,7 +9,7 @@ import { messagingProviderLabel } from "../../../im/provider-label.js";
 import { SlackConfiguration } from "../../../im/slack-configuration.js";
 import { SlackCustomApp } from "../../../im/slack-custom-app.js";
 import * as m from "../../../paraglide/messages.js";
-import { Banner, Button, Dialog, StatusIndicator, Text } from "../../../ui/design-system.js";
+import { Banner, Button, buttonClassName, Dialog, StatusIndicator, Text } from "../../../ui/design-system.js";
 import { ProviderIcon } from "../../../ui/provider-icon.js";
 import { AsyncState, toResourceState } from "../../resource/resource-state.js";
 import type { AgentDetailView } from "../agent-model.js";
@@ -147,6 +147,11 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                                 />
                               </span>
                             </div>
+                            {connectionFailureMessage(binding) ? (
+                              <p className="text-sm text-kumo-default" data-ui="messaging-connection-failure">
+                                {connectionFailureMessage(binding)}
+                              </p>
+                            ) : null}
                           </>
                         ) : null}
                         <MessagingConnectionActions
@@ -326,12 +331,16 @@ function MessagingConnectionActions({
           {(snapshot) =>
             snapshot.messaging.kind === "blocked" &&
             snapshot.messaging.errorCode === "IM_BINDING_IDENTITY_DISCONNECTED" ? (
-              <div className="grid gap-3">
+              <div className="grid justify-items-start gap-3">
                 <p>{m.im_identity_disconnected()}</p>
-                <Link {...agentCreateLink()}>{m.agents_new_agent()}</Link>
+                <Link {...agentCreateLink()} className={buttonClassName({ variant: "primary" })}>
+                  {m.agents_new_agent()}
+                </Link>
               </div>
             ) : (
-              <Link {...agentSetupLink(agent.id)}>{m.agents_continue_setup()}</Link>
+              <Link {...agentSetupLink(agent.id)} className={buttonClassName({ variant: "secondary" })}>
+                {m.agents_continue_setup()}
+              </Link>
             )
           }
         </AsyncState>
@@ -383,6 +392,19 @@ function TriggerModeOption({
       {label}
     </Button>
   );
+}
+
+/** Why openTag stopped connecting this binding, and what fixes it; nothing for any other state. */
+function connectionFailureMessage(binding: ImBindingSummary): string | undefined {
+  if (binding.bindingState !== "error" || !binding.connectionFailure) return undefined;
+  const provider = messagingProviderLabel(binding.provider);
+  const message = {
+    credentials_rejected: m.im_connection_failure_credentials_rejected(),
+    app_unavailable: m.im_connection_failure_app_unavailable({ provider }),
+    connection_rejected: m.im_connection_failure_connection_rejected({ provider }),
+    bot_mismatch: m.im_connection_failure_bot_mismatch(),
+  }[binding.connectionFailure];
+  return spaceScriptBoundary(message);
 }
 
 function messagingRecoveryLabel(binding: ImBindingSummary): string | undefined {

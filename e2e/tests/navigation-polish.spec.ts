@@ -112,7 +112,9 @@ internalToolsTest(
     await expect(integrations).toBeEnabled();
     await page.goto(`/agents/${agentId}`, { waitUntil: "networkidle" });
     await expect(page.getByRole("link", { name: "Skills", exact: true })).toBeVisible();
-    await expect(page.getByRole("link", { name: "Integrations", exact: true })).toBeVisible();
+    // The Agent Integrations page is gone (its links redirect to Account settings), so the preview
+    // switch no longer adds a navigation entry; only its own state is checked here.
+    await expect(page.getByRole("link", { name: "Integrations", exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "Account menu" }).click();
     await page.getByRole("menuitem", { name: "Internal tools" }).click();
     await integrations.click();

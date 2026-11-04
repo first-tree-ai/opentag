@@ -1,8 +1,8 @@
 <div align="center">
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/.assets/opentag-logo-on-dark.png">
-  <img src="docs/.assets/opentag-logo.png" alt="openTag" width="72">
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/opentag-logo-on-dark.png">
+  <img src=".github/assets/opentag-logo.png" alt="openTag" width="72">
 </picture>
 
 # openTag
@@ -33,7 +33,7 @@ openTag 是一个开源、多模型的 AI 同事。在 Slack 和飞书里，和�
 
 <p align="center">
   <a href="https://opentag.build/zh#how-it-works">
-    <img src="docs/.assets/opentag-walkthrough.gif" alt="openTag 如何工作：创建 Agent 并连接电脑和聊天应用，在聊天中委派任务，共享团队知识，以及连接你的工具。" width="100%">
+    <img src=".github/assets/opentag-walkthrough.gif" alt="openTag 如何工作：创建 Agent 并连接电脑和聊天应用，在聊天中委派任务，共享团队知识，以及连接你的工具。" width="100%">
   </a>
 </p>
 

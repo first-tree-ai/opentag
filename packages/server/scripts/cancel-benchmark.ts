@@ -12,12 +12,12 @@
  * - The fixture has no live Runner connection by construction, so every stop outcome must be
  *   `no_connection`. A `cancelled` outcome means the measurement no longer models a backlog, and the
  *   run fails instead of publishing a wrong comparison.
- * - Committed evidence must stay machine-independent: the report records the repository-relative
- *   tracked results path, or `<overridden>`, never the absolute output path.
+ * - Evidence must stay machine-independent: the report records the relative
+ *   default results path, or `<overridden>`, never the absolute output path.
  */
 import { dirname, resolve } from "node:path";
 
-export const TRACKED_RESULTS_PATH = "testing/performance/cancel-deliveries/results.json";
+export const DEFAULT_RESULTS_PATH = "cancel-deliveries/results.json";
 export const SEED_FIXTURE_PATH = "packages/server/scripts/database-performance-seed.sql";
 export const MINIMUM_TABLE_ROWS = 100_000;
 export const CASE_SIZES = [0, 1, 10, 100] as const;
@@ -102,24 +102,24 @@ export interface CancelBenchmarkDeps {
   migrate(databaseUrl: string): Promise<void>;
   openAdmin(databaseUrl: string): Promise<BenchmarkAdminPort>;
   openSeam(databaseUrl: string, beforeModuleFile: string): Promise<BenchmarkSeam>;
-  paths: { beforeModuleFile: string; migrationsFolder: string; seedFile: string; trackedResultsFile: string };
+  paths: { beforeModuleFile: string; migrationsFolder: string; seedFile: string; defaultResultsFile: string };
   sessionId: string;
   startDatabaseContainer(): string;
 }
 
 /**
  * The recorded location of a run. `label` is what the evidence may contain; `outputPath` is where the
- * run writes. An override run records only `<overridden>`, because a committed file must not carry a
+ * run writes. An override run records only `<overridden>`, because a report must not carry a
  * machine path.
  */
 export function resolveResultsTarget(
   env: Record<string, string | undefined>,
-  trackedResultsFile: string,
+  defaultResultsFile: string,
 ): { label: string; outputPath: string } {
   const override = env.OPENTAG_BENCHMARK_OUTPUT;
   return override
     ? { label: "<overridden>", outputPath: resolve(override) }
-    : { label: TRACKED_RESULTS_PATH, outputPath: trackedResultsFile };
+    : { label: DEFAULT_RESULTS_PATH, outputPath: defaultResultsFile };
 }
 
 /** Statements of the tracked seed fixture, each with the table it inserts into when it inserts rows. */
@@ -246,7 +246,7 @@ async function buildEnvironment(
     platform: process.platform,
     postgres: postgresInfo,
     resultsPath: resultsLabel,
-    resultsPathOverridden: resultsLabel !== TRACKED_RESULTS_PATH,
+    resultsPathOverridden: resultsLabel !== DEFAULT_RESULTS_PATH,
     runStartedAt: startedAt,
     seedFixture: SEED_FIXTURE_PATH,
     tableCount: report.rowCounts?.length,
@@ -372,7 +372,7 @@ function removeBeforeModule(deps: CancelBenchmarkDeps, report: BenchmarkReport):
 }
 
 export async function runCancelBenchmark(deps: CancelBenchmarkDeps): Promise<void> {
-  const target = resolveResultsTarget(deps.env, deps.paths.trackedResultsFile);
+  const target = resolveResultsTarget(deps.env, deps.paths.defaultResultsFile);
   const startedAt = deps.clock.nowIso();
   const report: BenchmarkReport = { cases: [] };
   const save = () => writeReport(deps, report, target.outputPath);

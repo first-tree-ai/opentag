@@ -602,12 +602,12 @@ export class AgentService {
       );
 
     /*
-     * Tasks still waiting for delivery, counted exactly as the Task list reads "Queued": a topic with
-     * a direct delivery and a pending one in a live Session of an active binding, and no running
-     * execution, which outranks it. They wait whether or not the Agent is working, so the count rides
-     * on every activity state, and it is what shows an admin that work is piling up behind an offline
-     * Computer. The pending-state index seeds the read, so only channels holding waiting work are
-     * classified into topics.
+     * Tasks still waiting for delivery, counted exactly as the Task list reads "Queued": a direct
+     * topic, not ended and not running, with a pending delivery in a live Session of an active
+     * binding. They wait whether or not the Agent is working, so the count rides on every activity
+     * state, and it is what shows an admin that work is piling up behind an offline Computer. The read
+     * is scoped to these Agents' live conversations before it touches a delivery, and only channels
+     * holding waiting work are classified into topics; see `queuedTaskCountsByAgent`.
      */
     const queuedRows = await executor.execute<{ agentId: string; queuedTaskCount: number } & Record<string, unknown>>(
       queuedTaskCountsByAgent({ accountId: callerUserId, agentIds, now }),

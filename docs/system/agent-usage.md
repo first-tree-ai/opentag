@@ -109,11 +109,15 @@ Three reads answer these questions over the Agent's IM bindings. The two running
 `im_message_deliveries_unreported_accepted_idx` — partial on `state = 'accepted' and reported_at is null` — as their
 access path; without it they join every Session of a binding to reach an answer, which is proportional to the Agent's
 history rather than to the Turns actually outstanding. The queued read is scoped to the listed Agents before it reads
-a delivery: it takes their active bindings, their live channel and thread Sessions through the partial
-`sessions_active_channel_unique` and `sessions_active_thread_unique` indexes, and probes each for a pending delivery
-through `im_message_deliveries_overflow_idx`, whose leading `session_id` serves the probe. It therefore grows with the
-Agents' live conversations, never with another Account's queue or with the Internal Sessions a busy binding
-accumulates; starting from `im_message_deliveries_pending_idx` instead would read every Account's pending work first.
+a delivery: it takes their active bindings and their live channel and thread Sessions through the partial
+`sessions_active_channel_unique` and `sessions_active_thread_unique` indexes, and semi-joins those Sessions to their
+pending deliveries, through `im_message_deliveries_overflow_idx` (leading `session_id`) or
+`im_message_deliveries_pending_idx`, whichever side the planner finds cheaper, so the delivery side costs at most the
+smaller of the Agents' live conversations and the Server's pending queue. The Internal Sessions a busy binding
+accumulates are never read, but the live conversation list itself is read in every plan, and it grows with the
+conversations the Agents have taken part in, because channel and thread Sessions stay live. No
+existing index reaches one Agent's pending deliveries directly; bounding the read by the Agents' pending work alone
+would take a delivery index keyed by binding, which is a schema change that needs a database-design decision.
 The Task topic chain then classifies only the channels holding waiting work and reads each as far as its Tasks reach,
 as the Task list does, so the hottest conversation holding a pending message is what the read is checked against the
 500 ms single-query budget for.

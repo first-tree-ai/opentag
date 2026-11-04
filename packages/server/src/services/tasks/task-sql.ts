@@ -370,12 +370,15 @@ export const topicEndedAt: SQL = sql`case when ts.id is not null then ts.ended_a
  * which outranks Queued; and only a pending delivery in a live Session of an active binding makes a
  * topic wait.
  *
- * The seed is scoped before anything else is read: the requested Agents' active bindings, their live
- * channel and thread Sessions through the two partial active-Session indexes, and a pending delivery
- * in each through `im_message_deliveries_overflow_idx`, whose leading `session_id` serves the probe.
- * The read therefore grows with the Agents' live conversations, never with another Account's queue or
- * with the Internal Sessions a busy binding accumulates. The topic chain then classifies only the
- * channels that hold waiting work.
+ * The seed is scoped before anything else is read: the requested Agents' active bindings and their
+ * live channel and thread Sessions, through the two partial active-Session indexes, semi-joined to
+ * their pending deliveries. The planner drives the semi-join from whichever side is cheaper — a probe
+ * per Session through `im_message_deliveries_overflow_idx` (leading `session_id`), or the pending
+ * rows through `im_message_deliveries_pending_idx` — but the live-Session list itself is always read.
+ * The read therefore grows with the Agents' live conversations, which are long-lived, and never with
+ * the Internal Sessions a busy binding accumulates. Bounding it by the Agents' pending work alone needs
+ * a delivery index keyed by binding, which is a schema decision. The topic chain then classifies only
+ * the channels that hold waiting work.
  */
 export function queuedTaskCountsByAgent(input: { accountId: string; agentIds: readonly string[]; now: Date }): SQL {
   const agentIds = sql.join(

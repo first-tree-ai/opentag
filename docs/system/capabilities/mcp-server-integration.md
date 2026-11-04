@@ -1461,11 +1461,16 @@ save remains a local form error; it does not turn into a tool-probe failure on t
 The Connectors page keeps its existing layout and actions. **Discover** opens the service directory;
 **Add custom** opens a compact **Add custom connector** dialog. The Chinese entry labels are
 **发现** and **自定义**, and the custom dialog title is **添加自定义连接器**. The custom dialog contains:
-An input with localized URL guidance and **Connect**, with dismissal through the header close button
-or Escape. **Connector URL** remains its screen-reader label; opening focuses the input. There is
-no source switch, name field, authentication picker, or header editor in this entry flow. Discover,
-manual configuration, and configuration import remain implementation capabilities rather than entry
-points in this dialog.
+- a **Connector address** (**连接器地址**) field, which is also its accessible name;
+- an **Authentication** (**认证方式**) choice of **Account sign-in** (**账户登录**, the default),
+  **API key or token** (**API 密钥或令牌**), or **No authentication** (**无需认证**); choosing a key reveals
+  its field;
+- collapsed **Advanced settings** (**高级设置**) for headers;
+- **Connect** (**连接**), which becomes **Retry** after a failed attempt.
+It is dismissed through the header close button or Escape. There is no source switch or name field.
+With Account sign-in, Connect first tries the address; when the service refuses it, authorization opens
+in its own window. Discover, manual configuration, and configuration import remain implementation
+capabilities rather than entry points in this dialog.
 
 Web installations retain an explicit mount and independent tool snapshot per Agent. Add custom does
 not list the Account pool. With new OAuth reuse enabled, both Add custom and Discover perform the

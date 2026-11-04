@@ -81,7 +81,7 @@ describe("OpenTag Web App Shell", () => {
   );
 
   it("keeps Skills reachable while omitting retired Agent repository navigation", async () => {
-    installApi({ internalNavigationVisibility: { integrations: true }, internalToolsOffered: true });
+    installApi({ internalToolsOffered: true });
     window.history.replaceState({}, "", `/agents/${agentId}/skills`);
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Skills" })).toBeTruthy();

@@ -370,7 +370,6 @@
   "InstallSkillPresetResponseSchema",
   "IntegrationCredentialExecutionReasonSchema",
   "IntegrationCredentialExecutionStatusSchema",
-  "InternalNavigationVisibilitySchema",
   "InternalSessionRuntimeOverridesSchema",
   "LegacyRuntimeSnapshotSchema",
   "ListAccountComputersResponseSchema",

@@ -77,12 +77,34 @@ receive role-aware managed instructions and may create further internal Sessions
 
 Local and Cloud use the same managed system-prompt renderer and Session context interface. Shared Session behavior is
 defined once; workspace persistence, isolation, and Context Tree facts are rendered for the execution environment.
-For eligible human IM inputs, the Server owns the working reaction and terminal error-card projection, including durable cleanup and safe recovery. Visible Sessions keep normal progress silent and publish their final result through the provider CLI. Observer copies and internal Sessions do not publish IM reactions or replies for that input. See [IM feedback and recovery](im-feedback.md) for eligibility, batching, failure handling, and recovery authority.
+For eligible human IM inputs, the Server owns the working reaction and terminal error-card projection, including durable cleanup and safe recovery. Visible Sessions keep normal progress silent and publish their final result through the provider CLI; long-running delegated or multi-step work also posts milestone messages, described below. Observer copies and internal Sessions do not publish IM reactions or replies for that input. See [IM feedback and recovery](im-feedback.md) for eligibility, batching, failure handling, and recovery authority.
 
 openTag internal Sessions are distinct from Provider-native subagents. When a person explicitly requests an openTag
 internal Session, the visible Session uses `opentag session create` rather than substituting a Provider-native subagent.
-openTag does not otherwise impose one automatic routing policy between direct work, Provider-native subagents, and
-internal Sessions.
+
+Beyond that rule, delegation is a managed-instruction convention, not a platform routing policy. A visible Session
+handles quick work directly. Work likely to take long — multi-step coding, debugging, test runs, or broad research,
+roughly over 10 minutes — or work that should continue on its own goes to an internal Session created with a
+`--max-duration-ms` sized to the task; the visible Session replies promptly that the work has started and publishes the
+result when the child reports back. A visible Session's own Run shares one time budget, is aborted on timeout, and
+holds the IM conversation until it ends. Provider-native subagents run inside that Run, are not visible in openTag,
+and do not survive a daemon restart, so they remain for short, bounded side tasks within the current Run. Internal
+Sessions may still delegate further.
+
+Session collaboration can be unavailable to a visible Session — Cloud omits it when the request carries no
+`sessionCollaboration` proof, and Local when it reconciles without the Session-collaboration capability or managed
+Session context. The visible Session then still handles quick work directly and keeps Provider-native subagents to
+short, bounded side tasks. It does long work directly in the current Run: it replies promptly that the work has started
+and that the conversation stays busy until it finishes, posts milestones, and, because the Run budget still applies,
+says so when the work may not fit and splits it into parts the user can request in separate messages.
+
+For long-running delegated or multi-step work, the visible Session posts a short new IM message at each meaningful
+milestone — started, key finding, blocked and needs input, done — rather than editing one message, because IM clients do
+not notify on edits. Routine check-ins are not milestones, and short work stays silent until the final reply. The done
+milestone is the one self-contained final result, not a separate completion message, and a start notice already sent —
+such as a scheduled task's fixed start notification — satisfies started, so the convention never adds the completion
+notices scheduled-task metadata forbids. Internal Sessions never publish to IM; they report milestones to their creator
+through `opentag session send` only when useful, along with questions and the final result.
 
 When a SessionMessage returns to a visible channel or thread Session, that callback Run retains the visible Session's IM
 authority. Credential grant v2 atomically supplies a temporary provider credential environment and a non-secret default

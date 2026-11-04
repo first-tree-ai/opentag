@@ -205,3 +205,7 @@ Agent Runtime passed 824 cases with 100% statements, branches, functions and lin
 type checks passed before the final Server query correction; the final Server build/type checks
 and affected three-file unit subset cover that correction. No manifest or lockfile changed. These
 local results do not waive either failed remote run or establish a new-head CI result.
+
+The final base update through `ce3b11254` changes only runtime-options abort handling and its test.
+The owning Server tests and Server type checks passed after integration; manifests and lockfile
+were unchanged.

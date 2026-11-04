@@ -349,12 +349,43 @@ const statusReasons: Record<NonNullable<AgentStatusSnapshot["reason"]>, AgentAva
 };
 function availabilityState(status: AgentStatusSnapshot): AgentAvailability["state"] {
   if (status.state === "ready") return "ready";
-  if (status.state === "initializing") return "setting_up";
+  if (status.state === "initializing" || status.reason === "im_provisioning") return "setting_up";
+  if (status.reason === "im_not_connected") return "not_connected";
   return status.reason === "agent_paused" ? "suspended" : "action_required";
+}
+
+function messagingStateFromStatus(status: AgentStatusSnapshot): AgentAvailability["dependencies"]["handoff"]["state"] {
+  switch (status.reason) {
+    case null:
+      return status.state === "ready" ? "ready" : "unconfirmed";
+    case "im_not_connected":
+      return "not_connected";
+    case "im_provisioning":
+      return "setting_up";
+    case "im_reauthorization_required":
+    case "im_error":
+    case "messaging_cli_unavailable":
+    case "messaging_cli_check_timed_out":
+    case "credential_validation_failed":
+    case "credential_validation_timeout":
+    case "credential_rate_limited":
+      return "action_required";
+    case "computer_not_bound":
+    case "computer_access_required":
+    case "computer_offline":
+    case "agent_paused":
+    case "runtime_unavailable":
+    case "runtime_check_timed_out":
+    case "self_check_report_stale":
+    case "first_validation":
+    case "legacy_checking":
+      return "unconfirmed";
+  }
 }
 
 export function availabilityFromStatus(status: AgentStatusSnapshot): AgentAvailability {
   const reason = status.reason === null ? null : statusReasons[status.reason];
+  const messagingState = messagingStateFromStatus(status);
   return {
     state: availabilityState(status),
     reason,
@@ -370,11 +401,16 @@ export function availabilityFromStatus(status: AgentStatusSnapshot): AgentAvaila
         ...(status.cloud ? { cloud: status.cloud } : {}),
       },
       handoff: {
-        state: status.state === "ready" ? "ready" : status.state === "initializing" ? "checking" : "action_required",
-        lastConfirmedAt: status.checkedAt,
+        state: messagingState,
+        lastConfirmedAt: messagingState === "unconfirmed" ? null : status.checkedAt,
       },
       channel: {
-        state: status.messaging?.bindingState === "active" ? "connected" : "not_connected",
+        state:
+          messagingState === "unconfirmed"
+            ? "unconfirmed"
+            : status.messaging?.bindingState === "active"
+              ? "connected"
+              : "not_connected",
         provider: status.messaging?.provider ?? null,
         botDisplayName: status.messaging?.bot.displayName ?? null,
       },

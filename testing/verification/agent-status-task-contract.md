@@ -148,6 +148,13 @@ overflow, no unexpected API endpoints or page errors, and zero axe violations. S
 [1440 px](agent-status-task-contract/messaging-disconnected-1440.png), and the
 [browser readback](agent-status-task-contract/review-browser.json).
 
+Messaging dependency projection now follows the causal Server reason. Computer, runtime, paused,
+and initializing verdicts leave messaging unconfirmed without a messaging repair action, including
+when an active binding exists. `im_not_connected` retains its neutral not-connected state. A
+table-driven list/detail regression covers every `AgentStatusReason`, with both active-binding and
+missing-binding cases for the higher-priority verdicts. The three owning Web files passed all 102
+cases; Web build, root type checks and repository checks passed after this correction.
+
 The older `db9e74d91` CI run passed 1,401 PostgreSQL cases and failed its 4,096-Session/max-1-pool
 stop deadline case. That red result is not waived by these local checks; the next head needs a
-fresh CI result and fresh review of the four corrected contracts.
+fresh CI result and fresh review of all five corrected contracts.

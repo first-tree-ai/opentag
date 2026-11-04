@@ -207,7 +207,8 @@ The same route outlet remains mounted across those changes. Agent roster rows st
 Every roster row whose blocked state the reader can fix offers exactly one action link to where it gets fixed:
 setup-owned reasons (no Computer, runtime missing, unavailable, or needing sign-in, messaging not finished, or
 delivery failing) use **Continue setup**; messaging that needs new permissions uses **Update permissions**; a
-disconnected or failed channel uses **Reconnect channel**; an offline Computer uses **Restore connection**. A paused
+recoverable channel failure uses **Reconnect channel**; an offline Computer uses **Restore connection**. A configured
+messaging identity that has been disconnected offers **New Agent**, because the identity cannot be replaced. A paused
 Agent and states that resolve on their own offer no action. A fixable row without a way out reads as a dead end next
 to rows that have one, so every fixable state carries the same single link.
 
@@ -229,6 +230,11 @@ request deduplication and error presentation remain. Offline overrides other dep
 credential initialization is neutral for at most 15 seconds; completed failures, stale reports and
 check timeouts name the problem. Rechecks retain the last complete result at the Server. The
 Agent's Work row still describes running Tasks separately from availability.
+
+Dependency rows use the causal status reason. Computer, runtime, paused and initializing verdicts
+leave messaging unconfirmed and offer no messaging repair; they do not establish a separate
+channel failure even when a binding exists. Only messaging verdicts can offer messaging recovery.
+An unconfigured channel remains neutral and reads Not connected.
 
 See [Agent status pipeline](../runtime/computer-status-pipeline.md) for the single-replica evidence
 model. Older Servers without negotiated metadata use the legacy read path.

@@ -570,6 +570,9 @@ export function agentRuntimeIssue(agent: AgentDetailView): (AgentDependencyStatu
 }
 
 export function agentMessagingStatus(agent: AgentDetailView): AgentDependencyStatus {
+  if (agent.serverStatus && agent.availability.dependencies.handoff.state === "unconfirmed") {
+    return { label: m.agents_status_unknown(), tone: "neutral" };
+  }
   if (agent.messaging.kind === "unconfirmed") {
     return {
       action: settingsAction(agent.id, m.agents_status_action_view_channel(), "messaging"),

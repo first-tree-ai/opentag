@@ -1,7 +1,14 @@
-import type { AccountComputerSummary, AgentDetail, ImBindingSummary } from "@opentag/shared/browser";
+import {
+  type AccountComputerSummary,
+  type AgentDetail,
+  type AgentStatusReason,
+  AgentStatusReasonSchema,
+  type AgentStatusSnapshot,
+  type ImBindingSummary,
+} from "@opentag/shared/browser";
 import { describe, expect, it } from "vitest";
 import type { AgentAvailability, AgentDetailView, AgentListItem } from "./agent-model.js";
-import { projectAgentAvailability } from "./agent-model.js";
+import { applyAgentStatus, projectAgentAvailability } from "./agent-model.js";
 import {
   agentAvailabilityRecovery,
   agentAvailabilitySummary,
@@ -273,4 +280,94 @@ describe("A messaging check still in progress, as the viewer reads it", () => {
       link: { search: { agentId }, to: "/agents/setup" },
     });
   });
+});
+
+describe("Server status reasons across the list and dependency rows", () => {
+  const states: Record<AgentStatusReason, AgentAvailability["dependencies"]["handoff"]["state"]> = {
+    computer_not_bound: "unconfirmed",
+    computer_access_required: "unconfirmed",
+    computer_offline: "unconfirmed",
+    agent_paused: "unconfirmed",
+    runtime_unavailable: "unconfirmed",
+    runtime_check_timed_out: "unconfirmed",
+    self_check_report_stale: "unconfirmed",
+    first_validation: "unconfirmed",
+    legacy_checking: "unconfirmed",
+    im_not_connected: "not_connected",
+    im_provisioning: "setting_up",
+    im_reauthorization_required: "action_required",
+    im_error: "action_required",
+    messaging_cli_unavailable: "action_required",
+    messaging_cli_check_timed_out: "action_required",
+    credential_validation_failed: "action_required",
+    credential_validation_timeout: "action_required",
+    credential_rate_limited: "action_required",
+  };
+  const cases = AgentStatusReasonSchema.options.flatMap((reason) =>
+    (states[reason] === "unconfirmed" ? [false, true] : [reason !== "im_not_connected"]).map((hasBinding) => ({
+      reason,
+      hasBinding,
+    })),
+  );
+  function statusForReason(agent: AgentDetail, reason: AgentStatusReason, hasBinding: boolean): AgentStatusSnapshot {
+    const bindingStates: Partial<Record<AgentStatusReason, ImBindingSummary["bindingState"]>> = {
+      im_provisioning: "provisioning",
+      im_reauthorization_required: "reauthorization_required",
+      im_error: "error",
+    };
+    const phases: Partial<Record<AgentStatusReason, AgentStatusSnapshot["state"]>> = {
+      computer_offline: "computer_offline",
+      first_validation: "initializing",
+      legacy_checking: "initializing",
+    };
+    return {
+      agentId: agent.id,
+      agentRevision: 1,
+      agentUpdatedAt: agent.updatedAt,
+      agentStatus: reason === "agent_paused" ? "suspended" : "active",
+      observedAt: agent.updatedAt,
+      checkedAt: agent.updatedAt,
+      state: phases[reason] ?? "problem",
+      reason,
+      computer:
+        reason === "computer_not_bound" || reason === "computer_access_required"
+          ? null
+          : {
+              computerId: agent.computer?.computerId ?? computerId,
+              kind: "local",
+              displayName: "Computer",
+              platform: "darwin",
+              online: reason !== "computer_offline",
+              lastSeenAt: agent.updatedAt,
+            },
+      runtimeProvider: "codex",
+      runtimeStatus: reason.startsWith("runtime_") || reason === "self_check_report_stale" ? "unavailable" : "ready",
+      messaging: hasBinding ? messagingBinding(bindingStates[reason] ?? "active") : null,
+    };
+  }
+  it.each(cases)(
+    "projects $reason with binding=$hasBinding without inventing another failure",
+    ({ reason, hasBinding }) => {
+      const agent = boundAgent();
+      const status = statusForReason(agent, reason, hasBinding);
+      const detail = applyAgentStatus(agent, status);
+      const list = listed(detail);
+      expect(detail.availability.dependencies.handoff.state).toBe(states[reason]);
+      const messaging = agentMessagingStatus(detail);
+      if (states[reason] === "unconfirmed") {
+        expect(messaging).toEqual({ label: "Status unavailable", tone: "neutral" });
+        expect(detail.availability.dependencies.channel.state).toBe("unconfirmed");
+        expect(agentCardStatus(list).label).not.toBe("Cannot receive messages");
+        expect(agentStatusPresentation(detail).label).not.toBe("Cannot receive messages");
+        expect(agentRowAction(list)?.link).not.toMatchObject({ params: { section: "messaging" } });
+      }
+      if (reason === "im_not_connected") {
+        expect(detail.availability.state).toBe("not_connected");
+        expect(messaging).toMatchObject({ label: "Not connected", tone: "neutral" });
+        expect(agentCardStatus(list).tone).toBe("neutral");
+        expect(agentStatusPresentation(detail).tone).toBe("neutral");
+      }
+      if (states[reason] === "action_required") expect(["warning", "danger"]).toContain(messaging.tone);
+    },
+  );
 });

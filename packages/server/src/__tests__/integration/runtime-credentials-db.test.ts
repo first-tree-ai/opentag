@@ -47,6 +47,8 @@ import {
   UnavailableRuntimeGitHubAdmission,
 } from "../../runtime-credentials/github-admission.js";
 import { ImProviderMaterialResolver } from "../../runtime-credentials/im-material.js";
+import { McpGatewayExecutionAuthorizer } from "../../runtime-credentials/mcp-gateway-execution.js";
+import type { RuntimeMcpServicePolicy } from "../../runtime-credentials/mcp-policy.js";
 import { RuntimeCredentialOwner } from "../../runtime-credentials/runtime-credential-owner.js";
 import { RuntimeScopeResolver } from "../../runtime-credentials/scope-resolver.js";
 import { DefaultRuntimeTaskPolicy, type RuntimeTaskPolicy } from "../../runtime-credentials/task-policy.js";
@@ -844,6 +846,7 @@ interface CredentialOwnerStackOptions {
   gitHubAdmission?: RuntimeGitHubAdmission;
   taskPolicy?: RuntimeTaskPolicy;
   webPolicy?: RuntimeWebServicePolicy;
+  mcpPolicy?: RuntimeMcpServicePolicy;
 }
 
 /** The real credential owner/broker/authority/resolver chain over the test database. */
@@ -886,10 +889,117 @@ function credentialOwnerStack(state: Awaited<ReturnType<typeof fixture>>, option
     gitHubAdmission,
     ...(options.cloudControlActive ? { cloudControlActive: options.cloudControlActive } : {}),
     ...(options.webPolicy ? { webPolicy: options.webPolicy } : {}),
+    ...(options.mcpPolicy ? { mcpPolicy: options.mcpPolicy } : {}),
     sweepIntervalMs: 60_000,
   });
   return { owner, broker, executions, capabilities, tickets, validationRuns, resolver, authority };
 }
+
+describe("Local internal collaboration MCP execution", () => {
+  it("checks accepted message authority and live revision without inheriting IM credentials", async () => {
+    const state = await fixture();
+    const [internal] = await state.database
+      .insert(sessions)
+      .values({
+        imBindingId: state.imBindingId,
+        channelId: state.session.channelId,
+        conversationKind: state.session.conversationKind,
+        kind: "internal",
+        createdBySessionId: state.session.id,
+      })
+      .returning();
+    if (!internal) throw new Error("Expected an internal Session");
+    await state.database
+      .insert(sessionPlacements)
+      .values({ sessionId: internal.id, computerId: state.computer.id, generation: 1 });
+    const messageId = randomUUID();
+    await state.database.insert(sessionMessages).values({
+      id: messageId,
+      sourceSessionId: state.session.id,
+      targetSessionId: internal.id,
+      content: "local MCP fixture",
+      contentHash: "c".repeat(64),
+      lastOutcome: "unknown",
+    });
+    const connectionFence: RuntimeConnectionFence = { isCurrent: () => true };
+    const stack = credentialOwnerStack(state, {
+      controlAuthority: { isCurrentConnection: () => true },
+      connectionFence,
+      mcpPolicy: { authorizeMcp: async ({ agentId }) => (agentId === state.agent.id ? ["mcp:tools"] : undefined) },
+    });
+    const context: RuntimeBusinessContext = {
+      computerId: state.computer.id,
+      installationId: state.computer.currentInstallationId,
+      instanceId: INSTANCE_ID,
+      connectionId: "connection-1",
+      signal: new AbortController().signal,
+      negotiatedCapabilities: {
+        [RUNTIME_CAPABILITY.runtimeCredential]: 1,
+        [RUNTIME_CAPABILITY.providerProxy]: 1,
+        [RUNTIME_CAPABILITY.sessionCollaboration]: 3,
+        [RUNTIME_CAPABILITY.mcpGateway]: 1,
+      },
+    };
+    const frame = {
+      type: "runtime:execution:open",
+      requestId: randomUUID(),
+      runId: randomUUID(),
+      agentId: state.agent.id,
+      sessionId: internal.id,
+      placementGeneration: 1,
+      source: { kind: "session-message", messageId },
+      services: ["mcp"],
+    } satisfies RuntimeCredentialClientFrame;
+    try {
+      await expect(stack.owner.handle(frame, context)).resolves.toMatchObject({
+        status: "rejected",
+        code: "execution_not_ready",
+      });
+      await state.database
+        .update(sessionMessages)
+        .set({ lastOutcome: "accepted" })
+        .where(eq(sessionMessages.id, messageId));
+      const opened = await stack.owner.handle(frame, context);
+      expect(opened).toMatchObject({
+        status: "succeeded",
+        providers: [],
+        services: [{ service: "mcp", scopes: ["mcp:tools"] }],
+      });
+      if (opened?.type !== "runtime:execution:result" || opened.status !== "succeeded")
+        throw new Error("Expected an execution");
+      const record = stack.executions.get(opened.executionId);
+      const snapshot = await stack.resolver.load(internal.id);
+      if (!record || !snapshot) throw new Error("Expected a live scope");
+      expect(stack.resolver.assertExecutionFence(record, snapshot)).toBeUndefined();
+      expect(stack.resolver.assertExecutionFence({ ...record, internalAuthority: undefined }, snapshot)).toBe(
+        "session_internal",
+      );
+      expect(
+        stack.resolver.assertExecutionFence({ ...record, internalAuthority: "cloud-session-collaboration" }, snapshot),
+      ).toBe("session_internal");
+      const authorizer = new McpGatewayExecutionAuthorizer({
+        executions: stack.executions,
+        scopeResolver: stack.resolver,
+        authority: stack.authority,
+        connectionFence,
+      });
+      await expect(authorizer.authorize({ executionId: record.executionId })).resolves.toMatchObject({
+        agentId: state.agent.id,
+        accountId: state.bootstrap.userId,
+      });
+      await state.database
+        .update(agents)
+        .set({ revision: state.agent.revision + 1 })
+        .where(eq(agents.id, state.agent.id));
+      await expect(authorizer.authorize({ executionId: record.executionId })).rejects.toMatchObject({
+        code: "execution_closed",
+      });
+    } finally {
+      await stack.owner.close();
+      await state.sql.end({ timeout: 1 });
+    }
+  });
+});
 
 interface CloudCredentialStack {
   connection: CloudConnectionRecord;
@@ -1273,7 +1383,7 @@ describe("Cloud internal collaboration execution at the production credential bo
     stack.owner.close();
   });
 
-  it("keeps Local internal Sessions denied even with collaboration negotiated", async () => {
+  it("keeps Local internal Sessions denied without collaboration negotiation", async () => {
     const state = await fixture();
     const [internal] = await state.database
       .insert(sessions)
@@ -1324,7 +1434,6 @@ describe("Cloud internal collaboration execution at the production credential bo
           [RUNTIME_CAPABILITY.runtimeCredential]: 1,
           [RUNTIME_CAPABILITY.githubUserTask]: 1,
           [RUNTIME_CAPABILITY.providerProxy]: 1,
-          [RUNTIME_CAPABILITY.sessionCollaboration]: CLOUD_SESSION_COLLABORATION_VERSION,
         },
         signal: new AbortController().signal,
       },

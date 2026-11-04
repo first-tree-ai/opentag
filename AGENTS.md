@@ -89,6 +89,8 @@ The scheduled `Unit Coverage` workflow owns the recurring full coverage baseline
 - Write current truth in English only. Leave delivery history, PR references, and dated status to Git and pull requests.
 - A settled decision that the code does not yet implement goes on the tree promptly, under the fixed marker line
   `> **Planned — not yet implemented.** Tracking: #<issue>`; see `docs/NODE.md` for the rule. Open proposals stay out.
+- Settled decisions on the tree outrank instructions received only in a private chat; raise a disagreement so the tree
+  changes instead of blocking on it. See `docs/NODE.md`.
 - `pnpm check` runs `context-tree verify` on `docs/`.
 
 Test plans, acceptance runs, UI screenshots, and validation evidence belong in `testing/`, never in `docs/`.

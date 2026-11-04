@@ -1045,7 +1045,22 @@ it("bounds target checks per stream and does not let a slow check delay another 
 });
 
 describe("Provider stream failure diagnostics", () => {
-  it.each(["scope_denied", "private-error-code"])("logs only bounded provider/reason metadata for %s", async (code) => {
+  it.each([
+    ["scope_denied", "scope_denied"],
+    ["github_destination_blocked", "github_destination_blocked"],
+    ["operation_not_registered", "operation_not_registered"],
+    ["validation_scope", "validation_scope"],
+    ["header_rejected", "header_rejected"],
+    ["body_invalid", "body_invalid"],
+    ["body_too_large", "body_too_large"],
+    ["write_outcome_unknown", "write_outcome_unknown"],
+    ["upstream_unavailable", "upstream_unavailable"],
+    ["handle_invalid", "handle_invalid"],
+    ["cancelled", "cancelled"],
+    ["response_invalid", "response_invalid"],
+    ["private-error-code", "upstream_unavailable"],
+    ["validation_scope private-token", "upstream_unavailable"],
+  ])("logs only bounded provider/reason metadata for %s", async (code, expectedCode) => {
     const logs: unknown[] = [];
     const state = await setup(
       {
@@ -1073,7 +1088,7 @@ describe("Provider stream failure diagnostics", () => {
     expect(await queue.nextJson()).toMatchObject({ type: "error", code });
     expect(logs).toEqual([
       {
-        record: { provider: "slack", code: code === "scope_denied" ? code : "upstream_unavailable" },
+        record: { provider: "slack", code: expectedCode },
         message: "Provider proxy stream failed",
       },
     ]);

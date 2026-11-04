@@ -28,6 +28,7 @@ import {
 import { AsyncByteQueue, QUEUE_END } from "./data-transport-queue.js";
 import type { RuntimeExecutionRegistry } from "./execution-registry.js";
 import type { ProviderProxyAdapter, ProviderProxyRequest } from "./provider-proxy-adapter.js";
+import { RUNTIME_PROXY_FAILURE_CODES } from "./provider-proxy-support.js";
 import type { RuntimeProxyTicketStore } from "./ticket-store.js";
 
 interface ResolvedTransportLimits {
@@ -448,7 +449,9 @@ class ProxyDataConnection {
     const safe =
       ["scope_denied", "invalid_request", "unavailable", "credential_scope_denied", "provider_unavailable"].includes(
         code,
-      ) || Object.hasOwn(GITHUB_PROXY_FAILURE_STATUSES, code);
+      ) ||
+      RUNTIME_PROXY_FAILURE_CODES.some((failureCode) => failureCode === code) ||
+      Object.hasOwn(GITHUB_PROXY_FAILURE_STATUSES, code);
     this.#transport.logger?.warn(
       { provider, code: safe ? code : "upstream_unavailable" },
       "Provider proxy stream failed",

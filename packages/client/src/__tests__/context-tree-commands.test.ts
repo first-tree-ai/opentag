@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import { contextTreeSelector } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CONTEXT_TREE_COMMAND_WORKER_SOURCE } from "../runner/context-tree-command-worker.js";
 import { resolveContextTreePackage, runContextTreeCli } from "../runtime/context-tree.js";
@@ -432,6 +433,84 @@ describe("Context Tree command boundary", () => {
     expect(calls[0]).not.toContain("--offline");
     expect(calls[1]).toContain("--offline");
   });
+
+  it("syncs two directories sharing one warm repository cache concurrently with the pinned CLI", async () => {
+    const root = await directory();
+    const pack = resolveContextTreePackage();
+    if (!pack) throw new Error("Missing pinned CLI");
+    const environment = {
+      HOME: root,
+      PATH: process.env.PATH,
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_AUTHOR_NAME: "Test",
+      GIT_AUTHOR_EMAIL: "test@example.test",
+      GIT_COMMITTER_NAME: "Test",
+      GIT_COMMITTER_EMAIL: "test@example.test",
+    };
+    const git = async (...args: string[]) => (await executeFile("git", args, { env: environment })).stdout.trim();
+    const seed = join(root, "seed");
+    await mkdir(seed);
+    await git("init", "--initial-branch=main", seed);
+    for (const tree of ["docs", "notes"])
+      await runContextTreeCli(pack, ["init", join(seed, tree), "--project-path", seed, "--json"], {
+        env: environment,
+      });
+    await git("-C", seed, "add", ".");
+    await git("-C", seed, "commit", "-m", "init");
+    const remote = join(root, "remote.git");
+    await git("clone", "--bare", seed, remote);
+    const bin = join(root, "bin");
+    await mkdir(bin);
+    // Every git call inside the shared bare cache runs under its repository lock; slowing them
+    // makes the two children hold and wait for that one lock at the same time.
+    await writeFile(
+      join(bin, "git"),
+      `#!/bin/sh\ncase "$PWD" in */repositories/*.git) sleep 1;; esac\nexec /usr/bin/git -c protocol.file.allow=always -c 'url.file://${remote}.insteadOf=https://github.com/acme/project.git' "$@"\n`,
+      { mode: 0o700 },
+    );
+    environment.PATH = `${bin}:${environment.PATH}`;
+    const sources = [source, { ...source, path: "notes" }] as const;
+    const workspace = join(root, "workspace");
+    await mkdir(workspace);
+    const projectPath = await configureContextTrees(workspace, sources);
+    // Warm the shared repository cache with one source, as an earlier task boundary would.
+    const warm = await runContextTreeCli(
+      pack,
+      ["sync", "--project-path", projectPath, "--tree", contextTreeSelector(source)],
+      { env: environment, network: true },
+    );
+    expect(warm.failureCode).toBeUndefined();
+    const owner = parent();
+    const gateway = new ContextTreeCommandGateway({
+      parent: owner.relay,
+      sources,
+      workspace,
+      stateDirectory: join(root, "routing"),
+      environment: () => environment,
+      execute: async (args, privateEnvironment, signal) => {
+        const result = await runContextTreeCli(pack, args, {
+          cwd: workspace,
+          network: true,
+          env: { ...environment, ...privateEnvironment },
+          signal,
+        });
+        return { code: result.failureCode ? 1 : 0, stdout: JSON.stringify(result.payload), stderr: "" };
+      },
+    });
+    await gateway.listen("socket");
+    cleanups.push(() => gateway.close());
+    const synced = await requestContextTreeCommand({ socketPath: gateway.socketPath }, ["sync"]);
+    expect(synced.code, synced.stdout).toBe(0);
+    const { connections } = JSON.parse(synced.stdout) as { connections: { ok: boolean; treeRoot: string }[] };
+    expect(
+      connections.map((entry) => entry.ok),
+      synced.stdout,
+    ).toEqual([true, true]);
+    expect(connections[0]?.treeRoot).toMatch(/docs$/);
+    expect(connections[1]?.treeRoot).toMatch(/notes$/);
+    expect(owner.openContextTree).toHaveBeenCalledTimes(2);
+  }, 60_000);
 
   it.each(["local", "cloud"])(
     "runs real CLI sync and publication through the %s worker, including a later execution",

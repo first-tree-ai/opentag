@@ -115,3 +115,7 @@ indicators; outbound capture no longer refreshes them. The old reaction notifier
 must not overlap during rollout, and old writers must not insert deliveries after explicit retry attempts are enabled.
 Coordinate this through the existing compatible release process without scaling the service to zero. The migration
 alone does not establish deployment or native Slack/Feishu acceptance.
+
+On shutdown, the Server first joins admitted HTTP requests and background producers, then drains feedback workspace
+operations before closing the shared SQL pool. A submission already waiting on SQL can still create such an operation;
+closing the feedback service before its producers settle would miss it.

@@ -51,7 +51,6 @@ async function fixture(enabled = true) {
     client.database,
     new BetterAuthSessionTokens(
       createBetterAuth(client.database, {
-        onSessionCreating: async () => {},
         publicUrl: "http://localhost:8000",
         secret: betterAuthSecret,
         secureCookies: false,

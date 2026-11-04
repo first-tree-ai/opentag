@@ -151,7 +151,7 @@ describe("ComputerConnect", () => {
         screen.getByText(
           executionLocation === "current"
             ? "Copy the task to your Agent on this computer."
-            : "Copy the task to your Agent on the target computer. Return here to continue setup when it connects.",
+            : "Copy the task to your Agent on the computer you want to connect.",
         ),
       ).toBeTruthy();
       const region = screen.getByRole("region", { name: "Connect computer" });
@@ -366,7 +366,8 @@ describe("ComputerConnect", () => {
     await flushAsync();
 
     expect(onConnected).not.toHaveBeenCalled();
-    expect(screen.getByRole("status").textContent).toContain("Command accepted. Waiting for openTag to come online");
+    // The web shows connection status only, never whether the command was used.
+    expect(screen.getByRole("status").textContent).toContain("Waiting for your computer…");
   });
 
   it("connects a computer that was already connected once it is seen after the redemption", async () => {
@@ -475,8 +476,8 @@ describe("ComputerConnect", () => {
     await flushAsync();
     inventory.mockResolvedValue({ computers: [{ ...computer, connectionStatus: "disconnected", connectedAt: null }] });
     await act(async () => vi.advanceTimersByTimeAsync(1_500));
-    expect(screen.getByRole("button", { name: "Get a new command" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Copy for Agent" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Copy for Agent" }) as HTMLButtonElement).disabled).toBe(true);
     expect(onConnected).not.toHaveBeenCalled();
     expect(browserApi.issueComputerConnectCode).toHaveBeenCalledOnce();
   });
@@ -498,11 +499,13 @@ describe("ComputerConnect", () => {
     render(<ComputerConnect intent={{ mode: "create" }} />);
     await flushAsync();
 
+    // The dead command stays in place, masked, with one Refresh action and the expiry hint saying so.
     expect(expandedTaskIncludesCommand(COMMAND)).toBe(false);
-    expect(screen.getByText("This command is no longer valid.")).toBeTruthy();
-    expect(screen.getByRole("status").textContent).toContain("This command is no longer valid.");
-    expect(screen.queryByRole("button", { name: "Copy for Agent" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Get a new command" })).toBeTruthy();
+    expect(document.querySelector('.ots-command[data-expired="true"]')).not.toBeNull();
+    expect(document.querySelector('[data-ui="computer-connect-expiry"]')?.textContent).toBe("Expired");
+    expect(screen.getByRole("status").textContent).toBe("Your computer isn't connected yet");
+    expect((screen.getByRole("button", { name: "Copy for Agent" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getAllByRole("button", { name: "Refresh" })).toHaveLength(1);
   });
 
   it("reissues in place after local expiry", async () => {
@@ -527,7 +530,7 @@ describe("ComputerConnect", () => {
       await vi.advanceTimersByTimeAsync(1_000);
     });
     expect(expandedTaskIncludesCommand(COMMAND)).toBe(false);
-    fireEvent.click(screen.getByRole("button", { name: "Get a new command" }));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     expect(screen.getByRole("status").textContent).toContain("Preparing connection command");
     await flushAsync();
 
@@ -563,7 +566,7 @@ describe("ComputerConnect", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_000);
     });
-    expect(screen.queryByRole("button", { name: "Get a new command" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
     oldPoll.resolve({
       connectCodeId: CONNECT_CODE_ID,
       state: "expired",
@@ -571,7 +574,7 @@ describe("ComputerConnect", () => {
       redeemedAt: null,
     });
     await flushAsync();
-    fireEvent.click(screen.getByRole("button", { name: "Get a new command" }));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await flushAsync();
 
     expect(computers).not.toHaveBeenCalled();
@@ -594,16 +597,17 @@ describe("ComputerConnect", () => {
     await act(async () => {
       await vi.advanceTimersByTimeAsync(1_000);
     });
-    fireEvent.click(screen.getByRole("button", { name: "Get a new command" }));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await flushAsync();
 
+    // The masked command keeps its single Refresh; the failure is reported in the status slot.
     expect(expandedTaskIncludesCommand(COMMAND)).toBe(false);
-    expect(screen.queryByRole("button", { name: "Copy for Agent" })).toBeNull();
+    expect((screen.getByRole("button", { name: "Copy for Agent" }) as HTMLButtonElement).disabled).toBe(true);
     const alert = screen.getByRole("alert");
     expect(alert.textContent).toContain("Couldn’t prepare the connection command.");
     expect(alert.textContent).not.toContain("Failed to fetch");
     expect(alert.closest(".ots-command__body")).toBeNull();
-    expect(screen.getByRole("button", { name: "Try again" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Refresh" })).toBeTruthy();
   });
 
   it("retries an initial issuance failure", async () => {

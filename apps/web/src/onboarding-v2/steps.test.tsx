@@ -78,7 +78,7 @@ describe("creation step navigation", () => {
       />,
     );
 
-    const rule = "Use lowercase letters, numbers, and hyphens (-), starting with a letter or number.";
+    const rule = "Use Chinese characters, letters, numbers, and hyphens (-); don't start with a hyphen.";
     expect(screen.getByText(rule)).toBeTruthy();
     const input = screen.getByLabelText("Agent name");
     const describedBy = input.getAttribute("aria-describedby")?.split(" ") ?? [];
@@ -90,7 +90,7 @@ describe("creation step navigation", () => {
   it("names a refused name briefly instead of repeating the character rule", () => {
     render(
       <AgentStep
-        draft={{ destination: "local", name: "研发助理", runtime: "codex" }}
+        draft={{ destination: "local", name: "研发助理!", runtime: "codex" }}
         onChange={() => undefined}
         onSubmit={() => undefined}
         submitLabel="Create Agent"
@@ -100,10 +100,47 @@ describe("creation step navigation", () => {
     const input = screen.getByLabelText("Agent name");
     fireEvent.blur(input);
 
-    const rule = "Use lowercase letters, numbers, and hyphens (-), starting with a letter or number.";
+    const rule = "Use Chinese characters, letters, numbers, and hyphens (-); don't start with a hyphen.";
     expect(screen.getByText("The name has characters that aren't allowed.")).toBeTruthy();
     expect(screen.getAllByText(rule)).toHaveLength(1);
     expect(input.getAttribute("aria-invalid")).toBe("true");
+  });
+
+  it("says a name is too long while typing, before blur or Create", () => {
+    const tooLong = "中".repeat(22);
+    const { rerender } = render(
+      <AgentStep
+        draft={{ destination: "local", name: "中".repeat(21), runtime: "codex" }}
+        onChange={() => undefined}
+        onSubmit={() => undefined}
+        submitLabel="Create Agent"
+      />,
+    );
+    const error = "The name is too long: up to 64 letters or 21 Chinese characters.";
+    expect(screen.queryByText(error)).toBeNull();
+
+    rerender(
+      <AgentStep
+        draft={{ destination: "local", name: tooLong, runtime: "codex" }}
+        onChange={() => undefined}
+        onSubmit={() => undefined}
+        submitLabel="Create Agent"
+      />,
+    );
+    expect(screen.getByText(error)).toBeTruthy();
+    expect(screen.getByLabelText("Agent name").getAttribute("aria-invalid")).toBe("true");
+  });
+
+  it("waits for blur before flagging other name problems", () => {
+    render(
+      <AgentStep
+        draft={{ destination: "local", name: "", runtime: "codex" }}
+        onChange={() => undefined}
+        onSubmit={() => undefined}
+        submitLabel="Create Agent"
+      />,
+    );
+    expect(screen.getByLabelText("Agent name").getAttribute("aria-invalid")).toBeNull();
   });
 
   it("keeps Create Agent disabled until a Runtime is selected", () => {

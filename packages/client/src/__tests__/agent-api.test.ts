@@ -649,3 +649,61 @@ describe("OpenTagApi Agent methods", () => {
     });
   });
 });
+
+describe("OpenTagApi against a newer Server", () => {
+  /*
+   * A CLI keeps running until its next connect while the Server upgrades for everyone, so a newer
+   * Server's additive fields must not break its reads. Known fields stay validated.
+   */
+  const future = {
+    serverOnlyFlag: true,
+    agents: [
+      {
+        ...agentListItem,
+        activity: { state: "working", startedAt: agent.updatedAt, queuedTaskCount: 2 },
+        computer: { ...agentListItem.computer, region: "value-must-not-be-logged" },
+        brandNewField: { nested: [1, 2] },
+      },
+    ],
+  };
+
+  it("reads the Agent list and detail when the Server adds fields at any depth", async () => {
+    const debug = vi.fn();
+    const fetchImpl = vi.fn<typeof fetch>(async (input) =>
+      String(input).endsWith("/api/v1/agents")
+        ? jsonResponse(future)
+        : jsonResponse({ ...future.agents[0], usage: undefined, newDetailField: "x" }),
+    );
+    const api = new OpenTagApi("https://opentag.example", { fetchImpl, logger: { debug } });
+
+    const listed = await api.listAgents("access");
+    expect(listed).toEqual({
+      agents: [{ ...agentListItem, activity: { state: "working", startedAt: agent.updatedAt } }],
+    });
+    const detail = await api.getAgent("access", agentId);
+    expect(detail.activity).toEqual({ state: "working", startedAt: agent.updatedAt });
+    expect(detail).not.toHaveProperty("newDetailField");
+
+    // Version skew is visible in debug logs by key path only, never by value.
+    expect(debug).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: "/api/v1/agents",
+        ignoredKeys: expect.arrayContaining(["serverOnlyFlag", "agents.0.activity.queuedTaskCount"]),
+      }),
+      expect.any(String),
+    );
+    expect(JSON.stringify(debug.mock.calls)).not.toContain("value-must-not-be-logged");
+  });
+
+  it("still rejects a newer Server's response that changes a known field", async () => {
+    const changed = { agents: [{ ...future.agents[0], status: "archived" }] };
+    const api = new OpenTagApi("https://opentag.example", {
+      fetchImpl: vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(changed)),
+      logger: { debug: vi.fn() },
+    });
+    await expect(api.listAgents("access")).rejects.toMatchObject({
+      code: "SERVICE_UNAVAILABLE",
+      phase: "serialization",
+    });
+  });
+});

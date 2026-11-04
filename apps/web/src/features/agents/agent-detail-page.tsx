@@ -82,12 +82,14 @@ export function AgentObjectHeader({
           {backToSettings ? agent.displayName : m.agents_title()}
         </Link>
       ) : null}
-      <div className="flex flex-wrap items-center justify-between gap-4">
+      <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex min-w-0 flex-1 basis-64 items-start gap-4">
           <AgentAvatar displayName={agent.displayName} avatarPath={agent.avatarPath} className="size-11" />
           <div className="grid min-w-0 gap-1.5">
-            <Text as="h1" DANGEROUS_className="wrap-anywhere" size="lg" variant="heading">
-              {agent.displayName}
+            {/* A long name keeps the header to two lines; the full name stays in the heading's text
+                and title, and in settings. */}
+            <Text as="h1" DANGEROUS_className="wrap-anywhere line-clamp-2" size="lg" variant="heading">
+              <span title={agent.displayName}>{agent.displayName}</span>
             </Text>
             <p className="flex flex-wrap items-center gap-3 text-sm text-kumo-subtle">
               {handle ? <span className="min-w-0 wrap-anywhere">@{handle}</span> : null}

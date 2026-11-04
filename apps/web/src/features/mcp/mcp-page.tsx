@@ -221,7 +221,7 @@ function McpManagementPage({ agentId }: { agentId: string }) {
       aria-labelledby="mcp-page-title"
       data-ui="mcp-page"
     >
-      <PageHeader title={m.mcp_heading()} titleId="mcp-page-title" description={m.mcp_intro()}>
+      <PageHeader title={m.mcp_heading()} titleId="mcp-page-title">
         <Button disabled={addDisabled} onClick={() => setPanel({ kind: "discover" })}>
           <Icon name="integrations" />
           {m.mcp_discover_action()}

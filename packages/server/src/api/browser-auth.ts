@@ -206,7 +206,7 @@ function transientFailure(response: Response): AuthServiceError | undefined {
 /**
  * An OpenTag decision the library only carried, rather than one of its own.
  *
- * `onSessionCreating` raises `AUTH_USER_SUSPENDED` from inside Better Auth, and that answer should reach the caller
+ * The session hook raises `AUTH_USER_SUSPENDED` from inside Better Auth, and that answer should reach the caller
  * intact. Only codes that parse as OpenTag's own survive this: the library's vocabulary — `INVALID_EMAIL_OR_PASSWORD`
  * and the rest — does not, so nothing it decided leaks through here.
  */
@@ -233,6 +233,9 @@ async function signUpFailure(response: Response): Promise<AuthServiceError> {
   const preserved = preservedDecision(body, response.status);
   if (preserved) return preserved;
   const code = (body as { code?: unknown } | undefined)?.code;
+  if (code === "FAILED_TO_CREATE_USER") {
+    return new AuthServiceError("SERVICE_UNAVAILABLE", "transient", "Sign-in is temporarily unavailable", 503);
+  }
   const duplicate =
     response.status === 409 || (typeof code === "string" && code.toUpperCase().includes("ALREADY_EXISTS"));
   if (duplicate) {
@@ -366,6 +369,8 @@ export function registerBrowserAuthRoutes(app: FastifyInstance, options: Browser
       path: "/sign-in/social",
       body: { callbackURL: destination, provider: "google" },
     });
+    const transient = transientFailure(response);
+    if (transient) throw transient;
     const payload = (await response.json().catch(() => undefined)) as { url?: string } | undefined;
     if (!response.ok || !payload?.url) {
       throw new AuthServiceError("AUTH_PROVIDER_DISABLED", "deterministic", "Google sign-in is not configured", 404);

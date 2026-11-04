@@ -99,7 +99,8 @@ channel, no cohorts or canaries. The daemon reads its configured channel's `late
 capability incompatibility, and every five minutes after a successful read. A failed read uses bounded exponential
 backoff, doubling up to thirty minutes. The Server's v2 heartbeat advertisement (`runtime.channelTarget`; see
 [runtime-protocol.md](../system/runtime/runtime-protocol.md)) remains an optimization while the connection is healthy, not the only
-way to discover a release.
+way to discover a release. The Server bounds streamed pointer JSON to 256 KiB and keeps its
+last good target after non-OK, malformed or oversized responses.
 
 An already-stopped old Client cannot run this discovery loop. Run `opentag upgrade` once from that installation (or
 reinstall the portable channel) so that it reaches a version with independent discovery; later releases can then be
@@ -251,6 +252,9 @@ release metadata, never from anything already remote.
 Step 7 makes publication monotonic and step 8 makes it single-writer. `install.sh` is written first because it is
 channel-pinned and version-independent, so a failure between the two writes leaves an installer that is at least as new
 as the pointer.
+
+After upload, the channel smoke test installs the advertised version and runs the installer again. The second run
+must succeed and report that the same version is already installed without downloading it again.
 
 ## Channel heads
 

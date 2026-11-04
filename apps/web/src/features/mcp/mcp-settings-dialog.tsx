@@ -219,7 +219,15 @@ function CurrentAuthentication({ state }: { state: SettingsState }) {
 }
 
 function ProbeRecovery({ state }: { state: SettingsState }) {
-  if (state.feedback.action !== "retry" || !state.onRetry) return null;
+  // A failed authentication already states its reason beside Authorize; a second line would repeat it.
+  if (state.feedback.action !== "retry" || !state.onRetry || state.authenticationError) return null;
+  // The fix is the address field above, so the reason stands alone without a Retry beside it.
+  if (state.feedback.recovery === "edit-address")
+    return (
+      <div className="mcp-auth-action-row">
+        <AuthenticationFeedback state={state} recovery />
+      </div>
+    );
   return (
     <div className="mcp-auth-action-row">
       <Button variant="secondary" size="compact" disabled={state.busy} loading={state.retrying} onClick={state.onRetry}>

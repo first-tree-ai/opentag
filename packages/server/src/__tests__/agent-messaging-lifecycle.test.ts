@@ -29,6 +29,7 @@ import {
   SlackOAuthService,
   SlackOAuthStateService,
 } from "../services/im-bindings/slack/index.js";
+import { abortableMockFeishuRegistration } from "./support/abortable-feishu-registration.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 const fixedNow = new Date("2026-08-19T00:00:00.000Z");
@@ -113,7 +114,7 @@ function pendingRegistration() {
     reject = rej;
   });
   void result.catch(() => undefined);
-  const registration = {
+  const registration = abortableMockFeishuRegistration({
     // The setup service measures QR expiry against real time, so the fixture must live in the real future.
     qrReady: Promise.resolve({
       url: "https://feishu.example/qr/lifecycle",
@@ -121,7 +122,7 @@ function pendingRegistration() {
     }),
     result,
     abort: vi.fn(),
-  };
+  });
   return { registration, resolve, reject };
 }
 
@@ -574,14 +575,16 @@ describe("Feishu setup command fencing", () => {
     // provider handshake: the transaction-time fence, not the earlier observation, must decide.
     const abort = vi.fn();
     const racingGateway: FeishuRegistrationGateway = {
-      start: vi.fn(() => ({
-        qrReady: value.service.activateFeishu(feishuActivationInput(value.agent.id)).then(() => ({
-          url: "https://feishu.example/qr/race",
-          expiresAt: new Date(Date.now() + 60_000),
-        })),
-        result: pending.registration.result,
-        abort,
-      })),
+      start: vi.fn(() =>
+        abortableMockFeishuRegistration({
+          qrReady: value.service.activateFeishu(feishuActivationInput(value.agent.id)).then(() => ({
+            url: "https://feishu.example/qr/race",
+            expiresAt: new Date(Date.now() + 60_000),
+          })),
+          result: pending.registration.result,
+          abort,
+        }),
+      ),
     };
     const setup = feishuSetup(value, racingGateway);
     try {
@@ -606,7 +609,7 @@ describe("Feishu setup command fencing", () => {
     });
     const pending = pendingRegistration();
     const abort = vi.fn();
-    const start = vi.fn(() => ({ qrReady, result: pending.registration.result, abort }));
+    const start = vi.fn(() => abortableMockFeishuRegistration({ qrReady, result: pending.registration.result, abort }));
     const setup = feishuSetup(value, { start });
     try {
       const command = setup.createOrReuse(value.bootstrap.userId, value.agent.id, "reauthorize", {

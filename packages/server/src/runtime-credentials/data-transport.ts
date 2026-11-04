@@ -88,6 +88,8 @@ interface ProxyStream {
 export class RuntimeProviderProxyTransport {
   readonly #options: RuntimeProviderProxyTransportOptions;
   readonly #limits: ResolvedTransportLimits;
+  readonly #connections = new Set<ProxyDataConnection>();
+  #closing: Promise<void> | undefined;
 
   constructor(options: RuntimeProviderProxyTransportOptions) {
     this.#options = options;
@@ -102,9 +104,24 @@ export class RuntimeProviderProxyTransport {
   }
 
   attach(socket: WebSocket): { snapshot(): { active: number; retired: number; bufferedBytes: number } } {
+    if (this.#closing) {
+      socket.close(1001, "Server shutting down");
+      return { snapshot: () => ({ active: 0, retired: 0, bufferedBytes: 0 }) };
+    }
     const connection = new ProxyDataConnection(socket, this.#options, this.#limits);
+    this.#connections.add(connection);
     connection.start();
+    socket.once("close", () => {
+      void connection.close().then(() => this.#connections.delete(connection));
+    });
     return { snapshot: () => connection.snapshot() };
+  }
+
+  close(): Promise<void> {
+    this.#closing ??= Promise.allSettled([...this.#connections].map((connection) => connection.close())).then(() => {
+      this.#connections.clear();
+    });
+    return this.#closing;
   }
 }
 
@@ -120,11 +137,31 @@ class ProxyDataConnection {
   #unsubscribeClose?: () => void;
   #revalidateTimer?: ReturnType<typeof setInterval>;
   #authTimer?: ReturnType<typeof setTimeout>;
+  readonly #work = new Set<Promise<unknown>>();
+  #closing: Promise<void> | undefined;
 
   constructor(socket: WebSocket, options: RuntimeProviderProxyTransportOptions, limits: ResolvedTransportLimits) {
     this.#socket = socket;
     this.#transport = options;
     this.#limits = limits;
+  }
+
+  close(): Promise<void> {
+    if (this.#closing) return this.#closing;
+    this.#destroy();
+    this.#socket.close(1001, "Server shutting down");
+    this.#closing = (async () => {
+      while (this.#work.size) await Promise.allSettled([...this.#work]);
+    })();
+    return this.#closing;
+  }
+
+  #track(operation: Promise<unknown>): void {
+    this.#work.add(operation);
+    void operation.then(
+      () => this.#work.delete(operation),
+      () => this.#work.delete(operation),
+    );
   }
 
   snapshot(): { active: number; retired: number; bufferedBytes: number } {
@@ -200,7 +237,10 @@ class ProxyDataConnection {
     this.#unsubscribeClose = this.#transport.executions?.onClose((event) => {
       if (event.executionId === this.#executionId) this.#fail(4000, "proxy_execution_closed");
     });
-    this.#revalidateTimer = setInterval(() => void this.#revalidateStreams(), this.#limits.revalidateIntervalMs);
+    this.#revalidateTimer = setInterval(
+      () => this.#track(this.#revalidateStreams()),
+      this.#limits.revalidateIntervalMs,
+    );
     this.#revalidateTimer.unref?.();
     this.#sendJson({
       type: "ready",
@@ -288,7 +328,7 @@ class ProxyDataConnection {
       return;
     }
     this.#streams.set(stream.id, stream);
-    void this.#runStream(stream, frame).catch(() => undefined);
+    this.#track(this.#runStream(stream, frame));
   }
 
   async #runStream(
@@ -340,7 +380,10 @@ class ProxyDataConnection {
       };
       const response = await adapter.handle(request, authorization);
       responseStatus = response.status;
-      if (this.#settleIfStreamCancelled(perfHandle, stream, frame.provider, responseStatus)) return;
+      if (this.#settleIfStreamCancelled(perfHandle, stream, frame.provider, responseStatus)) {
+        await response.body[Symbol.asyncIterator]().return?.();
+        return;
+      }
       const head = {
         type: "response" as const,
         streamId: stream.id,

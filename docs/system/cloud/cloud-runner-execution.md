@@ -482,6 +482,13 @@ One Cloud Agent can execute several **Agent Sessions** concurrently. Each Sessio
 Sandbox and one Instance; it does not share a writable workspace or Pi history with another
 Session. Cloud Computer remains the Account's logical identity, not an execution lock.
 
+Physical occupancy and cleanup follow the retained Session placement's Cloud Computer owner until
+verified absence, including after Agent suspension, deletion or transfer. Managed execution still
+requires current active Account/Agent/binding/Session authority and the Agent's current Computer.
+Reservation locks capacity first, then authority rows before Sandbox; physical cleanup and borrow
+ownership checks never acquire those authority locks after locking Sandbox. Agent overview keeps
+current Agent ownership and can use its retained owned Cloud placements after detach.
+
 The existing IM delivery worker uses a Session lane for Cloud and an Agent lane for Local. Durable
 custody follows the same boundary: a running or uncertain Cloud delivery fences its own Session;
 Local custody retains the Agent-wide fence. The short PostgreSQL advisory lock still serializes

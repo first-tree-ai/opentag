@@ -143,7 +143,11 @@ describe("Agent list unreported-accepted index", () => {
       queries.length = 0;
       const listed = await agents.listForAccount(owner.userId);
       expect(listed.agents).toHaveLength(1);
-      expect(listed.agents[0]?.activity).toEqual({ state: "working", startedAt: NOW.toISOString() });
+      expect(listed.agents[0]?.activity).toEqual({
+        state: "working",
+        startedAt: NOW.toISOString(),
+        runningTaskCount: 1,
+      });
 
       const unreported = queries.filter((entry) => entry.query.includes('"reported_at" is null'));
       expect(unreported.length).toBeGreaterThan(0);

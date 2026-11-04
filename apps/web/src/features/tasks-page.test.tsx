@@ -358,14 +358,14 @@ describe("Tasks view", () => {
     const statusOf = (title: string) => {
       const row = screen.getByRole("link", { name: title }).closest("tr");
       if (!row) throw new Error("Expected the Task link to be inside a row");
-      return within(row).getByText(/^(Queued|Running|Completed|Failed)$/u).textContent;
+      return within(row).getByText(/^(Queued|Running|Completed|Failed|Cancelled)$/u).textContent;
     };
     expect(statuses.map((status) => statusOf(`Task ${status}`))).toEqual([
       "Queued",
       "Running",
       "Completed",
       "Failed",
-      "Completed",
+      "Cancelled",
       "Failed",
       "Completed",
     ]);
@@ -535,9 +535,10 @@ describe("Tasks view", () => {
       path: `/agents/${agentId}/tasks/${sessionId}`,
     });
 
-    // The Task's own facts and conversation render exactly as before.
+    // The Task's own facts and conversation render; on the Agent's own page the Agent is not repeated.
     expect(await screen.findByLabelText("Task details")).toBeTruthy();
-    expect(screen.getByLabelText("Task details").textContent).toContain("Atlas");
+    expect(screen.getByLabelText("Task details").textContent).not.toContain("Atlas");
+    expect(screen.getByLabelText("Task details").textContent).toContain("Lark");
     expect(await screen.findByRole("region", { name: "Activity" })).toBeTruthy();
     // No environment region or resource control belongs to the page, and no Cloud read fires.
     expect(screen.queryByRole("region", { name: "Cloud environment" })).toBeNull();
@@ -546,6 +547,16 @@ describe("Tasks view", () => {
     expect(overview).not.toHaveBeenCalled();
     expect(agent).not.toHaveBeenCalled();
     expect(computers).not.toHaveBeenCalled();
+  });
+
+  it("keeps the Agent fact when an Agent's page shows another Agent's Task", async () => {
+    mockDetail(detail);
+    const otherAgentId = "99999999-9999-4999-8999-999999999999";
+    await renderInRouter(<TaskDetailPage agentId={otherAgentId} taskId={sessionId} />, {
+      path: `/agents/${otherAgentId}/tasks/${sessionId}`,
+    });
+    // A stale or mistyped link: the Task belongs to Atlas, so the fact naming it stays.
+    expect((await screen.findByLabelText("Task details")).textContent).toContain("Atlas");
   });
 
   it("shows the agent logo in Task rows and the agent filter while preserving filter labels", async () => {
@@ -1146,7 +1157,9 @@ describe("Tasks view", () => {
     });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     const activity = await screen.findByRole("region", { name: "Activity" });
-    expect(within(activity).getByText("Work is in progress.")).toBeTruthy();
+    // The running Turn gets no Agent entry of its own: the Task status already says it is running.
+    expect(within(activity).queryByText("Work is in progress.")).toBeNull();
+    expect(activity.querySelectorAll('[data-ui="task-message-agent"]')).toHaveLength(1);
     expect(within(activity).getByText("No text content")).toBeTruthy();
     expect(within(activity).getByText("Provider failed")).toBeTruthy();
     expect(within(activity).queryByText(/attempts/)).toBeNull();
@@ -1216,9 +1229,10 @@ describe("Tasks view", () => {
     });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     const activity = await screen.findByRole("region", { name: "Activity" });
-    expect(within(activity).getByText("Text").closest("header")?.getAttribute("data-ui")).toBe(
-      "task-message-author-agent",
-    );
+    // A plain-text reply's header names the author alone: no message kind or status label.
+    expect(activity.querySelector('[data-ui="task-message-author-agent"]')?.textContent).toBe("Atlas");
+    expect(within(activity).queryByText("Text")).toBeNull();
+    expect(within(activity).queryByText(/Completed/)).toBeNull();
     expect(within(activity).queryByText("Sent reply")).toBeNull();
     expect(within(activity).getByText("Hello from Lark")).toBeTruthy();
     expect(within(activity).queryByText("Execution summary")).toBeNull();

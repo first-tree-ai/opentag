@@ -72,6 +72,12 @@ description of impact, a non-destructive default focus target, and an execution 
 outcome is uncertain. A low-impact action may execute immediately only when it is reliably reversible and offers a clear,
 keyboard-accessible Undo path for long enough to recover.
 
+Deleting an Agent is offered whether it is running or paused, behind one confirmation that requires typing its name.
+The Server deletes only a paused Agent, so the Web pauses a running one first in the same action. If the pause fails,
+nothing is deleted and the dialog says so. If the delete fails after the pause, the dialog says the Agent is now paused
+and Try again retries only the delete. A missing permission is named as such. Why: the reader has already confirmed
+the delete, so a separate pause step adds nothing for them, and each failure has to say which state it left.
+
 Every full-screen state that replaces the application shell must keep a way to sign out, because an Account that has
 not finished setup is shown nothing else. First-time creation and exact setup headers reuse the shared Account menu,
 aligned with their navigation action. Until Account setup is complete, that menu offers only Sign out; navigation links
@@ -102,6 +108,14 @@ Drafts are not persisted across a document reload or an external authorization r
 Agent's server snapshot restores the remaining setup steps.
 If a creation finishes after the user navigates away, it refreshes the Agent list without pulling the user back into setup.
 
+The creation form starts with the product name as the Agent name; matching the product name is intended, not a
+collision. The name field states the allowed characters before anything is typed, and a refused name gets a short
+error that does not repeat them. A name past the length limit gets that error while typing, not only on Create,
+because more typing cannot fix it; other name errors wait for blur or Create, so an empty field is not flagged
+before anyone types. Why: a rule the reader only discovers by failing wastes an attempt, and repeating
+it in the error adds reading without new information. Create stays disabled until a Local Agent's runtime is chosen;
+no runtime is preselected, because the reader's computer may not have it.
+
 First-time setup stays full-screen throughout its current journey, even when Account admission completes before
 Computer or messaging setup. An Account-scoped, tab-local layout marker preserves this presentation across reloads
 and external authorization; leaving setup or signing out clears it. If browser storage is unavailable, the current
@@ -118,6 +132,13 @@ Why: the Agent type (Local or Cloud) is fixed once chosen, because switching it 
 or Cloud preparation already made for it. A single exit in a fixed place, the top-right Back to Agents, replaces a
 step-by-step Back and a separate Set up later that each led somewhere different. The Agent list is where every
 unfinished setup can be resumed.
+
+When the Agent's runtime is installed but signed out, the setup page's runtime row offers **Sign in** (**去登录**). It
+expands the terminal steps for that computer: open a terminal on it, run `claude` and enter `/login` for Claude Code,
+or run `codex login` for Codex. The page's existing Check again follows. The commands are short enough to type, so they show as inline code with no copy control. The Agent list row and the
+Agent page's runtime row name the same action with the same single link, which opens that setup step with the steps
+already shown. Why: sign-in stays on the user's computer. openTag only checks it and never stores Claude or Codex
+credentials, so the next step is the terminal on that computer, not a Web sign-in.
 The completion screen stays visible until the user navigates away. Its primary action, **View agent**
 (**查看 Agent** in Chinese), opens that Agent's overview. Global navigation provides the return to the Agent list;
 the completion screen does not repeat that destination as a secondary action or redirect automatically.
@@ -137,7 +158,7 @@ Authenticated pages use the named `content` container and the shared content fra
 container queries for page composition because the Sidebar changes the space available to the route without changing
 the viewport. The shell follows the website app preview breakpoints: 240px Agent sidebar above 950px, 200px from 641px to 950px,
 and inline scrolling navigation at 640px and below. Compact controls retain account access and Agent switching.
-The same route outlet remains mounted across those changes. Agent roster rows stack identity above status below a 42rem roster container width, keeping names and setup actions readable at 320px.
+The same route outlet remains mounted across those changes. Agent roster rows stack identity above status below a 42rem roster container width, keeping names and setup actions readable at 320px. Each row's open link precedes its status and action in keyboard order, matching how the row reads.
 
 Every roster row whose blocked state the reader can fix offers exactly one action link to where it gets fixed:
 setup-owned reasons (no Computer, runtime missing, unavailable, or needing sign-in, messaging not finished, or
@@ -149,12 +170,19 @@ to rows that have one, so every fixable state carries the same single link.
 Agent roster status stays steady through background refreshes. Transient evidence (a refresh that failed, a
 paused offline read, delivery credentials being re-verified, or a runtime Provider probe still running) does not
 replace a row's last settled status; the row keeps it until the next settled answer. A check with no settled answer
-behind it reads as Ready, while unreadable evidence with none reads as Status unavailable. A confirmed problem
-replaces Ready as soon as it is read. When a row's evidence stays transient for a full refresh interval, that row
+behind it reads as a neutral **Checking**, never Ready: right after a load the first check can still find a problem,
+and a row that flips from Ready to that problem seconds later has told the reader something false. Unreadable
+evidence with nothing settled reads as Status unavailable. A confirmed problem replaces Ready as soon as it is read.
+A confirmed problem also outranks a check: while a runtime Provider check is still running, a messaging binding the
+same read confirmed as needing new permissions, failed, or turned off is the row's status, with its action. Why: the
+check is not an answer, and showing Checking over a problem already known delays both the fact and its fix. A
+confirmed runtime problem still comes first, as the dependency the Agent needs before messaging matters. When a row's evidence stays transient for a full refresh interval, that row
 alone adds a quiet **Refreshing status** note under its held status; there is no page-level notice. A flickering
 status or a page-wide error reads as an outage when only one Agent's check is late, so the list keeps what it last
 knew and flags only the row whose answer is overdue. The Agent's own
-page keeps the exact current dependency states. The Server already bounds what it holds: a local Computer without a
+page keeps the exact current dependency states. Its status card starts with a **Work** row carrying the same
+running-Task or **Waiting** line as the list row, so the home answers what the Agent is doing as the list does; as its
+own row it never reads as a fact about the Computer or messaging below it. The Server already bounds what it holds: a local Computer without a
 heartbeat for 90 seconds reads as offline, and runtime and messaging observations expire on their own TTLs, so held
 list statuses converge on the Server's next settled answer.
 
@@ -185,8 +213,13 @@ openTag Web targets WCAG 2.2 AA for product UI:
 - Enter and Space activate controls according to their native semantics;
 - Escape closes dismissible overlays, and focus returns to the control that opened them;
 - icon-only controls have an accessible name, while decorative icons are hidden from assistive technology;
-- validation identifies the field, describes the problem, and exposes the update to assistive technology; and
-- non-essential animation and transition are removed when `prefers-reduced-motion: reduce` is active.
+- validation identifies the field, describes the problem, and exposes the update to assistive technology;
+- non-essential animation and transition are removed when `prefers-reduced-motion: reduce` is active;
+- a control that changes in place keeps keyboard focus: a switch or button is not disabled while its write is
+  pending (it ignores repeat input and reports busy instead), because disabling the focused element drops focus
+  to the page; and
+- a step change inside one route, such as the next Agent Setup step, moves focus to the new step's heading, as a
+  route change does.
 
 Automated axe checks are required for representative browser flows, but they do not replace keyboard testing or review
 of contrast, focus order, accessible names, and task completion.
@@ -315,28 +348,29 @@ Every module-owned stylesheet must:
 
 ## Schedule handoff feedback
 
-Schedule rows keep configuration state (Enabled, Paused, or an exhausted one-time schedule) separate from the
-latest handoff result. When a handoff summary exists, its recorded outcome and scheduled time remain visible
-without opening the full task. The list uses its existing summary fields and does not fetch the private prompt
-until details are opened.
+Each schedule row shows its name as a heading that opens the details, Pause or Resume, and a label only for a state
+other than running on schedule (Paused, or Finished for a one-time schedule). Below it, one line gives the rule in
+words ("Every weekday at 9:00", "Monthly on days 28–31 at 18:00"), the next time, and the last time. Times are short
+(month, day, weekday, and an unpadded hour) and name the zone, after the time ("Mon, Nov 9, 9:30 (GMT+8)",
+"11月9日周一 9:30（GMT+8）"), only when it differs from the reader's. Two zones count as the same when their UTC
+offsets are equal at that run, not by name and not by a fixed offset: Asia/Shanghai reads the same as Asia/Singapore,
+while a daylight-saving zone differs only on the dates its clock differs. Why: the reader needs the zone only when
+their own clock would show a different time, and a zone name between the date and the time breaks the time apart. A cron
+expression with no plain form is shown as written, never guessed.
 
-Details explain the recorded outcome and retain its reason code and next scheduled time. An accepted handoff
-confirms runtime receipt, never task completion. An unknown handoff may still be in flight or may already have started work; users check
-Tasks before starting it again. Unreachable and rejected handoffs direct users to the Agent's Computer status,
-without diagnosing the cause from current presence. Skipped occurrences retain their reason code. The schedule
-does not retry an occurrence. Explanations do not imply a future occurrence when the next trigger is absent;
-future occurrences, when present, follow the current enabled state and time rule. These messages
-do not introduce retries, execution history, or a separate task lifecycle.
+The last run reads in the reader's terms. A run that happened shows only its time. One that did not run says why,
+in the danger color ("didn't run: the computer was offline"). One whose handoff is unconfirmed says so, in the
+warning color. The opened details add only what the row does not say: where the schedule posts (for example
+"Lark · thread"), its zone when it differs from the reader's at the next (or last) run, one note after a failed or unconfirmed run, the full
+task, and Delete. After a failed run, the note says it won't be rerun and, when another run exists, that the next
+run follows the schedule. After an unconfirmed run, it says to check Tasks before starting the work again. Internal
+identifiers and reason codes are not shown. The list uses its existing summary fields and does not fetch the private
+prompt until details are opened.
 
-## IM recovery confirmation
-
-[Task recovery](../messaging/im-feedback.md) is an owner-authenticated, read-only entry page, including links with an
-operation hint. Choosing an action opens a separate review; discard adds an acknowledgement of permanent file loss
-and unchanged external effects. Before the final POST the page fetches fresh confirmation data and refuses a changed
-revision, changed environment, missing action, or failed read even when cached data exists. A lost POST response leads
-to checking the recorded result, never an automatic second submission. Pending operations refresh their result only.
-The Agent detail page includes a collapsed, paginated recovery-notice list so delivery failures remain discoverable.
-English and Chinese copy distinguish "queued", "saved and released", "released but unverified", and actual completion.
+Why: a schedule row answers whether the schedule will run and whether the last run worked. Labels for the default
+state, a separate details button, raw cron, long timestamps, and handoff jargon repeated what the row already said or
+asked the reader to know the delivery system. Delete is rare and irreversible, so it sits with the details rather
+than on every row.
 
 ## Internationalization and copy
 
@@ -352,5 +386,20 @@ field, the method labels, and the installed states — goes through Paraglide. D
 copy into the message catalog as if it were an omission; the exception and its reason are recorded in
 `mcp-server-integration.md`.
 
-Controls use concise action labels. Errors explain what happened and what the user can do next. Do not rely on color,
+A state uses one label everywhere it appears. For example, a messaging binding that needs new permissions reads
+"Messaging permissions need updating" (需要更新消息权限) on the Agent list, the Agent page, the settings index, and the
+messaging page, with the single action Update permissions. Page subtitles, field helpers, and notes appear only when they
+add information the title or control does not already give. So the Tasks, messaging, Computer, Usage, and Account pages carry no
+subtitle, and Account shows the sign-in email as plain text without explanatory helpers. The Soul editor's description
+holds only the formatting hint while editing. The Model page shows one line by the model field only when the computer's
+model list can't be read. Usage notes unreported Tasks as a muted line under the totals, not a warning banner.
+Self-configuration sits on the Model page beside Ask for approval, with the other rules about what the Agent may do on
+its own. Why: repeated or differing wording makes one state read as several, and copy that restates the page is more
+to read with nothing more to act on.
+
+Controls use concise action labels. Errors explain what happened and what the user can do next. Messages stay short:
+they say what happened and the next step, without internal states (such as "already connected" or "nothing
+changed") or parenthetical mechanics. Explanatory text appears only when it adds information the reader needs, such
+as which computer a command is for. Why: fewer words and fewer controls make the next step easier to find, and
+internal details give the reader nothing to act on. Do not rely on color,
 placeholder text, an icon, or a tooltip as the only communication of essential information.

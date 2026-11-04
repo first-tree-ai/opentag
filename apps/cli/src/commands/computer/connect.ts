@@ -7,7 +7,7 @@ import { resolveChannelEnvironment } from "../../core/channel/environment.js";
 import * as commandPolicy from "../../core/command/policy.js";
 import { type ComputerConnectResult, runComputerConnect } from "../../core/computer/connect.js";
 import { describeConnectFailure, formatConnectFailure } from "../../core/computer/connect-messages.js";
-import { formatPreparationResultLines } from "../../core/computer/formatting.js";
+import { formatPreparationResultLines, preparationNextStep } from "../../core/computer/formatting.js";
 import {
   daemonServiceCommand,
   failedLocalComputerPreparation,
@@ -25,6 +25,7 @@ type ComputerConnectCommandOptions = {
   start?: boolean;
   prepareProviderClis?: boolean;
   json?: boolean;
+  verbose?: boolean;
 };
 
 export function registerComputerConnectCommand(computer: Command): void {
@@ -37,6 +38,7 @@ export function registerComputerConnectCommand(computer: Command): void {
     .option("--no-start", "skip only daemon service installation/start")
     .option("--no-prepare-provider-clis", "skip Lark and Slack CLI preparation")
     .option("--json", "print JSON")
+    .option("--verbose", "also print each readiness check and preparation step")
     .action(executeComputerConnectCommand);
 }
 
@@ -66,20 +68,22 @@ async function executeComputerConnectCommand(code: string, options: ComputerConn
   try {
     preparation = await runLocalComputerPreparation({
       ...preparationOptions,
-      onPhase: options.json
-        ? undefined
-        : (event) => {
-            const provider = event.provider === "feishu" ? "lark" : "slack";
-            const detail = event.detail ? ` — ${event.detail}` : "";
-            process.stdout.write(`${safeLine(`[im-cli:${provider}] ${event.phase}: ${event.status}${detail}`)}\n`);
-          },
+      // Step-by-step preparation lines are diagnostics: shown only when asked for.
+      onPhase:
+        !options.verbose || options.json
+          ? undefined
+          : (event) => {
+              const provider = event.provider === "feishu" ? "lark" : "slack";
+              const detail = event.detail ? ` — ${event.detail}` : "";
+              process.stdout.write(`${safeLine(`[im-cli:${provider}] ${event.phase}: ${event.status}${detail}`)}\n`);
+            },
     });
   } catch (error) {
     // Preserve the already-saved connection even after a projection failure. Neither exchange
     // nor ensure is repeated here: the one-time code cannot be reused.
     preparation = failedLocalComputerPreparation(preparationOptions, error);
   }
-  presentPreparation(connection, preparation, options.json === true);
+  presentPreparation(connection, preparation, { json: options.json === true, verbose: options.verbose === true });
 }
 
 async function connectOrPresentFailure(
@@ -155,7 +159,7 @@ function presentPersistenceFailure(connection: ComputerConnectResult, home: stri
 function presentPreparation(
   connection: ComputerConnectResult,
   preparation: LocalComputerPreparationResult,
-  json: boolean,
+  { json, verbose }: { json: boolean; verbose: boolean },
 ): void {
   const guidance = preparationGuidance(preparation);
   const value = { connected: true, connection, preparation, guidance };
@@ -170,7 +174,11 @@ function presentPreparation(
     );
     return;
   }
-  const lines = [connection.message, ...formatPreparationResultLines(preparation), ...guidance];
+  // By default the reader gets the outcome and, when something is left to do, one next step. The
+  // per-check report is for diagnosis (`--verbose`) and stays complete in `--json`.
+  const lines = verbose
+    ? [connection.message, ...formatPreparationResultLines(preparation), ...guidance]
+    : [connection.message, ...(preparation.localReady ? [] : [`Next: ${preparationNextStep(preparation)}`])];
   const output = `${lines.map(safeLine).join("\n")}\n`;
   if (preparation.localReady) process.stdout.write(output);
   else process.stderr.write(output);

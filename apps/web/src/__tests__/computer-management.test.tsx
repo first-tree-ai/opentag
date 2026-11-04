@@ -69,14 +69,29 @@ describe("Account Computer management", () => {
   ])("connects another computer alongside $name only after an explicit action", async ({ computers }) => {
     installApi({ computers });
     openComputer(`?computerId=${computerId}&fromAgent=${agentId}`);
-    const connect = await screen.findByRole("button", { name: "Connect another computer" });
+    const connect = await screen.findByRole("button", { name: "Connect a new computer" });
     expect(repairRequests()).toHaveLength(0);
     fireEvent.click(connect);
     await waitFor(() => expect(repairRequests()).toHaveLength(1));
     expect(JSON.parse(String(repairRequests()[0]?.[1]?.body))).toEqual({ mode: "create" });
     expect(screen.getByRole("heading", { name: "Ada's Mac" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Connect another computer" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Connect a new computer" })).toBeNull();
     expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
+  });
+
+  it("starts the connection requested from Agent settings once, then drops the request from the URL", async () => {
+    installApi({ bound: true, computers: [{ ...twoReadyComputers[0] }] });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/computer`);
+    render(<App />);
+    fireEvent.click(await screen.findByRole("link", { name: "Connect a new computer" }));
+    expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Ada's Mac" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: /Back to/ })).toBeTruthy();
+    await waitFor(() => expect(window.location.search).not.toContain("connect="));
+    expect(window.location.search).toContain(`fromAgent=${agentId}`);
+    expect(repairRequests()).toHaveLength(1);
+    expect(JSON.parse(String(repairRequests()[0]?.[1]?.body))).toEqual({ mode: "create" });
+    expect(vi.mocked(fetch).mock.calls.some(([path]) => String(path).endsWith("/computer/rebind"))).toBe(false);
   });
 
   it("offers the first Local connection while preserving an existing Cloud card", async () => {
@@ -84,7 +99,7 @@ describe("Account Computer management", () => {
     openComputer();
     const connect = await screen.findByRole("button", { name: "Connect computer" });
     expect(screen.getByRole("heading", { name: "Cloud" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Connect another computer" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Connect a new computer" })).toBeNull();
     expect(repairRequests()).toHaveLength(0);
     fireEvent.click(connect);
     expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
@@ -118,16 +133,16 @@ describe("Account Computer management", () => {
       return api(path, init);
     });
     openComputer();
-    fireEvent.click(await screen.findByRole("button", { name: "Connect another computer" }));
-    expect(await screen.findByText("Command accepted. Waiting for openTag to come online…")).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Connect a new computer" }));
+    expect(await screen.findByText("Waiting for your computer…")).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Ada's Mac" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Zulu Tower" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "Connect another computer" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Connect a new computer" })).toBeNull();
     expect(repairRequests()).toHaveLength(1);
 
     online = true;
     fireEvent(window, new Event("focus"));
-    expect(await screen.findByRole("button", { name: "Connect another computer" }, { timeout: 3_000 })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Connect a new computer" }, { timeout: 3_000 })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Zulu Tower" })).toBeTruthy();
     expect(screen.getAllByText("Online")).toHaveLength(2);
     expect(repairRequests()).toHaveLength(1);
@@ -138,11 +153,11 @@ describe("Account Computer management", () => {
     let failed = false;
     installApi({ bound: true, computerReadStatus: () => (failed ? 503 : undefined) });
     openComputer();
-    expect(await screen.findByRole("button", { name: "Connect another computer" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Connect a new computer" })).toBeTruthy();
     failed = true;
     fireEvent(window, new Event("focus"));
     expect(await screen.findByText("Status unavailable")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Connect another computer" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Connect a new computer" })).toBeNull();
     expect(repairRequests()).toHaveLength(0);
   });
 
@@ -180,8 +195,11 @@ describe("Account Computer management", () => {
     });
     openComputer();
     fireEvent.click(await screen.findByRole("button", { name: "Connect computer" }));
-    expect(await screen.findByText("Command accepted. Waiting for openTag to come online…")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Copy for Agent" })).toBeNull();
+    // After redemption the used command is gone and only the connection status remains.
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Copy for Agent" })).toBeNull(), {
+      timeout: 3_000,
+    });
+    expect(screen.getByText("Waiting for your computer…")).toBeTruthy();
     online = true;
     fireEvent(window, new Event("focus"));
     expect(await screen.findByText("Online", {}, { timeout: 3_000 })).toBeTruthy();
@@ -215,16 +233,10 @@ describe("Account Computer management", () => {
       return api(path, init);
     });
     openComputer();
+    fireEvent.click(await screen.findByRole("button", { name: "Restore connection" }));
     const expectAttempt = async () => {
       if (codeState === "pending") expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
-      else
-        expect(
-          await screen.findByText(
-            "Authorization accepted. Waiting for openTag to come online…",
-            {},
-            { timeout: 3_000 },
-          ),
-        ).toBeTruthy();
+      else expect(await screen.findByText("Waiting for Ada's Mac to reconnect…", {}, { timeout: 3_000 })).toBeTruthy();
     };
     await expectAttempt();
     failed = true;
@@ -267,10 +279,20 @@ describe("Account Computer management", () => {
     expect(repairRequests()).toHaveLength(0);
   });
 
-  it("automatically exposes recovery for an offline computer with no Agents", async () => {
+  it("opens recovery for an offline computer only when asked", async () => {
     installApi({ computers: [{ ...twoReadyComputers[0], agentIds: [], connectionStatus: "offline" }] });
     openComputer();
+    const restore = await screen.findByRole("button", { name: "Restore connection" });
+    // Several offline computers would otherwise each issue a command and lengthen the page.
+    expect(screen.getByText("Offline")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Copy for Agent" })).toBeNull();
+    expect(repairRequests()).toHaveLength(0);
+
+    fireEvent.click(restore);
     expect(await screen.findByRole("button", { name: "Copy for Agent" })).toBeTruthy();
+    expect(repairRequests()).toHaveLength(1);
+    expect(screen.queryByText("Offline")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Restore connection" })).toBeNull();
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(screen.queryByRole("button", { name: "Get connection help" })).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Show full instructions" }));

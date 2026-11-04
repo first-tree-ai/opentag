@@ -169,7 +169,8 @@ export class CloudDeliveryCoordinator {
       const built =
         prepared.persistedRequest ?? (await this.#buildFreshDispatch(row, prepared.replyRole, prepared.runtime));
       if (!(await lease.assertOwned())) return false;
-      const allocate = () => this.#ensureEnvironment(row, attempt);
+      if (signal.aborted) return false;
+      const allocate = () => this.#ensureEnvironment(row, attempt, signal);
       if (!(latency ? await latency.measure("allocation_wait", allocate, { falseIsFailure: true }) : await allocate()))
         return false;
       if (!(await lease.assertOwned())) return false;
@@ -177,7 +178,7 @@ export class CloudDeliveryCoordinator {
       if (!cloudDelivery) return false;
       return await this.#dispatchToRunner(row, cloudDelivery, built, attempt, signal);
     } catch (error) {
-      await this.#recordDispatchError(attempt, error);
+      await this.#recordDispatchError(attempt, error, signal);
       return false;
     }
   }
@@ -326,6 +327,7 @@ export class CloudDeliveryCoordinator {
             inputHash: computeDirectInputHash(built),
             installationId: row.computer.currentInstallationId,
             request: built,
+            signal,
           });
         } finally {
           onDispatched();
@@ -341,7 +343,8 @@ export class CloudDeliveryCoordinator {
     return true;
   }
 
-  async #recordDispatchError(attempt: DeliveryAttempt, error: unknown): Promise<void> {
+  async #recordDispatchError(attempt: DeliveryAttempt, error: unknown, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return;
     if (error instanceof ImDeliveryInputError) throw error;
     if (error instanceof InboundReceiptPendingError) {
       await this.#options.recordFailure(attempt, error.code, {
@@ -374,9 +377,10 @@ export class CloudDeliveryCoordinator {
   async #ensureEnvironment(
     row: Pick<CloudDeliveryClaimRow, "delivery" | "session" | "agent">,
     attempt: DeliveryAttempt,
+    signal: AbortSignal,
   ): Promise<boolean> {
-    const sandboxId = await this.#ensureSandboxRow(row, attempt);
-    if (!sandboxId) return false;
+    const sandboxId = await this.#ensureSandboxRow(row, attempt, signal);
+    if (signal.aborted || !sandboxId) return false;
     if (!this.#options.cloudAllocation) return true;
     return this.#convergeAllocation(attempt, row.agent.createdByUserId, sandboxId);
   }
@@ -385,8 +389,10 @@ export class CloudDeliveryCoordinator {
   async #ensureSandboxRow(
     row: Pick<CloudDeliveryClaimRow, "session" | "agent">,
     attempt: DeliveryAttempt,
+    signal: AbortSignal,
   ): Promise<string | undefined> {
     const existing = await loadSandboxRecordBySessionId(this.#options.database, row.session.id);
+    if (signal.aborted) return undefined;
     if (existing) return existing.id;
     const port = this.#options.cloudAllocation;
     if (!port) {
@@ -414,9 +420,11 @@ export class CloudDeliveryCoordinator {
           : { ...ensureInput, kind: "channel" },
       );
     } catch {
+      if (signal.aborted) return undefined;
       await this.#options.recordFailure(attempt, "IM_DELIVERY_CLOUD_ALLOCATION_FAILED");
       return undefined;
     }
+    if (signal.aborted) return undefined;
     const created = await loadSandboxRecordBySessionId(this.#options.database, row.session.id);
     if (!created) {
       await this.#options.recordFailure(attempt, "IM_DELIVERY_CLOUD_ALLOCATION_FAILED");

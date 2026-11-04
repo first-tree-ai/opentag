@@ -207,12 +207,22 @@ describe("actual outgoing reply content", () => {
     ];
     render(withTimes.map((reply) => <TaskOutgoingReplyMeta key={reply.messageId} reply={reply} />));
 
-    // Both real times are formatted; an unparseable one is dropped rather than shown as Invalid Date.
+    // Both real times are formatted; an unparseable one is dropped rather than shown as Invalid Date,
+    // and a plain-text reply has no kind label to show in its place.
     const meta = [...document.querySelectorAll("small")].map((node) => node.textContent);
-    expect(meta[0]).toContain("·");
-    expect(meta[1]).toContain("·");
-    expect(meta[2]).toBe("Text");
-    expect(meta[2]).not.toContain("Invalid");
+    expect(meta).toHaveLength(2);
+    expect(meta[0]).toMatch(/\d/);
+    expect(meta[1]).toMatch(/\d/);
+    expect(meta.join(" ")).not.toMatch(/Text|Invalid/);
+  });
+
+  it("labels neither plain nor rich text in the header", () => {
+    renderReplies([
+      { msgType: "text", text: "plain" },
+      { msgType: "post", text: "rich", raw: "{}" },
+    ]);
+    expect(document.querySelectorAll("small")).toHaveLength(0);
+    expect(screen.queryByText("Post")).toBeNull();
   });
 
   it("always shows the reply kind, even when there is no time to show beside it", () => {

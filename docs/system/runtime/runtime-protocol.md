@@ -138,6 +138,14 @@ changes presentation only, never approval authority or decision semantics.
 Decision frames contain only the request identity and decision. Request-only presentation fields
 are never copied into decisions, including automatic declines and expired requests.
 
+The Server checks the durable Computer/connection and approval status under their row
+locks through synchronous decision enqueue. It releases SQL before waiting for the
+WebSocket callback. An uncertain send retains the owner's no-replay fence; late
+transport errors cannot replace an acknowledged decision because status updates
+require the expected status. Runtime test callers wait on their existing result
+TTL/cancellation promise immediately after dispatch; a delayed send callback does
+not extend that budget. Transport completion remains owned by the registry/socket.
+
 ## Channel target advertisement
 
 The optional `runtime.channelTarget` capability (version 1) lets a connected Client learn the exact channel latest target for automatic upgrades. When the capability is negotiated, every v2 `heartbeat:result` may carry an optional `channelTarget` field: the Server's release channel and the exact SemVer it currently advertises, read from the channel's published release pointer. The field is additive and negotiated, so older Clients with strict heartbeat schemas never receive it, and a Client behind an older Server simply sees no target. The Client treats only an exact version-string match as already current; SemVer precedence is used solely to reject an older target, while an equal-precedence target with different build metadata is installed. A target for another channel is rejected before any upgrade decision.

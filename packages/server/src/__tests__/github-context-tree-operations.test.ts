@@ -20,7 +20,6 @@ import {
   type GitHubContextTreeOperationsOptions,
 } from "../services/agents/github-context-tree-operations.js";
 import { GitHubConnectionServiceError } from "../services/github/errors.js";
-import { GitHubExecutionCredentials } from "../services/github-proxy/execution-credentials.js";
 import { GitPublicationError } from "../services/github-proxy/git-packets.js";
 import { type GitProcessOptions, runTrustedProcess } from "../services/github-proxy/git-process.js";
 import type { PublicationRemote } from "../services/github-proxy/git-remote.js";
@@ -95,7 +94,9 @@ function management(row: GitHubConnectionStatus | null | (() => GitHubConnection
       const row = current();
       return overview(row?.status === "active" ? row : null);
     }),
-    getCurrentUserCredential: vi.fn(async (connectionId: string) => {
+    getExecutionUserCredential: vi.fn(async (input: { connectionId: string; signal?: AbortSignal }) => {
+      input.signal?.throwIfAborted();
+      const connectionId = input.connectionId;
       const observed = current();
       if (!observed) return null;
       return {
@@ -148,9 +149,6 @@ function operations(
         createPrivateRepository: vi.fn(),
         initializeContextTree: vi.fn(),
         getRepository: vi.fn(),
-      },
-      credentials: {
-        acquire: vi.fn(async () => ({ token: "ghu_scoped_test_token", release: vi.fn(async () => undefined) })),
       },
       computerKind: vi.fn(async () => "cloud" as const),
       workspace: { close: vi.fn(async () => undefined) } as unknown as GitWorkspace,
@@ -241,7 +239,7 @@ describe("Cloud Context Tree connect", () => {
     );
     const cloud = operations(github);
     expect(await cloud.run(runInput())).toEqual({ status: "completed", repository: "Acme/Memory" });
-    expect(github.getCurrentUserCredential).not.toHaveBeenCalled();
+    expect(github.getExecutionUserCredential).not.toHaveBeenCalled();
   });
 
   it("requires an active connection, an Account-owned credential, and an unchanged fencing state", async () => {
@@ -586,9 +584,6 @@ describe("Cloud Context Tree verification with the pinned CLI", () => {
         initializeContextTree: vi.fn(),
         getRepository: vi.fn(),
       },
-      credentials: {
-        acquire: vi.fn(async () => ({ token: "ghu_scoped_test_token", release: vi.fn(async () => undefined) })),
-      },
       computerKind: async () => "cloud",
       workspace,
       remoteFactory: () => localRemote(origin),
@@ -660,7 +655,6 @@ describe("Cloud Context Tree verification with the pinned CLI", () => {
       const operation = new GitHubContextTreeOperations({
         management: f.github,
         api: f.api,
-        credentials: new GitHubExecutionCredentials(f.github),
         computerKind: async () => kind,
         remoteFactory: (_repository, token) => {
           const remote = localRemote(tree);
@@ -798,4 +792,58 @@ it("does not accept another remaining Tree binding when the requested grant is r
     status: "failed",
     code: "permission_denied",
   });
+});
+
+it.each(["missing", "abort"] as const)("keeps direct settings credential failure=%s fenced", async (mode) => {
+  const github = management(connection());
+  const credential = await github.getExecutionUserCredential({ connectionId: "connection" });
+  let release!: () => void, enter!: () => void;
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  const entered = new Promise<void>((r) => {
+    enter = r;
+  });
+  github.getExecutionUserCredential.mockImplementation(async () => {
+    enter();
+    if (mode === "abort") await gate;
+    return mode === "missing" ? null : credential;
+  });
+  let token!: () => Promise<string>;
+  const observed: string[] = [];
+  const operation = operations(github, {
+    remoteFactory: (_repository, read) => {
+      token = read;
+      return {} as PublicationRemote;
+    },
+    treeHeads: {
+      verify: async () => {
+        observed.push(await token());
+        return "a".repeat(40);
+      },
+    },
+  });
+  const running = operation.run(runInput());
+  try {
+    await entered;
+    if (mode === "abort") {
+      const closing = operation.close();
+      release();
+      await closing;
+    }
+    expect(await running).toEqual({ status: "failed", code: mode === "missing" ? "permission_denied" : "failed" });
+    expect(observed).toEqual([]);
+    expect(github.getExecutionUserCredential).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        accountId: ACCOUNT,
+        agentId: AGENT,
+        authorizationRevision: "github:1",
+        signal: expect.any(AbortSignal),
+      }),
+    );
+  } finally {
+    release();
+    await running;
+    await operation.close();
+  }
 });

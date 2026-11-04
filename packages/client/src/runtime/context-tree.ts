@@ -2,6 +2,7 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { readdir, realpath } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
+import { StringDecoder } from "node:string_decoder";
 import {
   type AgentRuntimeProvider,
   type ContextTreeConnection,
@@ -144,6 +145,8 @@ export const runContextTreeProcess: ContextTreeExecFile = (file, args, options) 
       windowsHide: options.windowsHide,
     });
     let stdout = "";
+    let stdoutBytes = 0;
+    const decoder = new StringDecoder("utf8");
     let bufferExceeded = false;
     let settled = false;
     let terminating = false;
@@ -166,11 +169,14 @@ export const runContextTreeProcess: ContextTreeExecFile = (file, args, options) 
       else resolveRun({ stdout });
     };
     child.stdout?.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString("utf8");
-      if (!bufferExceeded && stdout.length > options.maxBuffer) {
+      if (bufferExceeded) return;
+      if (stdoutBytes + chunk.length > options.maxBuffer) {
         bufferExceeded = true;
         terminate();
+        return;
       }
+      stdoutBytes += chunk.length;
+      stdout += decoder.write(chunk);
     });
     child.stderr?.resume();
     child.once("error", (error: Error) => {
@@ -179,6 +185,7 @@ export const runContextTreeProcess: ContextTreeExecFile = (file, args, options) 
       );
     });
     child.once("close", (code, signal) => {
+      if (!bufferExceeded) stdout += decoder.end();
       const error = cliExitError(terminating, bufferExceeded, code, signal, stdout);
       const complete = () => finish(error);
       if (cleanup) void cleanup.then(complete, complete);

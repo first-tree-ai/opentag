@@ -387,6 +387,13 @@ const DEFAULT_WORKER_METHODS = [
   "notifyCloudRunnerReady",
 ] as const;
 
+const WORKER_METHOD_OVERRIDES: Readonly<Record<string, readonly string[]>> = {
+  FeishuSetupService: ["maintainHeartbeat", "maintainSweep"],
+  FeishuConnectionManager: ["maintain"],
+  RuntimeApprovalOwner: ["poll"],
+  CloudModelService: ["reconcile"],
+};
+
 const instrumentedWorkers = new WeakSet<object>();
 
 export function instrumentWorker<T extends object>(
@@ -399,7 +406,7 @@ export function instrumentWorker<T extends object>(
 ): T | undefined {
   const perfLogger = options.perfLogger;
   if (!worker || !perfLogger?.config.enabled || instrumentedWorkers.has(worker)) return worker;
-  const methods = options.methods ?? DEFAULT_WORKER_METHODS;
+  const methods = options.methods ?? WORKER_METHOD_OVERRIDES[options.workerName] ?? DEFAULT_WORKER_METHODS;
   const record = worker as Record<string, unknown>;
   for (const methodName of methods) {
     const original = Reflect.get(worker, methodName, worker);

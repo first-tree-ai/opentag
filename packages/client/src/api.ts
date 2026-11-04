@@ -168,6 +168,7 @@ import {
   type UpdateSelfMCPBindingRequest,
   type ValidationIssue,
 } from "@opentag/shared";
+import { type ClientLogger, createLogger } from "./observability/logger.js";
 import {
   awaitWithAbort,
   defaultPhase,
@@ -182,6 +183,7 @@ import {
   safeCause,
   statusFallback,
 } from "./request-policy.js";
+import { parseResponseIgnoringUnknownKeys } from "./response-parse.js";
 
 interface RuntimeSchema<T> {
   safeParse(value: unknown): { success: true; data: T } | { success: false };
@@ -245,12 +247,14 @@ function structuredCategory(category: ErrorCategory, code: string, status?: numb
 export interface OpenTagApiConstructorOptions {
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
+  logger?: Pick<ClientLogger, "debug">;
 }
 
 export class OpenTagApi {
   readonly #baseUrl: URL;
   readonly #fetch: typeof fetch;
   readonly #timeoutMs: number;
+  readonly #logger: Pick<ClientLogger, "debug">;
   readonly #responseRequestIds = new WeakMap<Response, string>();
 
   constructor(
@@ -262,6 +266,7 @@ export class OpenTagApi {
     const constructorOptions = typeof fetchOrOptions === "function" ? options : fetchOrOptions;
     this.#fetch = typeof fetchOrOptions === "function" ? fetchOrOptions : (constructorOptions.fetchImpl ?? fetch);
     this.#timeoutMs = constructorOptions.timeoutMs ?? OPEN_TAG_API_REQUEST_TIMEOUT_MS;
+    this.#logger = constructorOptions.logger ?? createLogger("api");
   }
 
   exchangeConnectCode(
@@ -1489,21 +1494,36 @@ export class OpenTagApi {
     if (!response.ok) {
       this.#throwResponseError(response.status, body, this.#requestIdFromResponse(response));
     }
-    const parsed = schema.safeParse(body);
-    if (!parsed.success) {
-      throw new OpenTagApiError(
-        "SERVICE_UNAVAILABLE",
-        "transient",
-        "The openTag server returned an invalid response",
-        response.status,
-        undefined,
-        {
-          requestId: this.#requestIdFromResponse(response),
-          phase: "serialization",
-        },
+    return this.#parseResponse(path, schema, body, response);
+  }
+
+  /**
+   * Parses a response with its shared schema, ignoring fields this client does not know so that a
+   * newer Server's additive fields never break an older CLI. See `response-parse.ts`.
+   */
+  #parseResponse<T>(path: string, schema: RuntimeSchema<T>, body: unknown, response: Response): T {
+    const parsed = parseResponseIgnoringUnknownKeys(schema, body);
+    if (parsed.ignoredKeys.length > 0) {
+      // Key paths only, never values: enough to see version skew without logging response content.
+      this.#logger.debug(
+        { path: new URL(path, this.#baseUrl).pathname, ignoredKeys: parsed.ignoredKeys },
+        "Ignored response fields unknown to this client",
       );
     }
-    return parsed.data;
+    if (parsed.success) return parsed.data;
+    throw new OpenTagApiError(
+      "SERVICE_UNAVAILABLE",
+      "transient",
+      parsed.reason === "unknown_key_pass_limit"
+        ? "The openTag server returned a response with too many unknown fields"
+        : "The openTag server returned an invalid response",
+      response.status,
+      undefined,
+      {
+        requestId: this.#requestIdFromResponse(response),
+        phase: "serialization",
+      },
+    );
   }
 
   async #requestNoContent(path: string, init: RequestInit, options?: RequestOptions): Promise<void> {
@@ -1537,21 +1557,7 @@ export class OpenTagApi {
     if (response.status === 204) return undefined;
     const body = await response.json().catch(() => undefined);
     if (!response.ok) this.#throwResponseError(response.status, body, this.#requestIdFromResponse(response));
-    const parsed = schema.safeParse(body);
-    if (!parsed.success) {
-      throw new OpenTagApiError(
-        "SERVICE_UNAVAILABLE",
-        "transient",
-        "The openTag server returned an invalid response",
-        response.status,
-        undefined,
-        {
-          requestId: this.#requestIdFromResponse(response),
-          phase: "serialization",
-        },
-      );
-    }
-    return parsed.data;
+    return this.#parseResponse(path, schema, body, response);
   }
 
   async #fetchResponse(path: string, init: RequestInit, options: RequestOptions = {}): Promise<Response> {

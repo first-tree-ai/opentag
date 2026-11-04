@@ -312,7 +312,9 @@ describe("Agent availability model and presentation", () => {
     expect(messagingChannelLabel(base, binding("active", "feishu"))).toContain("@reviewer");
     expect(messagingChannelLabel(base, binding("active", "slack", "Team Bot"))).toContain("Team Bot");
     expect(messagingChannelLabel(base, binding("active", "slack", null))).toBe("Slack");
-    expect(messagingConnectionLabel(binding("reauthorization_required", "feishu"))).toBe("Permissions required");
+    expect(messagingConnectionLabel(binding("reauthorization_required", "feishu"))).toBe(
+      "Messaging permissions need updating",
+    );
     expect(messagingConnectionTone(binding("disabled"))).toBe("neutral");
     expect(sharedConversationLabel("feishu")).toBe("Group chats");
     expect(sharedConversationLabel("slack")).toBe("Channels");
@@ -383,10 +385,30 @@ describe("Agent availability model and presentation", () => {
       }),
     ).toBeUndefined();
     expect(agentCardStatus({ ...base, evidenceConfirmed: true } as never)).toEqual({
-      detail: undefined,
+      detail: "Waiting",
       label: "Ready",
       tone: "success",
     });
+    for (const [runningTaskCount, detail] of [
+      [1, "1 task running"],
+      [3, "3 tasks running"],
+    ] as const) {
+      expect(
+        agentCardStatus({
+          ...base,
+          activity: { state: "working", startedAt: new Date().toISOString(), runningTaskCount },
+          evidenceConfirmed: true,
+        } as never),
+      ).toEqual({ detail, label: "Ready", tone: "success" });
+    }
+    expect(
+      agentCardStatus({
+        ...base,
+        activity: { state: "working", startedAt: new Date().toISOString(), runningTaskCount: 2 },
+        evidenceConfirmed: true,
+        availability: { ...base.availability, state: "action_required", reason: "computer_offline" },
+      } as never),
+    ).toEqual({ detail: "2 tasks running", label: "Computer offline", tone: "warning" });
     expect(
       agentCardStatus({
         ...base,

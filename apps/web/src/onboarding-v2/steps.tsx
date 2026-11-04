@@ -242,7 +242,10 @@ function AgentNameField({
   const nameId = useId();
   const hintId = `${nameId}-hint`;
   const errorId = `${nameId}-error`;
-  const error = showError ? validateAgentName(draft.name) : undefined;
+  const problem = validateAgentName(draft.name);
+  // A name past the limit can't become valid by typing more, so say so while typing. Other
+  // problems wait for blur or Create, so an empty field isn't flagged before anyone types.
+  const error = showError || problem === "too-long" ? problem : undefined;
   const errorText =
     error === "empty"
       ? m.onboarding_v2_agent_name_empty_error()

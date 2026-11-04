@@ -1,0 +1,67 @@
+diff --git a/dist/oauth2/validate-authorization-code.d.mts b/dist/oauth2/validate-authorization-code.d.mts
+index 63f7b421a06e4d8e134eb151d6270fcd90958d5e..0d91b1f657981db23deaba4ed4242e72c28ee860 100644
+--- a/dist/oauth2/validate-authorization-code.d.mts
++++ b/dist/oauth2/validate-authorization-code.d.mts
+@@ -19,6 +19,7 @@ interface AuthorizationCodeRequestInput {
+ }
+ interface ValidateAuthorizationCodeInput extends AuthorizationCodeRequestInput {
+   tokenEndpoint: string;
++  signal?: AbortSignal | undefined;
+ }
+ declare function authorizationCodeRequest({
+   code,
+@@ -47,7 +48,8 @@ declare function validateAuthorizationCode({
+   deviceId,
+   headers,
+   additionalParams,
+-  resource
++  resource,
++  signal
+ }: ValidateAuthorizationCodeInput): Promise<OAuth2Tokens>;
+ declare function validateToken(token: string, jwksEndpoint: string, options?: {
+   audience?: string | string[];
+diff --git a/dist/oauth2/validate-authorization-code.mjs b/dist/oauth2/validate-authorization-code.mjs
+index 901e962d13dcdbcf4a2cae72ff5d92905fae7d01..3bffdddfb83faea54aa4f4cb68f3afd1c67e8e15 100644
+--- a/dist/oauth2/validate-authorization-code.mjs
++++ b/dist/oauth2/validate-authorization-code.mjs
+@@ -47,7 +47,7 @@ function buildAuthorizationCodeRequest({ code, codeVerifier, redirectURI, option
+ 		headers: requestHeaders
+ 	};
+ }
+-async function validateAuthorizationCode({ code, codeVerifier, redirectURI, options, tokenEndpoint, authentication, tokenEndpointAuth, deviceId, headers, additionalParams = {}, resource }) {
++async function validateAuthorizationCode({ code, codeVerifier, redirectURI, options, tokenEndpoint, authentication, tokenEndpointAuth, deviceId, headers, additionalParams = {}, resource, signal }) {
+ 	const { body, headers: requestHeaders } = await authorizationCodeRequest({
+ 		code,
+ 		codeVerifier,
+@@ -64,7 +64,8 @@ async function validateAuthorizationCode({ code, codeVerifier, redirectURI, opti
+ 	const { data, error } = await fetchRefusingRedirects(tokenEndpoint, {
+ 		method: "POST",
+ 		body,
+-		headers: requestHeaders
++		headers: requestHeaders,
++		signal
+ 	});
+ 	if (error) throw error;
+ 	return getOAuth2Tokens(data);
+diff --git a/dist/social-providers/google.mjs b/dist/social-providers/google.mjs
+index 56c5611b3a6cb17994f42c2a1e8620b179df302e..f95ba9679780e5924f69d9b2ea6bebcb2fec36b6 100644
+--- a/dist/social-providers/google.mjs
++++ b/dist/social-providers/google.mjs
+@@ -6,6 +6,7 @@ import { refreshAccessToken } from "../oauth2/refresh-access-token.mjs";
+ import { validateAuthorizationCode } from "../oauth2/validate-authorization-code.mjs";
+ import { decodeJwt, decodeProtectedHeader, importJWK, jwtVerify } from "jose";
+ import { betterFetch } from "@better-fetch/fetch";
++const GOOGLE_TOKEN_EXCHANGE_TIMEOUT_MS = 10_000;
+ //#region src/social-providers/google.ts
+ const GOOGLE_ID_TOKEN_MAX_AGE = "1h";
+ const GOOGLE_ID_TOKEN_ALGORITHM = "RS256";
+@@ -93,7 +94,8 @@ const google = (options) => {
+ 				codeVerifier,
+ 				redirectURI,
+ 				options,
+-				tokenEndpoint: "https://oauth2.googleapis.com/token"
++				tokenEndpoint: "https://oauth2.googleapis.com/token",
++				signal: AbortSignal.timeout(GOOGLE_TOKEN_EXCHANGE_TIMEOUT_MS)
+ 			});
+ 		},
+ 		refreshAccessToken: options.refreshAccessToken ? options.refreshAccessToken : async (refreshToken) => {

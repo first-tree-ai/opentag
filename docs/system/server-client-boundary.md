@@ -74,7 +74,9 @@ and classifies it:
 
 The connect command is one command that users and Agents can run again safely: it upgrades openTag first, then
 connects, and on an already-connected computer it repairs or confirms instead of adding a duplicate. Rerunning is the
-expected fix for a half-finished or broken connection, so it must never make things worse.
+expected fix for a half-finished or broken connection, so it must never make things worse. The upgrade finishes
+before connecting starts: overlapping them would save little time and add failures from a connection made by one
+version while another is being installed.
 
 - An account conflict stops without taking the computer over and offers no web action to do so. The browser that
   issued the command may be signed in to a different account than the one that owns the computer, and only the
@@ -122,6 +124,32 @@ observation, and writes no durable record. The daemon validates a one-time
 sentinel locally and returns only pass or a fixed sanitized failure. A pass
 proves only that this invocation worked with that configuration on that
 Computer; it is not an authentication or readiness claim.
+
+## Response compatibility
+
+The Server and the CLI ship separately. A Server release applies to everyone at
+once, while a CLI upgrades only on its next connect, so released CLIs keep
+reading responses from newer Servers for a long time. The HTTP contract
+therefore follows one convention:
+
+- The Server changes responses additively: it may add fields, but it does not
+  remove, rename, or retype an existing field.
+- The client (`packages/client`, which the CLI uses) ignores response fields it
+  does not know. It parses each response with the strict shared schema and, when
+  the only problems are unrecognized keys, drops exactly those keys at the paths
+  the schema reports and parses again. Every known field stays fully validated,
+  and the dropped key paths (never values) go to the client's debug log so
+  version skew is visible when diagnosing.
+- Removing, renaming, or retyping a field, adding an enum value, or any other
+  change an older client cannot read still needs version negotiation or a client
+  capability header (an `x-opentag-*` request header that opts a newer client
+  into the new shape). A capability header is not needed for a new field once
+  the released CLIs ignore unknown fields.
+- Request bodies stay strict on the Server: unknown keys sent to the Server are
+  rejected.
+
+The runtime connection negotiates capabilities in its own protocol and is
+outside this convention.
 
 ## Rationale
 

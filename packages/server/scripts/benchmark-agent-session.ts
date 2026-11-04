@@ -11,12 +11,13 @@
  * ```
  *
  * `OPENTAG_BENCHMARK_OUT` does the same as `--out`, so a reviewer can keep the checkout clean.
- * Results default to `testing/performance/agent-session/results.json`; the container and its volume are
- * removed in `finally`, and anything a forced kill leaves behind carries the `opentag.benchmark=agent-session`
+ * Results default to the system temporary directory under `opentag-benchmarks/agent-session/`.
+ * The container and its volume are removed in `finally`, and anything a forced kill leaves behind carries the `opentag.benchmark=agent-session`
  * label.
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import type { AgentUsageWindowDays } from "@opentag/shared";
@@ -35,7 +36,7 @@ import {
   runBenchmark,
 } from "./agent-session-benchmark.js";
 
-const trackedDirectory = resolve(import.meta.dirname, "../../../testing/performance/agent-session");
+const defaultDirectory = resolve(tmpdir(), "opentag-benchmarks/agent-session");
 
 /** Stable fixture identities produced by `agent-session-seed.sql`. */
 const id = (kind: number, number: number) =>
@@ -116,7 +117,7 @@ function benchmarkDependencies(): BenchmarkDeps {
       resolveOutputDirectory({
         argv: process.argv.slice(2),
         env: process.env,
-        trackedDirectory,
+        defaultDirectory,
       }),
     writeResults: (directory, content) => {
       mkdirSync(directory, { recursive: true });

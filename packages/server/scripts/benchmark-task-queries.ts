@@ -18,6 +18,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { drizzle } from "drizzle-orm/postgres-js";
@@ -29,7 +30,7 @@ import { parseBenchmarkArgs } from "./benchmark/args.js";
 import { runBenchmark } from "./benchmark/run.js";
 
 const { phase, output } = parseBenchmarkArgs(process.argv, {
-  defaultOutput: fileURLToPath(new URL("../../../testing/performance/task-queries/", import.meta.url)),
+  defaultOutput: resolve(tmpdir(), "opentag-benchmarks/task-queries"),
   resolvePath: resolve,
 });
 const containerName = `opentag-task-bench-${process.pid}`;
@@ -83,10 +84,7 @@ await runBenchmark({
   mkdir: (path) => mkdirSync(path, { recursive: true }),
   write: (path, contents) => writeFileSync(path, contents),
   gitHead: () => execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
-  // Source cleanliness only: the evidence directory is not a code change.
-  gitDirty: () =>
-    execFileSync("git", ["status", "--porcelain", "--", ".", ":!testing/performance"], { encoding: "utf8" }).trim() !==
-    "",
+  gitDirty: () => execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" }).trim() !== "",
   clock: () => performance.now(),
   log: (line) => console.log(line),
   ids: {

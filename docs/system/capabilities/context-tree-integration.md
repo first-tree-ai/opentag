@@ -34,8 +34,13 @@ in the creation dialog. Connected Context Trees appear as divided rows in one
 surface, with repository/directory, branch, and a direct GitHub-folder link. A trailing secondary
 **Connect another Context Tree** action keeps additional connections available inside the collection.
 The trailing action is absent at the connection limit rather than presenting an unexplained disabled control.
-These are saved selections, not runtime-ready indicators. Each choice opens a focused dialog; the
-collection does not show an inline form. Disconnect lives in the Context Tree action menu and confirms
+These are saved selections, not runtime-ready indicators. Each choice opens a focused dialog. Before showing repository fields, the dialog checks
+the current Agent’s GitHub MCP authorization and Computer compatibility through an authenticated,
+uncached Server read. Missing deployment configuration directs the user to the server administrator;
+missing, disabled or unsupported Agent authorization links to that Agent’s Connectors. Read-only
+authorization permits connecting but blocks repository creation. Retry rechecks readiness after setup,
+and Cancel remains available while checking. An unavailable or older Server does not expose a form
+whose prerequisites could not be checked. The collection does not show an inline form. Disconnect lives in the Context Tree action menu and confirms
 the exact Context Tree and preservation impact.
 Cancel receives initial focus, pending requests block dismissal and repeated submissions, and failures
 stay inside the confirmation. A confirmed removal returns focus to a surviving neighbour or the empty-state
@@ -60,6 +65,10 @@ and disables writes until a successful read. Connector and restriction-recovery 
 an in-progress form stays available in the original tab. Terminal authorization/resource failures hide stale settings.
 Invalid directories associate their error with the field. The offline restriction notice links to the
 existing Computer settings.
+
+Readiness checks are advisory: submissions still recheck current revisions, Computer capability and
+GitHub authority. They do not call GitHub, refresh credentials or start authorization. Disconnect never
+requires readiness or GitHub authorization.
 
 Failed settings operations display an error banner and the current Agent's Connector or repository destination. When the server has no GitHub MCP OAuth client
 configured, the message asks the server administrator to configure it; this does not

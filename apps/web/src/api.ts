@@ -95,6 +95,8 @@ import {
   type ComputerConnectCodeStatus,
   ComputerConnectCodeStatusSchema,
   ConnectMCPOAuthResponseSchema,
+  type ContextTreeAvailabilityResponse,
+  ContextTreeAvailabilityResponseSchema,
   type ContextTreeOperationRequest,
   type ContextTreeOperationResponse,
   ContextTreeOperationResponseSchema,
@@ -607,6 +609,10 @@ export class BrowserApi {
       body: JSON.stringify(input),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
     });
+  }
+
+  contextTreeAvailability(agentId: string): Promise<ContextTreeAvailabilityResponse> {
+    return this.request(agentContextTreePath(agentId), ContextTreeAvailabilityResponseSchema);
   }
 
   contextTreeOperation(agentId: string, input: ContextTreeOperationRequest): Promise<ContextTreeOperationResponse> {

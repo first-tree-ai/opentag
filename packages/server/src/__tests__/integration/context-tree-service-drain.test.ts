@@ -36,6 +36,7 @@ it("joins remote preparation and final selection SQL after the HTTP client disco
     agents,
     { currentInstanceId: () => "instance", supportsCapability: () => true },
     {
+      availability: async () => ({ status: "ready", readOnly: false }),
       computerKind: async () => "local",
       run: async () => {
         await client.sql`select 1`;

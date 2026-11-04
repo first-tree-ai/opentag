@@ -4,7 +4,7 @@ import { type AgentAdminConfig, CONTEXT_TREES_MAX, type ContextTreeOperationResp
 import { createMemoryHistory, createRootRoute, createRouter, RouterContextProvider } from "@tanstack/react-router";
 import { act, cleanup, fireEvent, render as renderDom, screen, waitFor, within } from "@testing-library/react";
 import { type ReactElement, type ReactNode, useState } from "react";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { browserApi } from "../../../api.js";
 import { ContextTreeSettings } from "./context-tree-settings.js";
 
@@ -43,6 +43,9 @@ function config(id = "agent-a", repository: string | null = null): AgentAdminCon
     updatedAt: "2026-09-16T00:00:00Z",
   };
 }
+beforeEach(() => {
+  vi.spyOn(browserApi, "contextTreeAvailability").mockResolvedValue({ status: "ready", readOnly: false });
+});
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
@@ -56,10 +59,11 @@ async function openForm(mode: "connect" | "create" = "connect") {
   else {
     fireEvent.click(screen.getByRole("button", { name: "Connect another Context Tree" }));
     const directDialog = screen.queryByRole("dialog", { name });
-    if (directDialog) return directDialog;
-    fireEvent.click(await screen.findByRole("menuitem", { name: new RegExp(`^${name}`) }));
+    if (!directDialog) fireEvent.click(await screen.findByRole("menuitem", { name: new RegExp(`^${name}`) }));
   }
-  return screen.findByRole("dialog", { name });
+  const dialog = await screen.findByRole("dialog", { name });
+  await within(dialog).findByRole("textbox", { name: mode === "connect" ? "GitHub repository link" : "GitHub owner" });
+  return dialog;
 }
 function enter(repository = "acme/memory") {
   const link = screen.queryByRole("textbox", { name: "GitHub repository link" });
@@ -545,4 +549,94 @@ it("preserves a form draft but disables writes while the current selection is un
   expect((screen.getByRole("button", { name: "Connect" }) as HTMLButtonElement).disabled).toBe(true);
   submit();
   expect(operation).not.toHaveBeenCalled();
+});
+
+it.each(["connect", "create"] as const)(
+  "checks GitHub before showing the %s fields and retries after setup",
+  async (mode) => {
+    const availability = vi
+      .mocked(browserApi.contextTreeAvailability)
+      .mockResolvedValueOnce({ status: "failed", code: "github_not_configured" });
+    const operation = vi.spyOn(browserApi, "contextTreeOperation");
+    render(<ContextTreeSettings config={config()} online onChanged={vi.fn()} />);
+    fireEvent.click(
+      screen.getByRole("button", { name: mode === "connect" ? "Connect an existing tree" : "create a new one" }),
+    );
+    const dialog = await screen.findByRole("dialog");
+    expect((await within(dialog).findByRole("alert")).textContent).toMatch(/Ask the server administrator/);
+    expect(within(dialog).queryByRole("textbox")).toBeNull();
+    expect(operation).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Retry" }));
+    const input = await within(dialog).findByRole("textbox", {
+      name: mode === "connect" ? "GitHub repository link" : "GitHub owner",
+    });
+    await waitFor(() => expect(document.activeElement).toBe(input));
+    expect(availability).toHaveBeenCalledTimes(2);
+  },
+);
+it.each(["authentication_required", "github_connector_disabled", "github_connector_unsupported"] as const)(
+  "links %s to the current Agent's Connectors before exposing fields",
+  async (code) => {
+    vi.mocked(browserApi.contextTreeAvailability).mockResolvedValue({ status: "failed", code });
+    render(<ContextTreeSettings config={config()} online onChanged={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Connect an existing tree" }));
+    const link = await screen.findByRole("link", { name: "Connectors" });
+    expect(link.getAttribute("href")).toBe("/agents/agent-a/mcp");
+    expect(link.getAttribute("target")).toBe("_blank");
+    expect(screen.queryByRole("textbox")).toBeNull();
+  },
+);
+it("allows connecting with read-only authorization but blocks repository creation", async () => {
+  vi.mocked(browserApi.contextTreeAvailability).mockResolvedValue({ status: "ready", readOnly: true });
+  render(<ContextTreeSettings config={config()} online onChanged={vi.fn()} />);
+  await openForm();
+  fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  fireEvent.click(screen.getByRole("button", { name: "create a new one" }));
+  const dialog = await screen.findByRole("dialog");
+  expect((await within(dialog).findByRole("alert")).textContent).toMatch(/read-only/);
+  expect(within(dialog).queryByRole("textbox")).toBeNull();
+  expect(within(dialog).getByRole("link", { name: "Connectors" })).toBeTruthy();
+});
+it("keeps unavailable and old-server checks out of the form and offers retry", async () => {
+  vi.mocked(browserApi.contextTreeAvailability).mockRejectedValueOnce(new Error("404 from older server"));
+  render(<ContextTreeSettings config={config()} online onChanged={vi.fn()} />);
+  fireEvent.click(screen.getByRole("button", { name: "Connect an existing tree" }));
+  const dialog = await screen.findByRole("dialog");
+  expect((await within(dialog).findByRole("alert")).textContent).toMatch(/Couldn’t check GitHub access/);
+  expect(within(dialog).queryByRole("textbox")).toBeNull();
+  expect(within(dialog).getByRole("button", { name: "Retry" })).toBeTruthy();
+});
+it("allows cancelling a pending check and ignores its late response", async () => {
+  let resolve!: (value: { status: "ready"; readOnly: boolean }) => void;
+  vi.mocked(browserApi.contextTreeAvailability).mockReturnValueOnce(
+    new Promise((done) => {
+      resolve = done;
+    }),
+  );
+  render(<ContextTreeSettings config={config()} online onChanged={vi.fn()} />);
+  const trigger = screen.getByRole("button", { name: "Connect an existing tree" });
+  trigger.focus();
+  fireEvent.click(trigger);
+  const dialog = await screen.findByRole("dialog");
+  expect(within(dialog).getByRole("status").textContent).toMatch(/Checking GitHub access/);
+  fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await act(async () => resolve({ status: "ready", readOnly: false }));
+  expect(screen.queryByRole("textbox")).toBeNull();
+  await waitFor(() => expect(document.activeElement).toBe(trigger));
+});
+it("still disconnects saved trees when GitHub is unavailable", async () => {
+  const availability = vi
+    .mocked(browserApi.contextTreeAvailability)
+    .mockResolvedValue({ status: "failed", code: "github_not_configured" });
+  const operation = vi
+    .spyOn(browserApi, "contextTreeOperation")
+    .mockResolvedValue({ status: "completed", repository: null });
+  render(<ContextTreeSettings config={config("agent-a", "acme/memory")} online onChanged={vi.fn()} />);
+  fireEvent.click(screen.getByRole("button", { name: "More actions for memory" }));
+  fireEvent.click(await screen.findByRole("menuitem", { name: "Disconnect" }));
+  fireEvent.click(await screen.findByRole("button", { name: "Disconnect" }));
+  await waitFor(() => expect(operation).toHaveBeenCalled());
+  expect(availability).not.toHaveBeenCalled();
 });

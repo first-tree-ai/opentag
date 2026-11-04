@@ -70,6 +70,19 @@ same pull request as the code they describe.
 - Test plans, acceptance runs, and validation evidence are not knowledge-base
   content; they live in the repository's
   [`testing/`](https://github.com/first-tree-ai/opentag/blob/main/testing/README.md) directory.
+
+  > **Planned — not yet implemented.** Tracking: #1280
+
+  Only release regression tests are committed under `testing/`. They are
+  written in Markdown, cover the product's main features, run before every
+  release, and live in one dedicated regression subdirectory; nothing else
+  lives under `testing/`. Ordinary test cases, test plans, acceptance runs, and
+  validation evidence for one task stay with its pull request and are recorded
+  in the GitHub issue when they need to be kept. Local test environments are
+  task-specific and are not committed. When a change adds or alters a product
+  feature, it adds or updates the matching regression tests in the same pull
+  request. This replaces keeping test plans, acceptance runs, and validation
+  evidence in `testing/`.
 - The knowledge base is maintained in English only.
 - Edit an existing page before adding one. Add a page only when it has a
   distinct, independently findable subject, and add a directory only for at

@@ -13,68 +13,43 @@
  */
 
 import { extname, isAbsolute, posix, relative } from "node:path";
+import { isInsideMeasuredProject, isMeasuredSourcePath } from "./coverage-scope.mjs";
 
 export const SUPPORTED_SOURCE_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"]);
 
 const EXCLUDED_DIRECTORY_NAMES = new Set(["coverage", "dist", "node_modules"]);
 const EXCLUDED_ROOT_NAMES = new Set(["e2e", "scripts"]);
-const PACKAGE_SOURCE_ROOTS = new Set([
-  "apps/cli/src",
-  "apps/web/src",
-  "packages/client/src",
-  "packages/server/src",
-  "packages/shared/src",
-]);
-const TOOLING_CONFIG_ROOTS = new Set([
-  ".",
-  "apps/cli",
-  "apps/web",
-  "e2e",
-  "packages/client",
-  "packages/mcp-presets",
-  "packages/server",
-  "packages/shared",
-]);
 const TOOLING_CONFIG_FILE_PATTERN = /^[^/]+\.config\.(?:cjs|cts|js|jsx|mjs|mts|ts|tsx)$/;
 
 function normalizePath(value) {
   return posix.normalize(String(value).replaceAll("\\", "/").replace(/^\.\//, ""));
 }
 
-function fileName(path) {
-  return path.slice(path.lastIndexOf("/") + 1);
-}
-
-function isPackageTestInfrastructurePath(path) {
-  for (const sourceRoot of PACKAGE_SOURCE_ROOTS) {
-    const prefix = `${sourceRoot}/`;
-    if (!path.startsWith(prefix)) continue;
-    const relativePath = path.slice(prefix.length);
-    if (relativePath.split("/").includes("__tests__")) return true;
-  }
-  return false;
-}
-
-function isToolingConfigPath(path) {
-  const name = fileName(path);
-  if (!TOOLING_CONFIG_FILE_PATTERN.test(name)) return false;
-  const separator = path.lastIndexOf("/");
-  const parent = separator === -1 ? "." : path.slice(0, separator);
-  return TOOLING_CONFIG_ROOTS.has(parent);
-}
-
-export function isSupportedSourcePath(value) {
-  const path = normalizePath(value);
+/**
+ * Source outside every measured workspace: code that belongs to no coverage project yet, such as a new
+ * workspace. It is judged, so a changed line there reads as "missing coverage entry" and blocks until
+ * the workspace is added to `coverage-scope.mjs`, rather than going unmeasured without anyone noticing.
+ * Repository tooling (`scripts`, `e2e`, top-level `*.config.*`) and build output are not source.
+ */
+function isUnownedSourcePath(path) {
   const segments = path.split("/");
   if (EXCLUDED_ROOT_NAMES.has(segments[0])) return false;
   if (segments.some((segment) => EXCLUDED_DIRECTORY_NAMES.has(segment))) return false;
-  if (segments.includes("paraglide") && segments.includes("src")) return false;
-  if (isPackageTestInfrastructurePath(path)) return false;
-  if (isToolingConfigPath(path)) return false;
-  const name = fileName(path);
+  const name = segments.at(-1) ?? "";
+  if (segments.length === 1 && TOOLING_CONFIG_FILE_PATTERN.test(name)) return false;
   if (/\.d\.(?:cts|mts|ts)$/.test(name)) return false;
   if (/\.(?:test|spec)\.(?:cjs|cts|js|jsx|mjs|mts|ts|tsx)$/.test(name)) return false;
   return SUPPORTED_SOURCE_EXTENSIONS.has(extname(name).toLowerCase());
+}
+
+/**
+ * Whether the gate judges a changed file. Inside a measured workspace this is exactly what the coverage
+ * run instruments, read from the scope the measurement itself uses, so a test helper, smoke harness or
+ * tooling config is never judged, and a judged file without a coverage entry really went unmeasured.
+ */
+export function isSupportedSourcePath(value) {
+  const path = normalizePath(value);
+  return isInsideMeasuredProject(path) ? isMeasuredSourcePath(path) : isUnownedSourcePath(path);
 }
 
 function isExecutableSourceLine(value) {
@@ -180,7 +155,7 @@ export function buildLineHitsByFile(coverage, repositoryRoot) {
 }
 
 function evaluateChangedFile({ file, lines, lineHits }) {
-  if (!isSupportedSourcePath(file)) return { covered: 0, total: 0, uncovered: [] };
+  if (!isSupportedSourcePath(file)) return { covered: 0, total: 0, uncovered: [], unmeasured: false };
   const instrumented = lineHits !== undefined;
   const uncovered = [];
   let covered = 0;
@@ -199,7 +174,7 @@ function evaluateChangedFile({ file, lines, lineHits }) {
       uncovered.push(`${file}:${line}`);
     }
   }
-  return { covered, total, uncovered };
+  return { covered, total, uncovered, unmeasured: !instrumented && total > 0 };
 }
 
 export function evaluatePatchCoverage({ diff, coverage, repositoryRoot, threshold = 80 }) {
@@ -210,6 +185,7 @@ export function evaluatePatchCoverage({ diff, coverage, repositoryRoot, threshol
   const changedLines = extractChangedLines(diff);
   const lineHitsByFile = buildLineHitsByFile(coverage, repositoryRoot);
   const uncovered = [];
+  const unmeasured = [];
   let covered = 0;
   let total = 0;
 
@@ -218,6 +194,7 @@ export function evaluatePatchCoverage({ diff, coverage, repositoryRoot, threshol
     covered += result.covered;
     total += result.total;
     uncovered.push(...result.uncovered);
+    if (result.unmeasured) unmeasured.push(file);
   }
 
   if (total === 0) {
@@ -225,5 +202,7 @@ export function evaluatePatchCoverage({ diff, coverage, repositoryRoot, threshol
   }
 
   const percent = (covered / total) * 100;
-  return { covered, passed: percent >= threshold, percent, total, uncovered };
+  // A changed file the run should have measured but did not blocks on its own, whatever the
+  // percentage: a covered remainder of the patch must not hide a package that stopped being measured.
+  return { covered, passed: percent >= threshold && unmeasured.length === 0, percent, total, uncovered, unmeasured };
 }

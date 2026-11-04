@@ -253,9 +253,12 @@ Patch Coverage checks changed paths before installing dependencies. Changes outs
 receive an explicit pass; source deletions and renames still require measurement. For source changes, five parallel jobs
 measure one workspace each and enforce its existing floors. The final job requires every report, concatenates disjoint
 file maps, and enforces the unchanged 80% changed-line threshold. Missing reports, failed suites, and overlapping source
-ownership fail the check. The Unit Coverage workflow measures the complete baseline on `main` after every merge that
-touches source, scripts, or dependencies, and weekly, and fails when `main` falls below a floor, so a breach is
-attributed to the merge that caused it.
+ownership fail the check. Inside a measured workspace the gate judges exactly the files the coverage run instruments,
+read from the same scope (`scripts/coverage-scope.mjs`), so test helpers, smoke harnesses and tooling config are never
+judged. A judged file with no coverage entry was not measured and fails the check on its own, whatever the percentage.
+The Unit Coverage workflow measures the complete baseline on `main` after every merge that touches source, scripts, or
+dependencies, and weekly, and fails when `main` falls below a floor, so a breach is attributed to the merge that
+caused it.
 
 On pull requests, Quality Scoreboard runs inside CI and reuses the three Node 24 unit shard timings instead of rerunning
 tests. Its duration metric is explicitly the slowest workspace shard, excluding repository script tests and runner queue

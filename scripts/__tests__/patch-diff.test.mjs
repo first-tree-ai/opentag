@@ -160,6 +160,7 @@ test("the workflow's inline gate program fails an uncovered changed line and pas
       join(REPOSITORY_ROOT, "scripts/unit-coverage-gate.mjs"),
       join(repository, "scripts/unit-coverage-gate.mjs"),
     );
+    await copyFile(join(REPOSITORY_ROOT, "scripts/coverage-scope.mjs"), join(repository, "scripts/coverage-scope.mjs"));
 
     const sourceFile = "packages/shared/src/workflow-gate-fixture.ts";
     await mkdir(join(repository, "packages/shared/src"), { recursive: true });

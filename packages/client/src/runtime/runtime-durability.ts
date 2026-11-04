@@ -10,7 +10,11 @@ import {
 import { ensurePrivateDirectory, readDurableJson, writeDurableJson } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 
-export type DurableWorkKind = "session-message" | "turn-report";
+/**
+ * `session-message-outcome` holds Run outcome reports for creator notices. It is a Local-only kind:
+ * the reporter always uses a local store, never the Server durable-work API.
+ */
+export type DurableWorkKind = "session-message" | "session-message-outcome" | "turn-report";
 export type DurableWorkStatus = "accepted" | "running" | "succeeded" | "retryable" | "failed" | "dead-letter";
 /** The durable state machine stores taxonomy retry policy, not a second retry enum. */
 export type DurableRetryability = ErrorRetryability;

@@ -7,6 +7,7 @@ import {
   type SessionMessageDeliveryRequestV3,
   SessionMessageDeliveryRequestV3Schema,
   type SessionMessageDeliveryResult,
+  SessionMessageRunOutcomeReasonSchema,
 } from "@opentag/shared";
 import type { AgentInput, AgentRuntime } from "../agent-runtime/types.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
@@ -69,13 +70,19 @@ export interface SessionMessageInboxOptions {
   metrics?: RuntimeDurabilityMetrics;
   now?: () => number;
   onFailure?(failure: DurableFailure): void;
+  /**
+   * Called once when a message's Run reaches a terminal non-completed state (timeout, permanent
+   * failure, or exhausted retries). The Server uses the report to notify an internal Session's
+   * creator; it ignores reports for visible Sessions.
+   */
+  onRunOutcome?(outcome: SessionMessageRunOutcomeEvent): void | Promise<void>;
   persistence?: RuntimeDurabilityStore;
   retryPolicy?: Partial<RuntimeRetryPolicy>;
   scheduler?: RuntimeRetryScheduler;
   timeoutScheduler?: RuntimeRetryScheduler;
   /**
    * The negotiated `runtime.sessionCollaboration` version. A scheduled-origin delivery is only
-   * legal on a v3 channel; anything else is refused at the wire boundary instead of being
+   * legal on a v3-or-newer channel; anything else is refused at the wire boundary instead of being
    * silently executed or silently dropped. Already-accepted durable records are unaffected —
    * recovery never re-checks the negotiation.
    */
@@ -86,6 +93,18 @@ export interface SessionMessageInboxOptions {
   >;
   runtimeManager: Pick<SessionRuntimeManager, "ensureRuntime" | "sessionKind">;
 }
+
+export interface SessionMessageRunOutcomeEvent {
+  messageId: string;
+  targetSessionId: string;
+  agentId: string;
+  placementGeneration: number;
+  outcome: "timed_out" | "failed";
+  reason: string;
+}
+
+/** The stable code a Run outcome report carries for a timed-out Session message. */
+export const SESSION_MESSAGE_TURN_TIMEOUT_CODE = "turn_timeout";
 
 export class SessionMessageInbox {
   readonly #admission: AdmissionController;
@@ -100,6 +119,7 @@ export class SessionMessageInbox {
   readonly #metrics?: RuntimeDurabilityMetrics;
   readonly #now: () => number;
   readonly #onFailure?: SessionMessageInboxOptions["onFailure"];
+  readonly #onRunOutcome?: SessionMessageInboxOptions["onRunOutcome"];
   readonly #persistence?: RuntimeDurabilityStore;
   readonly #retryPolicy: RuntimeRetryPolicy;
   readonly #scheduler: RuntimeRetryScheduler;
@@ -129,6 +149,7 @@ export class SessionMessageInbox {
     this.#metrics = options.metrics;
     this.#now = options.now ?? Date.now;
     this.#onFailure = options.onFailure;
+    this.#onRunOutcome = options.onRunOutcome;
     this.#persistence = options.persistence;
     this.#retryPolicy = normalizeRetryPolicy(options.retryPolicy);
     this.#scheduler = options.scheduler ?? defaultRuntimeRetryScheduler;
@@ -167,7 +188,7 @@ export class SessionMessageInbox {
     // Gate every scheduled v3 frame, including duplicates previously accepted under v3.
     if (
       request.scheduledOrigin !== undefined &&
-      this.#sessionCollaborationVersion() !== RUNTIME_SESSION_COLLABORATION_SCHEDULED_VERSION
+      (this.#sessionCollaborationVersion() ?? 0) < RUNTIME_SESSION_COLLABORATION_SCHEDULED_VERSION
     ) {
       return deliveryResult(request, "rejected", "configuration_unsupported");
     }
@@ -398,7 +419,10 @@ export class SessionMessageInbox {
         this.#remember(key, { hash: next.hash, status: "succeeded" });
       }
     } catch (error) {
-      if (current) await this.#handleFailure(current, next.hash, phase, error);
+      // Only the Run budget timer counts as a timeout; daemon stop and revocation keep their
+      // existing recovery semantics.
+      const timedOut = timeout.signal.aborted && !this.#abort.signal.aborted && executionSignal?.aborted !== true;
+      if (current) await this.#handleFailure(current, next.hash, phase, error, timedOut);
     } finally {
       timer?.cancel();
       await this.#cleanupTurnPlan(turnPlanInput);
@@ -529,6 +553,7 @@ export class SessionMessageInbox {
       if (retryExhausted(this.#retryPolicy, record, this.#now())) {
         record = await this.#transition(record, "dead-letter", { nextAttemptAt: undefined });
         this.#remember(key, { hash, status: "dead-letter", reason: "provider_unavailable" });
+        this.#emitRunOutcome(record.payload, "failed", record.lastError?.code ?? "retry_exhausted");
         continue;
       }
       if (record.status === "running") {
@@ -572,13 +597,22 @@ export class SessionMessageInbox {
     hash: string,
     phase: string,
     error: unknown,
+    timedOut = false,
   ): Promise<void> {
-    const failure = durableFailureFromUnknown(
+    const reported = durableFailureFromUnknown(
       record.payload.requestId,
       phase,
       error,
       phase === "credential" ? "credential_unavailable" : phase === "prompt" ? "provider_failed" : "runtime_failed",
     );
+    /*
+     * A Run that used its whole budget is terminal: rerunning the same message from scratch
+     * would repeat the work and likely time out again. The Session keeps its provider context, so
+     * the creator decides whether to continue it with a follow-up message.
+     */
+    const failure: DurableFailure = timedOut
+      ? { ...reported, code: SESSION_MESSAGE_TURN_TIMEOUT_CODE, retryability: "never" }
+      : reported;
     this.#emitFailure(failure);
     const attempts = record.attempts + 1;
     const now = this.#now();
@@ -590,6 +624,7 @@ export class SessionMessageInbox {
         { code: failure.code, messageId: record.payload.messageId, phase, status: "failed" },
         "Session message failed permanently",
       );
+      this.#emitRunOutcome(record.payload, timedOut ? "timed_out" : "failed", failure.code);
       return;
     }
     if (retryExhausted(this.#retryPolicy, candidate, now)) {
@@ -599,6 +634,7 @@ export class SessionMessageInbox {
         { code: failure.code, messageId: record.payload.messageId, phase, status: "dead-letter" },
         "Session message moved to dead letter",
       );
+      this.#emitRunOutcome(record.payload, "failed", failure.code);
       return;
     }
     const nextAttemptAt = now + retryDelay(this.#retryPolicy, attempts);
@@ -614,6 +650,30 @@ export class SessionMessageInbox {
     }
     this.#remember(record.key, { hash, status: "retryable" });
     this.#scheduleRetry(retryable, hash);
+  }
+
+  #emitRunOutcome(request: SessionMessageDeliveryRequestV3, outcome: "timed_out" | "failed", code: string): void {
+    try {
+      const reported = this.#onRunOutcome?.({
+        messageId: request.messageId,
+        targetSessionId: request.targetSessionId,
+        agentId: request.agentId,
+        placementGeneration: request.placementGeneration,
+        outcome,
+        reason: SessionMessageRunOutcomeReasonSchema.safeParse(code).success ? code : "run_failed",
+      });
+      void Promise.resolve(reported).catch(() => this.#warnRunOutcomeFailed(request.messageId));
+    } catch {
+      this.#warnRunOutcomeFailed(request.messageId);
+    }
+  }
+
+  /** The inbox state machine never depends on reporting; the reporter owns its own durability. */
+  #warnRunOutcomeFailed(messageId: string): void {
+    this.#logger.warn(
+      { code: "SESSION_MESSAGE_OUTCOME_REPORT_FAILED", messageId },
+      "Session message Run outcome could not be queued for reporting",
+    );
   }
 
   #emitFailure(failure: DurableFailure): void {

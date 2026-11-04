@@ -104,6 +104,13 @@ scanned, using the existing durable-work transaction. A conflicting update is ne
 nor acknowledged; an identical terminal replay remains acknowledgeable. Busy/grant cleanup follows
 a successful or identical commit and names that exact Turn, preserving newer work.
 
+On a Runner collaboration-v3 channel, the settled frame also carries the Run's failure reason (for
+example `turn_timeout`), journaled with the immutable settlement. A Runner sends it only after a
+v3 welcome; a Server that negotiated v1 or v2 receives the exact older frame. After a non-completed
+terminal commit (new or identical replay), the Server notifies an internal child's creator; see
+[Run outcome notices](../messaging/internal-session-collaboration.md#run-outcome-notices). A v3 Runner
+image requires a v3 Server, so the Server must be deployed first, as with earlier versions.
+
 Cloud delivery still uses one Server owner. E8 adds no cross-Server routing or independent task queue.
 Local Session collaboration keeps its current behavior and trust boundary.
 

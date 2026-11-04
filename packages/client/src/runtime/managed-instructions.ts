@@ -1,5 +1,10 @@
 import type { EffectiveRuntimeSnapshot } from "@opentag/shared";
-import { AGENT_SLUG_CHARACTERS, contextTreeName, contextTreeSelector } from "@opentag/shared";
+import {
+  AGENT_SLUG_CHARACTERS,
+  contextTreeName,
+  contextTreeSelector,
+  SESSION_RUN_OUTCOME_NOTICE_HEADER,
+} from "@opentag/shared";
 import type { ContextTreeStatus as ManagedContextTreeStatus } from "./context-tree-connections.js";
 import { GITHUB_MCP_INSTRUCTIONS, renderProviderOutboxGuidance } from "./provider-outbox-instructions.js";
 
@@ -217,6 +222,7 @@ function renderSessionCollaboration(context: ManagedSessionContext): readonly st
       : []),
     "An accepted result means the target accepted the message for processing; it does not mean the delegated task is complete.",
     "If a command result is uncertain, retry with the same messageId and exactly the same semantic input.",
+    `A message that begins with "${SESSION_RUN_OUTCOME_NOTICE_HEADER}" is written by openTag, not by the child: an internal Session you created stopped before finishing (for example \`timed_out\` after reaching its maximum Run duration). openTag does not rerun it. The child keeps its conversation context; to continue, send it a follow-up with \`${context.cliCommand} session send <child-session-id> --message <text>\`, or choose another approach. Decide what, if anything, the user needs to hear.`,
     ...(context.environment === "cloud"
       ? [
           `A child Session reports through \`${context.cliCommand} session send\`; its final text is not automatically returned to its parent.`,

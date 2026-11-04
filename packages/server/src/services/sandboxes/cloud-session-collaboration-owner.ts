@@ -47,6 +47,8 @@ import {
 import type {
   CloudSessionMessageDeliveryInput,
   CloudSessionMessageOutcome,
+  RunOutcomeNoticeInput,
+  RunOutcomeNotifier,
 } from "../sessions/session-collaboration-service.js";
 import type { SessionService } from "../sessions/session-service.js";
 import type { CloudModelGrantPort } from "./cloud-delivery-owner.js";
@@ -95,6 +97,13 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_ENSURE_TIMEOUT_MS = 20_000;
 /** Grant transport allowance on top of the Turn budget (mirrors the IM delivery owner). */
 const CLOUD_SESSION_GRANT_TRANSPORT_MS = 30_000;
+/**
+ * Bounded Server-side redelivery of one creator Run outcome notice. The Runner's settlement is
+ * acknowledged independently, so the Server owns these few retries for a busy or briefly
+ * unreachable creator; every attempt reuses the same deterministic notice row.
+ */
+const RUN_OUTCOME_NOTICE_ATTEMPTS = 3;
+const RUN_OUTCOME_NOTICE_RETRY_MS = 30_000;
 /** Non-terminal durable work statuses: every one of them keeps the reclaim/save barrier. */
 const UNSETTLED_DURABLE_STATUSES = ["accepted", "running", "retryable"] as const;
 
@@ -349,6 +358,8 @@ export interface CloudSessionCollaborationOwnerOptions {
   now?: () => number;
   requestTimeoutMs?: number;
   ensureTimeoutMs?: number;
+  /** Test seam for the delay between creator Run outcome notice attempts. */
+  runOutcomeRetryMs?: number;
 }
 
 export type CloudSessionCancelOutcome = {
@@ -457,6 +468,8 @@ export class CloudSessionCollaborationOwner {
   readonly #tails = new Map<string, Promise<unknown>>();
   readonly #tasks = new Set<Promise<unknown>>();
   readonly #stop = new AbortController();
+  #runOutcomeNotifier: RunOutcomeNotifier | undefined;
+  readonly #runOutcomeRetryMs: number;
   #closing: Promise<void> | undefined;
 
   constructor(options: CloudSessionCollaborationOwnerOptions) {
@@ -477,6 +490,16 @@ export class CloudSessionCollaborationOwner {
     this.#now = options.now ?? (() => Date.now());
     this.#requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.#ensureTimeoutMs = options.ensureTimeoutMs ?? DEFAULT_ENSURE_TIMEOUT_MS;
+    this.#runOutcomeRetryMs = options.runOutcomeRetryMs ?? RUN_OUTCOME_NOTICE_RETRY_MS;
+  }
+
+  /**
+   * Late-bound creator notifier: the collaboration service depends on this owner for Cloud
+   * transport, so composition binds the reverse edge after both exist. Without it, settlement
+   * behaves exactly as before and no notice is sent.
+   */
+  setRunOutcomeNotifier(notifier: RunOutcomeNotifier): void {
+    this.#runOutcomeNotifier = notifier;
   }
 
   close(): Promise<void> {
@@ -684,7 +707,7 @@ export class CloudSessionCollaborationOwner {
     signal?.throwIfAborted();
     const connection = this.#dispatchableConnection(sandbox);
     if (!connection) throw new CloudSessionDispatchUnavailableError();
-    if (scheduled && connection.sessionCollaborationVersion !== 2) {
+    if (scheduled && connection.sessionCollaborationVersion < 2) {
       throw new CloudScheduledOriginUnsupportedError();
     }
     const socket = this.#socketFor(connection);
@@ -1397,7 +1420,7 @@ export class CloudSessionCollaborationOwner {
     if (frame.phase === "started") return;
     // A downgraded Runner retains accepted custody, but receives no execution grant for a
     // scheduled entry until a v2 reconnect can understand its journal and managed input.
-    if (scheduled && connection.sessionCollaborationVersion !== 2) return;
+    if (scheduled && connection.sessionCollaborationVersion < 2) return;
     if (row.bindingStatus !== "active") {
       // A transient IM reauthorization pauses new grants but never erases accepted custody: keep
       // the entry pending; the restored authority re-handshakes the Runner and re-announces.
@@ -1483,7 +1506,40 @@ export class CloudSessionCollaborationOwner {
       status: committed,
       turnId: frame.turnId,
     });
+    // Both a new and a replayed identical commit may notify: the notice id is deterministic, so a
+    // replay after a lost notice repairs it and a replay after a delivered notice is a no-op.
+    const notice = runOutcomeNotice(frame, envelope, connection);
+    if (notice) void this.#track(this.#notifyRunOutcome(notice));
     await this.#recordActivity(connection.scope.sandboxId);
+  }
+
+  async #notifyRunOutcome(notice: RunOutcomeNoticeInput): Promise<void> {
+    const notifier = this.#runOutcomeNotifier;
+    if (!notifier) return;
+    for (let attempt = 1; attempt <= RUN_OUTCOME_NOTICE_ATTEMPTS; attempt += 1) {
+      if (this.#stop.signal.aborted) return;
+      let status: Awaited<ReturnType<RunOutcomeNotifier["notifyRunOutcome"]>>;
+      try {
+        status = await notifier.notifyRunOutcome(notice);
+      } catch (error) {
+        this.#logger?.warn(
+          { code: "CLOUD_SESSION_RUN_OUTCOME_NOTICE_FAILED", messageId: notice.messageId, err: error },
+          "The internal Session Run outcome notice could not be processed",
+        );
+        status = "retry";
+      }
+      if (status !== "retry") return;
+      if (attempt === RUN_OUTCOME_NOTICE_ATTEMPTS) break;
+      try {
+        await delay(this.#runOutcomeRetryMs, undefined, { signal: this.#stop.signal });
+      } catch {
+        return;
+      }
+    }
+    this.#logger?.warn(
+      { code: "CLOUD_SESSION_RUN_OUTCOME_NOTICE_UNDELIVERED", messageId: notice.messageId },
+      "The internal Session Run outcome notice was not accepted by its creator",
+    );
   }
 
   #rejectReceipt(
@@ -1952,6 +2008,34 @@ function allocationMatches(left: CloudWorkAllocation, right: CloudWorkAllocation
 }
 
 /** The durable outcome for one acknowledged Runner terminal result; outcomes stay distinguishable. */
+/** The creator notice for one non-completed settlement, or undefined for a completed Run. */
+function runOutcomeNotice(
+  frame: RunnerCloudSessionMessageSettledFrame,
+  envelope: CloudSessionWorkEnvelope,
+  connection: CloudConnectionRecord,
+): RunOutcomeNoticeInput | undefined {
+  if (frame.outcome === "completed") return undefined;
+  const outcome = frame.reason === "turn_timeout" ? "timed_out" : frame.outcome === "failed" ? "failed" : frame.outcome;
+  const reason =
+    frame.reason ??
+    (frame.outcome === "cancelled"
+      ? "turn_cancelled"
+      : frame.outcome === "unknown"
+        ? "turn_state_unknown"
+        : "turn_failed");
+  return {
+    childSessionId: connection.scope.sessionId,
+    messageId: frame.messageId,
+    outcome,
+    reason,
+    source: {
+      computerId: connection.computerId,
+      connectionInstanceId: connection.connectionId,
+      placementGeneration: envelope.request.placementGeneration,
+    },
+  };
+}
+
 function settledOutcome(outcome: RunnerCloudSessionMessageSettledFrame["outcome"]): {
   status: "succeeded" | "failed";
   code?: string;

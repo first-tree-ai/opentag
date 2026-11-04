@@ -1,0 +1,215 @@
+import { randomUUID } from "node:crypto";
+import { RUNTIME_CAPABILITY, type SessionMessageOutcomeReport } from "@opentag/shared";
+import { describe, expect, it, vi } from "vitest";
+import type { RuntimeConnectionState } from "../runtime/runtime-connection.js";
+import { MemoryRuntimeDurabilityStore } from "../runtime/runtime-durability.js";
+import {
+  type SessionMessageOutcomeInput,
+  SessionMessageOutcomeReporter,
+} from "../runtime/session-message-outcome-reporter.js";
+
+function fakeConnection(version: number | undefined, state: RuntimeConnectionState = "registered") {
+  const sent: SessionMessageOutcomeReport[] = [];
+  const listeners = new Set<(state: RuntimeConnectionState) => void>();
+  const connection = {
+    state,
+    version,
+    capabilityVersion: vi.fn((capability: string) =>
+      capability === RUNTIME_CAPABILITY.sessionCollaboration ? connection.version : undefined,
+    ),
+    send: vi.fn(async (frame: unknown) => {
+      sent.push(frame as SessionMessageOutcomeReport);
+    }),
+    subscribeState(listener: (state: RuntimeConnectionState) => void) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    emit(next: RuntimeConnectionState) {
+      connection.state = next;
+      for (const listener of listeners) listener(next);
+    },
+  };
+  return { connection, sent };
+}
+
+function manualScheduler() {
+  const tasks: { delay: number; task: () => void; cancelled: boolean }[] = [];
+  return {
+    tasks,
+    schedule(delay: number, task: () => void) {
+      const entry = { delay, task, cancelled: false };
+      tasks.push(entry);
+      return {
+        cancel() {
+          entry.cancelled = true;
+        },
+      };
+    },
+    /** Run the pending tasks scheduled with the given delay predicate. */
+    run(predicate: (delay: number) => boolean) {
+      for (const entry of tasks.splice(0)) {
+        if (!entry.cancelled && predicate(entry.delay)) entry.task();
+        else if (!entry.cancelled) tasks.push(entry);
+      }
+    },
+  };
+}
+
+function outcome(overrides: Partial<SessionMessageOutcomeInput> = {}): SessionMessageOutcomeInput {
+  return {
+    messageId: randomUUID(),
+    targetSessionId: randomUUID(),
+    agentId: randomUUID(),
+    placementGeneration: 1,
+    outcome: "timed_out",
+    reason: "turn_timeout",
+    ...overrides,
+  };
+}
+
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+describe("SessionMessageOutcomeReporter", () => {
+  it("sends one report on a v4 connection and finalizes it on a notified answer", async () => {
+    const { connection, sent } = fakeConnection(4);
+    const persistence = new MemoryRuntimeDurabilityStore();
+    const reporter = new SessionMessageOutcomeReporter({ connection, persistence, scheduler: manualScheduler() });
+    const input = outcome();
+    await reporter.report(input);
+    await reporter.report(input);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ type: "session:message:outcome", ...input });
+    expect(reporter.pendingCount).toBe(1);
+
+    reporter.handleResult({
+      type: "session:message:outcome:result",
+      requestId: sent[0]?.requestId ?? "",
+      messageId: input.messageId,
+      status: "notified",
+    });
+    await flush();
+    expect(reporter.pendingCount).toBe(0);
+    expect((await persistence.list("session-message-outcome"))[0]).toMatchObject({ status: "succeeded" });
+    reporter.stop();
+  });
+
+  it("never sends the frame to a peer below collaboration v4 and keeps the report pending", async () => {
+    const { connection, sent } = fakeConnection(3);
+    const scheduler = manualScheduler();
+    const reporter = new SessionMessageOutcomeReporter({ connection, scheduler });
+    await reporter.report(outcome());
+    await flush();
+    expect(sent).toHaveLength(0);
+    expect(reporter.pendingCount).toBe(1);
+    // After an upgrade the next registration sends it.
+    connection.version = 4;
+    connection.emit("registered");
+    await flush();
+    expect(sent).toHaveLength(1);
+    reporter.stop();
+  });
+
+  it("resends with a fresh correlation id after a retry answer and ignores stale answers", async () => {
+    const { connection, sent } = fakeConnection(4);
+    const scheduler = manualScheduler();
+    const reporter = new SessionMessageOutcomeReporter({ connection, scheduler });
+    const input = outcome();
+    await reporter.report(input);
+    const first = sent[0]?.requestId ?? "";
+    reporter.handleResult({
+      type: "session:message:outcome:result",
+      requestId: first,
+      messageId: input.messageId,
+      status: "retry",
+    });
+    await flush();
+    scheduler.run((delay) => delay < 120_000);
+    expect(sent).toHaveLength(2);
+    expect(sent[1]?.requestId).not.toBe(first);
+    // The answer to the superseded send cannot finalize the report.
+    reporter.handleResult({
+      type: "session:message:outcome:result",
+      requestId: first,
+      messageId: input.messageId,
+      status: "notified",
+    });
+    await flush();
+    expect(reporter.pendingCount).toBe(1);
+    reporter.handleResult({
+      type: "session:message:outcome:result",
+      requestId: sent[1]?.requestId ?? "",
+      messageId: input.messageId,
+      status: "ignored",
+    });
+    await flush();
+    expect(reporter.pendingCount).toBe(0);
+    reporter.stop();
+  });
+
+  it("resends after an acknowledgement timeout", async () => {
+    const { connection, sent } = fakeConnection(4);
+    const scheduler = manualScheduler();
+    const reporter = new SessionMessageOutcomeReporter({ connection, scheduler });
+    await reporter.report(outcome());
+    scheduler.run((delay) => delay === 120_000);
+    await flush();
+    scheduler.run((delay) => delay < 120_000);
+    expect(sent).toHaveLength(2);
+    reporter.stop();
+  });
+
+  it("recovers pending durable reports after restart and leaves final ones alone", async () => {
+    const persistence = new MemoryRuntimeDurabilityStore();
+    const pending = outcome();
+    const done = outcome();
+    const now = Date.now();
+    await persistence.write({
+      acceptedAt: now,
+      attempts: 1,
+      key: `${pending.targetSessionId}:${pending.messageId}`,
+      kind: "session-message-outcome",
+      payload: pending,
+      status: "retryable",
+      updatedAt: now,
+    });
+    await persistence.write({
+      acceptedAt: now,
+      attempts: 0,
+      key: `${done.targetSessionId}:${done.messageId}`,
+      kind: "session-message-outcome",
+      payload: done,
+      status: "succeeded",
+      updatedAt: now,
+    });
+    const { connection, sent } = fakeConnection(4);
+    const reporter = new SessionMessageOutcomeReporter({ connection, persistence, scheduler: manualScheduler() });
+    await reporter.ready();
+    expect(sent.map((frame) => frame.messageId)).toEqual([pending.messageId]);
+    reporter.stop();
+  });
+
+  it("gives up after the bounded retry age", async () => {
+    let now = 0;
+    const warn = vi.fn();
+    const { connection } = fakeConnection(3);
+    const scheduler = manualScheduler();
+    const reporter = new SessionMessageOutcomeReporter({
+      connection,
+      logger: { warn },
+      now: () => now,
+      retryPolicy: { baseDelayMs: 1, maxDelayMs: 1, maxAttempts: 2, maxAgeMs: 1_000 },
+      scheduler,
+    });
+    await reporter.report(outcome());
+    await flush();
+    now = 10;
+    scheduler.run(() => true);
+    await flush();
+    expect(reporter.pendingCount).toBe(0);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "SESSION_MESSAGE_OUTCOME_UNDELIVERED" }),
+      expect.any(String),
+    );
+    reporter.stop();
+  });
+});

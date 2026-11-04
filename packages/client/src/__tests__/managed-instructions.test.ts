@@ -1,4 +1,4 @@
-import type { EffectiveRuntimeSnapshot } from "@opentag/shared";
+import { type EffectiveRuntimeSnapshot, SESSION_RUN_OUTCOME_NOTICE_HEADER } from "@opentag/shared";
 import { describe, expect, it } from "vitest";
 import { type ManagedSessionContext, renderManagedSystemPrompt } from "../runtime/managed-instructions.js";
 
@@ -428,6 +428,18 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
     expect(cloud).toContain("retry with the same messageId and exactly the same semantic input");
     expect(cloud).toContain("its final text is not automatically returned to its parent");
     expect(cloud).toContain("pass `--max-duration-ms` with headroom");
+
+    // Both environments explain the Server-written creator notice and how to continue the child.
+    for (const [prompt, cli] of [
+      [local, "opentag-dev"],
+      [cloud, "opentag"],
+    ] as const) {
+      expect(prompt).toContain(
+        `A message that begins with "${SESSION_RUN_OUTCOME_NOTICE_HEADER}" is written by openTag`,
+      );
+      expect(prompt).toContain("openTag does not rerun it");
+      expect(prompt).toContain(`\`${cli} session send <child-session-id> --message <text>\``);
+    }
   });
 
   it("renders session-specific instructions from the snapshot on both environments", () => {

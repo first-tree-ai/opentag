@@ -409,10 +409,12 @@ describe("SessionMessageInbox", () => {
   });
 
   it("dead-letters a non-completed prompt result", async () => {
+    const onRunOutcome = vi.fn();
     const inbox = new SessionMessageInbox({
       admission: new AdmissionController(),
       credentialEnvironment: credentialEnvironment(),
       imCredentialGrantVersion: () => 2,
+      onRunOutcome,
       sessionCollaborationVersion: () => 3,
       reconciler: inboxReconciler(),
       retryPolicy: { maxAttempts: 1, maxAgeMs: 10_000 },
@@ -432,6 +434,149 @@ describe("SessionMessageInbox", () => {
     await expect(inbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
     await inbox.settled();
     expect(inbox.getState(request.messageId)?.status).toBe("dead-letter");
+    expect(onRunOutcome).toHaveBeenCalledOnce();
+    expect(onRunOutcome).toHaveBeenCalledWith({
+      messageId: request.messageId,
+      targetSessionId: request.targetSessionId,
+      agentId: request.agentId,
+      placementGeneration: request.placementGeneration,
+      outcome: "failed",
+      reason: "provider_failed",
+    });
+    inbox.stop();
+  });
+
+  it("treats a Run timeout as terminal, never reruns the message, and reports timed_out", async () => {
+    let fireTimeout: () => void = () => undefined;
+    const timeoutScheduler: RuntimeRetryScheduler = {
+      schedule(_delay, task) {
+        fireTimeout = task;
+        return { cancel: () => undefined };
+      },
+    };
+    const retryScheduler = { schedule: vi.fn(() => ({ cancel: () => undefined })) };
+    const onRunOutcome = vi.fn();
+    const prompt = vi.fn(
+      (input: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          input.signal?.addEventListener("abort", () => reject(input.signal?.reason), { once: true });
+          queueMicrotask(() => fireTimeout());
+        }),
+    );
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      onRunOutcome,
+      persistence: new MemoryRuntimeDurabilityStore(),
+      sessionCollaborationVersion: () => 4,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+      scheduler: retryScheduler,
+      timeoutScheduler,
+    });
+    const request = delivery();
+
+    await expect(inbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
+    await inbox.settled();
+    expect(prompt).toHaveBeenCalledOnce();
+    expect(retryScheduler.schedule).not.toHaveBeenCalled();
+    expect(inbox.getState(request.messageId)).toMatchObject({
+      status: "failed",
+      lastError: { code: "turn_timeout", retryability: "never" },
+    });
+    expect(onRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: request.messageId, outcome: "timed_out", reason: "turn_timeout" }),
+    );
+    // A redelivery of the same message is answered from memory and never reruns it.
+    expect((await inbox.accept(request)).status).toBe("rejected");
+    expect(prompt).toHaveBeenCalledOnce();
+    inbox.stop();
+  });
+
+  it("never lets a failing outcome reporter change the inbox state machine", async () => {
+    const warn = vi.fn();
+    for (const onRunOutcome of [
+      vi.fn(() => {
+        throw new Error("reporter threw");
+      }),
+      vi.fn(async () => {
+        throw new Error("reporter rejected");
+      }),
+    ]) {
+      const inbox = new SessionMessageInbox({
+        admission: new AdmissionController(),
+        credentialEnvironment: credentialEnvironment(),
+        imCredentialGrantVersion: () => 2,
+        logger: { warn },
+        onRunOutcome,
+        sessionCollaborationVersion: () => 4,
+        reconciler: inboxReconciler(),
+        retryPolicy: { maxAttempts: 1, maxAgeMs: 10_000 },
+        runtimeManager: {
+          ensureRuntime: vi.fn(
+            async () =>
+              ({
+                waitForIdle: vi.fn(async () => undefined),
+                prompt: vi.fn(async () => ({ status: "failed", error: { message: "provider rejected input" } })),
+              }) as never,
+          ),
+          sessionKind: vi.fn(() => "internal" as const),
+        },
+      });
+      const request = delivery();
+      await inbox.accept(request);
+      await inbox.settled();
+      expect(inbox.getState(request.messageId)?.status).toBe("dead-letter");
+      await vi.waitFor(() =>
+        expect(warn).toHaveBeenCalledWith(
+          expect.objectContaining({ code: "SESSION_MESSAGE_OUTCOME_REPORT_FAILED", messageId: request.messageId }),
+          expect.any(String),
+        ),
+      );
+      inbox.stop();
+    }
+  });
+
+  it("accepts scheduled origins on a v4 channel", async () => {
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      sessionCollaborationVersion: () => 4,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(
+          async () =>
+            ({
+              waitForIdle: vi.fn(async () => undefined),
+              prompt: vi.fn(async (input: { runId: string }) => ({
+                runId: input.runId,
+                status: "completed",
+                output: [],
+              })),
+            }) as never,
+        ),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+    });
+    const { sourceSessionId: _source, ...base } = delivery();
+    const scheduled = {
+      ...base,
+      scheduledOrigin: {
+        scheduleId: randomUUID(),
+        scheduledFor: "2026-01-01T00:00:00.000Z",
+        timezone: "UTC",
+        name: "Daily",
+      },
+      sentAt: "2026-01-01T00:00:01.000Z",
+      scheduleDetailUrl: "https://opentag.example.com/schedules/1",
+    };
+    expect((await inbox.accept(scheduled)).status).toBe("accepted");
+    await inbox.settled();
     inbox.stop();
   });
 

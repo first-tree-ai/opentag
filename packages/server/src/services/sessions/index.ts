@@ -8,6 +8,9 @@ export {
 export type {
   CloudSessionMessageDispatch,
   CloudSessionMessageOutcome,
+  RunOutcomeNoticeInput,
+  RunOutcomeNoticeStatus,
+  RunOutcomeNotifier,
   ScheduleDispatch,
   ScheduledMessageDispatchOutcome,
   ScheduledMessageSnapshot,

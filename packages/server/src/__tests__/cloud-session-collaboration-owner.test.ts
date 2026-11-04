@@ -169,6 +169,7 @@ function makeStack(
     noteActivity?: ConstructorParameters<typeof CloudSessionCollaborationOwner>[0]["noteActivity"];
     recordMessageOutcome?: (input: { messageId: string }) => Promise<boolean>;
     requestTimeoutMs?: number;
+    runOutcomeRetryMs?: number;
     logger?: ConstructorParameters<typeof CloudSessionCollaborationOwner>[0]["logger"];
   } = {},
 ): Stack {
@@ -212,6 +213,7 @@ function makeStack(
     ...(overrides.logger !== undefined ? { logger: overrides.logger } : {}),
     proofs,
     ...(overrides.requestTimeoutMs !== undefined ? { requestTimeoutMs: overrides.requestTimeoutMs } : {}),
+    ...(overrides.runOutcomeRetryMs !== undefined ? { runOutcomeRetryMs: overrides.runOutcomeRetryMs } : {}),
     sessions: { recordMessageOutcome },
     work,
   });
@@ -897,6 +899,71 @@ describe("CloudSessionCollaborationOwner", () => {
     // A conflicting outcome for an already-terminal record is never overwritten or acked.
     await stack.owner.handleSettled(attach.connection, settleFrame(messageId, "failed"));
     expect(attach.sent.filter((frame) => frame.type === "session:message:settled:ack")).toHaveLength(2);
+  });
+
+  it("notifies the creator once per non-completed settlement under the reporting connection", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    const stack = makeStack(fixture);
+    const notifyRunOutcome = vi.fn(async () => "notified" as const);
+    stack.owner.setRunOutcomeNotifier({ notifyRunOutcome });
+    const attach = await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "accepted",
+    });
+
+    await stack.owner.handleSettled(attach.connection, { ...settleFrame(messageId, "failed"), reason: "turn_timeout" });
+    await vi.waitFor(() => expect(notifyRunOutcome).toHaveBeenCalledOnce());
+    expect(notifyRunOutcome).toHaveBeenCalledWith({
+      childSessionId: fixture.sessionId,
+      messageId,
+      outcome: "timed_out",
+      reason: "turn_timeout",
+      source: {
+        computerId: attach.connection.computerId,
+        connectionInstanceId: attach.connection.connectionId,
+        placementGeneration: 1,
+      },
+    });
+    // An identical replay re-asks the idempotent notifier (repairing a lost notice); the
+    // deterministic notice id keeps it to one message.
+    await stack.owner.handleSettled(attach.connection, { ...settleFrame(messageId, "failed"), reason: "turn_timeout" });
+    await vi.waitFor(() => expect(notifyRunOutcome).toHaveBeenCalledTimes(2));
+    await stack.owner.close();
+  });
+
+  it("never notifies for a completed settlement and bounds retries for a busy creator", async () => {
+    const fixture = await seedCloudSession();
+    const completedId = randomUUID();
+    const failedId = randomUUID();
+    await insertMessage(completedId, fixture);
+    await insertMessage(failedId, fixture);
+    const warn = vi.fn();
+    const stack = makeStack(fixture, { logger: { error: vi.fn(), warn }, runOutcomeRetryMs: 1 });
+    const notifyRunOutcome = vi.fn(async () => "retry" as const);
+    stack.owner.setRunOutcomeNotifier({ notifyRunOutcome });
+    const attach = await attachRunner(stack, fixture, { onFrame: answeringOnFrame(stack, fixture) });
+    for (const id of [completedId, failedId]) {
+      await expect(stack.owner.deliver(await deliveryInput(fixture, id), allowAdmission)).resolves.toEqual({
+        status: "accepted",
+      });
+    }
+
+    await stack.owner.handleSettled(attach.connection, settleFrame(completedId));
+    await stack.owner.handleSettled(attach.connection, settleFrame(failedId, "cancelled"));
+    await vi.waitFor(() => expect(notifyRunOutcome).toHaveBeenCalledTimes(3));
+    expect(notifyRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: failedId, outcome: "cancelled", reason: "turn_cancelled" }),
+    );
+    expect(notifyRunOutcome).not.toHaveBeenCalledWith(expect.objectContaining({ messageId: completedId }));
+    await vi.waitFor(() =>
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ code: "CLOUD_SESSION_RUN_OUTCOME_NOTICE_UNDELIVERED", messageId: failedId }),
+        expect.any(String),
+      ),
+    );
+    await stack.owner.close();
   });
 
   it("retires accepted work only when its allocation is authoritatively gone", async () => {

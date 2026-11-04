@@ -1,5 +1,5 @@
 import type { SlackBindingActivation } from "@opentag/shared";
-import { and, desc, eq, gt } from "drizzle-orm";
+import { and, eq, gt } from "drizzle-orm";
 import type { DatabaseTransaction } from "../../db/client.js";
 import { imBindings } from "../../db/schema/index.js";
 import { ImBindingServiceError } from "./errors.js";
@@ -62,16 +62,7 @@ async function assertNoPreviousMessagingIdentity(transaction: DatabaseTransactio
     );
 }
 
-export async function readDisconnectedSetupBinding(transaction: DatabaseTransaction, agentId: string) {
-  const [row] = await transaction
-    .select()
-    .from(imBindings)
-    .where(
-      and(eq(imBindings.agentId, agentId), eq(imBindings.status, "disabled"), gt(imBindings.credentialGeneration, 0)),
-    )
-    .orderBy(desc(imBindings.updatedAt), desc(imBindings.id))
-    .limit(1);
-  if (!row) return undefined;
+export function disconnectedSetupBinding(row: typeof imBindings.$inferSelect) {
   return {
     row,
     binding: {

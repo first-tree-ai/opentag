@@ -1,7 +1,6 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
   "im_cancel_initial_setup_description": "这会停止尚未完成的消息应用设置。你仍可为此 Agent 重新开始设置。",
-  "im_change_bot": "更换机器人",
   "im_channel_messages_description": "此 Agent 始终接收私信。请选择它何时接收频道中的消息。",
   "im_connect_feishu": "连接{provider}",
   "im_connect_slack": "连接 {provider}",
@@ -9,7 +8,7 @@
   "im_connecting": "正在连接…",
   "im_connection_error": "连接失败",
   "im_connection_failure_app_unavailable": "此应用在{provider}中已停用或未安装。启用后请重新连接。",
-  "im_connection_failure_bot_mismatch": "此应用现在对应另一个机器人。请重新连接，或更换机器人。",
+  "im_connection_failure_bot_mismatch": "此应用现在对应另一个机器人。请恢复原机器人；如需使用其他机器人，请新建 Agent。",
   "im_connection_failure_connection_rejected": "{provider}拒绝了此应用的连接。请重新连接并重新授权。",
   "im_connection_failure_credentials_rejected": "应用凭据已失效。请重新连接并重新授权。",
   "im_disconnect": "断开{providerName}",

@@ -124,6 +124,15 @@ The default `legacy` mode can configure and authorize connectors in the Web App,
 the execution that delivers MCP tools to the Provider. Codex and Claude Code retain their normal
 per-action approval settings.
 
+Both IM Turns and Session messages pass the current execution's service grants to the Provider.
+In proxy mode, Local internal Sessions open their own execution for an accepted Session message
+over a connection that negotiated Session collaboration. They receive only their Agent's authorized
+platform services, without inheriting the visible Session's IM provider credentials or outbox.
+Legacy-mode internal Sessions retain their credential-free execution path. An older Server that
+refuses the internal execution leaves the message without managed services and emits a bounded
+warning; it supplies no replacement credentials. Each message prepares
+and closes its own execution; a new Session or runtime snapshot does not reuse a previous bearer.
+
 ### Pi and Cloud runtime delivery
 
 Pi uses extensions for MCP. OpenTag pins `pi-mcp-adapter` 2.36.0 and explicitly loads its gateway
@@ -1148,6 +1157,15 @@ authorization still use the existing gateway. Native local MCP services use thei
 and credentials, without being registered in the platform catalog or sent to the Server.
 Native MCP startup and tool limits remain Claude's responsibility, including the operator's
 `MCP_TIMEOUT` setting. Run deadlines and cancellation continue to bound the owned Provider process.
+
+A separate `claude mcp list` command reads that command's native configuration; it does not inherit
+the running Provider's supplementary `--mcp-config` argument. It cannot establish whether the
+platform gateway reached the current Run. Check the execution grant, the private launch configuration,
+and that process's MCP catalog in sequence. Managed GitHub tools use
+`mcp__g<10 hex characters>__github__<toolName>`, rather than a bare `mcp__github__` prefix.
+An enabled mount and successful probe describe management-plane readiness; they do not prove that
+a particular execution received or initialized its gateway. Native Git and `gh` credentials remain
+independent and are not a fallback source of platform authorization.
 
 ### Codex: rebinding the thread per run
 

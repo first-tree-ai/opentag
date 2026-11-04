@@ -175,3 +175,33 @@ violations. No package manifest or lockfile changed.
 The older `db9e74d91` CI run passed 1,401 PostgreSQL cases and failed its 4,096-Session/max-1-pool
 stop deadline case. That red result is not waived by these local checks; the next head needs a
 fresh CI result and fresh review of all five corrected contracts.
+
+## Retired-contract CI follow-up
+
+The `8527f7fd9` remote matrix failed on retired replacement copy and tests: unused locale keys,
+old identity-mismatch and disconnect text, a newly reachable setup link without a Router, and a
+smoke assertion requiring the removed Change bot button. The catalogs, lifecycle documentation,
+unbind comment and owning tests now describe original-identity repair or New Agent. The setup
+fixture supplies a real memory Router and verifies that disconnecting offers New Agent without
+channel choices. The paused smoke supplies the negotiated batch status fixture alongside the
+existing synthetic binding observations and verifies replacement is absent.
+
+The complete Web suite passed all 2,577 tests. The paused smoke passed for both Providers at
+320/390/768/1440 px, including keyboard, overflow, axe, stopped-Feishu recovery, failed reads and
+zero messaging writes. Nine paused-settings screenshots were refreshed; mobile Feishu and desktop
+Slack evidence was visually reviewed.
+
+That remote PostgreSQL run passed 1,418 cases and failed two integration assumptions. The stopped
+Feishu fixture now uses its own Agent instead of replacing an already configured Slack identity.
+Setup reads now select a current binding or retained disconnected identity in the original
+owner-authorized snapshot, preserving the unchanged five-SELECT/eight-statement query budget and
+terminal generation-zero slot semantics. Both complete owning PostgreSQL files passed all 25
+tests at the normal two-worker concurrency using isolated databases on the existing local server.
+The native active/paused owner-versus-foreign disconnected-identity smoke also passed and rolled
+all fixtures back. No test container was created.
+
+After integrating `main@a5d19e64f`, affected credential tests passed 28 Server and 40 Client cases;
+Agent Runtime passed 824 cases with 100% statements, branches, functions and lines. Root build and
+type checks passed before the final Server query correction; the final Server build/type checks
+and affected three-file unit subset cover that correction. No manifest or lockfile changed. These
+local results do not waive either failed remote run or establish a new-head CI result.

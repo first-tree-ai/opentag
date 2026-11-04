@@ -1,9 +1,19 @@
 import { randomUUID } from "node:crypto";
 import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { AgentStatusResponseSchema } from "@opentag/shared";
+import type { Page } from "@playwright/test";
 import { baseURL, repositoryRoot } from "../playwright.config.js";
 import { expectAccessible, expectNoPageOverflow } from "./browser-contract.js";
 import { allowExpectedDiagnostic, expect, smokeTest as test } from "./fixtures.js";
+
+async function readPausedStatus(page: Page, agentId: string) {
+  const response = await page.request.get(`/api/v1/agents/status?ids=${agentId}`);
+  expect(response.ok(), await response.text()).toBeTruthy();
+  const observed = AgentStatusResponseSchema.parse(await response.json()).statuses[0];
+  if (!observed?.computer) throw new Error("Missing paused Agent Computer");
+  return observed;
+}
 
 test("paused messaging is readable across layouts and never starts a write", async ({ page }) => {
   test.setTimeout(120_000);
@@ -29,6 +39,7 @@ test("paused messaging is readable across layouts and never starts a write", asy
   expect(paused.ok(), await paused.text()).toBeTruthy();
   // The real paused read is unbound. Provider observations below isolate the rendered states from external services.
   expect((await page.request.get(`/api/v1/agents/${agent.id}/im-binding`)).status()).toBe(204);
+  const observed = await readPausedStatus(page, agent.id);
   await page.addInitScript(() => localStorage.setItem("PARAGLIDE_LOCALE", "zh"));
   const writes: string[] = [];
   page.on("request", (request) => {
@@ -65,6 +76,21 @@ test("paused messaging is readable across layouts and never starts a write", asy
       lastErrorCode: null,
     };
     await page.route(`**/api/v1/agents/${agent.id}/im-binding`, (route) => route.fulfill({ json: binding }));
+    await page.route("**/api/v1/agents/status?**", (route) =>
+      route.fulfill({
+        json: {
+          statuses: [
+            {
+              ...observed,
+              state: "problem",
+              reason: "agent_paused",
+              computer: { ...observed.computer, online: true },
+              messaging: binding,
+            },
+          ],
+        },
+      }),
+    );
     await page.route(`**/api/v1/agents/${agent.id}/im-binding/handoff`, (route) =>
       route.fulfill({ json: { bindingState: "active", handoffReady: true } }),
     );
@@ -94,7 +120,7 @@ test("paused messaging is readable across layouts and never starts a write", asy
       await expect(modes).toHaveCount(2);
       for (const mode of await modes.all()) await expect(mode).toBeDisabled();
       if (provider === "feishu") {
-        await expect(page.getByRole("button", { name: "更换机器人" })).toBeDisabled();
+        await expect(page.getByRole("button", { name: "更换机器人" })).toHaveCount(0);
         await expect(page.getByRole("button", { name: "断开飞书" })).toBeDisabled();
       } else {
         const more = page.getByRole("button", { name: "更多", exact: true });
@@ -135,6 +161,7 @@ test("paused messaging is readable across layouts and never starts a write", asy
       await page.screenshot({ path: join(screenshots, "feishu-error-390.png"), fullPage: true });
     }
     await page.unroute(`**/api/v1/agents/${agent.id}/im-binding`);
+    await page.unroute("**/api/v1/agents/status?**");
   }
   allowExpectedDiagnostic(page, {
     routeTemplate: "/api/v1/agents/:id/im-binding",

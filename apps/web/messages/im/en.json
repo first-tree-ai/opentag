@@ -1,7 +1,6 @@
 {
   "$schema": "https://inlang.com/schema/inlang-message-format",
   "im_cancel_initial_setup_description": "This stops the unfinished messaging setup. You can start setup again for this Agent.",
-  "im_change_bot": "Change bot",
   "im_channel_messages_description": "This Agent always receives direct messages. Choose when it receives messages in channels.",
   "im_connect_feishu": "Connect {provider}",
   "im_connect_slack": "Connect {provider}",
@@ -9,7 +8,7 @@
   "im_connecting": "Connecting…",
   "im_connection_error": "Connection failed",
   "im_connection_failure_app_unavailable": "This application is disabled or not installed in {provider}. Enable it there, then reconnect.",
-  "im_connection_failure_bot_mismatch": "This application now answers as a different bot. Reconnect, or change the bot.",
+  "im_connection_failure_bot_mismatch": "This application now answers as a different bot. Restore the original bot, or create a new Agent to use another.",
   "im_connection_failure_connection_rejected": "{provider} refused this application's connection. Reconnect to authorize it again.",
   "im_connection_failure_credentials_rejected": "The application credentials are no longer valid. Reconnect to authorize it again.",
   "im_disconnect": "Disconnect {providerName}",

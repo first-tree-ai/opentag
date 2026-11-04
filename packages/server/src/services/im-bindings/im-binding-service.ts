@@ -40,7 +40,12 @@ import {
 } from "../../runtime-credentials/runtime-validation-execution.js";
 import type { ApplicationCipher } from "../crypto.js";
 import { activeBindingValues } from "./active-binding-values.js";
-import { readBindingActivity, readBindingDiagnostics } from "./binding-read-snapshot.js";
+import {
+  type BindingObservation,
+  readBindingActivity,
+  readBindingDiagnostics,
+  readBindingObservation,
+} from "./binding-read-snapshot.js";
 import { type BotProfile, sameBotProfileIdentity, storedBotProfile } from "./bot-profile.js";
 import { computerKindFor, localRawGrantAllowed } from "./computer-kind.js";
 import {
@@ -66,7 +71,7 @@ import {
   type ImBindingReadiness,
   type ImBindingReadinessInput,
 } from "./im-binding-provider-cli.js";
-import { assertFeishuIdentity, assertSlackIdentity, readDisconnectedSetupBinding } from "./messaging-identity.js";
+import { assertFeishuIdentity, assertSlackIdentity, disconnectedSetupBinding } from "./messaging-identity.js";
 
 type QueryExecutor = Pick<DatabaseClient, "select">;
 type CredentialMaterialWithId = CredentialMaterialInput & { id?: string };
@@ -763,11 +768,12 @@ export class ImBindingService {
 
   /** Internal captured row for Feishu projection; only the public binding view may be serialized. */
   async readSetupForAgent(callerUserId: string, agentId: string) {
-    const observed = await this.#observeForAgent(callerUserId, agentId);
-    if (!observed)
-      return this.readForAgent(callerUserId, agentId, (transaction) =>
-        readDisconnectedSetupBinding(transaction, agentId),
-      );
+    const selected = await this.readForAgent(callerUserId, agentId, (transaction) =>
+      readBindingObservation(transaction, agentId, true),
+    );
+    if (!selected) return undefined;
+    if (selected.binding.status === "disabled") return disconnectedSetupBinding(selected.binding);
+    const observed = await this.#observeBinding(selected);
     return {
       row: observed.row,
       binding: {
@@ -788,23 +794,13 @@ export class ImBindingService {
   }
 
   async #observeForAgent(callerUserId: string, agentId: string): Promise<ObservedAgentBinding | undefined> {
-    const selected = await this.readForAgent(callerUserId, agentId, async (transaction) => {
-      const [row] = await transaction
-        .select({
-          binding: imBindings,
-          slackInstallation: slackInstallations,
-          computerKind: computers.kind,
-          agentStatus: agents.status,
-        })
-        .from(imBindings)
-        .innerJoin(agents, eq(agents.id, imBindings.agentId))
-        .leftJoin(computers, eq(computers.id, agents.computerId))
-        .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
-        .where(currentBindingOf(agentId))
-        .limit(1);
-      return row;
-    });
-    if (!selected) return undefined;
+    const selected = await this.readForAgent(callerUserId, agentId, (transaction) =>
+      readBindingObservation(transaction, agentId),
+    );
+    return selected ? this.#observeBinding(selected) : undefined;
+  }
+
+  async #observeBinding(selected: BindingObservation): Promise<ObservedAgentBinding> {
     const row = {
       ...selected.binding,
       slackInstallation: selected.slackInstallation,
@@ -951,7 +947,8 @@ export class ImBindingService {
    * The explicit Account-owned unbind. Naming the exact current Provider and binding fences the mutation
    * against a stale view: anything else fails closed and nothing is disabled. The atomic disable clears the
    * effective credential, setup attempt context and owner, and connection leases, terminates active chat
-   * sessions, and retains message and session history. Afterwards any Provider may bind.
+   * sessions, and retains message, session and configured identity history. A configured identity cannot
+   * reconnect here; only a never-activated slot can be cleared so creation can resume.
    */
   async unbindForAgent(
     callerUserId: string,

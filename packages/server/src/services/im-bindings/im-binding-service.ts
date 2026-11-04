@@ -25,7 +25,7 @@ import {
   ImBindingUnbindRequiredDetailSchema,
   SLACK_REQUIRED_BOT_SCOPES,
 } from "@opentag/shared";
-import { and, asc, desc, eq, gt, inArray, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   agents,
@@ -62,6 +62,7 @@ import {
 } from "./credential-material.js";
 import { currentBindingOf } from "./current-binding.js";
 import { disableImBindingInTransaction } from "./disable-im-binding.js";
+import { connectionFailureOf, listFeishuConnectionCandidates, stopFeishuConnection } from "./feishu-connection-rows.js";
 import {
   ImBindingProviderCli,
   type ImBindingReadiness,
@@ -687,22 +688,15 @@ export class ImBindingService {
     };
   }
 
-  async listFeishuConnectionIds(afterId: string | undefined, limit = 100): Promise<string[]> {
-    const rows = await this.#database
-      .select({ imBindingId: imBindings.id })
-      .from(imBindings)
-      .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .where(
-        and(
-          eq(imBindings.provider, "feishu"),
-          eq(imBindings.status, "active"),
-          ne(agents.status, "deleted"),
-          ...(afterId ? [gt(imBindings.id, afterId)] : []),
-        ),
-      )
-      .orderBy(asc(imBindings.id))
-      .limit(limit);
-    return rows.map((row) => row.imBindingId);
+  listFeishuConnectionIds(afterId: string | undefined, limit = 100) {
+    return listFeishuConnectionCandidates(this.#database, afterId, limit);
+  }
+
+  /** Stops a binding Feishu keeps refusing; see `stopFeishuConnection`. */
+  async markFeishuConnectionFailed(fence: Parameters<typeof stopFeishuConnection>[1], errorCode: string) {
+    const agentId = await stopFeishuConnection(this.#database, fence, errorCode, this.#now());
+    if (agentId) await this.#notifyActiveBindingChanged(agentId).catch(() => undefined);
+    return agentId !== undefined;
   }
 
   async getFeishuConnectionMaterial(
@@ -753,6 +747,7 @@ export class ImBindingService {
           externalAppId: imBindings.externalAppId,
           externalBotId: imBindings.externalBotId,
           externalTeamId: imBindings.externalTeamId,
+          lastErrorCode: imBindings.lastErrorCode,
           credentialSchemaVersion: imBindings.credentialSchemaVersion,
           credentialGeneration: imBindings.credentialGeneration,
           slackInstallation: slackInstallations,
@@ -781,6 +776,7 @@ export class ImBindingService {
         lastRuntimeObservationAt:
           (row.provider === "slack" ? (row.slackInstallation?.observedAt ?? null) : row.observedAt)?.toISOString() ??
           null,
+        ...connectionFailureOf(row.bindingState, row.lastErrorCode),
       };
     });
   }

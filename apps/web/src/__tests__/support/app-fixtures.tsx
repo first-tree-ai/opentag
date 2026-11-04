@@ -447,6 +447,8 @@ export function installApi(
     bindingReauth?: boolean;
     bindingEvidenceFails?: boolean;
     bindingState?: "provisioning" | "active";
+    /** Serves a binding the Server stopped connecting (`error`), with this public reason. */
+    bindingConnectionFailure?: "credentials_rejected" | "app_unavailable" | "connection_rejected" | "bot_mismatch";
     bound?: boolean;
     computers?:
       | readonly Record<string, unknown>[]
@@ -906,7 +908,7 @@ export function installApi(
         );
       }
       if (!options.bound) return new Response(null, { status: 204 });
-      const bindingState = options.bindingReauth ? "reauthorization_required" : "active";
+      const bindingState = handoffBindingState(options);
       return json({ bindingState, handoffReady: options.handoffReady ?? bindingState === "active" });
     }
     const slackResponse = slackConfigurationResponse(path, init?.method, options);
@@ -929,12 +931,12 @@ export function installApi(
         id: options.provider === "slack" ? agentId : crypto.randomUUID(),
         agentId,
         provider: options.provider ?? "feishu",
-        bindingState: options.bindingState ?? (options.bindingReauth ? "reauthorization_required" : "active"),
         bot: { displayName: "Reviewer", avatarUrl: null },
         receiveMode: "mention_only",
         lastInboundAt: null,
         lastValidatedAt: "2026-08-20T00:00:00.000Z",
         lastRuntimeObservationAt: null,
+        ...summaryBindingState(options),
       });
     }
     if (path === `/api/v1/agents/${agentId}/im-binding/feishu/setup-attempts`) {
@@ -955,6 +957,25 @@ export function installApi(
     });
   });
   scriptRefusals(options);
+}
+
+type BindingStateOptions = Pick<
+  Parameters<typeof installApi>[0] & object,
+  "bindingConnectionFailure" | "bindingReauth" | "bindingState"
+>;
+
+/** The handoff's view of the served binding: a stopped binding is `error`, as the Server reports it. */
+function handoffBindingState(options: BindingStateOptions) {
+  if (options.bindingConnectionFailure) return "error";
+  return options.bindingReauth ? "reauthorization_required" : "active";
+}
+
+/** The served binding's state, and for a binding the Server stopped, why it stopped. */
+function summaryBindingState(options: BindingStateOptions) {
+  if (options.bindingConnectionFailure) {
+    return { bindingState: "error", connectionFailure: options.bindingConnectionFailure };
+  }
+  return { bindingState: options.bindingState ?? (options.bindingReauth ? "reauthorization_required" : "active") };
 }
 
 /** Layers scripted refusals over the installed fixture, kept apart so the fixture itself stays simple. */

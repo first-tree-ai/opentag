@@ -1,5 +1,6 @@
 /**
- * The Agent list's two unreported-accepted reads must use the partial index that exists for them.
+ * The Agent list's two unreported-accepted reads must use the partial index that exists for them, and
+ * its queued-Task read must start from the pending-state index.
  *
  * Without it, the reads join every Session of a binding to answer "which Turns are still unreported?", which
  * cost 100,001 probes for one hot Agent in the 100k-row benchmark. This suite runs the real service, captures
@@ -123,8 +124,9 @@ describe("Agent list unreported-accepted index", () => {
         queuedTaskCount: 1,
       });
 
-      const queued = queries.filter((entry) => entry.query.includes(`"state" = $`) && entry.params.includes("pending"));
-      expect(queued.length).toBeGreaterThan(0);
+      // The queued read seeds the Task topic chain from the pending deliveries alone.
+      const queued = queries.filter((entry) => entry.query.includes("pending_channels"));
+      expect(queued).toHaveLength(1);
       await client.sql.unsafe("set enable_seqscan = off");
       for (const statement of queued) {
         const plan = await client.sql.unsafe(`explain (format json) ${statement.query}`, statement.params as never[]);

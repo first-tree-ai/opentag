@@ -223,6 +223,51 @@ async function createDelivery(
   return delivery;
 }
 
+/**
+ * One inbound message in a Session's own channel and its delivery, so the Task topic rules classify it
+ * as they would a real one: a message without a thread key is a root of its own topic, and a reply
+ * carries its root's message id as the thread key.
+ */
+async function createTopicDelivery(
+  session: { id: string; imBindingId: string; channelId: string },
+  options: { state: "pending" | "accepted"; attention?: "direct" | "ambient"; threadKey?: string },
+) {
+  const externalMessageId = `message-${crypto.randomUUID()}`;
+  const [message] = await unitDatabase.database
+    .insert(imMessages)
+    .values({
+      imBindingId: session.imBindingId,
+      providerEventId: `event-${crypto.randomUUID()}`,
+      channelId: session.channelId,
+      externalMessageId,
+      providerRevisionKey: "1",
+      operation: "created",
+      direction: "inbound",
+      authorKind: "human",
+      authorExternalId: "human-fixture",
+      content: { version: 1, fallbackText: "Request", blocks: [{ type: "text", text: "Request" }], truncated: false },
+      providerContext: { provider: "feishu", chatType: "group" },
+      threadKey: options.threadKey ?? null,
+      occurredAt: NOW,
+    })
+    .returning();
+  if (!message) throw new Error("Message fixture was not created");
+  const accepted = options.state === "accepted";
+  await unitDatabase.database.insert(imMessageDeliveries).values({
+    messageId: message.id,
+    sessionId: session.id,
+    attention: options.attention ?? "direct",
+    state: options.state,
+    placementGeneration: 1,
+    inputHash: accepted ? crypto.randomUUID() : null,
+    turnId: accepted ? `turn-${crypto.randomUUID()}` : null,
+    reportOwnerInstanceId: accepted ? REPORT_OWNER : null,
+    acceptedAt: accepted ? NOW : null,
+    expiresAt: new Date(NOW.getTime() + 60_000),
+  });
+  return { externalMessageId };
+}
+
 describe("AgentService", () => {
   it("rejects permission configuration when creating or updating local Pi", async () => {
     const { bootstrap, computer, service } = await fixture();
@@ -706,33 +751,52 @@ describe("AgentService", () => {
     expect((await service.getById(bootstrap.userId, created.id)).activity).toEqual(listed.agents[0]?.activity);
   });
 
-  it("counts queued Tasks as the Task list does, beside any activity state", async () => {
+  it("counts each queued root topic in one channel Session as its own Task", async () => {
     const { bootstrap, computer, service } = await fixture();
     const created = await createAgent(service, bootstrap.userId, computer.id, "queued-agent");
     const binding = await createBinding(created.id);
-    const waiting = await createSession(binding.id);
-    const another = await createSession(binding.id);
+    const channel = await createSession(binding.id);
     const ended = await createSession(binding.id);
-    // Two pending messages in one Task count as one queued Task.
-    await createDelivery(binding.id, waiting.id, { state: "pending" });
-    await createDelivery(binding.id, waiting.id, { state: "pending" });
-    await createDelivery(binding.id, another.id, { state: "pending" });
-    await createDelivery(binding.id, ended.id, { state: "pending" });
+    // Two top-level requests in one group channel are two Tasks, though they share the channel Session.
+    const first = await createTopicDelivery(channel, { state: "pending" });
+    await createTopicDelivery(channel, { state: "pending" });
+    // A reply in the first request's thread belongs to that Task and does not add one.
+    await createTopicDelivery(channel, { state: "pending", threadKey: first.externalMessageId });
+    await createTopicDelivery(ended, { state: "pending" });
     await unitDatabase.database.update(sessions).set({ endedAt: NOW }).where(eq(sessions.id, ended.id));
 
-    const idle = await service.listForAccount(bootstrap.userId);
-    expect(idle.agents[0]?.activity).toEqual({ state: "idle", queuedTaskCount: 2 });
-    expect((await service.getById(bootstrap.userId, created.id)).activity).toEqual(idle.agents[0]?.activity);
+    const listed = await service.listForAccount(bootstrap.userId);
+    expect(listed.agents[0]?.activity).toEqual({ state: "idle", queuedTaskCount: 2 });
+    expect((await service.getById(bootstrap.userId, created.id)).activity).toEqual(listed.agents[0]?.activity);
+  });
 
-    // Running work and queued work are reported together.
-    const busy = await createSession(binding.id);
-    await createDelivery(binding.id, busy.id, { acceptedAt: NOW, usage: {} });
-    const working = await service.listForAccount(bootstrap.userId);
-    expect(working.agents[0]?.activity).toEqual({
+  it("does not count a pending message the Agent only overheard as a queued Task", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id, "ambient-queue-agent");
+    const binding = await createBinding(created.id);
+    const channel = await createSession(binding.id);
+    await createTopicDelivery(channel, { state: "pending", attention: "ambient" });
+
+    const listed = await service.listForAccount(bootstrap.userId);
+    expect(listed.agents[0]?.activity).toEqual({ state: "idle" });
+  });
+
+  it("reads a running topic with a pending follow-up as running, not queued", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id, "running-queue-agent");
+    const binding = await createBinding(created.id);
+    const channel = await createSession(binding.id);
+    const running = await createTopicDelivery(channel, { state: "accepted" });
+    await createTopicDelivery(channel, { state: "pending", threadKey: running.externalMessageId });
+    // A request waiting in another conversation is queued, and both counts are reported together.
+    await createTopicDelivery(await createSession(binding.id), { state: "pending" });
+
+    const listed = await service.listForAccount(bootstrap.userId);
+    expect(listed.agents[0]?.activity).toEqual({
       state: "working",
       startedAt: NOW.toISOString(),
       runningTaskCount: 1,
-      queuedTaskCount: 2,
+      queuedTaskCount: 1,
     });
   });
 
@@ -741,7 +805,11 @@ describe("AgentService", () => {
     const created = await createAgent(service, bootstrap.userId, computer.id, "disabled-queue-agent");
     const binding = await createBinding(created.id);
     const session = await createSession(binding.id);
-    await createDelivery(binding.id, session.id, { state: "pending" });
+    await createTopicDelivery(session, { state: "pending" });
+    expect((await service.listForAccount(bootstrap.userId)).agents[0]?.activity).toEqual({
+      state: "idle",
+      queuedTaskCount: 1,
+    });
     await unitDatabase.database
       .update(imBindings)
       .set({ status: "disabled", encryptedCredential: null, disabledAt: NOW })

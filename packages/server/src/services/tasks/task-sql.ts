@@ -40,6 +40,12 @@ export interface TopicQueryInput {
   now: Date;
   /** Rollup CTEs (`topics`, `message_topics`) are only needed by the list page. */
   rollups?: boolean;
+  /**
+   * The name of a CTE defined ahead of the chain whose `(im_binding_id, channel_id)` rows bound every
+   * channel-keyed part of it, for a read that spans several channels without reading the Account's
+   * whole history. Ignored when `scope` is set.
+   */
+  channelsFrom?: string;
 }
 
 /**
@@ -81,8 +87,15 @@ export function sameTopic(left: string, right: string): SQL {
  * a part of it.
  */
 export function topicCtes(input: TopicQueryInput): SQL {
-  const channelFilter = (alias: string) =>
-    input.scope ? sql`and ${sql.raw(alias)}.channel_id = ${input.scope.channelId}` : sql``;
+  const channelFilter = (alias: string) => {
+    if (input.scope) return sql`and ${sql.raw(alias)}.channel_id = ${input.scope.channelId}`;
+    if (input.channelsFrom) {
+      return sql`and (${sql.raw(alias)}.im_binding_id, ${sql.raw(alias)}.channel_id) in (
+        select im_binding_id, channel_id from ${sql.raw(input.channelsFrom)}
+      )`;
+    }
+    return sql``;
+  };
   const topicFilter = (alias: string) =>
     input.scope && "topicKey" in input.scope
       ? sql`and ${sql.raw(alias)}.topic_key is not distinct from ${input.scope.topicKey}`
@@ -158,6 +171,7 @@ export function topicCtes(input: TopicQueryInput): SQL {
         and a.status <> 'deleted'
         ${input.agentId ? sql`and a.id = ${input.agentId}::uuid` : sql``}
         ${input.scope ? sql`and b.id = ${input.scope.bindingId}::uuid` : sql``}
+        ${!input.scope && input.channelsFrom ? sql`and b.id in (select im_binding_id from ${sql.raw(input.channelsFrom)})` : sql``}
     ),
     channels as (
       select distinct on (s.im_binding_id, s.channel_id)
@@ -323,6 +337,51 @@ export function topicCtes(input: TopicQueryInput): SQL {
         and not (d.attention = 'ambient' and ds.kind = 'channel' and tw.message_id is not null)
     )
     ${rollups}
+  `;
+}
+
+/**
+ * The number of Queued Tasks per Agent, read by the Task list's own rules: a Task is a topic with a
+ * direct delivery, a running execution outranks a pending one, and only a pending delivery in a live
+ * Session of an active binding counts as waiting. The seed is the pending deliveries themselves, read
+ * first through the pending-state index: starting from the Agent's Sessions instead would walk every
+ * Internal Session of a busy binding. The topic chain then classifies only the channels that hold
+ * waiting work, so a channel with nothing pending is never read.
+ */
+export function queuedTaskCountsByAgent(input: { accountId: string; agentIds: readonly string[]; now: Date }): SQL {
+  const agentIds = sql.join(
+    input.agentIds.map((agentId) => sql`${agentId}::uuid`),
+    sql`, `,
+  );
+  return sql`
+    with pending as materialized (
+      select distinct s.im_binding_id, s.channel_id
+      from im_message_deliveries d
+      inner join sessions s on s.id = d.session_id
+      where d.state = 'pending'
+        and s.ended_at is null
+    ),
+    pending_channels as (
+      select p.im_binding_id, p.channel_id
+      from pending p
+      inner join im_bindings b on b.id = p.im_binding_id
+      where b.status = 'active'
+        and b.agent_id in (${agentIds})
+    ),
+    ${topicCtes({ accountId: input.accountId, now: input.now, channelsFrom: "pending_channels" })},
+    queued_topics as (
+      select e.im_binding_id
+      from executions e
+      inner join sessions es on es.id = e.session_id
+      group by e.im_binding_id, e.channel_id, e.topic_key
+      having bool_or(e.attention = 'direct')
+        and not bool_or(e.is_running)
+        and bool_or(e.state = 'pending' and es.ended_at is null)
+    )
+    select sb.agent_id as "agentId", count(*)::int as "queuedTaskCount"
+    from queued_topics q
+    inner join scoped_bindings sb on sb.binding_id = q.im_binding_id
+    group by sb.agent_id
   `;
 }
 

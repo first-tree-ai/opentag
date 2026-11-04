@@ -48,6 +48,7 @@ import type { McpCredentialCipher } from "../mcp/mcp-credential-cipher.js";
 import { resolveAgentRuntimeConfig } from "../runtime-config/index.js";
 import type { CloudModelCatalog } from "../sandboxes/cloud-model-catalog.js";
 import { markEndedDescendantsInactive } from "../sessions/session-closure.js";
+import { queuedTaskCountsByAgent } from "../tasks/index.js";
 import { AgentTransferError, type AgentTransferInput, type AgentTransferResult } from "./agent-transfer.js";
 import {
   deliveryUsageTokenCounts,
@@ -60,7 +61,7 @@ import { AgentServiceError, resourceNotFound } from "./errors.js";
 
 type AgentRow = typeof agents.$inferSelect;
 type AgentRuntimeConfigRow = typeof agentRuntimeConfigs.$inferSelect;
-type QueryExecutor = Pick<DatabaseClient, "select" | "selectDistinct" | "selectDistinctOn">;
+type QueryExecutor = Pick<DatabaseClient, "execute" | "select" | "selectDistinct" | "selectDistinctOn">;
 
 const AGENT_ACTIVITY_REPORT_DELIVERY_SLACK_HOURS = 1;
 const MILLISECONDS_PER_HOUR = 60 * 60 * 1_000;
@@ -557,7 +558,9 @@ export class AgentService {
 
   async #readActivityByAgent(
     executor: QueryExecutor,
+    callerUserId: string,
     agentIds: readonly string[],
+    now: Date,
     recoveryStartedAt: Date,
   ): Promise<Map<string, AgentListActivity>> {
     // One row per working Agent: its open Tasks (Sessions) and the latest accepted Turn among them.
@@ -599,28 +602,16 @@ export class AgentService {
       );
 
     /*
-     * Tasks still waiting for delivery, counted as the Task list counts "Queued": a Task with any
-     * pending delivery in a live Session of an active binding. They wait whether or not the Agent is
-     * working, so the count rides on every activity state, and it is what shows an admin that work is
-     * piling up behind an offline Computer. The pending-state index serves the filter.
+     * Tasks still waiting for delivery, counted exactly as the Task list reads "Queued": a topic with
+     * a direct delivery and a pending one in a live Session of an active binding, and no running
+     * execution, which outranks it. They wait whether or not the Agent is working, so the count rides
+     * on every activity state, and it is what shows an admin that work is piling up behind an offline
+     * Computer. The pending-state index seeds the read, so only channels holding waiting work are
+     * classified into topics.
      */
-    const queuedRows = await executor
-      .select({
-        agentId: imBindings.agentId,
-        queuedTaskCount: sql<number>`count(distinct ${imMessageDeliveries.sessionId})::int`,
-      })
-      .from(imMessageDeliveries)
-      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
-      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
-      .where(
-        and(
-          inArray(imBindings.agentId, agentIds),
-          eq(imBindings.status, "active"),
-          isNull(sessions.endedAt),
-          eq(imMessageDeliveries.state, "pending"),
-        ),
-      )
-      .groupBy(imBindings.agentId);
+    const queuedRows = await executor.execute<{ agentId: string; queuedTaskCount: number } & Record<string, unknown>>(
+      queuedTaskCountsByAgent({ accountId: callerUserId, agentIds, now }),
+    );
 
     const activityByAgent = projectActivityByAgent(activityRows);
     for (const row of staleActivityRows) {
@@ -682,7 +673,13 @@ export class AgentService {
         if (summaries.length === 0) return { summaries, activityByAgent: new Map(), usageRows: [] };
         await this.#afterReadAuthorization?.("list");
         const agentIds = summaries.map((agent) => agent.id);
-        const activityByAgent = await this.#readActivityByAgent(transaction, agentIds, recoveryStartedAt);
+        const activityByAgent = await this.#readActivityByAgent(
+          transaction,
+          callerUserId,
+          agentIds,
+          now,
+          recoveryStartedAt,
+        );
         const usageRows = await readAgentUsageSummaries(transaction, {
           agentIds,
           startedAt: usageStartedAt,
@@ -782,8 +779,15 @@ export class AgentService {
     return this.#database.transaction(
       async (transaction) => {
         const agent = await this.#readAgentSummary(transaction, callerUserId, agentId);
-        const recoveryStartedAt = new Date(this.#now().getTime() - AGENT_ACTIVITY_RECOVERY_WINDOW_MS);
-        const activityByAgent = await this.#readActivityByAgent(transaction, [agentId], recoveryStartedAt);
+        const now = this.#now();
+        const recoveryStartedAt = new Date(now.getTime() - AGENT_ACTIVITY_RECOVERY_WINDOW_MS);
+        const activityByAgent = await this.#readActivityByAgent(
+          transaction,
+          callerUserId,
+          [agentId],
+          now,
+          recoveryStartedAt,
+        );
         return { ...agent, activity: activityByAgent.get(agentId) ?? { state: "idle" } };
       },
       { isolationLevel: "repeatable read", accessMode: "read only" },

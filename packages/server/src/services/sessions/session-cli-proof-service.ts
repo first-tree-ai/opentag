@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { RUNTIME_CAPABILITY, type RuntimeUserTaskSource, type SessionReconcileRequest } from "@opentag/shared";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, exists, isNull } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   agents,
@@ -394,6 +394,36 @@ export class SessionCliProofService {
     connectionInstanceId: string;
     expectedProof?: { proofId: string; updatedAt: Date };
   }): Promise<void> {
+    if (input.expectedProof) {
+      const placement = this.#database.$with("revoke_placement").as(
+        this.#database
+          .select({ sessionId: sessionPlacements.sessionId })
+          .from(sessionPlacements)
+          .where(
+            and(
+              eq(sessionPlacements.sessionId, input.sessionId),
+              eq(sessionPlacements.computerId, input.computerId),
+              eq(sessionPlacements.generation, input.placementGeneration),
+            ),
+          )
+          .for("update"),
+      );
+      await this.#database
+        .with(placement)
+        .delete(sessionCliProofs)
+        .where(
+          and(
+            exists(this.#database.select().from(placement)),
+            eq(sessionCliProofs.sessionId, input.sessionId),
+            eq(sessionCliProofs.computerId, input.computerId),
+            eq(sessionCliProofs.placementGeneration, input.placementGeneration),
+            eq(sessionCliProofs.connectionInstanceId, input.connectionInstanceId),
+            eq(sessionCliProofs.proofId, input.expectedProof.proofId),
+            eq(sessionCliProofs.updatedAt, input.expectedProof.updatedAt),
+          ),
+        );
+      return;
+    }
     await this.#database.transaction(async (transaction) => {
       const [placement] = await transaction
         .select({
@@ -415,12 +445,6 @@ export class SessionCliProofService {
             eq(sessionCliProofs.computerId, input.computerId),
             eq(sessionCliProofs.placementGeneration, input.placementGeneration),
             eq(sessionCliProofs.connectionInstanceId, input.connectionInstanceId),
-            ...(input.expectedProof
-              ? [
-                  eq(sessionCliProofs.proofId, input.expectedProof.proofId),
-                  eq(sessionCliProofs.updatedAt, input.expectedProof.updatedAt),
-                ]
-              : []),
           ),
         );
     });

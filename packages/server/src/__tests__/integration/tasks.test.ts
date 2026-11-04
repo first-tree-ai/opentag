@@ -19,6 +19,7 @@ import {
   sessionMessages,
   sessions,
 } from "../../db/schema/index.js";
+import { resolveSessionTaskAnchor } from "../../runtime-credentials/index.js";
 import { ImMessageInbox } from "../../services/im/im-message-inbox.js";
 import { normalizeFeishuMessage } from "../../services/im-bindings/feishu/adapter.js";
 import { normalizeSlackEnvelope } from "../../services/im-bindings/slack/adapter.js";
@@ -1237,6 +1238,128 @@ describe("Task cursor precision", () => {
       );
       // The fixture's own Task is older still.
       expect(ids.at(-1)).toBe(value.session.id);
+    } finally {
+      await value.sql.end();
+    }
+  });
+});
+
+describe("Session footer links and Task detail", () => {
+  /** A group channel Session in the fixture's binding, and one inbound message delivered to it. */
+  async function groupSession(value: Awaited<ReturnType<typeof fixture>>) {
+    const [channel] = await value.database
+      .insert(sessions)
+      .values({
+        imBindingId: value.binding.id,
+        channelId: "oc_group",
+        conversationKind: "channel",
+        kind: "channel",
+        createdAt: new Date("2026-08-27T02:00:00.000Z"),
+      })
+      .returning();
+    if (!channel) throw new Error("Group channel Session fixture was not created");
+    return channel;
+  }
+
+  async function deliver(
+    value: Awaited<ReturnType<typeof fixture>>,
+    sessionId: string,
+    externalMessageId: string,
+    attention: "direct" | "ambient",
+    occurredAt: Date,
+  ) {
+    const [message] = await value.database
+      .insert(imMessages)
+      .values({
+        imBindingId: value.binding.id,
+        providerEventId: `event-${externalMessageId}`,
+        channelId: "oc_group",
+        externalMessageId,
+        providerRevisionKey: "1",
+        operation: "created",
+        direction: "inbound",
+        authorKind: "human",
+        authorExternalId: "ou_group",
+        authorDisplayName: "Mia",
+        content: { version: 1, fallbackText: `Message ${externalMessageId}`, blocks: [], truncated: false },
+        providerContext: { provider: "feishu", chatType: "group" },
+        occurredAt,
+      })
+      .returning();
+    if (!message) throw new Error("Group message fixture was not created");
+    await value.database.insert(imMessageDeliveries).values({
+      messageId: message.id,
+      sessionId,
+      attention,
+      state: "accepted",
+      placementGeneration: 1,
+      inputHash: "c".repeat(64),
+      turnId: `turn-${externalMessageId}`,
+      reportOwnerInstanceId: crypto.randomUUID(),
+      acceptedAt: occurredAt,
+      expiresAt: new Date(occurredAt.getTime() + 86_400_000),
+    });
+    return message;
+  }
+
+  async function internalSession(
+    value: Awaited<ReturnType<typeof fixture>>,
+    createdBySessionId: string,
+    channelId: string,
+  ) {
+    const [internal] = await value.database
+      .insert(sessions)
+      .values({
+        imBindingId: value.binding.id,
+        channelId,
+        conversationKind: "channel",
+        kind: "internal",
+        createdBySessionId,
+        createdAt: new Date("2026-08-27T03:00:00.000Z"),
+      })
+      .returning();
+    if (!internal) throw new Error("Internal Session fixture was not created");
+    return internal;
+  }
+
+  it("keeps a plain footer exactly when Task detail answers 404, and links when it resolves", async () => {
+    const value = await fixture();
+    try {
+      // An ambient-only group channel Session: stored and owned, but not a Task.
+      const channel = await groupSession(value);
+      await deliver(value, channel.id, "om_overheard", "ambient", new Date("2026-08-27T02:01:00.000Z"));
+      const internal = await internalSession(value, channel.id, "oc_group");
+      const nested = await internalSession(value, internal.id, "oc_group");
+      for (const sessionId of [channel.id, internal.id, nested.id]) {
+        await expect(resolveSessionTaskAnchor(value.database, { sessionId })).resolves.toEqual({ kind: "plain" });
+        await expect(value.service.detail(value.bootstrap.userId, sessionId)).rejects.toMatchObject({
+          code: "RESOURCE_NOT_FOUND",
+          statusCode: 404,
+        });
+      }
+      // List eligibility is unchanged: the ambient-only Session is not listed.
+      const listed = await value.service.list(value.bootstrap.userId, { limit: 50 });
+      expect(listed.tasks.map((task) => task.id)).toEqual([value.session.id]);
+
+      // An eligible private-chat Task and an internal Session rooted at it link, and the link resolves.
+      const dmInternal = await internalSession(value, value.session.id, "oc_debug");
+      for (const sessionId of [value.session.id, dmInternal.id]) {
+        await expect(resolveSessionTaskAnchor(value.database, { sessionId })).resolves.toEqual({
+          kind: "link",
+          taskAnchorId: sessionId,
+        });
+        expect((await value.service.detail(value.bootstrap.userId, sessionId)).task.id).toBe(value.session.id);
+      }
+
+      // Once somebody addresses the Agent in the group, the same Sessions qualify and link together.
+      await deliver(value, channel.id, "om_addressed", "direct", new Date("2026-08-27T02:05:00.000Z"));
+      for (const sessionId of [channel.id, internal.id, nested.id]) {
+        await expect(resolveSessionTaskAnchor(value.database, { sessionId })).resolves.toEqual({
+          kind: "link",
+          taskAnchorId: sessionId,
+        });
+        expect((await value.service.detail(value.bootstrap.userId, sessionId)).task.id).toBe(channel.id);
+      }
     } finally {
       await value.sql.end();
     }

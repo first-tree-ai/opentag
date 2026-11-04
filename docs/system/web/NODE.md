@@ -5,9 +5,14 @@ description: "Design guide, Web UI contract, Computer and Skill surfaces, intern
 
 # Web App
 
-The Web App is the owner's management surface for Agents, Computers, and their
-capabilities. Its design guide and UI contract define visual direction and
-application behavior together.
+The Web App is the admin console for configuring Agents, their Computers, and
+their capabilities, and for judging whether each Agent is healthy. A surface
+shows only what helps an admin do one of those two things. Admins cannot act
+on an individual Task, so per-Task process details such as pending approvals
+or per-message states stay off the Web; approvals are handled by the people
+involved in Feishu or Slack. Why: detail an admin cannot act on adds reading
+without helping configure an Agent or judge its health. Its design guide and
+UI contract define visual direction and application behavior together.
 
 ## Pages
 

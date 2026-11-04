@@ -162,7 +162,7 @@ test("Discover failure offers Authorize in the original action area and reuses t
   const height = (await card.boundingBox())?.height;
   if (!height) throw new Error("Missing card geometry");
   await card.getByRole("button", { name: "Add: Airtable", exact: true }).click();
-  await expect(card.getByRole("alert")).toHaveText("Authorization failed");
+  await expect(card.getByRole("alert")).toHaveText("Authorization didn't finish. Try again.");
   await expect(card.getByRole("button", { name: "Authorize: Airtable", exact: true })).toBeEnabled();
   await expect(dialog).not.toContainText("Private upstream detail");
   await expectHeight(card, height);

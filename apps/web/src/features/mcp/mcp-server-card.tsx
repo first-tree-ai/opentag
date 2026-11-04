@@ -91,8 +91,10 @@ function McpControls(props: CardProps & { checking: boolean }) {
   const { entry, checking: connecting, resuming, onResume, onAction } = props;
   const feedback = rowFeedback({ ...props, connecting });
   const busy = Boolean(props.connecting || props.oauthSession?.phase || resuming);
-  const actionLabel =
-    feedback.action === "retry"
+  const editAddress = feedback.recovery === "edit-address";
+  const actionLabel = editAddress
+    ? m.mcp_edit_address()
+    : feedback.action === "retry"
       ? m.mcp_retry()
       : entry.authorization?.kind === "bearer" && entry.authorization.hasCredential
         ? m.mcp_update_credentials()
@@ -117,7 +119,7 @@ function McpControls(props: CardProps & { checking: boolean }) {
           size="compact"
           aria-label={m.mcp_connector_action({ action: actionLabel, server: mcpTitle(entry) })}
           disabled={props.recoveryDisabled}
-          onClick={() => onAction(feedback.action === "retry" ? "retry" : "authorize")}
+          onClick={() => onAction(editAddress ? "edit" : feedback.action === "retry" ? "retry" : "authorize")}
         >
           {actionLabel}
         </Button>

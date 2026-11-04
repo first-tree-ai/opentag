@@ -13,10 +13,15 @@ import {
 import { RuntimeProviderProxyTransport } from "../runtime-credentials/data-transport.js";
 import { RuntimeExecutionRegistry } from "../runtime-credentials/execution-registry.js";
 import { UnavailableRuntimeGitHubAdmission } from "../runtime-credentials/github-admission.js";
+import { ProviderOperationRegistry } from "../runtime-credentials/operation-registry.js";
 import type { ProviderProxyAdapter } from "../runtime-credentials/provider-proxy-adapter.js";
+import { ImProviderProxyAdapter } from "../runtime-credentials/provider-proxy-adapter.js";
 import type { RuntimeScopeResolverPort, RuntimeScopeSnapshot } from "../runtime-credentials/scope-resolver.js";
+import { SLACK_OPERATIONS } from "../runtime-credentials/slack-operations.js";
 import { RuntimeProxyTicketStore } from "../runtime-credentials/ticket-store.js";
 import { runtimeExecutionProviderBinding } from "../runtime-credentials/types.js";
+import { RuntimeUrlHandleStore } from "../runtime-credentials/url-handle-store.js";
+import { deferred } from "./support/deferred.js";
 
 const AGENT = "00000000-0000-4000-8000-0000000000a1";
 const COMPUTER = "00000000-0000-4000-8000-0000000000c1";
@@ -1077,3 +1082,130 @@ describe("Provider stream failure diagnostics", () => {
     socket.close();
   });
 });
+
+it.each(["broker", "adapter", "revalidation"] as const)(
+  "joins disconnected proxy %s work before transport close resolves",
+  async (phase) => {
+    const entered = deferred(),
+      resume = deferred();
+    let upstreamSignal: AbortSignal | undefined;
+    const adapter: ProviderProxyAdapter = {
+      handle: vi.fn(async (request) => {
+        upstreamSignal = request.signal;
+        if (phase === "adapter") {
+          entered.resolve();
+          await resume.promise;
+        }
+        return {
+          status: 200,
+          headers: {},
+          body: (async function* () {
+            if (phase === "revalidation") {
+              yield Buffer.from("first");
+              await resume.promise;
+            }
+          })(),
+        };
+      }),
+    };
+    const state = await setup(adapter, { revalidateIntervalMs: 20 });
+    const originalBegin = state.broker.beginRequest.bind(state.broker);
+    const originalRevalidate = state.broker.revalidate.bind(state.broker);
+    const spy =
+      phase === "broker"
+        ? vi.spyOn(state.broker, "beginRequest").mockImplementation(async (...args) => {
+            upstreamSignal = args[0].signal;
+            const result = await originalBegin(...args);
+            entered.resolve();
+            await resume.promise;
+            return result;
+          })
+        : phase === "revalidation"
+          ? vi.spyOn(state.broker, "revalidate").mockImplementation(async (...args) => {
+              const result = await originalRevalidate(...args);
+              entered.resolve();
+              await resume.promise;
+              return result;
+            })
+          : undefined;
+    const { ticket } = state.tickets.issue(state.record);
+    const { socket, queue } = await connect(state.port, ticket);
+    await queue.nextJson();
+    let drained = false;
+    try {
+      socket.send(openFrame(1, state.grant.token));
+      await entered.promise;
+      const disconnected = once(socket, "close");
+      socket.close();
+      await disconnected;
+      const closing = state.transport.close().then(() => {
+        drained = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(drained).toBe(false);
+      expect(upstreamSignal?.aborted).toBe(true);
+      resume.resolve();
+      await closing;
+      if (phase === "broker") expect(adapter.handle).not.toHaveBeenCalled();
+      expect(state.connections[0]?.snapshot()).toEqual({ active: 0, retired: 0, bufferedBytes: 0 });
+    } finally {
+      resume.resolve();
+      await state.transport.close();
+      spy?.mockRestore();
+    }
+  },
+);
+
+it.each(["download", "upload"] as const)(
+  "does not create late %s handles after execution close during confirmed capture",
+  async (kind) => {
+    const entered = deferred(),
+      resume = deferred(),
+      urlHandles = new RuntimeUrlHandleStore();
+    let captured = false,
+      drained = false;
+    const payload =
+      kind === "upload"
+        ? { ok: true, upload_url: "https://files.slack.com/upload/v1/test" }
+        : { ok: true, file: { id: "F1", url_private: "https://files.slack.com/files-pri/T-F/report" } };
+    const adapter = new ImProviderProxyAdapter({
+      provider: "slack",
+      registry: new ProviderOperationRegistry(SLACK_OPERATIONS),
+      urlHandles,
+      fetchImpl: (async () =>
+        new Response(JSON.stringify(payload), { headers: { "content-type": "application/json" } })) as typeof fetch,
+      outboundCapture: {
+        capture: async () => {
+          entered.resolve();
+          await resume.promise;
+          captured = true;
+        },
+      },
+    });
+    const state = await setup(adapter);
+    const unsubscribe = state.executions.onClose(({ executionId }) => urlHandles.revokeExecution(executionId));
+    const { ticket } = state.tickets.issue(state.record);
+    const { socket, queue } = await connect(state.port, ticket);
+    await queue.nextJson();
+    try {
+      const path = kind === "upload" ? "/api/files.getUploadURLExternal" : "/api/files.completeUploadExternal";
+      socket.send(openFrame(1, state.grant.token, path));
+      socket.send(JSON.stringify({ type: "end", streamId: 1 }));
+      await entered.promise;
+      state.executions.close(state.record.executionId, "owner_lost");
+      const closing = state.transport.close().then(() => {
+        drained = true;
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(drained).toBe(false);
+      resume.resolve();
+      await closing;
+      expect(captured).toBe(true);
+      expect(urlHandles.size).toBe(0);
+    } finally {
+      resume.resolve();
+      await state.transport.close();
+      unsubscribe();
+    }
+  },
+);

@@ -28,7 +28,6 @@ import {
   runtimeAttrs,
   setActiveSpanAttributes,
   traceDeliveryClaim,
-  updateCurrentPerformanceContext,
 } from "../observability/index.js";
 import type { ServiceLogger } from "../observability/service-logger.js";
 import {
@@ -168,27 +167,11 @@ function claimAttempt(claim: WorkerClaim, phase: ImDeliveryFailurePhase): Delive
 function absentRuntimeMs(lastSeenAt: Date | null, now: number): number {
   return lastSeenAt ? now - lastSeenAt.getTime() : Number.POSITIVE_INFINITY;
 }
-function setDeliveryRowPerformanceContext(
-  row: {
-    agent: { id: string; createdByUserId: string };
-    computer: { id: string };
-    session: { id: string };
-    delivery: { id: string; turnId: string | null };
-  },
-  turnIdOverride?: string,
-): void {
-  const turnId = turnIdOverride ?? row.delivery.turnId ?? undefined;
-  updateCurrentPerformanceContext({
-    accountId: row.agent.createdByUserId,
-    agentId: row.agent.id,
-    computerId: row.computer.id,
-    sessionId: row.session.id,
-    deliveryId: row.delivery.id,
-    ...(turnId ? { turnId } : {}),
-  });
-}
 export class ImDeliveryWorker {
   #closed = false;
+  #closing: Promise<void> | undefined;
+  readonly #abort = new AbortController();
+  readonly #work = new Set<Promise<unknown>>();
   readonly #selector: ImDeliverySelector;
   #claimOperation: Promise<WorkerClaim | undefined> | undefined;
   readonly #readyWakeup: ImDeliveryReadyWakeup;
@@ -289,22 +272,14 @@ export class ImDeliveryWorker {
       now: this.#clock,
       runSession: (sessionId) => {
         this.#selector.invalidate(sessionId);
-        return this.#runOnce(sessionId);
+        return this.#runTracked(sessionId);
       },
       supervisor: this.#supervisor,
       onDiagnostic: this.#onDiagnostic,
     });
     const schedulers = createImDeliveryMaintenanceSchedulers({
-      expiryRun: async () => {
-        const options = {
-          ...this.#janitorConfig,
-          clock: this.#clock,
-          ...(this.#logger ? { logger: this.#logger } : {}),
-        };
-        await runImDeliveryExpiry(this.#database, options, this.#onDeliverySettled, this.#onDiagnostic);
-        await this.#cloudCoordinator.reconcileStoppedWork();
-      },
-      retentionRun: () => runImDeliveryRetention(this.#database, { ...this.#janitorConfig, clock: this.#clock }),
+      expiryRun: () => this.#track(this.#expire()),
+      retentionRun: () => this.#track(this.#retain()),
       supervisor: this.#supervisor,
       onDiagnostic: this.#onDiagnostic,
     });
@@ -323,20 +298,53 @@ export class ImDeliveryWorker {
     this.#retentionTimer.unref();
   }
 
-  stop(): void {
+  stop(): Promise<void> {
+    if (this.#closing) return this.#closing;
     this.#closed = true;
+    this.#abort.abort();
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = undefined;
     if (this.#janitorTimer) clearInterval(this.#janitorTimer);
     this.#janitorTimer = undefined;
     if (this.#retentionTimer) clearInterval(this.#retentionTimer);
     this.#retentionTimer = undefined;
-    this.#scheduler.close();
+    const scheduler = this.#scheduler.close();
     this.#selector.invalidate();
-    this.#readyWakeup.stop();
+    const wakeups = this.#readyWakeup.stop();
+    this.#closing = (async () => {
+      await Promise.allSettled([scheduler, wakeups]);
+      while (this.#work.size) await Promise.allSettled([...this.#work]);
+    })();
+    return this.#closing;
   }
 
-  async runJanitorOnce(): Promise<void> {
+  #track<T>(operation: Promise<T>): Promise<T> {
+    this.#work.add(operation);
+    void operation.then(
+      () => this.#work.delete(operation),
+      () => this.#work.delete(operation),
+    );
+    return operation;
+  }
+
+  async #expire(): Promise<void> {
+    if (this.#closed) return;
+    const options = { ...this.#janitorConfig, clock: this.#clock, ...(this.#logger ? { logger: this.#logger } : {}) };
+    await runImDeliveryExpiry(this.#database, options, this.#onDeliverySettled, this.#onDiagnostic);
+    if (!this.#closed) await this.#cloudCoordinator.reconcileStoppedWork();
+  }
+
+  async #retain(): Promise<void> {
+    if (this.#closed) return;
+    await runImDeliveryRetention(this.#database, { ...this.#janitorConfig, clock: this.#clock });
+  }
+
+  runJanitorOnce(): Promise<void> {
+    return this.#track(this.#runJanitor());
+  }
+
+  async #runJanitor(): Promise<void> {
+    if (this.#closed) return;
     await runImDeliveryJanitor(
       this.#database,
       {
@@ -347,24 +355,21 @@ export class ImDeliveryWorker {
       this.#onDeliverySettled,
       this.#onDiagnostic,
     );
-    await this.#cloudCoordinator.reconcileStoppedWork();
+    if (!this.#closed) await this.#cloudCoordinator.reconcileStoppedWork();
   }
 
   async runOnce(): Promise<void> {
-    await this.#runOnce();
+    await this.#runTracked();
+  }
+
+  #runTracked(sessionId?: string): Promise<void> {
+    return this.#track(this.#runOnce(sessionId));
   }
 
   async #runOnce(sessionId?: string): Promise<void> {
     if (this.#closed) return;
     const claimed = await this.#claim(sessionId);
     if (!claimed) return;
-    updateCurrentPerformanceContext({
-      agentId: claimed.agentId,
-      computerId: claimed.computerId,
-      deliveryId: claimed.id,
-      ...(sessionId ? { sessionId } : {}),
-      ...("expectedTurnId" in claimed ? { turnId: claimed.expectedTurnId } : {}),
-    });
     this.#logger?.info(
       {
         module: "im-delivery",
@@ -398,21 +403,19 @@ export class ImDeliveryWorker {
       try {
         await withOperationDeadline(
           this.#operationTimeoutMs,
-          async (signal) => {
-            await traceDeliveryClaim(claimed, async (claim) => {
-              if (claim.kind === "pending") await this.#deliver(claim, signal);
-              else if (claim.kind === "steer") await this.#deliverSteer(claim, signal);
-              else await this.#recover(claim);
-            });
+          async (deadlineSignal) => {
+            const signal = AbortSignal.any([deadlineSignal, this.#abort.signal]);
+            await this.#track(
+              traceDeliveryClaim(claimed, async (claim) => {
+                if (claim.kind === "pending") await this.#deliver(claim, signal);
+                else if (claim.kind === "steer") await this.#deliverSteer(claim, signal);
+                else await this.#recover(claim, signal);
+              }),
+            );
           },
           async () => {
             this.#onMetric({ name: "timeout", value: 1, agentId: claimed.agentId });
-            /*
-             * The timed-out operation is still in flight, so a terminal state is only written when
-             * the row carries no dispatch correlation: `RuntimeDomainOwner` persists that
-             * correlation before the frame leaves, so an uncorrelated row has no Turn that could
-             * still report, and a correlated row is left pending for the late-settle callback.
-             */
+            // A timeout cannot discard accepted custody or overwrite a later report/attempt.
             await this.#recordFailure(attempt, "IM_DELIVERY_OPERATION_TIMEOUT");
           },
           async () => {
@@ -453,9 +456,9 @@ export class ImDeliveryWorker {
   }
 
   /** A Computer's runtime became usable again, so its offline-parked retries are due again. */
-  async notifyComputerReady(computerId: string): Promise<void> {
-    if (this.#closed) return;
-    await advanceParkedRetries(this.#database, computerId, this.#now());
+  notifyComputerReady(computerId: string): Promise<void> {
+    if (this.#closed) return Promise.resolve();
+    return this.#track(advanceParkedRetries(this.#database, computerId, this.#now()));
   }
 
   #schedule(): void {
@@ -809,7 +812,6 @@ export class ImDeliveryWorker {
         await this.#recordFailure(attempt, "IM_DELIVERY_STEER_AUTHORITY_UNAVAILABLE");
         return;
       }
-      setDeliveryRowPerformanceContext(row, claim.expectedTurnId);
       if (row.computerOwnerAccountId !== row.agent.createdByUserId) {
         if (row.delivery.dispatchRequestId === null) {
           await this.#reject(claim.id, "computer_owner_mismatch", claimToken);
@@ -865,8 +867,8 @@ export class ImDeliveryWorker {
         },
         (onDispatched) =>
           row.computer.kind === "cloud" && this.#cloudDelivery
-            ? this.#cloudDelivery.requestSteer(request, onDispatched)
-            : this.#domain.requestSteer(row.computer.id, instanceId, request, onDispatched),
+            ? this.#cloudDelivery.requestSteer(request, onDispatched, signal)
+            : this.#domain.requestSteer(row.computer.id, instanceId, request, onDispatched, signal),
         signal,
       );
       if (!admitted.admitted) {
@@ -933,7 +935,6 @@ export class ImDeliveryWorker {
       await this.#recordFailure(attempt, "IM_DELIVERY_RUNTIME_AUTHORITY_UNAVAILABLE");
       return;
     }
-    setDeliveryRowPerformanceContext(row);
     if (row.computerOwnerAccountId !== row.agent.createdByUserId && row.delivery.dispatchRequestId === null) {
       setActiveSpanAttributes(outcomeAttrs("failed", "IM_DELIVERY_COMPUTER_OWNER_MISMATCH"));
       await this.#reject(deliveryId, "computer_owner_mismatch", claimToken);
@@ -1015,6 +1016,7 @@ export class ImDeliveryWorker {
     }
     const runtime = persistedRequest?.runtime ?? (await this.#assembleRuntime(attempt, row.session.id, "delivery"));
     if (!runtime) return;
+    signal.throwIfAborted();
     // A late acceptance may commit after this delivery was claimed. Recheck at
     // the last boundary before any reconcile or delivery frame reaches runtime.
     // The subject is Local here (the Cloud branch returned above), so this is the
@@ -1031,6 +1033,7 @@ export class ImDeliveryWorker {
       return;
     }
     if (!(await lease.assertOwned())) return;
+    let failureCode = "IM_DELIVERY_RUNTIME_FAILED";
     try {
       const admission = {
         agentId: row.agent.id,
@@ -1038,31 +1041,27 @@ export class ImDeliveryWorker {
         placementGeneration: row.placement.generation,
         sessionId: row.session.id,
       };
-      const admittedReconcile = await this.#withActiveAgentAdmission(
-        admission,
-        (onDispatched) =>
-          this.#domain.requestReconcile(
-            row.computer.id,
-            instanceId,
-            {
-              type: "session:reconcile",
-              requestId: randomUUID(),
-              installationId: row.computer.currentInstallationId,
-              sessionId: row.session.id,
-              agentId: row.agent.id,
-              placementGeneration: row.placement.generation,
-              desired: "ready",
-              runtime,
-            },
-            onDispatched,
-          ),
+      const reconcile = await this.#domain.requestReconcile(
+        row.computer.id,
+        instanceId,
+        {
+          type: "session:reconcile",
+          requestId: randomUUID(),
+          installationId: row.computer.currentInstallationId,
+          sessionId: row.session.id,
+          agentId: row.agent.id,
+          placementGeneration: row.placement.generation,
+          desired: "ready",
+          runtime,
+        },
+        undefined,
+        async (operation) => {
+          const admitted = await this.#withActiveAgentAdmission(admission, operation, signal);
+          if (!admitted.admitted) failureCode = "IM_DELIVERY_AGENT_NOT_ACTIVE";
+          return admitted;
+        },
         signal,
       );
-      if (!admittedReconcile.admitted) {
-        await this.#recordFailure(attempt, "IM_DELIVERY_AGENT_NOT_ACTIVE");
-        return;
-      }
-      const reconcile = await admittedReconcile.result;
       const [currentDelivery] = await this.#database
         .select({ state: imMessageDeliveries.state })
         .from(imMessageDeliveries)
@@ -1126,7 +1125,7 @@ export class ImDeliveryWorker {
       await this.#beforeDeliveryAdmission?.(signal);
       const admittedDelivery = await this.#withActiveAgentAdmission(
         admission,
-        (onDispatched) => this.#domain.requestDelivery(row.computer.id, instanceId, request, onDispatched),
+        (onDispatched) => this.#domain.requestDelivery(row.computer.id, instanceId, request, onDispatched, signal),
         signal,
       );
       if (!admittedDelivery.admitted) {
@@ -1135,16 +1134,14 @@ export class ImDeliveryWorker {
       }
       const result = await admittedDelivery.result;
       setActiveSpanAttributes(outcomeAttrs(result.status, "reason" in result ? result.reason : undefined));
-      if (
-        result.status === "rejected" &&
-        ["configuration_unsupported", "invalid_input"].includes(result.reason ?? "")
-      ) {
+      if (result.status !== "rejected") return;
+      if (["configuration_unsupported", "invalid_input"].includes(result.reason ?? "")) {
         await this.#reject(deliveryId, result.reason ?? "terminal_rejected", claimToken);
-      } else if (result.status === "rejected") {
+      } else {
         await this.#releaseDispatch(attempt, request.requestId, "IM_DELIVERY_RUNTIME_REJECTED");
       }
     } catch (error) {
-      await this.#recordOperationFailure(attempt, "IM_DELIVERY_RUNTIME_FAILED", error, signal);
+      await this.#recordOperationFailure(attempt, failureCode, error, signal);
     }
   }
 
@@ -1166,7 +1163,7 @@ export class ImDeliveryWorker {
     await this.#cloudCoordinator.deliver(row, attempt, lease, signal);
   }
 
-  async #recover(claim: WorkerClaim & { kind: "recovery" }): Promise<void> {
+  async #recover(claim: WorkerClaim & { kind: "recovery" }, signal: AbortSignal): Promise<void> {
     const attempt = claimAttempt(claim, "recover");
     const deliveryId = claim.id;
     const [row] = await this.#database
@@ -1196,7 +1193,6 @@ export class ImDeliveryWorker {
       )
       .limit(1);
     if (!row) return;
-    setDeliveryRowPerformanceContext(row);
     setActiveSpanAttributes({
       ...imAttrs({
         provider: row.imBinding.provider,
@@ -1250,16 +1246,23 @@ export class ImDeliveryWorker {
     }
     if (!(await this.#validateRecoveryPayload(row, attempt))) return;
     try {
-      const result = await this.#domain.requestReconcile(row.computer.id, instanceId, {
-        type: "session:reconcile",
-        requestId: randomUUID(),
-        installationId: row.computer.currentInstallationId,
-        sessionId: row.session.id,
-        agentId: row.agent.id,
-        placementGeneration: row.placement.generation,
-        // Accepted work must settle before applying any snapshot, including after an upgrade.
-        desired: "stopped",
-      });
+      const result = await this.#domain.requestReconcile(
+        row.computer.id,
+        instanceId,
+        {
+          type: "session:reconcile",
+          requestId: randomUUID(),
+          installationId: row.computer.currentInstallationId,
+          sessionId: row.session.id,
+          agentId: row.agent.id,
+          placementGeneration: row.placement.generation,
+          // Accepted work must settle before applying any snapshot, including after an upgrade.
+          desired: "stopped",
+        },
+        undefined,
+        undefined,
+        signal,
+      );
       await this.#deferRecovery(attempt, row.delivery.attemptCount, RECOVERY_RETRY_CODES[result.status]);
     } catch {
       await this.#deferRecovery(attempt, row.delivery.attemptCount, "IM_DELIVERY_RECOVERY_FAILED");
@@ -1385,7 +1388,9 @@ export class ImDeliveryWorker {
   }
 
   #recordFailure(attempt: DeliveryAttempt, code: string, options?: DeliveryFailureOptions): Promise<void> {
-    return recordDeliveryFailure(this.#failures, attempt, code, options);
+    if (attempt.phase === "recover" && code === "IM_DELIVERY_OPERATION_TIMEOUT")
+      return this.#track(this.#deferRecovery(attempt, attempt.attemptCount, code));
+    return this.#track(recordDeliveryFailure(this.#failures, attempt, code, options));
   }
 
   #releaseDispatch(attempt: DeliveryAttempt, requestId: string, code: string): Promise<void> {

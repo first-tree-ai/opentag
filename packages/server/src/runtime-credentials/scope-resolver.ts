@@ -140,16 +140,19 @@ export class RuntimeScopeResolver {
       .where(eq(sessions.id, sessionId))
       .limit(1);
     if (!row?.computerId || !row.computerKind || !row.computerOwnerAccountId) return undefined;
-    const sandboxRows = await this.#database
-      .select({
-        id: sandboxes.id,
-        resourceUid: sandboxes.currentResourceUid,
-        environmentGeneration: sandboxes.environmentGeneration,
-        lifecycle: sandboxes.lifecycle,
-      })
-      .from(sandboxes)
-      .where(eq(sandboxes.sessionId, sessionId))
-      .limit(1);
+    const sandboxRows =
+      row.computerKind === "cloud"
+        ? await this.#database
+            .select({
+              id: sandboxes.id,
+              resourceUid: sandboxes.currentResourceUid,
+              environmentGeneration: sandboxes.environmentGeneration,
+              lifecycle: sandboxes.lifecycle,
+            })
+            .from(sandboxes)
+            .where(eq(sandboxes.sessionId, sessionId))
+            .limit(1)
+        : [];
     const sandbox = sandboxRows[0];
     return {
       contextTrees: row.contextTrees ?? [],

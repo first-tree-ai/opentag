@@ -159,20 +159,72 @@ describe("Agent list status through background refreshes", () => {
     expect(rowStatus()).toContain("Ready");
   });
 
-  it("presents a first-seen check as ready, and unreadable evidence with nothing settled as unknown", async () => {
+  it("says Checking for a first-seen check, and unreadable evidence with nothing settled as unknown", async () => {
     const runtimeChecking = withAvailability(readyAgent, {
       state: "action_required",
       reason: "runtime_unavailable",
       dependencies: { ...readyAgent.availability.dependencies, runtime: { provider: "codex", status: "checking" } },
     });
     const { rerender } = await renderInRouter(<AgentList agents={[runtimeChecking]} />);
-    expect(rowStatus()).toContain("Ready");
+    expect(rowStatus()).toContain("Checking");
+    expect(rowStatus()).not.toContain("Ready");
     expect(screen.queryByRole("link", { name: "Continue setup" })).toBeNull();
 
     rerender(<AgentList agents={[reverifying]} key="remounted" />);
-    expect(rowStatus()).toContain("Ready");
+    expect(rowStatus()).toContain("Checking");
 
     rerender(<AgentList agents={[unreadable]} key="remounted-again" />);
     expect(rowStatus()).toContain("Status unavailable");
+  });
+
+  it("never reads Ready before a first check finds a problem", async () => {
+    const needsPermissions = withAvailability(readyAgent, {
+      state: "action_required",
+      reason: "im_reauthorization_required",
+    });
+    const { rerender } = await renderInRouter(<AgentList agents={[reverifying]} />);
+    expect(rowStatus()).toContain("Checking");
+    expect(rowStatus()).not.toContain("Ready");
+
+    rerender(<AgentList agents={[needsPermissions]} />);
+    expect(rowStatus()).toContain("Messaging permissions need updating");
+
+    // Once an answer has settled, a later check holds it rather than going back to Checking.
+    rerender(<AgentList agents={[reverifying]} />);
+    expect(rowStatus()).toContain("Messaging permissions need updating");
+  });
+});
+
+describe("Agent list activity", () => {
+  it("shows each Agent's running Task count, and Waiting only beside Ready", async () => {
+    const working: AgentListItem = {
+      ...readyAgent,
+      activity: { state: "working", startedAt: new Date().toISOString(), runningTaskCount: 2 },
+    };
+    const offline: AgentListItem = {
+      ...readyAgent,
+      ...secondAgentListItem,
+      availability: { ...readyAgent.availability, state: "action_required", reason: "computer_offline" },
+    };
+    const { rerender } = await renderInRouter(<AgentList agents={[working, offline]} />);
+    const row = (name: string) => screen.getByRole("link", { name }).closest("article")?.textContent ?? "";
+    expect(row("Open Reviewer")).toContain("2 tasks running");
+    expect(row("Open Helper")).not.toContain("Waiting");
+
+    rerender(<AgentList agents={[readyAgent, offline]} />);
+    expect(row("Open Reviewer")).toContain("Waiting");
+  });
+});
+
+describe("Agent list row actions", () => {
+  it("links a messaging permission problem to the messaging settings, like setup problems link to setup", async () => {
+    const permissions: AgentListItem = {
+      ...readyAgent,
+      availability: { ...readyAgent.availability, state: "action_required", reason: "im_reauthorization_required" },
+    };
+    await renderInRouter(<AgentList agents={[permissions]} />);
+    expect(screen.getByRole("link", { name: "Update permissions" }).getAttribute("href")).toBe(
+      `/agents/${readyAgent.id}/settings/messaging`,
+    );
   });
 });

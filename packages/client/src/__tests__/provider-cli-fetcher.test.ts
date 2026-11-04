@@ -183,3 +183,47 @@ describe("defaultProviderCliFetcher (real transport)", () => {
     expect(new ProviderCliInstallError("integrity_failed", "x").name).toBe("ProviderCliInstallError");
   });
 });
+
+describe("ProviderCliFetcher cancellation", () => {
+  it("rejects with the caller's reason when a body never finishes, and cancels the stream", async () => {
+    let cancelled = false;
+    const { fetchImpl } = fakeTransport(
+      () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              controller.enqueue(new Uint8Array(16));
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+          { status: 200 },
+        ),
+    );
+    const controller = new AbortController();
+    const reason = new Error("daemon shutting down");
+    const download = createProviderCliFetcher(fetchImpl)({ ...OPTIONS, signal: controller.signal });
+    setTimeout(() => controller.abort(reason), 20);
+    const startedAt = Date.now();
+    await expect(download).rejects.toBe(reason);
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    expect(cancelled).toBe(true);
+  });
+
+  it("does not report cancellation as an install error when the request itself is aborted", async () => {
+    const fetchImpl = ((_url: string, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), {
+          once: true,
+        });
+      })) as unknown as typeof fetch;
+    const controller = new AbortController();
+    const reason = new Error("daemon shutting down");
+    const download = createProviderCliFetcher(fetchImpl)({ ...OPTIONS, signal: controller.signal });
+    controller.abort(reason);
+    const error = await download.catch((caught: unknown) => caught);
+    expect(error).toBe(reason);
+    expect(error).not.toBeInstanceOf(ProviderCliInstallError);
+  });
+});

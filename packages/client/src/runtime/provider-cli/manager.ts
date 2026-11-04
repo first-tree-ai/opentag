@@ -74,6 +74,17 @@ export interface ProviderCliEnsureOptions {
   readonly pathUpdate?: boolean;
   readonly dryRun?: boolean;
   readonly onPhase?: (event: ProviderCliPhaseEvent) => void;
+  /**
+   * Cancels the operation (daemon shutdown): waiting for the provider lock, and the managed
+   * download up to publication. The staging directory and the lock are released, and `ensure`
+   * rejects with the signal's reason instead of reporting a failed install.
+   */
+  readonly signal?: AbortSignal;
+}
+
+/** Cancellation is the caller's own request, never a provider CLI failure to report. */
+function rethrowCancellation(signal: AbortSignal | undefined, error: unknown): void {
+  if (signal?.aborted) throw signal.reason ?? error;
 }
 
 const SUPPORTED_PLATFORMS: ReadonlySet<string> = new Set(["darwin", "linux"]);
@@ -341,14 +352,24 @@ export class ProviderCliManager {
           // Re-read and re-detect inside the lock so the incumbent is consistent.
           const lockedSelection = await readProviderCliSelection(this.#layout, provider);
           const lockedDetection = await this.#detect(provider, entry, lockedSelection, mode);
-          return await this.#ensureLocked(provider, entry, lockedSelection, lockedDetection, pathUpdate, session);
+          return await this.#ensureLocked(
+            provider,
+            entry,
+            lockedSelection,
+            lockedDetection,
+            pathUpdate,
+            session,
+            options.signal,
+          );
         },
         {
           ...(this.#deps.isProcessAlive ? { isProcessAlive: this.#deps.isProcessAlive } : {}),
           ...(this.#deps.sleep ? { sleep: this.#deps.sleep } : {}),
+          signal: options.signal,
         },
       );
     } catch (error) {
+      rethrowCancellation(options.signal, error);
       logger.debug({ code: "ensure_failed", provider, error: String(error) }, "Provider CLI ensure failed");
       if (error instanceof ProviderCliLockBusyError) {
         return failed("operation_in_progress", []);
@@ -490,6 +511,7 @@ export class ProviderCliManager {
     detection: ProviderCliDetection,
     pathUpdate: boolean,
     session: EnsureSession,
+    signal: AbortSignal | undefined,
   ): Promise<ProviderCliEnsureResult> {
     let ranked = rankProviderCliCandidates(detection.candidates);
     let winner = ranked.ordered[0];
@@ -588,8 +610,9 @@ export class ProviderCliManager {
       });
       let installed: Awaited<ReturnType<ProviderCliInstaller["install"]>>;
       try {
-        installed = await installer.install(entry, provider);
+        installed = await installer.install(entry, provider, signal);
       } catch (error) {
+        rethrowCancellation(signal, error);
         logger.debug(
           { code: "managed_install_failed", provider, error: String(error) },
           "Provider CLI managed install failed",

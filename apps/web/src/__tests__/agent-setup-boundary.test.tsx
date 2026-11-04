@@ -436,14 +436,14 @@ describe("Agent Setup route boundary", () => {
 
     const open = await screen.findByRole("link", { name: "Open @reviewer" });
     expect(open.getAttribute("href")).toBe(`/agents/${agentId}`);
-    expect(screen.getByText("An active Agent with this name already exists for this Account")).toBeTruthy();
+    expect(screen.getByText("An Agent with this name already exists. Names aren't case-sensitive.")).toBeTruthy();
     // Nobody is moved: the reader chooses between the Agent that exists and a different name.
     expect(window.location.search).toBe("");
     expect(agentCreationPosts()).toHaveLength(1);
 
     fireEvent.change(screen.getByLabelText("Agent name"), { target: { value: "helper" } });
     expect(screen.queryByRole("link", { name: "Open @reviewer" })).toBeNull();
-    expect(screen.queryByText("An active Agent with this name already exists for this Account")).toBeNull();
+    expect(screen.queryByText("An Agent with this name already exists. Names aren't case-sensitive.")).toBeNull();
   });
 
   it("retires a refusal's offer with the refusal itself", async () => {
@@ -575,7 +575,7 @@ describe("Agent Setup route boundary", () => {
 
     const exit = await screen.findByRole("link", { name: "Go to your Agents" });
     expect(exit.getAttribute("href")).toBe("/agents");
-    expect(screen.getByText("An active Agent with this name already exists for this Account")).toBeTruthy();
+    expect(screen.getByText("An Agent with this name already exists. Names aren't case-sensitive.")).toBeTruthy();
   });
 
   it("does not repeat the Agent list destination already offered by the sidebar", async () => {
@@ -615,7 +615,9 @@ describe("Agent Setup route boundary", () => {
     fireEvent.click(screen.getByRole("button", { name: /Codex/ }));
     fireEvent.click(screen.getByRole("button", { name: "Create Agent" }));
 
-    expect(await screen.findByText("An active Agent with this name already exists for this Account")).toBeTruthy();
+    expect(
+      await screen.findByText("An Agent with this name already exists. Names aren't case-sensitive."),
+    ).toBeTruthy();
     expect(screen.getByRole("link", { name: "All Agents" })).toBeTruthy();
     expect(screen.queryByRole("link", { name: "Go to your Agents" })).toBeNull();
   });

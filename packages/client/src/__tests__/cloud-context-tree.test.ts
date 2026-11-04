@@ -264,7 +264,9 @@ describe("managedAgentSlug", () => {
   it.each([
     ["You run inside OpenTag.\n\nOpenTag Agent slug: tree-agent", "tree-agent"],
     ["OpenTag Agent slug: a1\nTrailing line.", "a1"],
-    ["OpenTag Agent slug: Tree-Agent", undefined],
+    ["OpenTag Agent slug: Tree-Agent", "Tree-Agent"],
+    ["OpenTag Agent slug: 研发助理-2", "研发助理-2"],
+    ["OpenTag Agent slug: -leading", undefined],
     ["OpenTag Agent slug: not a slug!", undefined],
     ["no slug here", undefined],
     ["", undefined],

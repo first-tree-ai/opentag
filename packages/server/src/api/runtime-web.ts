@@ -255,7 +255,7 @@ function createRuntimeWebAuthPreHandler(
   };
 }
 
-/** Races the auth preHandler against the ingress deadline instead of awaiting it blindly. */
+/** The response timer enforces ingress budget while this hook retains the actual verifier. */
 function boundedAuthPreHandler(
   preHandler: (request: FastifyRequest, reply: FastifyReply) => Promise<void>,
 ): (request: FastifyRequest, reply: FastifyReply) => Promise<void> {
@@ -266,23 +266,9 @@ function boundedAuthPreHandler(
       sendWebError(reply, abortError(budget));
       return;
     }
-    const auth = preHandler(request, reply);
-    // A blocked verifier may still settle after the deadline; keep its rejection handled.
-    auth.catch(() => undefined);
-    await Promise.race([auth, waitForAbort(budget.controller.signal)]);
+    await preHandler(request, reply);
     if (budget.controller.signal.aborted) sendWebError(reply, abortError(budget));
   };
-}
-
-function waitForAbort(signal: AbortSignal): Promise<void> {
-  if (signal.aborted) return Promise.resolve();
-  return new Promise((resolve) => {
-    const onAbort = () => {
-      signal.removeEventListener("abort", onAbort);
-      resolve();
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
 }
 
 /**

@@ -127,6 +127,11 @@ beforeEach(() => {
   vi.spyOn(browserApi, "taskReplies").mockResolvedValue({ items: [], nextCursor: null });
 });
 
+function responseAt(index: number): string {
+  return new Date(Date.UTC(2026, 7, 27, 0, index * 2 + 1)).toISOString();
+}
+
+/** One exchange: `Request N`, answered by the Agent's sent Feishu reply `Response N`. */
 function timelineTurn(index: number): TaskDetail["turns"][number] {
   const base = detail.turns[0];
   if (!base) throw new Error("Expected the Task fixture to include a Turn");
@@ -143,13 +148,44 @@ function timelineTurn(index: number): TaskDetail["turns"][number] {
       ...base.report,
       turnId: `turn-${index}`,
       finalText: `Response ${index}`,
-      reportedAt: new Date(Date.UTC(2026, 7, 27, 0, index * 2 + 1)).toISOString(),
+      outgoingReplies: {
+        status: "complete",
+        replies: [
+          {
+            provider: "feishu",
+            teamBrand: "lark",
+            chatId: "oc_debug_channel",
+            messageId: `reply-${index}`,
+            createTime: String(Date.parse(responseAt(index))),
+            content: { msgType: "text", text: `Response ${index}` },
+          },
+        ],
+      },
+      reportedAt: responseAt(index),
     },
   };
 }
 
+/** The same sent reply as the Server's captured record, which every provider reads. */
+function capturedResponse(index: number, provider: TaskSummary["source"]["provider"]): TaskReply {
+  return {
+    id: `captured-${index}`,
+    provider,
+    channelId: "oc_debug_channel",
+    externalMessageId: `reply-${index}`,
+    authorKind: "bot",
+    authorDisplayName: null,
+    messageType: "text",
+    contentAvailable: true,
+    fallbackText: `Response ${index}`,
+    truncated: false,
+    occurredAt: responseAt(index),
+    timeSource: "provider",
+  };
+}
+
 function displayedMessages() {
-  return [...document.querySelectorAll('[data-ui="task-message-request"] p, [data-ui="task-execution-summary"] p')].map(
+  return [...document.querySelectorAll('[data-ui="task-message-request"] p, [data-ui="task-sent-reply"] p')].map(
     (message) => message.textContent,
   );
 }
@@ -169,8 +205,13 @@ describe("Tasks view", () => {
       turns: [timelineTurn(3), timelineTurn(2), timelineTurn(1)],
     };
     mockDetail(page);
+    vi.spyOn(browserApi, "taskReplies").mockResolvedValue({
+      items: [1, 2, 3].map((index) => capturedResponse(index, provider)),
+      nextCursor: null,
+    });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />);
     await screen.findByText("Request 3");
+    await screen.findByText("Response 3");
 
     expect(displayedMessages()).toEqual([
       "Request 1",
@@ -317,14 +358,14 @@ describe("Tasks view", () => {
     const statusOf = (title: string) => {
       const row = screen.getByRole("link", { name: title }).closest("tr");
       if (!row) throw new Error("Expected the Task link to be inside a row");
-      return within(row).getByText(/^(Queued|Running|Completed|Failed)$/u).textContent;
+      return within(row).getByText(/^(Queued|Running|Completed|Failed|Cancelled)$/u).textContent;
     };
     expect(statuses.map((status) => statusOf(`Task ${status}`))).toEqual([
       "Queued",
       "Running",
       "Completed",
       "Failed",
-      "Completed",
+      "Cancelled",
       "Failed",
       "Completed",
     ]);
@@ -473,7 +514,8 @@ describe("Tasks view", () => {
 
     const activity = await screen.findByRole("region", { name: "Activity" });
     expect(within(activity).getByText("Please investigate the failed deployment.")).toBeTruthy();
-    expect(within(activity).getByText("The runtime finished and the provider reply was sent separately.")).toBeTruthy();
+    // The runtime's final text repeats the sent reply; the conversation never shows it.
+    expect(within(activity).queryByText("The runtime finished and the provider reply was sent separately.")).toBeNull();
     expect(screen.getByLabelText("Task details").textContent).toContain("Atlas");
     expect(screen.queryByText(/Provider outbound messages and detailed tool traces/)).toBeNull();
     expect(screen.queryByText(/Internal collaboration/)).toBeNull();
@@ -493,9 +535,10 @@ describe("Tasks view", () => {
       path: `/agents/${agentId}/tasks/${sessionId}`,
     });
 
-    // The Task's own facts and conversation render exactly as before.
+    // The Task's own facts and conversation render; on the Agent's own page the Agent is not repeated.
     expect(await screen.findByLabelText("Task details")).toBeTruthy();
-    expect(screen.getByLabelText("Task details").textContent).toContain("Atlas");
+    expect(screen.getByLabelText("Task details").textContent).not.toContain("Atlas");
+    expect(screen.getByLabelText("Task details").textContent).toContain("Lark");
     expect(await screen.findByRole("region", { name: "Activity" })).toBeTruthy();
     // No environment region or resource control belongs to the page, and no Cloud read fires.
     expect(screen.queryByRole("region", { name: "Cloud environment" })).toBeNull();
@@ -504,6 +547,16 @@ describe("Tasks view", () => {
     expect(overview).not.toHaveBeenCalled();
     expect(agent).not.toHaveBeenCalled();
     expect(computers).not.toHaveBeenCalled();
+  });
+
+  it("keeps the Agent fact when an Agent's page shows another Agent's Task", async () => {
+    mockDetail(detail);
+    const otherAgentId = "99999999-9999-4999-8999-999999999999";
+    await renderInRouter(<TaskDetailPage agentId={otherAgentId} taskId={sessionId} />, {
+      path: `/agents/${otherAgentId}/tasks/${sessionId}`,
+    });
+    // A stale or mistyped link: the Task belongs to Atlas, so the fact naming it stays.
+    expect((await screen.findByLabelText("Task details")).textContent).toContain("Atlas");
   });
 
   it("shows the agent logo in Task rows and the agent filter while preserving filter labels", async () => {
@@ -757,7 +810,12 @@ describe("Tasks view", () => {
       absorbedBy: { deliveryId: root.deliveryId, turnId: root.report?.turnId ?? "turn-debug" },
       report: null,
     } satisfies TaskDetail["turns"][number];
-    mockDetail({ ...detail, turns: [steered, root] });
+    // A failed report keeps its entry, so the steered input shows it produced no second one.
+    const failedRoot = {
+      ...root,
+      report: root.report && { ...root.report, outcome: "failed" as const, errorReason: "provider_failed" },
+    } satisfies TaskDetail["turns"][number];
+    mockDetail({ ...detail, turns: [steered, failedRoot] });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
 
     const activity = await screen.findByRole("region", { name: "Activity" });
@@ -1099,7 +1157,9 @@ describe("Tasks view", () => {
     });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     const activity = await screen.findByRole("region", { name: "Activity" });
-    expect(within(activity).getByText("Work is in progress.")).toBeTruthy();
+    // The running Turn gets no Agent entry of its own: the Task status already says it is running.
+    expect(within(activity).queryByText("Work is in progress.")).toBeNull();
+    expect(activity.querySelectorAll('[data-ui="task-message-agent"]')).toHaveLength(1);
     expect(within(activity).getByText("No text content")).toBeTruthy();
     expect(within(activity).getByText("Provider failed")).toBeTruthy();
     expect(within(activity).queryByText(/attempts/)).toBeNull();
@@ -1126,22 +1186,21 @@ describe("Tasks view", () => {
     },
   );
 
-  it("keeps Slack execution summaries without a permanent unsupported reply-history notice", async () => {
+  it("shows no runtime final text or unsupported reply-history notice on a Slack Task", async () => {
     mockDetail({
       ...detail,
       task: { ...task, source: { ...task.source, provider: "slack" } },
     });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     const activity = await screen.findByRole("region", { name: "Activity" });
-    expect(within(activity).queryByText("Execution summary")).toBeNull();
-    expect(within(activity).getByRole("group", { name: "Execution summary" }).textContent).toContain(
-      detail.turns[0]?.report?.finalText,
-    );
+    expect(within(activity).getByText("Please investigate the failed deployment.")).toBeTruthy();
+    expect(within(activity).queryByText(detail.turns[0]?.report?.finalText ?? "")).toBeNull();
+    expect(activity.querySelector('[data-ui="task-message-agent"]')).toBeNull();
     expect(within(activity).queryByText("Reply data is unavailable.")).toBeNull();
     expect(within(activity).queryByText("No sent replies recorded.")).toBeNull();
   });
 
-  it("renders captured Lark replies separately from an execution summary", async () => {
+  it("renders captured Lark replies once, without the runtime final text", async () => {
     const root = detail.turns[0];
     if (!root?.report) throw new Error("Expected the Task fixture to include a root Turn");
     mockDetail({
@@ -1170,18 +1229,20 @@ describe("Tasks view", () => {
     });
     await renderInRouter(<TaskDetailPage taskId={sessionId} />, { path: `/tasks/${sessionId}` });
     const activity = await screen.findByRole("region", { name: "Activity" });
-    expect(within(activity).getByText("Text").closest("header")?.getAttribute("data-ui")).toBe(
-      "task-message-author-agent",
-    );
+    // A plain-text reply's header names the author alone: no message kind or status label.
+    expect(activity.querySelector('[data-ui="task-message-author-agent"]')?.textContent).toBe("Atlas");
+    expect(within(activity).queryByText("Text")).toBeNull();
+    expect(within(activity).queryByText(/Completed/)).toBeNull();
     expect(within(activity).queryByText("Sent reply")).toBeNull();
     expect(within(activity).getByText("Hello from Lark")).toBeTruthy();
     expect(within(activity).queryByText("Execution summary")).toBeNull();
     expect(within(activity).queryByRole("button", { name: "Details" })).toBeNull();
-    expect(within(activity).getByText("The runtime finished and the provider reply was sent separately.")).toBeTruthy();
+    expect(within(activity).queryByText("The runtime finished and the provider reply was sent separately.")).toBeNull();
+    expect(activity.querySelectorAll('[data-ui="task-message-agent"]')).toHaveLength(1);
     expect(within(activity).queryByText("Work is in progress.")).toBeNull();
   });
 
-  it("does not invent a reply from finalText and keeps completed empty from rendering as running", async () => {
+  it("does not invent a reply from finalText and leaves a completed silent Turn without an entry", async () => {
     const root = detail.turns[0];
     if (!root?.report) throw new Error("Expected the Task fixture to include a root Turn");
     mockDetail({
@@ -1201,9 +1262,9 @@ describe("Tasks view", () => {
     const activity = await screen.findByRole("region", { name: "Activity" });
     expect(within(activity).queryByText("No sent replies recorded.")).toBeNull();
     expect(within(activity).queryByText("No reply records available.")).toBeNull();
-    expect(within(activity).getByText(/^Completed ·/)).toBeTruthy();
+    expect(within(activity).queryByText(/^Completed ·/)).toBeNull();
     expect(within(activity).queryByText("Work is in progress.")).toBeNull();
-    expect(activity.querySelector('[data-ui="task-sent-reply"]')).toBeNull();
+    expect(activity.querySelector('[data-ui="task-message-agent"]')).toBeNull();
   });
 
   it("keeps successful outbound messages on a failed Turn and labels unavailable legacy data", async () => {
@@ -1265,14 +1326,10 @@ describe("Tasks view", () => {
       const { container } = await renderInRouter(<TaskDetailPage taskId={sessionId} />, {
         path: `/tasks/${sessionId}`,
       });
-      await screen.findAllByText("Actual reply");
+      await screen.findByText("Actual reply");
       expect(container.querySelector('[data-ui="task-sent-reply"]')?.textContent).toContain("Actual reply");
-      const summary = container.querySelector('[data-ui="task-execution-summary"]');
-      if (finalText) {
-        expect(summary?.querySelector("p")?.textContent).toBe(finalText);
-      } else {
-        expect(summary).toBeNull();
-      }
+      expect(container.querySelectorAll('[data-ui="task-message-agent"]')).toHaveLength(1);
+      if (finalText && finalText !== "Actual reply") expect(screen.queryByText(finalText)).toBeNull();
       expect(screen.queryByRole("button", { name: "Details" })).toBeNull();
       expect(screen.queryByText("Work is in progress.")).toBeNull();
     },
@@ -1291,17 +1348,18 @@ describe("Tasks view", () => {
        * The captured feed owns the empty state. The report's own incomplete-history note stays,
        * because it remains true of that snapshot; its missing/unavailable notice yields to the feed.
        */
-      await screen.findByRole("group", { name: "Execution summary" });
+      await screen.findByText("Please investigate the failed deployment.");
       if (status === "incomplete") {
         expect(
           screen.getByText("Reply history is incomplete. Some messages or content could not be included."),
         ).toBeTruthy();
+      } else {
+        expect(document.querySelector('[data-ui="task-message-agent"]')).toBeNull();
       }
       expect(screen.queryByText("No reply records available.")).toBeNull();
       expect(screen.queryByText("No sent replies recorded.")).toBeNull();
       expect(screen.queryByText("Work is in progress.")).toBeNull();
-      expect(screen.queryByText("Execution summary")).toBeNull();
-      expect(screen.getByRole("group", { name: "Execution summary" }).textContent).toContain(report.finalText);
+      expect(screen.queryByText(report.finalText ?? "")).toBeNull();
     },
   );
 

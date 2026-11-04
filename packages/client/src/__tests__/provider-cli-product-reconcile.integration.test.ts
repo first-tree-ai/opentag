@@ -170,7 +170,7 @@ describe("provider CLI product reconcile", () => {
     expect(before).toEqual([]);
 
     await runtime.emit(requirement);
-    expect(ensure).toHaveBeenCalledWith("slack", { mode: "managed-only" });
+    expect(ensure).toHaveBeenCalledWith("slack", { mode: "managed-only", signal: expect.any(AbortSignal) });
     expect(await ensure.mock.results[0]?.value).toMatchObject({ ok: true, action: "installed-managed" });
     expect(server.requests.length).toBeGreaterThan(0);
     expect(sentTypes(runtime)).toEqual(["provider-cli:artifact:status:checking", "provider-cli:artifact:status:ready"]);

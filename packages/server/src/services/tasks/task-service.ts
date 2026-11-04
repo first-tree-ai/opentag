@@ -336,16 +336,22 @@ export class TaskService {
    */
   async listReplies(accountId: string, taskId: string, options: GetTaskOptions): Promise<ListTaskRepliesResponse> {
     const cursor = parseCursor(options.cursor);
-    const scope =
-      (await this.#replyScopeOfMessage(accountId, taskId)) ?? (await this.#scopeOfSession(accountId, taskId));
-    if (!scope) throw taskNotFound();
-    const rows = await this.#replyRows(scope, cursor, options.limit + 1);
-    const page = rows.slice(0, options.limit);
-    const last = page.at(-1);
-    return {
-      items: page.map(toReply),
-      nextCursor: rows.length > options.limit && last ? encodeCursor(last.cursorAt, last.id) : null,
-    };
+    return this.database.transaction(
+      async (transaction) => {
+        const scope =
+          (await this.#replyScopeOfMessage(transaction, accountId, taskId)) ??
+          (await this.#scopeOfSession(accountId, taskId, transaction));
+        if (!scope) throw taskNotFound();
+        const rows = await this.#replyRows(transaction, scope, cursor, options.limit + 1);
+        const page = rows.slice(0, options.limit);
+        const last = page.at(-1);
+        return {
+          items: page.map(toReply),
+          nextCursor: rows.length > options.limit && last ? encodeCursor(last.cursorAt, last.id) : null,
+        };
+      },
+      { isolationLevel: "repeatable read", accessMode: "read only" },
+    );
   }
 
   /**
@@ -409,8 +415,12 @@ export class TaskService {
    * for a first confirmed send. Private context comes from the stored provider context, and any
    * unknown or group context keeps a concrete topic key rather than widening to the channel.
    */
-  async #replyScopeOfMessage(accountId: string, messageId: string): Promise<TopicScope | undefined> {
-    const rows = await this.database.execute<ScopeRow>(sql`
+  async #replyScopeOfMessage(
+    executor: QueryExecutor,
+    accountId: string,
+    messageId: string,
+  ): Promise<TopicScope | undefined> {
+    const rows = await executor.execute<ScopeRow>(sql`
       with anchor as (
         select
           m.im_binding_id,
@@ -609,8 +619,13 @@ export class TaskService {
    * has no inbound mapping yet, and a record that cannot be proven to belong is not shown. A
    * private chat (null topic key) takes the whole conversation, as it does inbound.
    */
-  async #replyRows(scope: TopicScope, cursor: TaskCursor | undefined, limit: number): Promise<TaskReplyRow[]> {
-    const rows = await this.database.execute<TaskReplyRow>(sql`
+  async #replyRows(
+    executor: QueryExecutor,
+    scope: TopicScope,
+    cursor: TaskCursor | undefined,
+    limit: number,
+  ): Promise<TaskReplyRow[]> {
+    const rows = await executor.execute<TaskReplyRow>(sql`
       with thread_roots as (
         select distinct on (m.im_binding_id, m.channel_id, m.thread_key)
           m.im_binding_id,

@@ -1,6 +1,7 @@
+import { sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
 import { parkedDelivery } from "../db/im-delivery-work.js";
-import { lockImAgentCustody, readInboundPendingAgents } from "../services/im/inbound-admission.js";
+import { readInboundPendingAgents } from "../services/im/inbound-admission.js";
 import { DISPATCH_CLAIM_PREFIX } from "./im-delivery-claim.js";
 import { isCloudReadinessRetry } from "./im-delivery-ready-wakeup.js";
 import {
@@ -172,7 +173,10 @@ export async function lockEligibleDelivery(
   now: Date,
   sessionId?: string,
 ) {
-  await lockImAgentCustody(database, expectedAgentId);
+  const [fence] = await database.execute(
+    sql`select pg_try_advisory_xact_lock(hashtextextended(${`im-agent-custody:${expectedAgentId}`}, 0)) as acquired`,
+  );
+  if (!fence?.acquired) return undefined;
   const delivery = await lockDeliveryCandidate(database, deliveryId, now);
   if (!delivery || (sessionId && delivery.sessionId !== sessionId)) return undefined;
   const rows = await readDeliveryCustody(database);

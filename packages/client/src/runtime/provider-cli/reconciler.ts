@@ -118,6 +118,8 @@ export class ProviderCliReconciler {
   readonly #unsubscribe: () => void;
   readonly #validation: ProviderCliReconcilerOptions["validation"];
   readonly #waiterAbort = new AbortController();
+  /** Aborted on close so an in-flight ensure (download) cannot hold shutdown open. */
+  readonly #ensureAbort = new AbortController();
   #closePromise?: Promise<void>;
   #closed = false;
 
@@ -150,6 +152,7 @@ export class ProviderCliReconciler {
 
   async #performClose(): Promise<void> {
     this.#closed = true;
+    this.#ensureAbort.abort(new Error("Provider CLI reconciliation closed"));
     this.#waiterAbort.abort();
     this.#unsubscribe();
     this.#imCliPublished.clear();
@@ -564,13 +567,14 @@ export class ProviderCliReconciler {
     provider: ProviderCliProvider,
     mode: "auto" | "managed-only",
   ): Promise<ProviderCliEnsureResult> {
-    let outcome = await this.#manager.ensure(provider, { mode });
+    const signal = this.#signal ? AbortSignal.any([this.#signal, this.#ensureAbort.signal]) : this.#ensureAbort.signal;
+    let outcome = await this.#manager.ensure(provider, { mode, signal });
     for (let attempt = 0; outcome.diagnostic?.code === "operation_in_progress"; attempt += 1) {
       if (attempt >= PROVIDER_CLI_LOCK_BUSY_MAX_ATTEMPTS || this.#closed || this.#signal?.aborted) break;
       await this.#sleepBusy();
       // The shutdown signal may win the wait; do not start another ensure after it.
       if (this.#closed || this.#signal?.aborted) break;
-      outcome = await this.#manager.ensure(provider, { mode });
+      outcome = await this.#manager.ensure(provider, { mode, signal });
     }
     return outcome;
   }

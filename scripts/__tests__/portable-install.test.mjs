@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  chmodSync,
+  copyFileSync,
   createReadStream,
   existsSync,
   mkdirSync,
@@ -9,6 +11,7 @@ import {
   readFileSync,
   realpathSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -195,22 +198,9 @@ async function withReleaseServer(run) {
 
 // The release server runs in this process, so the installer must be spawned asynchronously: a
 // synchronous child would block the event loop and deadlock against its own download.
-function runInstaller({ root, baseUrl, args = [], env = {} }) {
+function runScript(command, args, env = process.env) {
   return new Promise((complete, reject) => {
-    const child = spawn(
-      "sh",
-      [installerPath, "--prefix", join(root, "prefix"), "--bin-dir", join(root, "bin"), "--no-path-edit", ...args],
-      {
-        env: {
-          ...process.env,
-          HOME: join(root, "home"),
-          OPENTAG_PORTABLE_CHANNEL: channel,
-          OPENTAG_PORTABLE_DOWNLOAD_BASE_URL: baseUrl,
-          ...env,
-        },
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
+    const child = spawn(command, args, { env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");
@@ -225,6 +215,52 @@ function runInstaller({ root, baseUrl, args = [], env = {} }) {
     child.on("close", (status) => complete({ status, stderr, stdout }));
   });
 }
+
+function runInstaller({ root, baseUrl, args = [], env = {} }) {
+  return runScript(
+    "sh",
+    [installerPath, "--prefix", join(root, "prefix"), "--bin-dir", join(root, "bin"), "--no-path-edit", ...args],
+    {
+      ...process.env,
+      HOME: join(root, "home"),
+      OPENTAG_PORTABLE_CHANNEL: channel,
+      OPENTAG_PORTABLE_DOWNLOAD_BASE_URL: baseUrl,
+      ...env,
+    },
+  );
+}
+
+test("portable release smoke accepts the current installer's repeat result without downloading twice", {
+  skip: platform === null,
+}, async () => {
+  await withReleaseServer(async ({ baseUrl, releaseRoot, requests, root }) => {
+    const version = "0.0.2-staging.1.1";
+    buildRelease({ baseUrl, releaseRoot, version });
+    copyFileSync(installerPath, join(releaseRoot, channel, "install.sh"));
+
+    const scriptsDir = join(root, "scripts");
+    const portableDir = join(scriptsDir, "portable");
+    mkdirSync(portableDir, { recursive: true });
+    const releasePath = join(portableDir, "release-gcs.sh");
+    copyFileSync(join(repoRoot, "scripts", "portable", "release-gcs.sh"), releasePath);
+    symlinkSync(join(repoRoot, "scripts", "channel-config.mjs"), join(scriptsDir, "channel-config.mjs"));
+    writeExecutable(join(portableDir, "upload-gcs.sh"), "#!/bin/sh\nexit 0\n");
+
+    const result = await runScript("bash", [
+      releasePath,
+      "--channel",
+      channel,
+      "--version",
+      version,
+      "--download-base-url",
+      baseUrl,
+      "--skip-build",
+    ]);
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, /public install smoke test passed for staging 0\.0\.2-staging\.1\.1/);
+    assert.equal(tarballRequests(requests, version), 1, "the second install must not download the payload");
+  });
+});
 
 function tarballRequests(requests, version) {
   return requests.filter((url) => url.includes(`/${version}/`) && url.endsWith(".tar.gz")).length;
@@ -261,8 +297,8 @@ test("portable installer activates a release and short-circuits when it is alrea
 
     const second = await runInstaller({ baseUrl, root });
     assert.equal(second.status, 0, `${second.stdout}\n${second.stderr}`);
-    assert.match(second.stdout, /already installed and up to date; skipping download/);
-    assert.match(second.stdout, /--force to reinstall/);
+    assert.match(second.stdout, /openTag 0\.0\.2-staging\.1\.1 is already installed; nothing was downloaded\./);
+    assert.doesNotMatch(second.stdout, /--force/);
     // The short-circuit closes step 2 and gets its own footer headline; it must not claim a fresh install.
     assert.match(second.stdout, /Resolved openTag 0\.0\.2-staging\.1\.1 already current\n/);
     assert.match(second.stdout, /OK\s+openTag is already up to date\./);
@@ -373,7 +409,7 @@ test("portable installer never rewrites the payload current points at", { skip: 
     // A later ordinary install of the same version must still converge on a working payload.
     const again = await runInstaller({ baseUrl, root });
     assert.equal(again.status, 0, `${again.stdout}\n${again.stderr}`);
-    assert.match(again.stdout, /already installed and up to date/);
+    assert.match(again.stdout, /is already installed; nothing was downloaded/);
   });
 });
 
@@ -473,8 +509,8 @@ test("portable installer --quiet only prints the result lines", { skip: platform
     assert.doesNotMatch(quiet.stdout, BANNER);
     assert.doesNotMatch(quiet.stdout, /OK\s+openTag/);
     assert.doesNotMatch(quiet.stdout, /Resolved openTag/);
-    assert.match(quiet.stdout, /openTag 0\.0\.2-staging\.1\.1 installed at/);
-    assert.match(quiet.stdout, /Command: /);
+    // Quiet callers such as the connect command get exactly one result line.
+    assert.equal(quiet.stdout, "openTag 0.0.2-staging.1.1 installed.\n");
     assert.equal(quiet.stderr, "");
 
     // OPENTAG_QUIET honours any non-empty value, like NO_COLOR does; --force so the run prints a result.
@@ -482,16 +518,39 @@ test("portable installer --quiet only prints the result lines", { skip: platform
     assert.equal(viaEnv.status, 0, `${viaEnv.stdout}\n${viaEnv.stderr}`);
     assert.doesNotMatch(viaEnv.stdout, STEP_LINE);
     assert.doesNotMatch(viaEnv.stdout, /OK\s+openTag/);
-    assert.match(viaEnv.stdout, /openTag 0\.0\.2-staging\.1\.1 installed at/);
-    assert.match(viaEnv.stdout, /Command: /);
+    assert.equal(viaEnv.stdout, "openTag 0.0.2-staging.1.1 installed.\n");
 
     // The quiet short-circuit keeps its verbatim result lines and nothing else from the progress output.
     const upToDate = await runInstaller({ args: ["-q"], baseUrl, root });
     assert.equal(upToDate.status, 0, `${upToDate.stdout}\n${upToDate.stderr}`);
     assert.doesNotMatch(upToDate.stdout, STEP_LINE);
     assert.doesNotMatch(upToDate.stdout, /already current|OK\s+openTag/);
-    assert.match(upToDate.stdout, /already installed and up to date; skipping download\./);
-    assert.match(upToDate.stdout, /Run this installer with --force to reinstall the same version\./);
-    assert.match(upToDate.stdout, /Command: /);
+    assert.equal(upToDate.stdout, "openTag 0.0.2-staging.1.1 is already installed.\n");
+  });
+});
+
+test("portable installer refuses an unwritable install location before downloading", {
+  skip: platform === null || process.getuid?.() === 0,
+}, async () => {
+  await withReleaseServer(async ({ baseUrl, releaseRoot, requests, root }) => {
+    buildRelease({ baseUrl, releaseRoot, version: "0.0.2-staging.1.1" });
+    const locked = join(root, "locked");
+    mkdirSync(locked, { mode: 0o555 });
+    try {
+      const result = await runInstaller({
+        baseUrl,
+        root,
+        args: ["--prefix", join(locked, "share", "opentag"), "--bin-dir", join(locked, "bin")],
+      });
+      assert.notEqual(result.status, 0);
+      const [reason, next] = result.stderr.split("\n");
+      assert.match(reason, /^opentag portable installer: openTag cannot write to .*locked .*permission denied\.$/);
+      assert.match(next, /^Next: fix the folder's permissions/);
+      assert.doesNotMatch(result.stderr, /mkdir:|Installation failed at step|--help/);
+      assert.equal(result.stderr.trim().split("\n").length, 2, result.stderr);
+      assert.equal(requests.length, 0, "nothing is downloaded when the install location is unwritable");
+    } finally {
+      chmodSync(locked, 0o755);
+    }
   });
 });

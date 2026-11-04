@@ -8,6 +8,7 @@ import type { ConnectionRegistry, RuntimeControlIdentity } from "../runtime/conn
 import type { RuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
 import type { ApplicationCipher } from "../services/crypto.js";
 import { ImOutboundCapture } from "../services/im/im-outbound-capture.js";
+import { closeServerResources, startClosingServerResources } from "../shutdown.js";
 import { RuntimeCapabilityStore } from "./capability-store.js";
 import {
   type RuntimeConnectionFence,
@@ -169,7 +170,7 @@ export interface RuntimeCredentialServices {
   web?: WebGatewayServices;
   /** Present only when the MCP gateway is wired; the route needs both to serve a request. */
   mcp?: McpGatewayServices;
-  close(): void;
+  close(): Promise<void>;
 }
 
 /** Builds the optional web service exactly once per stack; absent config keeps it fully off. */
@@ -321,7 +322,11 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
       feishu: materialResolver,
     },
   });
-  const adapters = createImAdapters(options, urlHandles);
+  const outboundCapture = new ImOutboundCapture(options.database, {
+    slackWorkingStatus: options.slackWorkingStatus,
+    logger: options.logger,
+  });
+  const adapters = createImAdapters(options, urlHandles, outboundCapture);
   const mcp = createMcpGatewayServices(options, { executions, scopeResolver, authority, connectionFence });
   const web = createRuntimeWebService(options, { executions, scopeResolver, authority, connectionFence });
   const owner = new RuntimeCredentialOwner({
@@ -353,6 +358,7 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
   const unsubscribeHandles = executions.onClose((event) => {
     urlHandles.revokeExecution(event.executionId);
   });
+  let closing: Promise<void> | undefined;
   return {
     owner,
     transport,
@@ -365,9 +371,21 @@ export function createRuntimeCredentialServices(options: RuntimeCredentialServic
     ...(web ? { web } : {}),
     ...mcpServicesResult(mcp),
     close: () => {
-      unsubscribeHandles();
-      owner.close();
-      tenantTokens.clear();
+      closing ??= closeServerResources([
+        [
+          "credential and transport work",
+          () =>
+            startClosingServerResources([
+              ["credential owner", () => owner.close()],
+              ["provider transport", () => transport.close()],
+            ]),
+        ],
+        ["outbound capture", () => outboundCapture.close()],
+      ]).finally(() => {
+        unsubscribeHandles();
+        tenantTokens.clear();
+      });
+      return closing;
     },
   };
 }
@@ -468,12 +486,9 @@ export async function resolveSessionTaskAnchor(
 function createImAdapters(
   options: RuntimeCredentialServicesOptions,
   urlHandles: RuntimeUrlHandleStore,
+  outboundCapture: ImOutboundCapture,
 ): Map<RuntimeCredentialProvider, ProviderProxyAdapter> {
   const adapters = new Map<RuntimeCredentialProvider, ProviderProxyAdapter>(options.adapters ?? []);
-  const outboundCapture = new ImOutboundCapture(options.database, {
-    slackWorkingStatus: options.slackWorkingStatus,
-    ...(options.logger ? { logger: options.logger } : {}),
-  });
   const resolveTaskAnchor = (input: { sessionId: string; source?: RuntimeExecutionSource }) =>
     resolveSessionTaskAnchor(options.database, input, options.logger);
   const defaults = [

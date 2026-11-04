@@ -38,7 +38,7 @@ Kumo Select on mobile. The selected overflow category stays in its original posi
 
 Task screens use the existing application typography: the list retains the page-title scale,
 while an individual Task title keeps its `h1` semantics and uses 16px medium text with a 24px
-line height. Requests, sent replies and execution summaries use 14px regular text with a 21px line
+line height. Requests and sent replies use 14px regular text with a 21px line
 height; authors use 14px medium and timestamps use 12px regular text. Message headings, emphasis
 and code retain their content formatting. Operational notices remain at 14px. The Activity
 section heading remains accessible without adding a visible label above the conversation.
@@ -54,18 +54,21 @@ the Tokens column supplies the unit. Cached input is a subset of input and is ex
 below the table rather than repeated as an exclusion on the row.
 
 Overview keeps Usage and dependency status above Schedules, followed by the Agent-scoped Tasks list.
-The detail header presents the Agent identity without an availability or activity badge beside the name;
+The detail header presents the Agent identity without an availability or activity badge beside the name, and a long
+name stops at two lines (the full name stays in the heading text and its title) so the header does not push the
+page down; Settings stays aligned with the top of the name;
 dependency status and lifecycle notices remain in the page content.
 The Overview status card keeps its healthy two-section, two-line composition in every dependency state.
 Computer summarizes the connection and the selected runtime Provider, with an existing runtime status replacing
 Online when attention is needed. The identity line always includes the Agent's selected Provider after the
 Computer name and platform; this is not the Computer's list of installed Providers. At narrow card widths the
-platform is omitted and long identities are truncated. Status text remains complete; the static section name
-can truncate and the recovery arrow is omitted when space is limited. Full identities are included in the
-accessible row name and are available through the details popover or recovery destination. Existing state
-values and localized status wording remain unchanged. Recovery uses the status row itself, rather than an
-additional action or explanation line. Each row retains two line boxes even when an identity is absent. Details
-and recovery never expand the card or move its divider; there is no larger fixed-height shell or reserved third line.
+platform is omitted and long identities are truncated. Status text and the section name both stay complete: in a
+narrow card the status wraps under the section name rather than cutting the name short, and the recovery arrow is
+omitted. Full identities are included in the accessible row name and the row's title. A row with nothing to act on
+and no further guidance is plain text, not a control: a popover that only repeated the row gave keyboard users a
+stop with nothing behind it. Existing state values and localized status wording remain unchanged. Recovery uses the
+status row itself, rather than an additional action or explanation line. Each row keeps at least two line boxes
+even when an identity is absent; details and recovery never add a reserved third line.
 For paused Agents, runtime failures open the existing local recovery guidance in a popover; they do not
 link to setup, which accepts only active Agents.
 Schedules retain their card layout. Tasks preserve server paging and Load more; the full Tasks page

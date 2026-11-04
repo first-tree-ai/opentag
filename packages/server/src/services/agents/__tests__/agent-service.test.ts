@@ -684,6 +684,28 @@ describe("AgentService", () => {
     });
   });
 
+  it("counts the Tasks with an unreported accepted Turn, not the Turns", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id, "counted-agent");
+    const binding = await createBinding(created.id);
+    const busy = await createSession(binding.id);
+    const second = await createSession(binding.id);
+    const finished = await createSession(binding.id);
+    const earlier = new Date(NOW.getTime() - 60_000);
+    await createDelivery(binding.id, busy.id, { acceptedAt: earlier, usage: {} });
+    await createDelivery(binding.id, busy.id, { acceptedAt: NOW, usage: {} });
+    await createDelivery(binding.id, second.id, { acceptedAt: earlier, usage: {} });
+    await createDelivery(binding.id, finished.id, { acceptedAt: earlier, reportedAt: earlier, usage: {} });
+
+    const listed = await service.listForAccount(bootstrap.userId);
+    expect(listed.agents[0]?.activity).toEqual({
+      state: "working",
+      startedAt: NOW.toISOString(),
+      runningTaskCount: 2,
+    });
+    expect((await service.getById(bootstrap.userId, created.id)).activity).toEqual(listed.agents[0]?.activity);
+  });
+
   it("keeps a maximum-duration unresolved delivery working", async () => {
     const { bootstrap, computer, service } = await fixture();
     const created = await createAgent(service, bootstrap.userId, computer.id, "maximum-duration-agent");
@@ -877,6 +899,7 @@ describe("AgentService", () => {
     expect(stopSessions).toHaveBeenCalledWith([
       {
         agentId: created.id,
+        agentRevision: suspended.revision,
         computerId: computer.id,
         installationId: computer.installationId,
         placementGeneration: 1,

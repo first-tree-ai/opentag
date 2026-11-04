@@ -5,6 +5,7 @@ import { Button, Icon, Popover } from "../../ui/design-system.js";
 import type { AgentDetailView } from "./agent-model.js";
 import {
   type AgentDependencyStatus,
+  agentActivityDetail,
   agentComputerStatus,
   agentMessagingStatus,
   agentRuntimeIssue,
@@ -13,8 +14,13 @@ import {
   runtimeProviderName,
 } from "./agent-presentation.js";
 
-/** Two dependencies with two lines each, using the existing healthy layout's space in every state. */
+/**
+ * What the Agent is doing, when there is something to say, then its two dependencies with two lines
+ * each, using the existing healthy layout's space in every state.
+ */
 export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
+  // The same running-Task or Waiting line the Agent list row shows, from the same activity data.
+  const activity = agentActivityDetail(agent, agent.availability.state === "ready");
   const computer = agentRuntimeIssue(agent) ?? agentComputerStatus(agent);
   const binding = agent.messaging.kind === "ready" ? agent.messaging.value : undefined;
   const provider = runtimeProviderName(agent.runtimeProvider);
@@ -29,6 +35,19 @@ export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
       data-ui="agent-status-overview"
     >
       <ul className="grid h-full list-none divide-y divide-kumo-line">
+        {activity ? (
+          // What the Agent is doing comes first, as its own row, so it never reads as a fact about
+          // the Computer or the channel below it.
+          <li
+            className="flex min-w-0 items-center justify-between gap-4 py-5 text-sm first:pt-0 last:pb-0"
+            data-ui="agent-status-work"
+          >
+            <strong className="min-w-0 truncate font-semibold text-kumo-strong">{m.agents_status_work()}</strong>
+            <span className="whitespace-nowrap font-medium text-kumo-default" data-ui="agent-status-activity">
+              {activity}
+            </span>
+          </li>
+        ) : null}
         <AgentStatusRow
           agent={agent}
           dependency="computer"
@@ -81,14 +100,15 @@ function AgentStatusRow({
   status: AgentDependencyStatus & { guidance?: string };
 }) {
   // The 44px target uses 1px of existing space on either side of the original 42px two-line block.
-  const triggerClassName = "-my-px grid h-11 min-w-0 grid-rows-2 py-px text-left text-sm";
+  // In a narrow card the status wraps under the row name instead of squeezing it, so the block grows.
+  const triggerClassName = "-my-px grid min-h-11 min-w-0 auto-rows-min py-px text-left text-sm";
   const accessibleStatus = fullIdentity
     ? m.agents_status_identity_label({ status: status.label, identity: fullIdentity })
     : status.label;
   const content = (
     <>
-      <span className="flex min-w-0 items-center justify-between gap-0 @min-[24rem]/agent-status:gap-4">
-        <strong className="min-w-0 truncate font-semibold text-kumo-strong">{name}</strong>
+      <span className="flex min-w-0 flex-wrap items-center justify-between gap-x-4 @min-[24rem]/agent-status:flex-nowrap">
+        <strong className="shrink-0 font-semibold text-kumo-strong">{name}</strong>
         <span
           className={`inline-flex shrink-0 items-center gap-1.5 font-medium ${status.action ? "text-kumo-link" : "text-kumo-default"}`}
           data-state={status.tone}
@@ -122,6 +142,15 @@ function AgentStatusRow({
         >
           {content}
         </Link>
+      ) : !status.guidance ? (
+        // Nothing to act on and nothing more to say: the row is plain text, not a control that opens
+        // a popover repeating it. The title keeps a truncated identity readable on hover.
+        <div className={triggerClassName} title={fullIdentity || undefined}>
+          <span className="sr-only">{`${name}: ${accessibleStatus}`}</span>
+          <span aria-hidden="true" className="contents">
+            {content}
+          </span>
+        </div>
       ) : (
         <Popover>
           <Popover.Trigger
@@ -129,7 +158,7 @@ function AgentStatusRow({
               <Button
                 variant="inline"
                 type="button"
-                className={`${triggerClassName} h-11! w-full grid-cols-[minmax(0,1fr)] items-stretch justify-stretch gap-0 px-0! font-normal! hover:bg-transparent`}
+                className={`${triggerClassName} w-full grid-cols-[minmax(0,1fr)] items-stretch justify-stretch gap-0 px-0! font-normal! hover:bg-transparent`}
                 aria-label={m.agents_status_details_label({ name, status: accessibleStatus })}
               />
             }

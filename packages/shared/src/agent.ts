@@ -2,6 +2,7 @@ import { z } from "zod";
 import { AgentPermissionsSchema } from "./agent-permissions.js";
 import { ContextTreesSchema } from "./context-tree.js";
 import {
+  AGENT_NAME_PATTERN,
   AGENT_SLUG_MAX_LENGTH,
   RuntimeInstructionSchema,
   RuntimeInstructionsSchema,
@@ -9,16 +10,24 @@ import {
   RuntimeModelSchema,
   RuntimeReasoningEffortSchema,
   renderPlatformInstructions,
+  runtimeUtf8Length,
 } from "./runtime-config.js";
+
+export { AGENT_NAME_PATTERN, AGENT_SLUG_CHARACTERS } from "./runtime-config.js";
 
 export const AgentNameSchema = z
   .string()
   .trim()
+  // Compatibility ideographs render like their unified forms; NFC folds them into one name.
+  .normalize("NFC")
   .min(1, "Agent name is required")
-  .max(AGENT_SLUG_MAX_LENGTH, `Agent name must be at most ${AGENT_SLUG_MAX_LENGTH} characters`)
   .regex(
-    /^[a-z0-9][a-z0-9-]*$/,
-    "Agent name must start with a lowercase letter or number and contain only lowercase letters, numbers, and hyphens",
+    AGENT_NAME_PATTERN,
+    "Agent name may contain only letters, numbers, Chinese characters, and hyphens, and must not start with a hyphen",
+  )
+  .refine(
+    (name) => runtimeUtf8Length(name) <= AGENT_SLUG_MAX_LENGTH,
+    `Agent name must be at most ${AGENT_SLUG_MAX_LENGTH} bytes (21 Chinese characters)`,
   );
 export const AgentDisplayNameSchema = z.string().trim().min(1).max(120);
 export const AgentCreationIntentIdSchema = z.string().uuid();
@@ -146,9 +155,33 @@ export const AgentListActivitySchema = z.discriminatedUnion("state", [
     .object({
       state: z.literal("working"),
       startedAt: z.string().datetime(),
+      /** Tasks with a Turn the Computer accepted and has not reported yet. Older Servers omit it. */
+      runningTaskCount: z.number().int().safe().positive().optional(),
     })
     .strict(),
 ]);
+
+/**
+ * Clients that render running Task counts send this header with the version below. `runningTaskCount`
+ * is additive to a strict object, so a client that does not ask for it never receives it: older
+ * clients validate the working activity strictly and would reject the field.
+ */
+export const AGENT_ACTIVITY_TASK_COUNT_HEADER = "x-opentag-agent-activity-task-count";
+export const AGENT_ACTIVITY_TASK_COUNT_VERSION = "1";
+
+export function requestsAgentActivityTaskCount(value: string | string[] | undefined): boolean {
+  return (Array.isArray(value) ? value[0] : value) === AGENT_ACTIVITY_TASK_COUNT_VERSION;
+}
+
+/** The activity a client receives: the count only for a client that declared it can read it. */
+export function projectAgentActivityForClient(
+  activity: z.infer<typeof AgentListActivitySchema>,
+  includeTaskCount: boolean,
+): z.infer<typeof AgentListActivitySchema> {
+  if (includeTaskCount || activity.state !== "working" || activity.runningTaskCount === undefined) return activity;
+  const { runningTaskCount: _count, ...legacy } = activity;
+  return legacy;
+}
 
 export const AgentDetailSchema = AgentSummarySchema.extend({
   activity: AgentListActivitySchema,

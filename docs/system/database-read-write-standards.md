@@ -61,6 +61,15 @@ Finding a deviation does not authorize its implementation.
   [Observability](../operations/observability.md). A statement deadline,
   transaction idle timeout, transport deadline, and whole-operation budget
   cover different waits; document which component owns each applicable bound.
+  Benchmark admin, fixture and EXPLAIN connections reuse the shared client with
+  one connection and a five-second native close. Fixture statements use the
+  shared 30-second statement / 35-second elapsed budgets, measured separately
+  from the shorter startup migration budget.
+
+HTTP authentication hooks belong in route options so application shutdown can
+retain their actual Promises through client disconnect. Ordinary callers need
+no extra drain set. Detached work and operations hidden by timeout races retain
+an explicit owner until actual settlement.
 
 ## Migrations
 
@@ -85,7 +94,7 @@ Do not widen the routine startup budget or rewrite merged migration history to a
 | ID | Requirement | Review evidence |
 | --- | --- | --- |
 | AT1 | Facts that must hold together commit in one atomic statement or transaction. | List the invariant, primary and related writes, deduplication record, and state change. A mid-operation failure leaves no partial combination. |
-| AT2 | Helpers whose work must roll back together use the same transaction executor. | Trace the actual caller through nested services and callbacks. A root pool call inside a transaction callback does not join that transaction. A locking helper requires a transaction in its type contract; ordinary reads may accept either executor. |
+| AT2 | Helpers whose work must roll back together use the same transaction executor. | Trace nested services and library hooks to the transaction, including adapter opt-ins. A root pool call does not join it. A locking helper requires a transaction type; ordinary reads may accept either executor. |
 | AT3 | Failure after commit is distinct from rollback. | A notification or cleanup failure does not undo a committed lifecycle change or prove an object is unreferenced. Keep the commit boundary visible in error handling. |
 
 ## 2. Final database authority

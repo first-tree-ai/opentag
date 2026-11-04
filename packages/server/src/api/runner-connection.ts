@@ -70,8 +70,8 @@ export interface RunnerWebSocketRouteOptions {
 export interface RunnerCloudSessionPort {
   handleReceived(connection: CloudConnectionRecord, frame: RunnerCloudSessionMessageReceivedFrame): Promise<void>;
   handleSettled(connection: CloudConnectionRecord, frame: RunnerCloudSessionMessageSettledFrame): Promise<void>;
-  /** Synchronously fails pending dispatches; async durable cleanup is handled internally. */
-  detachConnection(connectionId: string): void;
+  /** Synchronously fails pending dispatches and returns any durable cleanup. */
+  detachConnection(connectionId: string): void | Promise<void>;
 }
 
 const DEFAULT_AUTH_TIMEOUT_MS = 5_000;
@@ -160,6 +160,9 @@ export class RunnerConnection {
   #credentialTimer: ReturnType<typeof setInterval> | undefined;
   #queued = 0;
   #chain: Promise<void> = Promise.resolve();
+  #renewal: Promise<void> | undefined;
+  #cleanup: Promise<void> | undefined;
+  #closing: Promise<void> | undefined;
 
   constructor(input: {
     socket: WebSocket;
@@ -177,6 +180,13 @@ export class RunnerConnection {
     this.#heartbeatTimeoutMs = input.options.heartbeatTimeoutMs ?? DEFAULT_HEARTBEAT_TIMEOUT_MS;
     this.#credentialRenewalIntervalMs =
       input.options.credentialRenewalIntervalMs ?? Math.max(1_000, Math.floor(input.options.tokens.ttlMs / 2));
+  }
+
+  close(): Promise<void> {
+    if (this.#closing) return this.#closing;
+    this.#closeWith(1001, "Server shutting down");
+    this.#closing = Promise.allSettled([this.#chain, this.#renewal, this.#cleanup]).then(() => undefined);
+    return this.#closing;
   }
 
   start(): void {
@@ -240,13 +250,15 @@ export class RunnerConnection {
    * Teardown order is significant: Cloud delivery first closes the credential executions (the
    * registry close synchronously invalidates every Session proof correlated with them), then the
    * collaboration owner synchronously fails its pending dispatches and schedules its durable
-   * revocation cleanup. Both are idempotent, so either close path is safe.
+   * revocation cleanup. Clearing the retained connection makes both close paths share one cleanup.
    */
   #detachCloudConnection(): void {
     const connection = this.#cloudConnection;
     if (!connection) return;
+    this.#cloudConnection = undefined;
     this.#options.cloudDelivery?.detachConnection(connection.connectionId);
-    this.#options.cloudSession?.detachConnection(connection.connectionId);
+    this.#cleanup = Promise.resolve(this.#options.cloudSession?.detachConnection(connection.connectionId));
+    void this.#cleanup.catch(() => undefined);
   }
 
   #sendAuthResult(ok: boolean, requestId: string | undefined): void {
@@ -686,7 +698,15 @@ export class RunnerConnection {
     });
   }
 
-  async #renewCredential(): Promise<void> {
+  #renewCredential(): Promise<void> {
+    if (this.#closed) return Promise.resolve();
+    this.#renewal ??= this.#performCredentialRenewal().finally(() => {
+      this.#renewal = undefined;
+    });
+    return this.#renewal;
+  }
+
+  async #performCredentialRenewal(): Promise<void> {
     const current = this.#scope;
     if (!current || this.#closed || !this.#options.hub.isCurrent(current.sandboxId, this.#adapter)) return;
     // Revalidate the database allocation before minting anything; a stale connection must never

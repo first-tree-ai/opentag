@@ -15,7 +15,7 @@ import {
   type TurnReportRequest,
 } from "@opentag/shared";
 import { and, eq, isNotNull, isNull } from "drizzle-orm";
-import type { DatabaseClient } from "../../db/client.js";
+import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   agents,
   imBindings,
@@ -32,9 +32,11 @@ import {
   updateCurrentPerformanceContext,
 } from "../../observability/performance-logger.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
+import { withAgentSessionStopAuthority } from "../../runtime/agent-session-stop-authority.js";
 import type { DeliveryDispatchStatus, RuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
 import type { RuntimeBusinessContext } from "../../runtime/runtime-session.js";
 import type { RuntimeCredentialOwner } from "../../runtime-credentials/runtime-credential-owner.js";
+import type { AgentSessionStopTarget } from "../agents/agent-service.js";
 import { InboundReceiptPendingError } from "../im/inbound-admission.js";
 import type { SessionCliProofService } from "../sessions/session-cli-proof-service.js";
 import { CloudImSteering } from "./cloud-im-steering.js";
@@ -324,8 +326,12 @@ export class CloudDeliveryOwner {
     );
   }
 
-  requestSteer(request: import("@opentag/shared").RuntimeImSteerRequest, onDispatched: () => void) {
-    return this.#steering.request(request, onDispatched);
+  requestSteer(
+    request: import("@opentag/shared").RuntimeImSteerRequest,
+    onDispatched: () => void,
+    signal?: AbortSignal,
+  ) {
+    return this.#steering.request(request, onDispatched, signal);
   }
 
   handleSteerResult(record: CloudConnectionRecord, frame: import("@opentag/shared").RunnerCloudSteerResultFrame) {
@@ -347,7 +353,9 @@ export class CloudDeliveryOwner {
     inputHash: string;
     installationId: string;
     request: DirectImMessageDeliveryRequest;
+    signal?: AbortSignal;
   }): Promise<void> {
+    input.signal?.throwIfAborted();
     const request = input.request;
     updateCurrentPerformanceContext({
       agentId: request.agentId,
@@ -356,6 +364,7 @@ export class CloudDeliveryOwner {
       deliveryId: request.deliveryId,
     });
     const owned = await loadManagedSandboxBySessionId(this.#database, request.sessionId);
+    input.signal?.throwIfAborted();
     if (!owned) throw new CloudDeliveryDispatchError("environment_not_ready", "The Session has no current Sandbox");
     const row = owned.sandbox;
     updateCurrentPerformanceContext({
@@ -386,6 +395,7 @@ export class CloudDeliveryOwner {
     if (!(await this.#modelGrants.isModelAllowed(request.runtime.model ?? ""))) {
       throw new CloudDeliveryDispatchError("model_unavailable", "The Session model is not offered by the Router");
     }
+    input.signal?.throwIfAborted();
     const connection = requireDispatchableConnection(this.#fence.connectionForSandbox(row.id), snapshot.scope);
     if (!supportsBatchRequest(request, connection))
       throw new CloudDeliveryDispatchError("runner_not_ready", "The Runner does not support batched input");
@@ -395,8 +405,10 @@ export class CloudDeliveryOwner {
       computerId: input.computerId,
       instanceId: connection.instanceId,
     });
+    input.signal?.throwIfAborted();
     assertCloudDispatchStatus(dispatch);
     await this.#assertEnvironmentStillOwned(row, request, input.inputHash);
+    input.signal?.throwIfAborted();
     await this.#sendDeliveryRunFrame(row.id, connection.connectionId, socket, request, input.computerId);
     await this.#recordActivity(row.id);
   }
@@ -1037,8 +1049,26 @@ export class CloudDeliveryOwner {
    * Two statements regardless of the backlog: the eligible deliveries, then (only when the list is
    * nonempty) the one Sandbox row `sandboxes_session_id_unique` guarantees for the Session.
    */
-  async cancelSessionDeliveries(sessionId: string): Promise<CloudSessionCancelOutcome[]> {
-    const rows = await this.#database
+  async cancelSessionDeliveries(
+    sessionId: string,
+    target?: AgentSessionStopTarget,
+  ): Promise<CloudSessionCancelOutcome[]> {
+    if (target) {
+      if (target.sessionId !== sessionId) return [];
+      return (
+        (await withAgentSessionStopAuthority(this.#database, target, (executor) =>
+          this.#cancelSessionDeliveries(sessionId, executor),
+        )) ?? []
+      );
+    }
+    return this.#cancelSessionDeliveries(sessionId, this.#database);
+  }
+
+  async #cancelSessionDeliveries(
+    sessionId: string,
+    executor: DatabaseClient | DatabaseTransaction,
+  ): Promise<CloudSessionCancelOutcome[]> {
+    const rows = await executor
       .select({
         id: imMessageDeliveries.id,
         turnId: imMessageDeliveries.turnId,
@@ -1052,14 +1082,16 @@ export class CloudDeliveryOwner {
           isNull(imMessageDeliveries.reportedAt),
         ),
       );
-    for (const row of rows) {
-      if (row.turnId) this.#revokeTurnGrants(row.turnId);
+    const closeExecutions = this.#credentials?.owner.prepareSessionExecutionClose(sessionId, "execution_closed");
+    if (rows.length === 0) {
+      closeExecutions?.();
+      return [];
     }
-    this.#credentials?.owner.closeSessionExecutions(sessionId, "execution_closed");
-    if (rows.length === 0) return [];
     // The Session's single Sandbox row is read once for the whole backlog. The connection fence
     // itself stays a per-delivery read, so a replacement attached mid-loop is still observed.
-    const sandbox = await loadSandboxRecordBySessionId(this.#database, sessionId);
+    const sandbox = await loadSandboxRecordBySessionId(executor, sessionId);
+    for (const row of rows) if (row.turnId) this.#revokeTurnGrants(row.turnId);
+    closeExecutions?.();
     const outcomes: CloudSessionCancelOutcome[] = [];
     for (const row of rows) {
       const record = sandbox ? this.#fence.connectionForSandbox(sandbox.id) : undefined;

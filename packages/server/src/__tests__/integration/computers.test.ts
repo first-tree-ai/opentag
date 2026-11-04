@@ -48,7 +48,6 @@ async function fixture() {
     client.database,
     new BetterAuthSessionTokens(
       createBetterAuth(client.database, {
-        onSessionCreating: async () => {},
         publicUrl: "http://localhost:8000",
         secret: betterAuthSecret,
         secureCookies: false,
@@ -216,7 +215,7 @@ describe("Computer connection persistence", () => {
     }
   });
 
-  it("creates a new Computer for every create code and never reuses an installation", async () => {
+  it("creates a Computer per installation and repairs the same installation in place on rerun", async () => {
     const value = await fixture();
     try {
       const first = await connect(value);
@@ -224,10 +223,53 @@ describe("Computer connection persistence", () => {
       expect(second.computerId).not.toBe(first.computerId);
       expect(second.installationId).not.toBe(first.installationId);
       expect(await value.database.select().from(computers)).toHaveLength(2);
-      await expect(connect(value, value.bootstrap.userId, first.installationId)).rejects.toMatchObject({
-        code: "COMPUTER_IDENTITY_CONFLICT",
-        statusCode: 409,
+      const rerun = await connect(value, value.bootstrap.userId, first.installationId);
+      expect(rerun.computerId).toBe(first.computerId);
+      expect(await value.database.select().from(computers)).toHaveLength(2);
+      await expect(value.machineAuth.verifyMachineToken(first.machineToken)).rejects.toMatchObject({
+        code: "AUTH_INVALID_TOKEN",
       });
+      const [other] = await value.database
+        .insert(users)
+        .values({ email: "other@example.com", displayName: "Other" })
+        .returning();
+      if (!other) throw new Error("Account insert returned no row");
+      const foreign = await value.machineAuth.issueForAccount(other.id, {});
+      await expect(
+        value.machineAuth.exchangeConnectCode(exchangeInput(foreign.code, first.installationId)),
+      ).rejects.toMatchObject({ code: "COMPUTER_ACCOUNT_CONFLICT", statusCode: 409 });
+      const [foreignCode] = await value.database
+        .select()
+        .from(computerConnectCodes)
+        .where(eq(computerConnectCodes.id, foreign.connectCodeId));
+      expect(foreignCode?.consumedAt).toBeNull();
+    } finally {
+      await value.sql.end();
+    }
+  });
+
+  it("admits exactly one Computer when two create codes race for a new installation", async () => {
+    const value = await fixture();
+    try {
+      const installationId = crypto.randomUUID();
+      const codes = await Promise.all([
+        value.machineAuth.issueForAccount(value.bootstrap.userId, {}),
+        value.machineAuth.issueForAccount(value.bootstrap.userId, {}),
+      ]);
+      const results = await Promise.allSettled(
+        codes.map((issued) =>
+          value.machineAuth.exchangeConnectCode({ ...exchangeInput(issued.code, installationId), reportOutcome: true }),
+        ),
+      );
+      const fulfilled = results.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+      expect(fulfilled.length).toBeGreaterThanOrEqual(1);
+      expect(new Set(fulfilled.map((result) => result.computerId)).size).toBe(1);
+      for (const result of results) {
+        if (result.status === "rejected") {
+          expect(result.reason).toMatchObject({ code: "COMPUTER_IDENTITY_CONFLICT", statusCode: 409 });
+        }
+      }
+      expect(await value.database.select().from(computers)).toHaveLength(1);
     } finally {
       await value.sql.end();
     }
@@ -985,7 +1027,7 @@ describe("Computer connection persistence", () => {
         expect(issued.headers["cache-control"]).toBe("no-store");
         const command = issued.json().bootstrapCommand as string;
         expect(command).toContain(
-          'opentag_installer="$(mktemp)" && curl -fsSL https://dl.opentag.build/releases/staging/install.sh -o "$opentag_installer" && sh "$opentag_installer" && PATH="$HOME/.local/bin${PATH:+:$PATH}" "$HOME/.local/bin/opentag-staging" connect --server https://dev.example.com -- otcc_',
+          'opentag_installer="$(mktemp)" && curl -fsSL https://dl.opentag.build/releases/staging/install.sh -o "$opentag_installer" && sh "$opentag_installer" --quiet && PATH="$HOME/.local/bin${PATH:+:$PATH}" "$HOME/.local/bin/opentag-staging" connect --server https://dev.example.com -- otcc_',
         );
         const code = command.split(" -- ").at(-1);
         if (!code) throw new Error("Computer connect command did not contain a code");

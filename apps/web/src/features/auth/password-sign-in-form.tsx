@@ -73,11 +73,7 @@ export function PasswordSignInForm({
        */
       navigate(resolveSignInDestination(next) ?? DEFAULT_SIGN_IN_DESTINATION);
     } catch (cause) {
-      /*
-       * The server's message is shown as it is. It is written to be shown — a rejected sign-in says only that the
-       * address or password was wrong, so restating it here could only make it less accurate.
-       */
-      setError(cause instanceof ApiError ? cause.message : m.auth_sign_in_failed());
+      setError(passwordAuthFailure(cause, registering));
       setSubmitting(false);
       inFlight.current = false;
       onSubmittingChange?.(false);
@@ -187,4 +183,19 @@ export function PasswordSignInForm({
       </p>
     </form>
   );
+}
+
+/**
+ * A refused sign-in or registration in the reader's language. The Server's codes carry the decision; its English
+ * message is for logs, so each known code has its own copy and anything else reads as a plain failure.
+ */
+function passwordAuthFailure(cause: unknown, registering: boolean): string {
+  const code = cause instanceof ApiError ? cause.code : undefined;
+  if (code === "AUTH_INVALID_TOKEN") return m.auth_error_invalid_credentials();
+  if (code === "AUTH_EMAIL_CONFLICT") return m.auth_error_email_taken();
+  if (code === "AUTH_USER_SUSPENDED") return m.auth_error_account_suspended();
+  if (code === "RATE_LIMITED") return m.auth_error_rate_limited();
+  if (code === "SERVICE_UNAVAILABLE") return m.auth_error_unavailable();
+  if (registering && code === "VALIDATION_ERROR") return m.auth_error_registration_refused();
+  return registering ? m.auth_error_registration_failed() : m.auth_sign_in_failed();
 }

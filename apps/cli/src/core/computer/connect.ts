@@ -4,11 +4,17 @@ import {
   machineCredentialsPath,
   normalizeServerUrl,
   type OpenTagApi,
+  readComputerIdentity,
+  readMachineCredentials,
   resolveOpenTagHome,
   storeBoundAccountComputer,
   writeComputerIdentityAtomically,
 } from "@opentag/client";
-import { type AgentRuntimeProvider, withComputerRuntimeProviderSupport } from "@opentag/shared";
+import {
+  type AgentRuntimeProvider,
+  type ComputerConnectOutcome,
+  withComputerRuntimeProviderSupport,
+} from "@opentag/shared";
 import { CLI_VERSION } from "../../build-info.js";
 import { resolveCommandContext } from "../command/context.js";
 import { redactSecrets } from "../command/policy.js";
@@ -38,6 +44,8 @@ export interface ComputerConnectResult {
   computerId: string;
   credentialsPath: string;
   message: string;
+  /** What the Server did; absent when an older Server did not report it. */
+  outcome?: ComputerConnectOutcome;
   service?: DaemonServiceInfo;
   /**
    * Redacted daemon service failure after the machine credential was stored. The connection is
@@ -58,46 +66,56 @@ export async function runComputerConnect(options: ComputerConnectOptions): Promi
   const clientVersion = withComputerRuntimeProviderSupport(CLI_VERSION);
   const home = options.home ?? resolveOpenTagHome();
   const serverUrl = normalizeServerUrl(options.serverUrl);
-  const currentPlatform = platform();
-  if (currentPlatform !== "darwin" && currentPlatform !== "linux" && currentPlatform !== "win32") {
-    throw new Error(`Unsupported Computer platform: ${currentPlatform}`);
-  }
+  const currentPlatform = supportedPlatform();
   const manager = options.noStart ? undefined : (options.manager ?? (await createDaemonServiceManager({ home })));
   await manager?.preflight();
   const serviceBefore = await manager?.status();
-  const identity = await allocateComputerIdentity(home, serverUrl);
+  const identity = await resolveInstallationIdentity(home, serverUrl);
+  const displayName = hostname();
   const api = options.api ?? (await resolveCommandContext({ home, serverUrl })).api;
   if (!api) throw new Error("Command context did not resolve an API");
   const exchange = await api.exchangeComputerConnectCode({
     code: options.code,
     installationId: identity.computerId,
-    displayName: hostname(),
+    displayName,
     platform: currentPlatform,
     arch: arch(),
     clientVersion,
+    ...(await currentMachineTokenField(home, serverUrl)),
+    reportOutcome: true,
   });
   const result: ComputerConnectResult = {
     agentId: exchange.agentId,
     runtimeProvider: exchange.runtimeProvider,
     computerId: exchange.computerId,
     credentialsPath: machineCredentialsPath(home),
-    message: exchange.agentId
-      ? `Connected Computer ${exchange.computerId} and bound Agent ${exchange.agentId}`
-      : `Connected Computer ${exchange.computerId}`,
+    message: connectedMessage(displayName, exchange.agentId, exchange.outcome),
+    ...(exchange.outcome ? { outcome: exchange.outcome } : {}),
   };
+  if (exchange.outcome === "already_connected" || exchange.machineToken === undefined) {
+    return ensureServiceWithoutChange(result, manager, serviceBefore);
+  }
   let stage: "credentials" | "identity" = "credentials";
   try {
     // Save the non-reconstructable token first. Identity is derivable from this credential, so
     // repair-local can finish a partial write (including a crash or an error after rename).
     // These are two durable file writes, not an atomic transaction; never roll back to a token
     // that the committed exchange may already have revoked.
-    await storeBoundAccountComputer({ ...exchange, serverUrl }, home);
+    await storeBoundAccountComputer(
+      {
+        computerId: exchange.computerId,
+        installationId: exchange.installationId,
+        machineToken: exchange.machineToken,
+        serverUrl,
+      },
+      home,
+    );
     stage = "identity";
     await writeComputerIdentityAtomically(home, identity);
   } catch (error) {
     return {
       ...result,
-      message: `${result.message} on the Server; local persistence is incomplete`,
+      message: `Connected this computer (${displayName}) on the openTag server, but could not save its credentials here; local persistence is incomplete.`,
       persistenceError: {
         stage,
         installationId: identity.computerId,
@@ -117,6 +135,66 @@ export async function runComputerConnect(options: ComputerConnectOptions): Promi
       serviceError: safeFailureMessage(error, "Daemon service failed", exchange.machineToken),
     };
   }
+}
+
+/**
+ * Rerunning connect on the same home keeps its installation identity, so the Server can recognize this
+ * machine (already connected, repair in place, or another Account) instead of adding a Computer.
+ */
+async function resolveInstallationIdentity(home: string, serverUrl: string) {
+  const existing = await readComputerIdentity(home);
+  if (existing && existing.serverUrl === serverUrl) {
+    return { version: 2 as const, computerId: existing.computerId, serverUrl };
+  }
+  return allocateComputerIdentity(home, serverUrl);
+}
+
+/**
+ * Nothing changed on the Server, so local credentials stay as they are; only make sure the daemon
+ * service is running, without restarting a healthy one.
+ */
+async function ensureServiceWithoutChange(
+  result: ComputerConnectResult,
+  manager: DaemonServiceManager | undefined,
+  serviceBefore: DaemonServiceInfo | undefined,
+): Promise<ComputerConnectResult> {
+  if (!manager || serviceBefore?.state === "active") {
+    return serviceBefore ? { ...result, service: serviceBefore } : result;
+  }
+  try {
+    return { ...result, service: await manager.installAndStart() };
+  } catch (error) {
+    return { ...result, serviceError: safeFailureMessage(error, "Daemon service failed", "") };
+  }
+}
+
+function supportedPlatform(): "darwin" | "linux" | "win32" {
+  const current = platform();
+  if (current !== "darwin" && current !== "linux" && current !== "win32") {
+    throw new Error(`Unsupported Computer platform: ${current}`);
+  }
+  return current;
+}
+
+/**
+ * The stored token for this Server, if any, as an exchange field. An unreadable credentials file is
+ * treated as having none: the exchange then repairs or creates instead of reporting already connected.
+ */
+async function currentMachineTokenField(home: string, serverUrl: string): Promise<{ machineToken?: string }> {
+  try {
+    const stored = await readMachineCredentials(home);
+    return stored?.computer.serverUrl === serverUrl ? { machineToken: stored.computer.machineToken } : {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * One line in plain language, the same for every outcome: whether the Server created, repaired, or
+ * found the computer already connected is internal detail kept in the structured result and `--json`.
+ */
+function connectedMessage(displayName: string, agentId: string | undefined, _outcome?: ComputerConnectOutcome): string {
+  return `Connected this computer (${displayName}) to openTag${agentId ? " and bound the Agent to it" : ""}.`;
 }
 
 function safeFailureMessage(error: unknown, fallback: string, machineToken: string): string {

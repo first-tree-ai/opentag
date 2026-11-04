@@ -134,6 +134,14 @@ async function callUpstream(
 ): Promise<Response | undefined> {
   const context = await options.contextForExecution(claims);
   if (!context) throw new Error("Cloud execution has no owner");
+  updateCurrentPerformanceContext({
+    accountId: context.accountId,
+    agentId: context.agentId,
+    sessionId: claims.sessionId,
+    sandboxId: claims.sandboxId,
+    ...(claims.executionId ? { turnId: claims.executionId } : {}),
+    ...(claims.deliveryId ? { deliveryId: claims.deliveryId } : {}),
+  });
   return options.modelService.request({ ...body, model }, signal, options.config, context);
 }
 

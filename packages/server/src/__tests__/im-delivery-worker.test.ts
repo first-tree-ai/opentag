@@ -27,9 +27,11 @@ import {
   users,
 } from "../db/schema/index.js";
 import { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
+import { createPerformanceLogger, type PerformanceLogger } from "../observability/performance-logger.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import { ImDeliveryInputError, validateFreshImRequest } from "../runtime/im-delivery-content.js";
 import { fitDeliveryFrame } from "../runtime/im-delivery-custody.js";
+import { recordDeliveryFailure } from "../runtime/im-delivery-failure.js";
 import { runImDeliverySteerRecovery } from "../runtime/im-delivery-janitor.js";
 import { ImDeliveryWorker } from "../runtime/im-delivery-worker.js";
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
@@ -1865,16 +1867,53 @@ describe("ImDeliveryWorker database workflow", () => {
     expect(rejectedEvents).not.toContain("IM_DELIVERY_STEER_DEFERRED");
 
     await unit.reset();
+    const deferred = await steerFixture(unit);
+    const deferredEvents: string[] = [];
+    const deferredWarn = vi.fn();
+    await new ImDeliveryWorker({
+      database: unit.database,
+      domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), deferred, {
+        steerStatus: "rejected",
+        steerReason: "turn_finishing",
+      }) as never,
+      assembler: { assembleForSession: vi.fn() },
+      registry: deferred.registry,
+      logger: { debug: vi.fn(), info: vi.fn(), warn: deferredWarn, error: vi.fn() },
+      onDiagnostic: (code) => deferredEvents.push(code),
+    }).runOnce();
+    const [deferredRow] = await unit.database
+      .select({ lastErrorCode: imMessageDeliveries.lastErrorCode })
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, deferred.deliveryId));
+    expect(deferredRow?.lastErrorCode).toBe("IM_DELIVERY_STEER_DEFERRED");
+    expect(deferredWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "IM_DELIVERY_STEER_DEFERRED", outcome: "retry" }),
+      "IM delivery dispatch retry scheduled",
+    );
+    expect(deferredEvents).toEqual([]);
+
+    await unit.reset();
     const retry = await steerFixture(unit);
     const retryEvents: string[] = [];
+    const retryWarn = vi.fn();
     await new ImDeliveryWorker({
       database: unit.database,
       domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), retry, { steerStatus: "retry" }) as never,
       assembler: { assembleForSession: vi.fn() },
       registry: retry.registry,
+      logger: { debug: vi.fn(), info: vi.fn(), warn: retryWarn, error: vi.fn() },
       onDiagnostic: (code) => retryEvents.push(code),
     }).runOnce();
-    expect(retryEvents).toContain("IM_DELIVERY_STEER_STARTING");
+    const [retryRow] = await unit.database
+      .select({ lastErrorCode: imMessageDeliveries.lastErrorCode })
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, retry.deliveryId));
+    expect(retryRow?.lastErrorCode).toBe("IM_DELIVERY_STEER_STARTING");
+    expect(retryWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "IM_DELIVERY_STEER_STARTING", outcome: "retry" }),
+      "IM delivery dispatch retry scheduled",
+    );
+    expect(retryEvents).toEqual([]);
 
     await unit.reset();
     const failed = await steerFixture(unit);
@@ -1887,6 +1926,49 @@ describe("ImDeliveryWorker database workflow", () => {
       onDiagnostic: (code) => failedEvents.push(code),
     }).runOnce();
     expect(failedEvents).toContain("IM_DELIVERY_STEER_FAILED");
+
+    for (const [code, abnormal] of [
+      ["IM_DELIVERY_CUSTODY_DEFERRED", false],
+      ["IM_DELIVERY_STEER_UNKNOWN", true],
+    ] as const) {
+      await unit.reset();
+      const recorded = await steerFixture(unit);
+      const diagnostic = vi.fn();
+      const warn = vi.fn();
+      const metric = vi.fn();
+      await recordDeliveryFailure(
+        {
+          database: unit.database,
+          now: () => Date.now(),
+          onDiagnostic: diagnostic,
+          onMetric: metric,
+          logger: { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() },
+          custody: new PostgresRuntimeCustodyStore(unit.database),
+          readyRetryClaims: new Set(),
+          recheckReady: vi.fn(),
+        },
+        {
+          phase: "steer",
+          deliveryId: recorded.deliveryId,
+          agentId: recorded.agentId,
+          computerId: recorded.computerId,
+          attemptCount: 0,
+        },
+        code,
+      );
+      const [row] = await unit.database
+        .select({ lastErrorCode: imMessageDeliveries.lastErrorCode })
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, recorded.deliveryId));
+      expect(row?.lastErrorCode).toBe(code);
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ code, outcome: "retry" }),
+        "IM delivery dispatch retry scheduled",
+      );
+      expect(metric).toHaveBeenCalledWith({ name: "retry", value: 1 });
+      if (abnormal) expect(diagnosticCodes(diagnostic)).toEqual([code]);
+      else expect(diagnostic).not.toHaveBeenCalled();
+    }
   });
 
   it("fences competing custody, retired steer correlations, and recovery authority", async () => {
@@ -2834,7 +2916,133 @@ describe("ImDeliveryWorker database workflow", () => {
     await worker.notifyComputerReady(fixture.computerId);
     expect(await readDue()).toBe(clock + 30_000);
   });
+
+  it("populates delivery row performance context for subsequent DB and runtime operations across deliver, steer, and recover", async () => {
+    const records: Record<string, unknown>[] = [];
+    const perfLogger = createPerformanceLogger(
+      () =>
+        ({
+          debug: (payload: Record<string, unknown>) => records.push(payload),
+          info: (payload: Record<string, unknown>) => records.push(payload),
+          warn: (payload: Record<string, unknown>) => records.push(payload),
+        }) as never,
+    );
+    const db = wrapDbWithPerformanceLogger(unit.database, perfLogger);
+
+    const deliverFixture = await workerFixture(unit);
+    await unit.database.update(agents).set({ status: "active" }).where(eq(agents.id, deliverFixture.agentId));
+    const deliverWorker = new ImDeliveryWorker({
+      database: db,
+      domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), deliverFixture, {
+        reconcileStatus: "running",
+      }) as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(deliverFixture.runtime) },
+      registry: deliverFixture.registry,
+    });
+    await perfLogger.traceAsync({ module: "im-delivery", category: "worker", operation: "test.deliver" }, () =>
+      deliverWorker.runOnce(),
+    );
+    const firstDeliverPostRead = records.find(
+      (r) => r.operation === "db.update" && r.outcome === "completed" && r.deliveryId === deliverFixture.deliveryId,
+    );
+    expect(firstDeliverPostRead).toMatchObject({
+      accountId: deliverFixture.userId,
+      agentId: deliverFixture.agentId,
+      computerId: deliverFixture.computerId,
+      sessionId: deliverFixture.sessionId,
+      deliveryId: deliverFixture.deliveryId,
+    });
+
+    records.length = 0;
+    const clock = Date.now();
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({
+        state: "accepted",
+        inputHash: "frozen-hash",
+        turnId: "turn-recover",
+        reportOwnerInstanceId: deliverFixture.instanceId,
+        acceptedAt: new Date(clock),
+        nextAttemptAt: new Date(clock - 1),
+      })
+      .where(eq(imMessageDeliveries.id, deliverFixture.deliveryId));
+    await perfLogger.traceAsync({ module: "im-delivery", category: "worker", operation: "test.recover" }, () =>
+      deliverWorker.runOnce(),
+    );
+    const firstRecoverPostRead = records.find(
+      (r) => r.operation === "db.update" && r.outcome === "completed" && r.deliveryId === deliverFixture.deliveryId,
+    );
+    expect(firstRecoverPostRead).toMatchObject({
+      accountId: deliverFixture.userId,
+      agentId: deliverFixture.agentId,
+      computerId: deliverFixture.computerId,
+      sessionId: deliverFixture.sessionId,
+      deliveryId: deliverFixture.deliveryId,
+      turnId: "turn-recover",
+    });
+
+    await unit.reset();
+    records.length = 0;
+    const steer = await steerFixture(unit);
+    const steerWorker = new ImDeliveryWorker({
+      database: db,
+      domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), steer) as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(steer.runtime) },
+      registry: steer.registry,
+    });
+    await perfLogger.traceAsync({ module: "im-delivery", category: "worker", operation: "test.steer" }, () =>
+      steerWorker.runOnce(),
+    );
+    const steerSelects = records.filter(
+      (r) => r.operation === "db.select" && r.outcome === "completed" && r.deliveryId === steer.deliveryId,
+    );
+    expect(steerSelects[1]).toMatchObject({
+      accountId: steer.userId,
+      agentId: steer.agentId,
+      computerId: steer.computerId,
+      sessionId: steer.sessionId,
+      deliveryId: steer.deliveryId,
+      turnId: "turn-root",
+    });
+  });
 });
+
+function wrapDbWithPerformanceLogger(
+  database: UnitDatabase["database"],
+  perfLogger: PerformanceLogger,
+): UnitDatabase["database"] {
+  const wrapBuilder = <T extends object>(builder: T, operation: string): T =>
+    new Proxy(builder, {
+      get(target, prop, receiver) {
+        if (prop === "then") {
+          const thenFn = Reflect.get(target, prop, receiver);
+          if (typeof thenFn !== "function") return thenFn;
+          return (onFulfilled?: (v: unknown) => unknown, onRejected?: (e: unknown) => unknown) =>
+            perfLogger
+              .traceAsync(
+                { module: "db", category: "db", operation },
+                () => new Promise((resolve, reject) => thenFn.call(target, resolve, reject)),
+              )
+              .then(onFulfilled, onRejected);
+        }
+        const value = Reflect.get(target, prop, receiver);
+        if (typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          const next = value.apply(target, args);
+          return next && typeof next === "object" ? wrapBuilder(next, operation) : next;
+        };
+      },
+    });
+  return new Proxy(database, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if ((prop === "select" || prop === "update") && typeof value === "function") {
+        return (...args: unknown[]) => wrapBuilder(value.apply(target, args), `db.${String(prop)}`);
+      }
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
 
 async function workerFixture(unit: UnitDatabase) {
   const now = new Date(Date.now() + 60 * 60_000);

@@ -78,10 +78,20 @@ const SELECT_TARGET_PATTERNS: readonly RegExp[] = [
 const CTE_NAME_PATTERN =
   /(?:\bwith(?:\s+recursive)?\s+|,\s*)"?([A-Za-z_][A-Za-z0-9_]*)"?\s+as\s+(?:(?:not\s+)?materialized\s+)?\(/gi;
 
-const IDENTIFIER_CHAR_PATTERN = /[A-Za-z0-9_$\x80-\xff]/;
 const STRING_PREFIX_CHAR_PATTERN = /^[EeBbXxNn]$/;
-const DOLLAR_TAG_PATTERN = /^\$(?:[A-Za-z_\x80-\xff][A-Za-z0-9_\x80-\xff]*)?\$/;
 const SIMPLE_DOUBLE_QUOTED_IDENTIFIER = /^"([A-Za-z_][A-Za-z0-9_.]*)"/;
+
+function isDollarTagStartChar(code: number): boolean {
+  return (code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a) || code === 0x5f || code >= 0x80;
+}
+
+function isDollarTagChar(code: number): boolean {
+  return isDollarTagStartChar(code) || (code >= 0x30 && code <= 0x39);
+}
+
+function isIdentifierChar(code: number): boolean {
+  return isDollarTagChar(code) || code === 0x24;
+}
 
 function skipLineComment(raw: string, start: number): number {
   let i = start + 2;
@@ -129,10 +139,26 @@ function skipSingleQuotedLiteral(raw: string, quoteStart: number, allowBackslash
   return raw.length;
 }
 
+function matchDollarTag(raw: string, start: number): string | undefined {
+  if (raw[start] !== "$") return undefined;
+  let cursor = start + 1;
+  if (raw[cursor] === "$") return "$$";
+  const firstCode = raw.charCodeAt(cursor);
+  if (Number.isNaN(firstCode) || !isDollarTagStartChar(firstCode)) return undefined;
+  cursor += 1;
+  while (cursor < raw.length) {
+    if (raw[cursor] === "$") {
+      return raw.slice(start, cursor + 1);
+    }
+    if (!isDollarTagChar(raw.charCodeAt(cursor))) return undefined;
+    cursor += 1;
+  }
+  return undefined;
+}
+
 function skipDollarQuotedLiteral(raw: string, start: number): number | undefined {
-  const match = DOLLAR_TAG_PATTERN.exec(raw.slice(start));
-  if (!match) return undefined;
-  const delimiter = match[0];
+  const delimiter = matchDollarTag(raw, start);
+  if (!delimiter) return undefined;
   const closeIndex = raw.indexOf(delimiter, start + delimiter.length);
   return closeIndex === -1 ? raw.length : closeIndex + delimiter.length;
 }
@@ -157,7 +183,7 @@ function consumeDoubleQuotedIdentifier(raw: string, start: number): { nextIndex:
 }
 
 function prefixedLiteralQuoteOffset(raw: string, index: number): number {
-  if (index > 0 && IDENTIFIER_CHAR_PATTERN.test(raw[index - 1] ?? "")) return 0;
+  if (index > 0 && isIdentifierChar(raw.charCodeAt(index - 1))) return 0;
   const ch = raw[index] ?? "";
   if ((ch === "U" || ch === "u") && raw[index + 1] === "&" && raw[index + 2] === "'") return 2;
   if (STRING_PREFIX_CHAR_PATTERN.test(ch) && raw[index + 1] === "'") return 1;

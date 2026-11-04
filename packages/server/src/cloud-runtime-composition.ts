@@ -118,7 +118,7 @@ export function createSandboxRunnerRuntime(
   const tokens = new RunnerBootstrapTokenService(config.jwtSecret, {
     ttlSeconds: cloudRunner.bootstrapTokenTtlSeconds,
   });
-  const hub = new RunnerHub();
+  const hub = new RunnerHub(options.performanceLogger ? { performanceLogger: options.performanceLogger } : {});
   const store =
     options.workspaceStoreFactory?.({ tokenProvider }) ??
     new GcsWorkspaceObjectStore({ tokenProvider, ...(gcsFetch ? { fetchImpl: gcsFetch } : {}) });
@@ -157,6 +157,31 @@ export function createSandboxRunnerRuntime(
  * entrypoint composition regression calls this same factory, so a wiring drift here is a test
  * failure rather than a 404 (or an unregistered model route) in production.
  */
+function buildCommonCloudOwnerOptions(
+  input: {
+    database: DatabaseClient;
+    cloudRuntimeFence: CloudRuntimeFence;
+    hub: RunnerHub;
+    cloudModel: CloudModelConfig;
+    publicUrl: string;
+    noteActivity?: (sandboxId: string) => Promise<void>;
+    logger?: ServiceLogger;
+    performanceLogger?: PerformanceLogger;
+  },
+  cloudModelGrants: CloudModelGrantService | undefined,
+) {
+  return {
+    database: input.database,
+    fence: input.cloudRuntimeFence,
+    hub: input.hub,
+    ...(input.noteActivity ? { noteActivity: input.noteActivity } : {}),
+    ...(input.logger ? { logger: input.logger } : {}),
+    ...(input.performanceLogger ? { performanceLogger: input.performanceLogger } : {}),
+    ...(input.cloudModel.enabled ? { modelBaseUrl: `${input.publicUrl}${CLOUD_MODEL_PROXY_PATH}` } : {}),
+    ...(cloudModelGrants ? { modelGrants: cloudModelGrants } : {}),
+  };
+}
+
 export function createCloudDeliveryComposition(input: {
   cloudModel: CloudModelConfig;
   jwtSecret: string;
@@ -183,6 +208,7 @@ export function createCloudDeliveryComposition(input: {
   /** E7 business-activity clock from the allocation service; absent keeps Cloud delivery untracked. */
   noteActivity?: (sandboxId: string) => Promise<void>;
   logger?: ServiceLogger;
+  performanceLogger?: PerformanceLogger;
 }): CloudDeliveryComposition {
   if (!input.cloudRuntimeFence || !input.hub) return {};
   const cloudModelCatalog = input.cloudModel.enabled
@@ -200,15 +226,10 @@ export function createCloudDeliveryComposition(input: {
           ttlSeconds: input.cloudModel.tokenTtlSeconds,
         })
       : undefined;
-  const common = {
-    database: input.database,
-    fence: input.cloudRuntimeFence,
-    hub: input.hub,
-    ...(input.noteActivity ? { noteActivity: input.noteActivity } : {}),
-    ...(input.logger ? { logger: input.logger } : {}),
-    ...(input.cloudModel.enabled ? { modelBaseUrl: `${input.publicUrl}${CLOUD_MODEL_PROXY_PATH}` } : {}),
-    ...(cloudModelGrants ? { modelGrants: cloudModelGrants } : {}),
-  };
+  const common = buildCommonCloudOwnerOptions(
+    { ...input, cloudRuntimeFence: input.cloudRuntimeFence, hub: input.hub },
+    cloudModelGrants,
+  );
   const cloudDeliveryOwner = new CloudDeliveryOwner({
     ...common,
     custody: input.custody,

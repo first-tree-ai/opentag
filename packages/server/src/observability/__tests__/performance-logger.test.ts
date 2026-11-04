@@ -8,6 +8,7 @@ import {
   safePerformanceErrorCode,
   updateCurrentPerformanceContext,
 } from "../performance-logger.js";
+import { instrumentService, instrumentWorker } from "../service-instrumentation.js";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -376,6 +377,80 @@ describe("performance logger", () => {
       dbLevel: "info",
       startLevel: "info",
       slowThresholdMs: 1_000,
+    });
+  });
+
+  it("propagates turnId, sandboxId, deliveryId, sessionId, and agentId across nested context and extracts nested resource IDs", async () => {
+    const records: Array<{ payload: Record<string, unknown> }> = [];
+    const fakeLogger = {
+      isLevelEnabled: () => true,
+      debug: (payload: Record<string, unknown>) => records.push({ payload }),
+      info: (payload: Record<string, unknown>) => records.push({ payload }),
+      warn: (payload: Record<string, unknown>) => records.push({ payload }),
+    };
+    const perf = createPerformanceLogger(() => fakeLogger as never);
+
+    const sandboxService = instrumentService(
+      {
+        async handleScope(input: {
+          scope: { sandboxId: string; sessionId: string };
+          claims: { turnId: string };
+          request: { agentId: string; deliveryId: string };
+        }) {
+          return input.scope.sandboxId;
+        },
+      },
+      { serviceName: "SandboxRunnerService", perfLogger: perf },
+    );
+
+    const worker = instrumentWorker(
+      {
+        async notifyCloudRunnerReady(allocation: { sandboxId: string; sessionId: string }) {
+          updateCurrentPerformanceContext({
+            agentId: "agent-turn-1",
+            deliveryId: "deliv-turn-1",
+            turnId: "turn-uuid-1",
+          });
+          return sandboxService.handleScope({
+            scope: allocation,
+            claims: { turnId: "turn-uuid-1" },
+            request: { agentId: "agent-turn-1", deliveryId: "deliv-turn-1" },
+          });
+        },
+      },
+      { workerName: "ImDeliveryWorker", perfLogger: perf },
+    );
+
+    await worker?.notifyCloudRunnerReady({ sandboxId: "sbx-1", sessionId: "sess-1" });
+
+    const workerStart = records.find(
+      (r) => r.payload.operation === "ImDeliveryWorker.notifyCloudRunnerReady" && r.payload.outcome === "started",
+    )?.payload;
+    const workerEnd = records.find(
+      (r) => r.payload.operation === "ImDeliveryWorker.notifyCloudRunnerReady" && r.payload.outcome === "completed",
+    )?.payload;
+    const serviceStart = records.find(
+      (r) => r.payload.operation === "SandboxRunnerService.handleScope" && r.payload.outcome === "started",
+    )?.payload;
+
+    expect(workerStart).toMatchObject({
+      sandboxId: "sbx-1",
+      sessionId: "sess-1",
+    });
+    expect(workerEnd).toMatchObject({
+      sandboxId: "sbx-1",
+      sessionId: "sess-1",
+      agentId: "agent-turn-1",
+      deliveryId: "deliv-turn-1",
+      turnId: "turn-uuid-1",
+    });
+    expect(serviceStart).toMatchObject({
+      parentCallId: workerStart?.callId,
+      sandboxId: "sbx-1",
+      sessionId: "sess-1",
+      agentId: "agent-turn-1",
+      deliveryId: "deliv-turn-1",
+      turnId: "turn-uuid-1",
     });
   });
 });

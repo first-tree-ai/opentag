@@ -19,7 +19,11 @@ import {
 } from "@opentag/shared";
 import type WebSocket from "ws";
 import type { RawData } from "ws";
-import type { PerformanceLogger, PerformanceOperationHandle } from "../observability/performance-logger.js";
+import {
+  type PerformanceLogger,
+  type PerformanceOperationHandle,
+  runWithPerformanceContext,
+} from "../observability/performance-logger.js";
 import {
   type RuntimeConnectionFence,
   type RuntimeCredentialBroker,
@@ -28,6 +32,7 @@ import {
 import { AsyncByteQueue, QUEUE_END } from "./data-transport-queue.js";
 import type { RuntimeExecutionRegistry } from "./execution-registry.js";
 import type { ProviderProxyAdapter, ProviderProxyRequest } from "./provider-proxy-adapter.js";
+import { RUNTIME_PROXY_FAILURE_CODES } from "./provider-proxy-support.js";
 import type { RuntimeProxyTicketStore } from "./ticket-store.js";
 
 interface ResolvedTransportLimits {
@@ -378,7 +383,15 @@ class ProxyDataConnection {
           stream.targetRecheck = check;
         },
       };
-      const response = await adapter.handle(request, authorization);
+      const perfContext = buildStreamPerformanceContext(
+        this.#transport.executions,
+        authorization.executionId,
+        authorization.sessionId,
+        stream.id,
+        frame.provider,
+        perfHandle,
+      );
+      const response = await runWithPerformanceContext(perfContext, () => adapter.handle(request, authorization));
       responseStatus = response.status;
       if (this.#settleIfStreamCancelled(perfHandle, stream, frame.provider, responseStatus)) {
         await response.body[Symbol.asyncIterator]().return?.();
@@ -448,7 +461,9 @@ class ProxyDataConnection {
     const safe =
       ["scope_denied", "invalid_request", "unavailable", "credential_scope_denied", "provider_unavailable"].includes(
         code,
-      ) || Object.hasOwn(GITHUB_PROXY_FAILURE_STATUSES, code);
+      ) ||
+      RUNTIME_PROXY_FAILURE_CODES.some((failureCode) => failureCode === code) ||
+      Object.hasOwn(GITHUB_PROXY_FAILURE_STATUSES, code);
     this.#transport.logger?.warn(
       { provider, code: safe ? code : "upstream_unavailable" },
       "Provider proxy stream failed",
@@ -640,6 +655,38 @@ function rawBuffer(data: RawData): Buffer {
   if (data instanceof ArrayBuffer) return Buffer.from(data);
   if (Array.isArray(data)) return Buffer.concat(data);
   return Buffer.from(data);
+}
+
+function buildStreamPerformanceContext(
+  executions: RuntimeExecutionRegistry | undefined,
+  executionId: string,
+  sessionId: string,
+  streamId: number,
+  provider: RuntimeCredentialProvider,
+  perfHandle?: PerformanceOperationHandle,
+) {
+  const execution = executions?.get(executionId);
+  const callId = perfHandle?.callId ?? `${executionId}:${streamId}`;
+  const operation = perfHandle?.context.operation ?? `runtime.provider-proxy.${provider}`;
+  if (!execution) {
+    return {
+      callId,
+      operation,
+      sessionId,
+    };
+  }
+  const delivery = execution.source?.kind === "delivery" ? execution.source : undefined;
+  const sandboxId = execution.sandbox?.sandboxId;
+  return {
+    callId,
+    operation,
+    accountId: execution.accountId,
+    agentId: execution.agentId,
+    sessionId: execution.sessionId,
+    computerId: execution.computerId,
+    ...(delivery ? { deliveryId: delivery.deliveryId, turnId: delivery.turnId } : {}),
+    ...(sandboxId ? { sandboxId } : {}),
+  };
 }
 
 function errorCodeOf(error: unknown): string {

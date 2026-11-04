@@ -28,6 +28,7 @@ import {
   runtimeAttrs,
   setActiveSpanAttributes,
   traceDeliveryClaim,
+  updateCurrentPerformanceContext,
 } from "../observability/index.js";
 import type { ServiceLogger } from "../observability/service-logger.js";
 import {
@@ -166,6 +167,20 @@ function claimAttempt(claim: WorkerClaim, phase: ImDeliveryFailurePhase): Delive
 /** How long the placement Computer has been silent; a Computer that never registered is fully offline. */
 function absentRuntimeMs(lastSeenAt: Date | null, now: number): number {
   return lastSeenAt ? now - lastSeenAt.getTime() : Number.POSITIVE_INFINITY;
+}
+function setDeliveryRowPerformanceContext(
+  row: Pick<CloudDeliveryClaimRow, "agent" | "computer" | "session" | "delivery">,
+  turnIdOverride?: string,
+): void {
+  const turnId = turnIdOverride ?? row.delivery.turnId ?? undefined;
+  updateCurrentPerformanceContext({
+    accountId: row.agent.createdByUserId,
+    agentId: row.agent.id,
+    computerId: row.computer.id,
+    sessionId: row.session.id,
+    deliveryId: row.delivery.id,
+    ...(turnId ? { turnId } : {}),
+  });
 }
 export class ImDeliveryWorker {
   #closed = false;
@@ -327,43 +342,35 @@ export class ImDeliveryWorker {
     return operation;
   }
 
-  async #expire(): Promise<void> {
-    if (this.#closed) return;
-    const options = { ...this.#janitorConfig, clock: this.#clock, ...(this.#logger ? { logger: this.#logger } : {}) };
-    await runImDeliveryExpiry(this.#database, options, this.#onDeliverySettled, this.#onDiagnostic);
-    if (!this.#closed) await this.#cloudCoordinator.reconcileStoppedWork();
-  }
-
-  async #retain(): Promise<void> {
-    if (this.#closed) return;
-    await runImDeliveryRetention(this.#database, { ...this.#janitorConfig, clock: this.#clock });
-  }
-
   runJanitorOnce(): Promise<void> {
     return this.#track(this.#runJanitor());
   }
 
   async #runJanitor(): Promise<void> {
     if (this.#closed) return;
-    await runImDeliveryJanitor(
-      this.#database,
-      {
-        ...this.#janitorConfig,
-        clock: this.#clock,
-        ...(this.#logger ? { logger: this.#logger } : {}),
-      },
-      this.#onDeliverySettled,
-      this.#onDiagnostic,
-    );
+    const options = { ...this.#janitorConfig, clock: this.#clock, ...(this.#logger ? { logger: this.#logger } : {}) };
+    await runImDeliveryJanitor(this.#database, options, this.#onDeliverySettled, this.#onDiagnostic);
     if (!this.#closed) await this.#cloudCoordinator.reconcileStoppedWork();
   }
 
   runExpiryOnce(): Promise<void> {
-    return this.#track(this.#expire());
+    return this.#track(
+      (async () => {
+        if (this.#closed) return;
+        const options = {
+          ...this.#janitorConfig,
+          clock: this.#clock,
+          ...(this.#logger ? { logger: this.#logger } : {}),
+        };
+        await runImDeliveryExpiry(this.#database, options, this.#onDeliverySettled, this.#onDiagnostic);
+        if (!this.#closed) await this.#cloudCoordinator.reconcileStoppedWork();
+      })(),
+    );
   }
 
   runRetentionOnce(): Promise<void> {
-    return this.#track(this.#retain());
+    if (this.#closed) return Promise.resolve();
+    return this.#track(runImDeliveryRetention(this.#database, { ...this.#janitorConfig, clock: this.#clock }));
   }
 
   async runOnce(): Promise<void> {
@@ -820,6 +827,7 @@ export class ImDeliveryWorker {
         await this.#recordFailure(attempt, "IM_DELIVERY_STEER_AUTHORITY_UNAVAILABLE");
         return;
       }
+      setDeliveryRowPerformanceContext(row, claim.expectedTurnId);
       if (row.computerOwnerAccountId !== row.agent.createdByUserId) {
         if (row.delivery.dispatchRequestId === null) {
           await this.#reject(claim.id, "computer_owner_mismatch", claimToken);
@@ -943,6 +951,7 @@ export class ImDeliveryWorker {
       await this.#recordFailure(attempt, "IM_DELIVERY_RUNTIME_AUTHORITY_UNAVAILABLE");
       return;
     }
+    setDeliveryRowPerformanceContext(row);
     if (row.computerOwnerAccountId !== row.agent.createdByUserId && row.delivery.dispatchRequestId === null) {
       setActiveSpanAttributes(outcomeAttrs("failed", "IM_DELIVERY_COMPUTER_OWNER_MISMATCH"));
       await this.#reject(deliveryId, "computer_owner_mismatch", claimToken);
@@ -1201,6 +1210,7 @@ export class ImDeliveryWorker {
       )
       .limit(1);
     if (!row) return;
+    setDeliveryRowPerformanceContext(row);
     setActiveSpanAttributes({
       ...imAttrs({
         provider: row.imBinding.provider,

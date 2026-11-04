@@ -178,6 +178,7 @@ export class McpOutboundFetcher {
   async fetchOutbound(accountId: string, rawUrl: string, init: McpFetchInit = {}): Promise<McpFetchResponse> {
     const httpMethod = (init.method ?? "GET").toUpperCase();
     const urlMeta = sanitizeExternalUrl(rawUrl);
+    let attempts = 0;
     return traceExternalCall(
       this.#perfLogger,
       {
@@ -189,15 +190,32 @@ export class McpOutboundFetcher {
           ...urlMeta,
         },
       },
-      () => this.#executeFetchOutbound(accountId, rawUrl, init),
+      () =>
+        this.#executeFetchOutbound(accountId, rawUrl, init, () => {
+          attempts += 1;
+        }),
       {
         statusFromResult: (response) => response.status,
+        resultAttributes: (res) => ({
+          status: res.status,
+          attemptCount: attempts,
+          retryCount: Math.max(0, attempts - 1),
+        }),
+        errorAttributes: () => ({
+          attemptCount: attempts,
+          retryCount: Math.max(0, attempts - 1),
+        }),
         fallbackErrorCode: MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE,
       },
     );
   }
 
-  async #executeFetchOutbound(accountId: string, rawUrl: string, init: McpFetchInit): Promise<McpFetchResponse> {
+  async #executeFetchOutbound(
+    accountId: string,
+    rawUrl: string,
+    init: McpFetchInit,
+    onAttempt: () => void,
+  ): Promise<McpFetchResponse> {
     const url = assertOutboundUrl(rawUrl, this.#policy);
     /*
      * A call the caller cancelled before entry is refused here. `fetch` would refuse to start it
@@ -218,7 +236,7 @@ export class McpOutboundFetcher {
     }
     this.#inFlight.set(accountId, (this.#inFlight.get(accountId) ?? 0) + 1);
     try {
-      return await this.#request(url, init);
+      return await this.#request(url, init, onAttempt);
     } finally {
       const remaining = (this.#inFlight.get(accountId) ?? 1) - 1;
       if (remaining <= 0) this.#inFlight.delete(accountId);
@@ -234,7 +252,7 @@ export class McpOutboundFetcher {
    * not keep a concurrency slot for the transport's whole budget. The slot is released by
    * `fetchOutbound` when this settles, which is at the deadline rather than after the resolver.
    */
-  #request(url: URL, init: McpFetchInit): Promise<McpFetchResponse> {
+  #request(url: URL, init: McpFetchInit, onAttempt: () => void): Promise<McpFetchResponse> {
     return withOutboundDeadline(
       {
         timeoutMs: this.#timeoutMs,
@@ -246,6 +264,7 @@ export class McpOutboundFetcher {
         // The resolver cannot be interrupted, so it may answer after this call already failed. No
         // request may follow it: that would spend the Account's slot on a call nobody is waiting for.
         deadline.throwIfEnded();
+        onAttempt();
         return this.#perform(url, init, deadline.signal);
       },
     );

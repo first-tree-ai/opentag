@@ -79,6 +79,7 @@ export interface PerformanceExecutionContext {
   environmentGeneration?: number;
   sessionId?: string;
   deliveryId?: string;
+  turnId?: string;
 }
 
 export interface PerformanceStartInput {
@@ -93,6 +94,7 @@ export interface PerformanceStartInput {
   environmentGeneration?: number;
   sessionId?: string;
   deliveryId?: string;
+  turnId?: string;
   attributes?: Record<string, unknown>;
   startMessage?: string;
   completeMessage?: string;
@@ -158,14 +160,11 @@ export function updateCurrentPerformanceContext(
 ): void {
   const current = performanceContextStorage.getStore();
   if (!current) return;
-  if (patch.requestId !== undefined) current.requestId = patch.requestId;
-  if (patch.accountId !== undefined) current.accountId = patch.accountId;
-  if (patch.agentId !== undefined) current.agentId = patch.agentId;
-  if (patch.computerId !== undefined) current.computerId = patch.computerId;
-  if (patch.sandboxId !== undefined) current.sandboxId = patch.sandboxId;
-  if (patch.environmentGeneration !== undefined) current.environmentGeneration = patch.environmentGeneration;
-  if (patch.sessionId !== undefined) current.sessionId = patch.sessionId;
-  if (patch.deliveryId !== undefined) current.deliveryId = patch.deliveryId;
+  const target = current as unknown as Record<string, unknown>;
+  for (const key of CONTEXT_ID_KEYS) {
+    const value = patch[key];
+    if (value !== undefined) target[key] = value;
+  }
 }
 
 function roundDurationMs(elapsedMs: number): number {
@@ -229,6 +228,7 @@ const CONTEXT_ID_KEYS = [
   "environmentGeneration",
   "sessionId",
   "deliveryId",
+  "turnId",
 ] as const;
 
 function copyDefinedContextIds(
@@ -342,6 +342,7 @@ export function createPerformanceLogger(
         port[completeLevel](
           {
             ...basePayload,
+            ...copyDefinedContextIds(childContext),
             ...extraAttributes,
             endedAt,
             durationMs,
@@ -361,6 +362,7 @@ export function createPerformanceLogger(
         port.warn(
           {
             ...basePayload,
+            ...copyDefinedContextIds(childContext),
             ...extraAttributes,
             ...(code ? { code, errorCode: code } : {}),
             endedAt,

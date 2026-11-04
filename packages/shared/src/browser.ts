@@ -32,6 +32,12 @@ export {
 export * from "./mcp.js";
 export * from "./mcp-gateway.js";
 export * from "./public-catalog.js";
+export {
+  MAX_UNKNOWN_KEY_PASSES,
+  type ParseIssue,
+  parseResponseIgnoringUnknownKeys,
+  type ResponseParseResult,
+} from "./response-parse.js";
 export { RUNTIME_DEFAULT_MAX_DURATION_MS, RUNTIME_MAX_DURATION_MS } from "./runtime-config.js";
 export * from "./runtime-configuration-options.js";
 export type { TurnFailureReason } from "./runtime-domain.js";

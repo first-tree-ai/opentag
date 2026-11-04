@@ -472,6 +472,12 @@ export * from "./mcp.js";
 export * from "./mcp-gateway.js";
 export * from "./mcp-outbound-url.js";
 export * from "./public-catalog.js";
+export {
+  MAX_UNKNOWN_KEY_PASSES,
+  type ParseIssue,
+  parseResponseIgnoringUnknownKeys,
+  type ResponseParseResult,
+} from "./response-parse.js";
 export * from "./runner-workspace.js";
 export {
   type AgentRuntimeOptions,

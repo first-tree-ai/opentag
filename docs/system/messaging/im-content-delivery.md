@@ -14,6 +14,8 @@ Slack blocks and legacy attachments retain readable paragraphs, fields, lists, l
 and tables. Feishu posts retain tagged/locale content, markdown fallback, and inline resources. A video body uses its
 file key; its cover image is a separate image reference. Visible cards and share/forward content are retained when the
 platform supplies them. Unknown or inaccessible content is labeled explicitly with a source-message readback path.
+Feishu card column sets retain visible content and native image references from each column in provider order when
+the incoming content includes the card structure.
 Slack routing collects mentions independently from the selected display body and retains the native `app_mention`
 meaning. Image references using either `slack_file.id` or a documented Slack private/permalink URL resolve to stable
 file IDs; private URLs are not treated as public downloads.

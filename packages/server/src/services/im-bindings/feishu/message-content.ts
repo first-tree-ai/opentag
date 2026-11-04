@@ -70,7 +70,7 @@ export function feishuMessageContent(type: string, raw: string, mentions: readon
   }
   function visibleObject(item: Record<string, unknown>, depth: number): string {
     const parts: string[] = [];
-    for (const key of ["title", "text", "content", "header", "body", "elements", "fields", "messages"]) {
+    for (const key of ["title", "text", "content", "header", "body", "elements", "columns", "fields", "messages"]) {
       if (item[key] !== undefined) parts.push(element(item[key], depth + 1));
     }
     for (const key of ["url", "href", "chat_id", "user_id", "message_id", "sender", "create_time"]) {

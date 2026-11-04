@@ -53,7 +53,6 @@
   "im_feishu_preparing": "Preparing QR code…",
   "im_feishu_qr_alt": "Scan this QR code in {provider}",
   "im_feishu_qr_expired": "QR code expired",
-  "im_feishu_qr_expires": "QR code expires {date}.",
   "im_feishu_qr_expires_in": "Expires in {minutes} min",
   "im_feishu_reauthorize_instructions": "Confirm the updated permissions for the current {provider} Bot.",
   "im_feishu_retry": "Try again",

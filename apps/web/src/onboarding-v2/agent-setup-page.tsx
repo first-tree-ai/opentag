@@ -48,6 +48,7 @@ import { QrCode, WAITING_LINE } from "../setup/index.js";
 import {
   Banner,
   Button,
+  buttonClassName,
   Collapsible,
   Dialog,
   Icon,
@@ -1022,7 +1023,6 @@ function AgentSetupSnapshotView({
               ? m.onboarding_v2_messaging_recovery_title()
               : m.onboarding_v2_messaging_title()}
           </Text>
-          <p className={HINT}>{m.onboarding_v2_setup_title({ name: snapshot.agent.displayName })}</p>
         </header>
       ) : null}
       {observationFailed ? (
@@ -1132,17 +1132,10 @@ function SetupStageNavigation({
   );
 }
 
-function preparationCheckingItem(rows: ReturnType<typeof preparationSummaryRows>): string {
-  return rows.runtime.status === "checking" || rows.runtime.status === "waiting"
-    ? rows.runtime.label
-    : rows.messaging.label;
-}
-
 function preparationHint(input: {
   cloud: boolean;
   ready: boolean;
   checking: boolean;
-  checkingItem: string;
   pollExhausted: boolean;
   refreshAction?: ReactNode;
 }): string {
@@ -1152,8 +1145,8 @@ function preparationHint(input: {
       ? m.onboarding_v2_prep_checking_paused()
       : m.onboarding_v2_prep_cloud_continue_unavailable();
   }
-  if (input.ready) return m.onboarding_v2_prep_continue_ready();
-  if (input.checking) return m.onboarding_v2_prep_checking_automatically({ item: input.checkingItem });
+  // Every row ready, or a row checking, already says so in the row itself; the footer adds nothing.
+  if (input.ready || input.checking) return "";
   if (input.pollExhausted) return m.onboarding_v2_prep_checking_paused();
   return input.refreshAction ? m.onboarding_v2_prep_complete_action() : m.onboarding_v2_prep_continue_waiting();
 }
@@ -1179,20 +1172,16 @@ function PreparationNavigation({
   if (snapshot.stage === "needs-computer" && !ready) {
     return refreshAction ? <div className="otv2-step-footer__actions">{refreshAction}</div> : null;
   }
-  const rows = snapshot.computer.kind === "cloud" ? undefined : preparationSummaryRows(snapshot);
-  const checkingItem = rows ? preparationCheckingItem(rows) : "";
   const hint = preparationHint({
     cloud: snapshot.computer.kind === "cloud",
     ready,
     checking,
-    checkingItem,
     pollExhausted,
     refreshAction: snapshot.stage === "needs-computer" ? undefined : refreshAction,
   });
   return (
     <div className="otv2-step-footer" data-state={ready ? "ready" : "blocked"} data-ui="onboarding-v2-step-2-nav">
       <p className="flex items-center gap-2 text-sm text-kumo-subtle m-0" id={hintId} role="status">
-        {checking ? <span aria-hidden="true" className="otv2-inline-spinner" /> : null}
         {hint}
       </p>
       <div className="otv2-step-footer__actions">
@@ -1494,6 +1483,7 @@ function NotBoundComputerSection({
         <AgentComputerChoice
           adapter={computerConnectAdapter}
           agentId={agentId}
+          connectAnotherInline
           inventoryAdapter={inventoryAdapter}
           onBound={onChanged}
         >
@@ -1762,18 +1752,29 @@ function MessagingChoiceCopy({ provider }: { provider: "slack" | "feishu" }) {
   );
 }
 
-/** Hide unusable QR pixels locally; only the Server may end or replace the attempt. */
-function useQrValidity(expiresAt: string): boolean {
+/**
+ * Hide unusable QR pixels locally; only the Server may end or replace the attempt. Also answers the
+ * whole minutes left, re-read each minute, so the expiry reads relative ("15 分钟后过期").
+ */
+function useQrValidity(expiresAt: string): { valid: boolean; minutesLeft: number } {
   const [now, setNow] = useState(Date.now);
   useEffect(() => {
-    const current = Date.now();
-    setNow(current);
-    const remaining = Date.parse(expiresAt) - current;
-    if (!Number.isFinite(remaining) || remaining <= 0) return;
-    const timer = window.setTimeout(() => setNow(Date.now()), Math.min(remaining, 2_147_483_647));
+    setNow(Date.now());
+    const expiry = Date.parse(expiresAt);
+    if (!Number.isFinite(expiry)) return;
+    let timer: number | undefined;
+    const tick = () => {
+      const current = Date.now();
+      setNow(current);
+      const remaining = expiry - current;
+      if (remaining > 0) timer = window.setTimeout(tick, Math.min(remaining, 60_000));
+    };
+    const remaining = expiry - Date.now();
+    if (remaining > 0) timer = window.setTimeout(tick, Math.min(remaining, 60_000));
     return () => window.clearTimeout(timer);
   }, [expiresAt]);
-  return Date.parse(expiresAt) > now;
+  const remaining = Date.parse(expiresAt) - now;
+  return { valid: remaining > 0, minutesLeft: Math.max(1, Math.ceil(remaining / 60_000)) };
 }
 
 function FeishuAuthorizing({
@@ -1787,7 +1788,7 @@ function FeishuAuthorizing({
   readonly onAct: (action: AgentSetupAction) => Promise<boolean>;
   readonly snapshot: AgentSetupSnapshot;
 }) {
-  const qrValid = useQrValidity(messaging.expiresAt);
+  const { valid: qrValid, minutesLeft } = useQrValidity(messaging.expiresAt);
   const cancel = snapshot.actions.find(
     (action): action is Extract<AgentSetupAction, { kind: "cancel-messaging-attempt" }> =>
       action.kind === "cancel-messaging-attempt" && action.attemptId === messaging.attemptId,
@@ -1815,24 +1816,50 @@ function FeishuAuthorizing({
             <strong>{spaceScriptBoundary(m.im_connect_feishu({ provider: providerTitle("feishu") }))}</strong>
           </Text>
         </div>
-        <p className={HINT}>
+        {/* The scanning instruction matches the QR code, which shows from 768px up; on a phone it
+            says to open Lark instead, matching the button below. */}
+        <p className={`${HINT} hidden md:block`}>
           {spaceScriptBoundary(m.onboarding_v2_messaging_lark_intro({ provider: providerTitle("feishu") }))}
         </p>
-        <p className={WAITING_LINE} role="status">
-          <span aria-hidden="true" className={qrValid ? "ots-pulse shrink-0" : "hidden"} />
-          {!qrValid
-            ? m.onboarding_v2_connection_qr_elapsed()
-            : messaging.qrUrl
-              ? m.onboarding_v2_messaging_waiting()
-              : m.onboarding_v2_connection_qr_loading()}
+        <p className={`${HINT} md:hidden`}>
+          {spaceScriptBoundary(m.onboarding_v2_messaging_lark_intro_phone({ provider: providerTitle("feishu") }))}
         </p>
-        <div className="otv2-connection-scan__content">
-          {qrValid && messaging.qrUrl ? <QrCode value={messaging.qrUrl} /> : null}
-        </div>
+        <p className={WAITING_LINE} role="status">
+          {/* Pending, not done: the same spinner as the connect command window, never a success dot. */}
+          {qrValid ? <span aria-hidden="true" className="otv2-pending-spinner" /> : null}
+          {!qrValid ? (
+            m.onboarding_v2_connection_qr_elapsed()
+          ) : messaging.qrUrl ? (
+            <>
+              <span className="hidden md:inline">{m.onboarding_v2_messaging_waiting()}</span>
+              <span className="md:hidden">{m.onboarding_v2_messaging_waiting_phone()}</span>
+            </>
+          ) : (
+            m.onboarding_v2_connection_qr_loading()
+          )}
+        </p>
+        {qrValid && messaging.qrUrl ? (
+          <>
+            {/* A QR code is for a second device; below 768px the reader is usually on the phone that
+                would scan it, so the same authorization link opens in Feishu instead. */}
+            <div className="otv2-connection-scan__content" data-ui="agent-setup-feishu-qr">
+              <QrCode value={messaging.qrUrl} />
+            </div>
+            <a
+              className={buttonClassName({ className: "w-full md:hidden" })}
+              data-ui="agent-setup-feishu-open"
+              href={messaging.qrUrl}
+              rel="noreferrer"
+              target="_blank"
+            >
+              {spaceScriptBoundary(m.im_feishu_open({ provider: providerTitle("feishu") }))}
+            </a>
+          </>
+        ) : null}
       </div>
       <div className="otv2-connection-card__footer">
         <p className="otv2-connection-card__metadata">
-          {qrValid ? m.im_feishu_qr_expires({ date: formatDateTime(messaging.expiresAt) }) : m.im_feishu_qr_expired()}
+          {qrValid ? m.im_feishu_qr_expires_in({ minutes: minutesLeft }) : m.im_feishu_qr_expired()}
         </p>
         {cancel ? (
           <Button
@@ -1862,7 +1889,7 @@ function SlackAuthorizing({
           <strong>{providerTitle("slack")}</strong>
         </span>
         <p className={WAITING_LINE} role="status">
-          <span aria-hidden="true" className="ots-pulse shrink-0" />
+          <span aria-hidden="true" className="otv2-pending-spinner" />
           {spaceScriptBoundary(m.onboarding_v2_messaging_slack_waiting({ provider: providerTitle("slack") }))}
         </p>
       </div>
@@ -1915,7 +1942,7 @@ function MessagingHandoff({
           <strong>{providerTitle(messaging.provider)}</strong>
         </span>
         <p className={WAITING_LINE} role="status">
-          <span aria-hidden="true" className="ots-pulse shrink-0" />
+          <span aria-hidden="true" className="otv2-pending-spinner" />
           {m.onboarding_v2_messaging_confirming()}
         </p>
         {messaging.progress ? (

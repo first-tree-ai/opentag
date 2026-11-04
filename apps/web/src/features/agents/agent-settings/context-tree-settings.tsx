@@ -81,7 +81,7 @@ function ContextTreeSettingsForm({
       mounted.current = false;
     };
   }, []);
-  const { selected, cloud, pauseRequired, pending, disabled } = treePermissions({
+  const { selected, cloud, pending, disabled } = treePermissions({
     config,
     computerKind,
     online,
@@ -224,7 +224,6 @@ function ContextTreeSettingsForm({
         online={online}
         selected={selected}
         pending={pending}
-        pauseRequired={pauseRequired}
         unconfirmed={unconfirmed}
         fieldId={fieldId}
         addButton={addButton}
@@ -292,7 +291,7 @@ function ContextTreeSettingsForm({
             />
           )}
           {cloud ? <p className="text-sm text-kumo-subtle">{m.agent_settings_context_tree_cloud_guidance()}</p> : null}
-          <ContextTreeRestrictions agentId={config.id} online={online} pauseRequired={pauseRequired} />
+          <ContextTreeRestrictions agentId={config.id} online={online} />
           {pending ? <p role="status">{m.agent_settings_context_tree_pending()}</p> : null}
           {formResult ? (
             <ContextTreeResult
@@ -319,7 +318,7 @@ function ContextTreeSettingsForm({
         agentId={config.id}
         target={disconnectTarget}
         pending={pending}
-        disabled={pauseRequired || unconfirmed}
+        disabled={unconfirmed}
         result={result}
         cloud={cloud}
         returnFocusRef={disconnectReturnFocus}
@@ -330,7 +329,7 @@ function ContextTreeSettingsForm({
           }
         }}
         onConfirm={() => {
-          if (disconnectTarget && !pauseRequired && !unconfirmed) void run("disconnect", disconnectTarget);
+          if (disconnectTarget && !unconfirmed) void run("disconnect", disconnectTarget);
         }}
       />
     </div>
@@ -351,14 +350,12 @@ function treePermissions({
   pendingAction?: ContextTreeOperationRequest["action"];
 }) {
   const selected = config.runtimeConfig.contextTrees;
-  const pauseRequired = selected.length > 0 && config.status !== "suspended";
   const pending = pendingAction !== undefined;
   return {
     selected,
-    pauseRequired,
     pending,
     cloud: computerKind === "cloud",
-    disabled: pending || !online || pauseRequired || unconfirmed,
+    disabled: pending || !online || unconfirmed,
   };
 }
 function currentFormResult(
@@ -450,46 +447,22 @@ function DisconnectTreeDialog({
   );
 }
 
-function ContextTreeRestrictions({
-  agentId,
-  online,
-  pauseRequired,
-}: {
-  agentId: string;
-  online: boolean;
-  pauseRequired: boolean;
-}) {
-  if (online && !pauseRequired) return null;
+function ContextTreeRestrictions({ agentId, online }: { agentId: string; online: boolean }) {
+  if (online) return null;
   return (
     <div className="grid gap-2 text-sm text-kumo-subtle" role="status">
-      {pauseRequired ? (
-        <p>
-          {m.agent_settings_context_tree_pause_required()}{" "}
-          <Link
-            {...agentSettingsSectionLink(agentId, "manage")}
-            target="_blank"
-            rel="noopener noreferrer"
-            title={m.agent_settings_context_tree_settings_link_hint()}
-            className="text-kumo-link underline underline-offset-4"
-          >
-            {m.agent_settings_context_tree_manage_agent()}
-          </Link>
-        </p>
-      ) : null}
-      {!online ? (
-        <p>
-          {m.agent_settings_context_tree_computer_unavailable()}{" "}
-          <Link
-            {...agentSettingsSectionLink(agentId, "computer")}
-            target="_blank"
-            rel="noopener noreferrer"
-            title={m.agent_settings_context_tree_settings_link_hint()}
-            className="text-kumo-link underline underline-offset-4"
-          >
-            {m.agent_settings_context_tree_computer_settings()}
-          </Link>
-        </p>
-      ) : null}
+      <p>
+        {m.agent_settings_context_tree_computer_unavailable()}{" "}
+        <Link
+          {...agentSettingsSectionLink(agentId, "computer")}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={m.agent_settings_context_tree_settings_link_hint()}
+          className="text-kumo-link underline underline-offset-4"
+        >
+          {m.agent_settings_context_tree_computer_settings()}
+        </Link>
+      </p>
     </div>
   );
 }
@@ -499,7 +472,6 @@ function ContextTreeCollection({
   online,
   selected,
   pending,
-  pauseRequired,
   unconfirmed,
   fieldId,
   addButton,
@@ -511,7 +483,6 @@ function ContextTreeCollection({
   online: boolean;
   selected: ContextTreeConnection[];
   pending: boolean;
-  pauseRequired: boolean;
   unconfirmed: boolean;
   fieldId: string;
   addButton: RefObject<HTMLButtonElement | null>;
@@ -521,7 +492,7 @@ function ContextTreeCollection({
 }) {
   return (
     <>
-      <ContextTreeRestrictions agentId={agentId} online={online} pauseRequired={pauseRequired} />
+      <ContextTreeRestrictions agentId={agentId} online={online} />
       {selected.length ? (
         <section
           aria-label={m.agent_settings_context_tree_connected_heading()}
@@ -532,7 +503,7 @@ function ContextTreeCollection({
               key={contextTreeIdentity(entry)}
               source={entry}
               id={`${fieldId}-tree-${index}`}
-              disabled={pending || pauseRequired || unconfirmed}
+              disabled={pending || unconfirmed}
               onDisconnect={() => onDisconnect(entry)}
               buttonRef={(button) => onButton(entry, button)}
             />
@@ -546,7 +517,7 @@ function ContextTreeCollection({
                       ref={addButton}
                       className="max-w-full min-w-0 shrink whitespace-normal text-left"
                       variant="ghost"
-                      disabled={pending || pauseRequired || unconfirmed}
+                      disabled={pending || unconfirmed}
                     />
                   }
                 >
@@ -985,8 +956,6 @@ function failureMessage(
       return m.agent_settings_context_tree_computer_unavailable();
     case "busy":
       return m.agent_settings_context_tree_busy();
-    case "pause_required":
-      return m.agent_settings_context_tree_pause_required();
     default:
       return cloud ? m.agent_settings_context_tree_cloud_failed() : m.agent_settings_context_tree_failed();
   }

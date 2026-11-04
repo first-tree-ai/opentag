@@ -75,14 +75,36 @@ it.each(["expectedRevision", "expectedRuntimeConfigRevision"] as const)(
     expect(f.github.run).not.toHaveBeenCalled();
   },
 );
-it("requires authorization and suspension", async () => {
+it("requires authorization", async () => {
   const f = fixture();
   f.agents.getConfigById.mockRejectedValueOnce(new Error("permission denied"));
   await expect(f.service.run("user", f.config.id, f.input)).rejects.toThrow("permission denied");
-  f.config.status = "active";
-  expect(await f.service.run("user", f.config.id, f.input)).toEqual({ status: "failed", code: "pause_required" });
   expect(f.github.run).not.toHaveBeenCalled();
 });
+it.each(["connect", "disconnect"] as const)(
+  "lets a running Agent %s a Context Tree without pausing",
+  async (action) => {
+    const f = fixture();
+    f.config.status = "active";
+    const input = action === "connect" ? f.input : { ...f.input, action, repository: "acme/old" };
+    expect(await f.service.run("user", f.config.id, input)).toEqual(
+      action === "connect"
+        ? { status: "completed", repository: "acme/memory", ref: "main" }
+        : { status: "completed", repository: null },
+    );
+    expect(f.agents.updateContextTreeSelection).toHaveBeenCalledWith(
+      "user",
+      f.config.id,
+      { revision: 3, runtimeConfigRevision: 7, computerId: f.config.computerId, status: "active" },
+      action === "connect"
+        ? [
+            { kind: "git", path: ".", ref: "main", repository: "acme/old" },
+            { kind: "git", path: ".", ref: "main", repository: "Acme/Memory" },
+          ]
+        : [],
+    );
+  },
+);
 it("accepts case-insensitive repository identity and passes every fence to the transaction", async () => {
   const f = fixture();
   const pending = f.service.run("user", f.config.id, f.input);

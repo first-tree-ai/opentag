@@ -261,21 +261,34 @@ it("restores focus to a surviving row action when the final connection removes t
   expect(screen.queryByRole("button", { name: "Connect another Context Tree" })).toBeNull();
 });
 
-it("explains offline and pause restrictions without blocking source browsing", async () => {
-  const view = render(<ContextTreeSettings config={config()} online={false} onChanged={vi.fn()} />);
+it("explains the offline restriction without blocking source browsing", async () => {
+  render(<ContextTreeSettings config={config()} online={false} onChanged={vi.fn()} />);
   await openForm();
   expect(within(screen.getByRole("dialog")).getByText(/Bring the Computer online/)).toBeTruthy();
   expect((screen.getByRole("button", { name: "Connect" }) as HTMLButtonElement).disabled).toBe(true);
-  view.rerender(
-    <ContextTreeSettings config={{ ...config("agent-b", "acme/tree"), status: "active" }} online onChanged={vi.fn()} />,
+});
+
+it("lets a running Agent connect another Context Tree and disconnect one without pausing", async () => {
+  const operation = vi
+    .spyOn(browserApi, "contextTreeOperation")
+    .mockResolvedValue({ status: "completed", repository: "acme/second", ref: "main" });
+  const changed = vi.fn();
+  render(
+    <ContextTreeSettings config={{ ...config("agent-b", "acme/tree"), status: "active" }} online onChanged={changed} />,
   );
-  expect(screen.getByText(/Pause this Agent/)).toBeTruthy();
-  expect((screen.getByRole("button", { name: "Connect another Context Tree" }) as HTMLButtonElement).disabled).toBe(
-    true,
-  );
+  expect(screen.queryByText(/Pause this Agent/)).toBeNull();
   expect(screen.getByRole("link", { name: "Open tree on GitHub" })).toBeTruthy();
   fireEvent.click(screen.getByRole("button", { name: "More actions for tree" }));
-  expect((await screen.findByRole("menuitem", { name: "Disconnect" })).getAttribute("aria-disabled")).toBe("true");
+  expect((await screen.findByRole("menuitem", { name: "Disconnect" })).getAttribute("aria-disabled")).not.toBe("true");
+  fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+  await openForm();
+  enter("acme/second");
+  submit();
+  await waitFor(() => expect(changed).toHaveBeenCalledOnce());
+  expect(operation).toHaveBeenCalledWith(
+    "agent-b",
+    expect.objectContaining({ action: "connect", repository: "acme/second" }),
+  );
 });
 
 it("validates the fields and focuses the first invalid input without contacting the server", async () => {
@@ -525,7 +538,7 @@ it("retains every unresolved creation identity when attempts fail for different 
   expect(operation).toHaveBeenCalledTimes(2);
 });
 
-it("explains both restrictions when active and offline without claiming disconnect is available", () => {
+it("explains the offline restriction for a running Agent without claiming disconnect is available", () => {
   render(
     <ContextTreeSettings
       config={{ ...config("agent-a", "acme/memory"), status: "active" }}
@@ -533,12 +546,9 @@ it("explains both restrictions when active and offline without claiming disconne
       onChanged={vi.fn()}
     />,
   );
-  expect(screen.getByText(/Pause this Agent/)).toBeTruthy();
+  expect(screen.queryByText(/Pause this Agent/)).toBeNull();
   expect(screen.getByText(/Bring the Computer online/)).toBeTruthy();
   expect(screen.queryByText(/Disconnect remains available/)).toBeNull();
-  expect(screen.getByRole("link", { name: "Manage Agent" }).getAttribute("href")).toBe(
-    "/agents/agent-a/settings/manage",
-  );
 });
 
 it("preserves a form draft but disables writes while the current selection is unconfirmed", async () => {

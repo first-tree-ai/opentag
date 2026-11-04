@@ -126,6 +126,8 @@ export function diagnosticContext(attempt: DeliveryAttempt): ImDeliveryDiagnosti
 
 export interface DeliveryFailureOptions {
   retryDelayMs?: number;
+  /** Suppress only the diagnostic when the caller has verified an expected fallback. */
+  expectedDeferral?: boolean;
   /**
    * Whether this record may settle the delivery terminally. A timed-out operation can still settle
    * after the deadline, so the callback that runs *at* the deadline passes `false` and the terminal
@@ -175,7 +177,7 @@ export async function recordDeliveryFailure(
   if (!updated) return;
   logDispatchRetryScheduled(deps.logger, attempt.deliveryId, bounded, delayMs);
   // One line per failure run, not one per attempt: a repeated code adds nothing an operator can act on.
-  if (shouldEmitFailureDiagnostic(bounded, attempt.previousErrorCode))
+  if (!options.expectedDeferral && shouldEmitFailureDiagnostic(bounded, attempt.previousErrorCode))
     deps.onDiagnostic(bounded, diagnosticContext(attempt));
   deps.onMetric({ name: "retry", value: 1 });
   if (isCloudReadinessRetry(bounded) && (!attempt.claimToken || !deps.readyRetryClaims.has(attempt.claimToken))) {

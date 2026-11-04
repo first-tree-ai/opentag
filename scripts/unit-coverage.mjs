@@ -28,6 +28,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { COVERAGE_PROJECTS, MEASURED_SOURCE_EXCLUDES, MEASURED_SOURCE_ROOTS } from "./coverage-scope.mjs";
 
 export {
   buildLineHitsByFile,
@@ -40,32 +41,7 @@ export {
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-/**
- * Each Vitest project alongside the workspace source roots its suite is the only one able to execute.
- *
- * `root` mirrors that project's own `root` in `vitest.coverage.config.ts`, because a `coverage.include`
- * glob is resolved against it -- see `projectCoverageIncludes` below. `sources` lists every measured
- * source root of the workspace, not only `src`: verification scripts under a package's `scripts`
- * directory are executable code too, and `unit-coverage-gate.mjs` already treats them as coverable, so
- * leaving them unmeasured used to report their patched lines as "missing coverage entry" forever.
- *
- * `workers` overrides the config's default worker count for a project whose suite owns spawned-CLI
- * timing tests. `cli` and `client` assert on fixed windows around child processes - a 1000ms
- * `vi.waitFor` for a shell shim to write its marker, a 5000-15000ms test timeout - and both packages'
- * own `test` scripts already run with `--maxWorkers=1`. Measuring them at the config default while v8
- * instrumentation slows every process start failed those unchanged tests intermittently, so the runner
- * now reproduces each package's own condition. Includes, assertions, timeouts, floors and the patch
- * threshold stay exactly as they are.
- */
-export const COVERAGE_PROJECTS = [
-  { name: "cli", root: "apps/cli", sources: ["apps/cli/src"], workers: 1 },
-  { name: "web", root: "apps/web", sources: ["apps/web/src"] },
-  { name: "shared", root: "packages/shared", sources: ["packages/shared/src"] },
-  { name: "skill-presets", root: "packages/skill-presets", sources: ["packages/skill-presets/src"] },
-  { name: "mcp-presets", root: "packages/mcp-presets", sources: ["packages/mcp-presets/src"] },
-  { name: "client", root: "packages/client", sources: ["packages/client/src"], workers: 1 },
-  { name: "server", root: "packages/server", sources: ["packages/server/src", "packages/server/scripts"] },
-];
+export { COVERAGE_PROJECTS } from "./coverage-scope.mjs";
 
 /** The Vitest worker override of a project; an empty list keeps the config default. */
 export function projectWorkerArgs(project) {
@@ -102,23 +78,9 @@ export const COVERAGE_METRICS = ["lines", "statements", "functions", "branches"]
 /**
  * Every measured source root of the repository. A root here is a promise: each of its files must have
  * an owner pattern, and every pattern must match at least one file (see `validateRepositoryCoverageManifest`).
- * `packages/server/scripts` is listed explicitly so verification scripts are measured like any other
- * executable source instead of being reported as "missing coverage entry" by the patch gate.
+ * The roots and excludes come from `coverage-scope.mjs`, which the patch gate reads too.
  */
-const ROOT_COVERAGE_SOURCE_ROOTS = [
-  "apps/cli/src",
-  "apps/web/src",
-  "packages/shared/src",
-  "packages/skill-presets/src",
-  "packages/mcp-presets/src",
-  "packages/client/src",
-  "packages/server/src",
-  "packages/server/scripts",
-];
-
-const ROOT_COVERAGE_INCLUDE_PATTERNS = ROOT_COVERAGE_SOURCE_ROOTS.map((root) => `${root}/**/*.{ts,tsx}`);
-
-const ROOT_COVERAGE_EXCLUDE_PATTERNS = ["**/src/__tests__/**", "**/src/smoke/**", "**/src/paraglide/**"];
+const ROOT_COVERAGE_INCLUDE_PATTERNS = MEASURED_SOURCE_ROOTS.map((root) => `${root}/**/*.{ts,tsx}`);
 
 /** The focused Agent Runtime manifest is deliberately explicit and source-tree checked. */
 export const AGENT_RUNTIME_COVERAGE_INCLUDE = [
@@ -350,11 +312,11 @@ export function sourceFilesUnder(directory, relativeTo = directory) {
 }
 
 export function validateRepositoryCoverageManifest(root = repositoryRoot) {
-  const projectSources = ROOT_COVERAGE_SOURCE_ROOTS.flatMap((sourceRoot) =>
+  const projectSources = MEASURED_SOURCE_ROOTS.flatMap((sourceRoot) =>
     sourceFilesUnder(resolve(root, sourceRoot), root),
   );
   const rootResult = validateCoverageManifest({
-    excludePatterns: ROOT_COVERAGE_EXCLUDE_PATTERNS,
+    excludePatterns: MEASURED_SOURCE_EXCLUDES,
     includePatterns: ROOT_COVERAGE_INCLUDE_PATTERNS,
     sourceFiles: projectSources,
   });

@@ -668,8 +668,8 @@ describe("Agent Setup route boundary", () => {
     expect(window.location.pathname).toBe("/agents/setup");
     const continueButton = await expectPreparationGate();
     fireEvent.click(continueButton);
-    expect(screen.getByText("Set up Reviewer")).toBeTruthy();
-    expect(screen.queryByRole("heading", { name: "Set up Reviewer" })).toBeNull();
+    // The step heading is the page's only title: no "Set up Reviewer" subtitle repeats the Agent.
+    expect(screen.queryByText("Set up Reviewer")).toBeNull();
     expect(screen.getByRole("heading", { name: "Connect your messaging app" })).toBeTruthy();
     const completions = vi
       .mocked(fetch)

@@ -1,10 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import type {
-  InternalNavigationVisibility,
-  ProviderReadinessStatus,
-  RuntimeCredentialServerFrame,
-} from "@opentag/shared";
+import type { ProviderReadinessStatus, RuntimeCredentialServerFrame } from "@opentag/shared";
 import { MCP_OAUTH_CALLBACK_PATH, RUNTIME_CAPABILITY, redactForLog } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { createApp } from "./app.js";
@@ -217,19 +213,6 @@ export {
 } from "./services/sessions/index.js";
 export { createPlatformRuntime };
 
-class InternalNavigationVisibilityService {
-  #value: InternalNavigationVisibility = { integrations: false };
-
-  read(): InternalNavigationVisibility {
-    return this.#value;
-  }
-
-  update(value: InternalNavigationVisibility): InternalNavigationVisibility {
-    this.#value = { ...value };
-    return this.#value;
-  }
-}
-
 /** The live Cloud fence exists exactly when the Cloud Runner runtime is enabled. */
 function cloudRuntimeFenceFor(runtime: SandboxRunnerRuntime | undefined): CloudRuntimeFence | undefined {
   return runtime ? new CloudRuntimeFence() : undefined;
@@ -377,6 +360,9 @@ function createContextTreeServices(
     githubContextTreeOperations,
     contextTreeOperationService: new ContextTreeOperationService(agents, registry, {
       computerKind,
+      availability: (accountId, agentId) =>
+        githubContextTreeOperations?.availability(accountId, agentId) ??
+        Promise.resolve({ status: "failed", code: "github_not_configured" }),
       run: (input) =>
         githubContextTreeOperations?.run(input) ??
         Promise.resolve({ result: { status: "failed", code: "github_not_configured" } }),
@@ -905,10 +891,10 @@ export async function startServer(): Promise<void> {
     };
     const imBindingService = new ImBindingService(database, applicationCipher, {
       agentRuntimeReadiness: agentRuntimeReadinessForAgent,
-      imCliReadiness: async (agentId, provider, integrationId, credentialGeneration) => {
+      imCliReadiness: async (agentId, provider, integrationId, credentialGeneration, refresh = true) => {
         const computerId = await imBindingService.getAgentComputerId(agentId);
         if (!computerId) return "unavailable";
-        refreshProviderCliReadiness(agentId, computerId);
+        if (refresh) refreshProviderCliReadiness(agentId, computerId);
         const observations = registry.providerCliArtifactReadiness(computerId);
         const observation = observations.find(
           ({ observation }) =>
@@ -923,10 +909,10 @@ export async function startServer(): Promise<void> {
           ...(observation.reason ? { reason: observation.reason } : {}),
         };
       },
-      credentialExecutionReadiness: async (agentId, provider, integrationId, credentialGeneration) => {
+      credentialExecutionReadiness: async (agentId, provider, integrationId, credentialGeneration, refresh = true) => {
         const computerId = await imBindingService.getAgentComputerId(agentId);
         if (!computerId) return { status: "unconfirmed" };
-        refreshProviderCliReadiness(agentId, computerId);
+        if (refresh) refreshProviderCliReadiness(agentId, computerId);
         const observations = registry.providerCliCredentialReadiness(computerId);
         const observation = observations.find(
           ({ observation }) =>
@@ -1250,7 +1236,6 @@ export async function startServer(): Promise<void> {
           registry,
         })
       : undefined;
-    const internalNavigationService = new InternalNavigationVisibilityService();
     const scheduleService = new ScheduleService({
       database,
       logger: serviceLogger("schedules"),
@@ -1486,7 +1471,7 @@ export async function startServer(): Promise<void> {
             botId: binding.botId,
           }),
       },
-      ...(setupResetService ? { internalNavigationService, setupResetService } : {}),
+      ...(setupResetService ? { setupResetService } : {}),
       accountSetupService,
     });
     instrumentServerWorkers(

@@ -39,7 +39,7 @@ import type { CloudDeliveryOwner } from "../services/sandboxes/index.js";
 import type { ReadyRunnerAllocation } from "../services/sandboxes/sandbox-runner-service.js";
 import type { ConnectionRegistry } from "./connection-registry.js";
 import { appendPendingImBatch } from "./im-delivery-batch.js";
-import { dispatchClaimToken } from "./im-delivery-claim.js";
+import { claimAttempt, claimPhase, dispatchClaimToken, maintainDeliveryClaimLease } from "./im-delivery-claim.js";
 import {
   type CloudDeliveryClaimRow,
   CloudDeliveryCoordinator,
@@ -59,7 +59,7 @@ import {
   loadDirectHistory,
   occupancyScopeKey,
 } from "./im-delivery-custody.js";
-import { withOperationDeadline } from "./im-delivery-deadline.js";
+import { isOperationCancellation, withOperationDeadline } from "./im-delivery-deadline.js";
 import {
   type DeliveryFailureDeps,
   type DeliveryFailureOptions,
@@ -81,7 +81,7 @@ import {
   runImDeliveryJanitor,
   runImDeliveryRetention,
 } from "./im-delivery-janitor.js";
-import { matchPinnedDirectInputHash } from "./im-delivery-pinned-hash.js";
+import { validateRecoveryPayload } from "./im-delivery-pinned-hash.js";
 import { ImDeliveryReadyWakeup } from "./im-delivery-ready-wakeup.js";
 import { acceptedReportClosed } from "./im-delivery-retry.js";
 import { ImDeliverySelector, lockEligibleDelivery } from "./im-delivery-selector.js";
@@ -90,7 +90,6 @@ import type {
   CloudSessionAllocationPort,
   DeliveryAttempt,
   ImDeliveryDiagnosticReporter,
-  ImDeliveryFailurePhase,
   ImDeliveryWorkerInput,
   RuntimeDeliveryWorkerMetric,
   WorkerClaim,
@@ -149,21 +148,6 @@ function failureDepsFor(
     recheckReady: ports.recheckReady,
   };
 }
-function claimPhase(claim: WorkerClaim): ImDeliveryFailurePhase {
-  return claim.kind === "pending" ? "deliver" : claim.kind === "steer" ? "steer" : "recover";
-}
-/** The claim already carries its identity, so a timeout is attributed even when the operation never loads a row. */
-function claimAttempt(claim: WorkerClaim, phase: ImDeliveryFailurePhase): DeliveryAttempt {
-  return {
-    deliveryId: claim.id,
-    agentId: claim.agentId,
-    computerId: claim.computerId,
-    attemptCount: claim.attemptCount,
-    phase,
-    previousErrorCode: claim.previousErrorCode,
-    ...("claimToken" in claim ? { claimToken: claim.claimToken } : {}),
-  };
-}
 /** How long the placement Computer has been silent; a Computer that never registered is fully offline. */
 function absentRuntimeMs(lastSeenAt: Date | null, now: number): number {
   return lastSeenAt ? now - lastSeenAt.getTime() : Number.POSITIVE_INFINITY;
@@ -189,6 +173,7 @@ export class ImDeliveryWorker {
   readonly #work = new Set<Promise<unknown>>();
   readonly #selector: ImDeliverySelector;
   #claimOperation: Promise<WorkerClaim | undefined> | undefined;
+  readonly #recoveries = new Map<string, { lease: ClaimLease; abort: AbortController }>();
   readonly #readyWakeup: ImDeliveryReadyWakeup;
   readonly #readyRetryClaims = new Set<string>();
   readonly #database: DatabaseClient;
@@ -385,6 +370,10 @@ export class ImDeliveryWorker {
     if (this.#closed) return;
     const claimed = await this.#claim(sessionId);
     if (!claimed) return;
+    if (this.#closed) {
+      await this.#releaseRecovery(claimed.id);
+      return;
+    }
     this.#logger?.info(
       {
         module: "im-delivery",
@@ -401,10 +390,16 @@ export class ImDeliveryWorker {
     this.#onMetric({ name: "queue_age_ms", value: queueAge, agentId: claimed.agentId });
     if (this.#maxQueueAgeMs !== undefined && queueAge > this.#maxQueueAgeMs) {
       this.#onMetric({ name: "saturation", value: 1, agentId: claimed.agentId });
-      await this.#recordFailure(claimAttempt(claimed, "claim"), "IM_DELIVERY_QUEUE_AGE_EXCEEDED");
+      try {
+        await this.#recordFailure(claimAttempt(claimed, "claim"), "IM_DELIVERY_QUEUE_AGE_EXCEEDED");
+      } finally {
+        await this.#releaseRecovery(claimed.id);
+      }
       return;
     }
     const attempt = claimAttempt(claimed, claimPhase(claimed));
+    const recovery = this.#recoveries.get(claimed.id);
+    let started = false;
     let resolve: () => void = () => undefined;
     let reject: (error: unknown) => void = () => undefined;
     const complete = new Promise<void>((done, fail) => {
@@ -412,6 +407,7 @@ export class ImDeliveryWorker {
       reject = fail;
     });
     const run = async () => {
+      started = true;
       if (sessionId && "claimToken" in claimed) this.#readyRetryClaims.add(claimed.claimToken);
       this.#onMetric({ name: "active_lanes", value: this.#scheduler.stats().active, agentId: claimed.agentId });
       let failed = false;
@@ -419,19 +415,23 @@ export class ImDeliveryWorker {
         await withOperationDeadline(
           this.#operationTimeoutMs,
           async (deadlineSignal) => {
-            const signal = AbortSignal.any([deadlineSignal, this.#abort.signal]);
+            const signal = AbortSignal.any([
+              deadlineSignal,
+              this.#abort.signal,
+              ...(recovery ? [recovery.abort.signal] : []),
+            ]);
             await this.#track(
               traceDeliveryClaim(claimed, async (claim) => {
                 if (claim.kind === "pending") await this.#deliver(claim, signal);
                 else if (claim.kind === "steer") await this.#deliverSteer(claim, signal);
-                else await this.#recover(claim, signal);
+                else if (recovery) await this.#runRecovery(claim, recovery.lease, signal, deadlineSignal);
               }),
             );
           },
           async () => {
             this.#onMetric({ name: "timeout", value: 1, agentId: claimed.agentId });
             // A timeout cannot discard accepted custody or overwrite a later report/attempt.
-            await this.#recordFailure(attempt, "IM_DELIVERY_OPERATION_TIMEOUT");
+            if (!recovery) await this.#recordFailure(attempt, "IM_DELIVERY_OPERATION_TIMEOUT");
           },
           async () => {
             this.#onDiagnostic("IM_DELIVERY_OPERATION_LATE_SETTLE", diagnosticContext(attempt));
@@ -442,6 +442,11 @@ export class ImDeliveryWorker {
           () => this.#onDiagnostic("IM_DELIVERY_OPERATION_ABANDONED", diagnosticContext(attempt)),
         );
       } catch (error) {
+        if (
+          recovery &&
+          [this.#abort.signal, recovery.abort.signal].some((signal) => isOperationCancellation(error, signal))
+        )
+          return;
         failed = true;
         reject(error);
         throw error;
@@ -451,19 +456,39 @@ export class ImDeliveryWorker {
         if (!failed) resolve();
       }
     };
-    const enqueued = this.#scheduler.enqueue(claimed.laneKey, run, () => {
-      this.#onMetric({ name: "saturation", value: 1, agentId: claimed.agentId });
-      void this.#recordFailure(claimAttempt(claimed, "claim"), "IM_DELIVERY_WORKER_SATURATED")
-        .catch(() => undefined)
-        .finally(resolve);
-    });
-    if (!enqueued) {
-      this.#onMetric({ name: "saturation", value: 1, agentId: claimed.agentId });
-      await this.#recordFailure(claimAttempt(claimed, "claim"), "IM_DELIVERY_WORKER_SATURATED");
-      resolve();
+    try {
+      const enqueued = this.#scheduler.enqueue(claimed.laneKey, run, () => {
+        if (recovery) {
+          void this.#releaseRecovery(claimed.id).then(resolve, reject);
+          return;
+        }
+        this.#onMetric({ name: "saturation", value: 1, agentId: claimed.agentId });
+        void this.#recordFailure(claimAttempt(claimed, "claim"), "IM_DELIVERY_WORKER_SATURATED")
+          .catch(() => undefined)
+          .finally(resolve);
+      });
+      if (!enqueued) {
+        if (recovery && this.#closed) {
+          await this.#releaseRecovery(claimed.id);
+          resolve();
+        } else {
+          this.#onMetric({ name: "saturation", value: 1, agentId: claimed.agentId });
+          await this.#recordFailure(claimAttempt(claimed, "claim"), "IM_DELIVERY_WORKER_SATURATED");
+          resolve();
+        }
+      }
+      this.#onMetric({ name: "queued_tasks", value: this.#scheduler.stats().queued, agentId: claimed.agentId });
+      await complete;
+    } finally {
+      if (!started) await this.#releaseRecovery(claimed.id);
     }
-    this.#onMetric({ name: "queued_tasks", value: this.#scheduler.stats().queued, agentId: claimed.agentId });
-    await complete;
+  }
+
+  async #releaseRecovery(deliveryId: string): Promise<void> {
+    const recovery = this.#recoveries.get(deliveryId);
+    if (!recovery) return;
+    await recovery.lease.stop();
+    this.#recoveries.delete(deliveryId);
   }
 
   notifyCloudRunnerReady(allocation: ReadyRunnerAllocation): Promise<void> {
@@ -511,18 +536,31 @@ export class ImDeliveryWorker {
     let claim: WorkerClaim | undefined;
     try {
       claim = await operation;
+      if (claim?.kind === "recovery") {
+        const abort = new AbortController();
+        const lease = this.#maintainClaimLease(claimAttempt(claim, "recover"), () =>
+          abort.abort(new Error("IM_DELIVERY_CLAIM_LOST")),
+        );
+        this.#recoveries.set(claim.id, { lease, abort });
+      }
     } finally {
       this.#claimOperation = undefined;
     }
     // Diagnostics hooks and runtime work do not hold the claim single-flight gate.
-    if (claim) await this.#afterClaimRowLocked?.();
-    return claim;
+    try {
+      if (claim) await this.#afterClaimRowLocked?.();
+      return claim;
+    } catch (error) {
+      if (claim) await this.#releaseRecovery(claim.id);
+      throw error;
+    }
   }
 
   async #claimNext(sessionId?: string): Promise<WorkerClaim | undefined> {
     let attempts = 0;
     for await (const candidate of this.#selector.candidates(this.#clock(), sessionId)) {
       if (this.#closed) return undefined;
+      if (this.#recoveries.has(candidate.row.id)) continue;
       const claimed = await this.#claimCandidate(candidate.row.id, candidate.context.agentId, sessionId);
       this.#selector.invalidate(candidate.row.sessionId);
       if (claimed) return claimed;
@@ -590,7 +628,7 @@ export class ImDeliveryWorker {
           .update(imMessageDeliveries)
           .set({
             attemptCount: sql`${imMessageDeliveries.attemptCount} + 1`,
-            nextAttemptAt: new Date(now.getTime() + RETRY_DELAY_MS),
+            nextAttemptAt: new Date(now.getTime() + this.#claimLeaseMs),
             lastErrorCode: null,
           })
           .where(and(eq(imMessageDeliveries.id, row.id), eq(imMessageDeliveries.state, "accepted")));
@@ -1180,7 +1218,28 @@ export class ImDeliveryWorker {
     await this.#cloudCoordinator.deliver(row, attempt, lease, signal);
   }
 
-  async #recover(claim: WorkerClaim & { kind: "recovery" }, signal: AbortSignal): Promise<void> {
+  async #runRecovery(
+    claim: WorkerClaim & { kind: "recovery" },
+    lease: ClaimLease,
+    signal: AbortSignal,
+    deadlineSignal: AbortSignal,
+  ): Promise<void> {
+    try {
+      signal.throwIfAborted();
+      if (await lease.assertOwned()) await this.#recover(claim, signal, lease);
+    } finally {
+      // Keep the lease and local owner through actual settlement, even after the scheduler grace.
+      await lease.stop();
+      try {
+        if (deadlineSignal.aborted)
+          await this.#recordFailure(claimAttempt(claim, "recover"), "IM_DELIVERY_OPERATION_TIMEOUT");
+      } finally {
+        this.#recoveries.delete(claim.id);
+      }
+    }
+  }
+
+  async #recover(claim: WorkerClaim & { kind: "recovery" }, signal: AbortSignal, lease: ClaimLease): Promise<void> {
     const attempt = claimAttempt(claim, "recover");
     const deliveryId = claim.id;
     const [row] = await this.#database
@@ -1202,6 +1261,9 @@ export class ImDeliveryWorker {
         and(
           eq(imMessageDeliveries.id, deliveryId),
           eq(imMessageDeliveries.state, "accepted"),
+          eq(imMessageDeliveries.attemptCount, claim.attemptCount),
+          eq(agents.id, claim.agentId),
+          eq(computers.id, claim.computerId),
           isNull(imMessageDeliveries.reportedAt),
           isNull(sessions.endedAt),
           eq(imBindings.status, "active"),
@@ -1209,6 +1271,7 @@ export class ImDeliveryWorker {
         ),
       )
       .limit(1);
+    signal.throwIfAborted();
     if (!row) return;
     setDeliveryRowPerformanceContext(row);
     setActiveSpanAttributes({
@@ -1262,9 +1325,13 @@ export class ImDeliveryWorker {
       );
       return;
     }
-    if (!(await this.#validateRecoveryPayload(row, attempt))) return;
+    if (!(await validateRecoveryPayload(row, attempt, (attempt, code) => this.#recordFailure(attempt, code)))) return;
+    signal.throwIfAborted();
+    if (!(await lease.assertOwned())) return;
+    signal.throwIfAborted();
+    let result: SessionReconcileResult;
     try {
-      const result = await this.#domain.requestReconcile(
+      result = await this.#domain.requestReconcile(
         row.computer.id,
         instanceId,
         {
@@ -1280,48 +1347,22 @@ export class ImDeliveryWorker {
         undefined,
         undefined,
         signal,
+        { joinSettlement: true },
       );
-      await this.#deferRecovery(attempt, row.delivery.attemptCount, RECOVERY_RETRY_CODES[result.status]);
     } catch {
-      await this.#deferRecovery(attempt, row.delivery.attemptCount, "IM_DELIVERY_RECOVERY_FAILED");
+      signal.throwIfAborted();
+      await lease.stop();
+      signal.throwIfAborted();
+      await this.#deferRecovery(attempt, claim.attemptCount, "IM_DELIVERY_RECOVERY_FAILED");
+      return;
     }
+    await lease.stop();
+    if (!signal.aborted) await this.#deferRecovery(attempt, claim.attemptCount, RECOVERY_RETRY_CODES[result.status]);
   }
 
   /** A reconcile response is not a report; preserve custody until the actual report settles it. */
   #deferRecovery(attempt: DeliveryAttempt, attemptCount: number, code: string): Promise<void> {
     return deferRecoveryRetry(this.#failures, attempt, attemptCount, code);
-  }
-
-  /** Verify the original dispatch identity without preparing new business or rewriting old hashes. */
-  async #validateRecoveryPayload(
-    row: {
-      delivery: typeof imMessageDeliveries.$inferSelect;
-      session: typeof sessions.$inferSelect;
-      agent: typeof agents.$inferSelect;
-      placement: typeof sessionPlacements.$inferSelect;
-    },
-    attempt: DeliveryAttempt,
-  ): Promise<boolean> {
-    if (row.delivery.dispatchPayload === null) return true;
-    const pinned = DirectImMessageDeliveryRequestSchema.safeParse(row.delivery.dispatchPayload);
-    const pinnedInputHash = pinned.success
-      ? matchPinnedDirectInputHash(pinned.data, row.delivery.dispatchInputHash)
-      : undefined;
-    if (
-      !pinned.success ||
-      pinned.data.deliveryId !== row.delivery.id ||
-      pinned.data.imMessageId !== row.delivery.messageId ||
-      pinned.data.sessionId !== row.session.id ||
-      pinned.data.agentId !== row.agent.id ||
-      pinned.data.placementGeneration !== row.placement.generation ||
-      pinned.data.requestId !== row.delivery.dispatchRequestId ||
-      pinnedInputHash !== row.delivery.dispatchInputHash ||
-      pinnedInputHash !== row.delivery.inputHash
-    ) {
-      await this.#recordFailure(attempt, "IM_DELIVERY_RECOVERY_PAYLOAD_INVALID");
-      return false;
-    }
-    return true;
   }
 
   async #assembleRuntime(
@@ -1436,64 +1477,13 @@ export class ImDeliveryWorker {
     return rejectDelivery(this.#failures, deliveryId, reason, claimToken);
   }
 
-  #maintainClaimLease(attempt: DeliveryAttempt): ClaimLease {
-    const deliveryId = attempt.deliveryId;
-    const claimToken = attempt.claimToken;
-    if (!claimToken) throw new Error("IM_DELIVERY_CLAIM_TOKEN_MISSING");
-    let active = true;
-    let lost = false;
-    let renewal = Promise.resolve();
-    const renew = () => {
-      renewal = renewal
-        .then(async () => {
-          if (!active || lost) return;
-          lost = !(await this.#renewClaim(deliveryId, claimToken));
-        })
-        .catch(() => {
-          lost = true;
-        });
-    };
-    const timer = setInterval(renew, this.#claimRenewMs);
-    timer.unref();
-    return {
-      assertOwned: async () => {
-        await renewal;
-        if (lost) return false;
-        const [owned] = await this.#database
-          .select({ id: imMessageDeliveries.id })
-          .from(imMessageDeliveries)
-          .where(
-            and(
-              eq(imMessageDeliveries.id, deliveryId),
-              inArray(imMessageDeliveries.state, ["pending", "expired"]),
-              eq(imMessageDeliveries.lastErrorCode, claimToken),
-            ),
-          )
-          .limit(1);
-        if (!owned) lost = true;
-        return !lost;
-      },
-      stop: async () => {
-        active = false;
-        clearInterval(timer);
-        await renewal;
-      },
-    };
-  }
-
-  async #renewClaim(deliveryId: string, claimToken: string): Promise<boolean> {
-    const [renewed] = await this.#database
-      .update(imMessageDeliveries)
-      .set({ nextAttemptAt: new Date(this.#now() + this.#claimLeaseMs) })
-      .where(
-        and(
-          eq(imMessageDeliveries.id, deliveryId),
-          inArray(imMessageDeliveries.state, ["pending", "expired"]),
-          eq(imMessageDeliveries.lastErrorCode, claimToken),
-        ),
-      )
-      .returning({ id: imMessageDeliveries.id });
-    return renewed !== undefined;
+  #maintainClaimLease(attempt: DeliveryAttempt, onLost?: () => void): ClaimLease {
+    return maintainDeliveryClaimLease(this.#database, attempt, {
+      now: this.#now,
+      leaseMs: this.#claimLeaseMs,
+      renewMs: this.#claimRenewMs,
+      ...(onLost ? { onLost } : {}),
+    });
   }
 
   async #buildDeliveryContent(input: {

@@ -1,6 +1,7 @@
 import {
   type AgentAdminConfig,
   CONTEXT_TREES_MAX,
+  type ContextTreeAvailabilityResponse,
   type ContextTreeConnection,
   ContextTreeConnectionSchema,
   type ContextTreeOperationRequest,
@@ -23,6 +24,17 @@ export class ContextTreeOperationService {
     readonly registry: Pick<ConnectionRegistry, "currentInstanceId" | "supportsCapability">,
     readonly github: GitHubContextTreeOperationRunner,
   ) {}
+  async availability(userId: string, agentId: string): Promise<ContextTreeAvailabilityResponse> {
+    const config = await this.agents.getConfigById(userId, agentId);
+    if (!config.computerId) return { status: "failed", code: "computer_unavailable" };
+    const kind = await this.github.computerKind(config.computerId);
+    if (!kind) return { status: "failed", code: "computer_unavailable" };
+    if (kind === "local") {
+      const failure = this.#checkComputer(config.computerId);
+      if (failure) return failure;
+    }
+    return this.github.availability(userId, agentId);
+  }
   async run(userId: string, agentId: string, raw: ContextTreeOperationRequest): Promise<ContextTreeOperationResponse> {
     const input = ContextTreeOperationRequestSchema.parse(raw);
     const config = await this.agents.getConfigById(userId, agentId);
@@ -34,7 +46,6 @@ export class ContextTreeOperationService {
     const connections = config.runtimeConfig.contextTrees;
     const unchanged = attachmentOutcome(config, input);
     if (unchanged) return unchanged;
-    if (connections.length > 0 && config.status !== "suspended") return { status: "failed", code: "pause_required" };
     const prepared: PreparedContextTreeOperation =
       input.action === "disconnect"
         ? { result: { status: "completed", repository: null } }
@@ -94,7 +105,7 @@ export class ContextTreeOperationService {
       : result;
   }
 
-  #checkComputer(computerId: string): Extract<ContextTreeOperationResponse, { status: "failed" }> | undefined {
+  #checkComputer(computerId: string): Extract<ContextTreeAvailabilityResponse, { status: "failed" }> | undefined {
     const instanceId = this.registry.currentInstanceId(computerId);
     if (!instanceId) return { status: "failed", code: "computer_unavailable" };
     if (!this.registry.supportsCapability(computerId, instanceId, RUNTIME_CAPABILITY.contextTreeSettings))

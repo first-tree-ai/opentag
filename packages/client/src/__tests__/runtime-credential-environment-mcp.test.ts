@@ -113,6 +113,19 @@ async function home(): Promise<string> {
 }
 
 describe("MCP gateway preparation", () => {
+  it("prepares a service-only internal execution without an IM provider or outbox", async () => {
+    const relay = fakeRelay("exec-internal", async () => ({
+      token: "otmg_internal_fixture",
+      expiresAt: "2026-01-01T00:00:00.000Z",
+    }));
+    relay.providers = [];
+    const prepared = await prepareWith(await home(), relay);
+    expect(prepared.providers).toEqual([]);
+    expect(prepared.provider).toBeUndefined();
+    expect(prepared.outboxContext).toBeUndefined();
+    expect(prepared.mcp).toEqual({ url: "https://server.example.test/api/v1/mcp", token: "otmg_internal_fixture" });
+  });
+
   it("composes the endpoint against the pinned Server origin, not anything the Server said", async () => {
     const relay = fakeRelay("exec-mcp", async () => ({ token: "otmg_abc", expiresAt: "2026-01-01T00:00:00.000Z" }));
     const prepared = await prepareWith(await home(), relay);

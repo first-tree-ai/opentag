@@ -2,13 +2,9 @@ import type { BackgroundFailureSupervisor } from "../../observability/background
 import type { SandboxRunnerService } from "./sandbox-runner-service.js";
 
 /**
- * E7 periodic idle sweep. ONE fixed cadence drives every consequence of the single idle budget:
- * a ready environment idle past the budget is sealed and deleted, an abandoned claim is retried
- * once that row's own `last_activity_at` budget has passed (the claim timestamp is intent, not a
- * second clock), and an automatic row already releasing resumes from its durable marker without
- * another budget. Each process runs at most one pass at a time; the database CAS in the runner
- * service makes restarts and concurrent workers converge. No environment is reclaimed merely
- * because a sweep happened.
+ * E7 periodic idle sweep. Business inactivity authorizes the initial claim; durable retry pacing
+ * in the service prevents claimed or releasing rows from repeating I/O on every sweep. Each
+ * process runs at most one pass at a time, and conditional reservations fence competing workers.
  */
 const DEFAULT_SWEEP_INTERVAL_MS = 15_000;
 

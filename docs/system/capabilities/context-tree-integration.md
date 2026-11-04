@@ -34,19 +34,27 @@ in the creation dialog. Connected Context Trees appear as divided rows in one
 surface, with repository/directory, branch, and a direct GitHub-folder link. A trailing secondary
 **Connect another Context Tree** action keeps additional connections available inside the collection.
 The trailing action is absent at the connection limit rather than presenting an unexplained disabled control.
-These are saved selections, not runtime-ready indicators. Each choice opens a focused dialog; the
-collection does not show an inline form. Disconnect lives in the Context Tree action menu and confirms
+These are saved selections, not runtime-ready indicators. Each choice opens a focused dialog. Before showing repository fields, the dialog checks
+the current Agent’s GitHub MCP authorization and Computer compatibility through an authenticated,
+uncached Server read. Missing deployment configuration directs the user to the server administrator;
+missing, disabled or unsupported Agent authorization links to that Agent’s Connectors. Read-only
+authorization permits connecting but blocks repository creation. Retry rechecks readiness after setup,
+and Cancel remains available while checking. An unavailable or older Server does not expose a form
+whose prerequisites could not be checked. The collection does not show an inline form. Disconnect lives in the Context Tree action menu and confirms
 the exact Context Tree and preservation impact.
 Cancel receives initial focus, pending requests block dismissal and repeated submissions, and failures
 stay inside the confirmation. A confirmed removal returns focus to a surviving neighbour or the empty-state
 connection shortcut. Successful first connections return focus to the collection's trailing connection action
 and leave visible, concise feedback.
 
-Connect accepts a GitHub repository link and an optional relative directory; an empty
-directory means the repository root. GitHub’s default branch is resolved during verification
-and saved with the connection. Both Local and Cloud can connect existing trees.
-Create accepts an owner and repository name and uses GitHub's default branch.
-Neither dialog asks for a branch.
+Connect accepts a GitHub repository link or a folder link copied from GitHub
+(`…/tree/<branch>/<folder>`), plus an optional relative directory that overrides the link's folder; with neither,
+the tree is the repository root. A folder link connects the branch it names, and the dialog says so, because silently
+using another branch would connect content the reader did not point at. A repository link uses GitHub's default
+branch, resolved during verification and saved with the connection. The branch is read as the link's first segment
+after `tree/`, so a branch whose name contains `/` is connected from the repository link with the folder typed in.
+Both Local and Cloud can connect existing trees. Create accepts an owner and repository name and uses GitHub's
+default branch. Neither dialog asks for a branch.
 Both Local and Cloud Computers can create private repositories: OpenTag creates the repository,
 generates the initial page with the pinned `context-tree init`, and commits it through
 GitHub's contents API. Connection verification and creation run exclusively on the Server with the current Agent's GitHub MCP OAuth
@@ -58,15 +66,22 @@ Initial settings read failures retain the page identity and offer explicit retry
 A transient refresh failure retains the existing collection and form draft, marks the data unconfirmed,
 and disables writes until a successful read. Connector and restriction-recovery links open a new tab so
 an in-progress form stays available in the original tab. Terminal authorization/resource failures hide stale settings.
-Invalid directories associate their error with the field. Restriction notices describe pause and offline
-requirements together and link to existing Agent/Computer settings without automatically pausing an Agent.
+Invalid directories associate their error with the field. The offline restriction notice links to the
+existing Computer settings.
+
+Readiness checks are advisory: submissions still recheck current revisions, Computer capability and
+GitHub authority. They do not call GitHub, refresh credentials or start authorization. Disconnect never
+requires readiness or GitHub authorization.
 
 Failed settings operations display an error banner and the current Agent's Connector or repository destination. When the server has no GitHub MCP OAuth client
 configured, the message asks the server administrator to configure it; this does not
 mean the bound Computer needs an update.
 
-Operations carry expected Agent/runtime revisions. Changing a
-nonempty selection requires a paused Agent. Disconnect only changes the selection;
+Operations carry expected Agent/runtime revisions. Connecting and disconnecting do not require
+pausing the Agent. A saved change advances the Agent revision, so it applies to the next turn
+like any other Agent settings change; a turn already running keeps the prompt and workspace it
+started with, while its later Context Tree commands fail closed against the stale revision and
+never reach a tree outside the current selection. Disconnect only changes the selection;
 it preserves cached content and unpublished work. Connecting an already selected source
 and disconnecting an absent source are idempotent.
 Repository creation never adopts or overwrites an existing repository. Remote writes are

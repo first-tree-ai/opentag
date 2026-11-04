@@ -1,6 +1,8 @@
 import {
   type AgentAdminConfig,
   CONTEXT_TREES_MAX,
+  type ContextTreeAvailabilityResponse,
+  ContextTreeBranchSchema,
   type ContextTreeConnection,
   ContextTreeConnectionSchema,
   type ContextTreeOperationRequest,
@@ -80,7 +82,7 @@ function ContextTreeSettingsForm({
       mounted.current = false;
     };
   }, []);
-  const { selected, cloud, pauseRequired, pending, disabled } = treePermissions({
+  const { selected, cloud, pending, disabled } = treePermissions({
     config,
     computerKind,
     online,
@@ -88,7 +90,12 @@ function ContextTreeSettingsForm({
     pendingAction,
   });
   const activeMode = mode ?? "connect";
-  const { source, valid, ownerValid, nameValid, linkedRepository } = parseForm(activeMode, draft, repositoryUrl, path);
+  const { source, valid, ownerValid, nameValid, linkedRepository, linkedPath, linkedRef } = parseForm(
+    activeMode,
+    draft,
+    repositoryUrl,
+    path,
+  );
   const fieldId = `context-tree-${config.id}`;
   const uncertainCreation =
     activeMode === "create"
@@ -218,7 +225,6 @@ function ContextTreeSettingsForm({
         online={online}
         selected={selected}
         pending={pending}
-        pauseRequired={pauseRequired}
         unconfirmed={unconfirmed}
         fieldId={fieldId}
         addButton={addButton}
@@ -239,22 +245,14 @@ function ContextTreeSettingsForm({
           <ContextTreeResult agentId={config.id} result={result} cloud={cloud} repository={resultSource?.repository} />
         ) : null}
       </div>
-      <Dialog
-        open={mode !== undefined}
-        busy={pending}
-        title={
-          activeMode === "connect"
-            ? m.agent_settings_context_tree_connect_existing()
-            : m.agent_settings_context_tree_create_new()
-        }
-        description={
-          activeMode === "connect"
-            ? m.agent_settings_context_tree_connect_guidance()
-            : m.agent_settings_context_tree_create_guidance()
-        }
+      <ContextTreeConnectDialog
+        agentId={config.id}
+        mode={mode}
+        pending={pending}
+        repositoryInput={repositoryInput}
+        ownerInput={ownerInput}
+        returnFocus={returnFocus}
         onClose={closeForm}
-        initialFocusRef={activeMode === "connect" ? repositoryInput : ownerInput}
-        returnFocusRef={returnFocus}
       >
         <form
           className="grid gap-4"
@@ -264,6 +262,7 @@ function ContextTreeSettingsForm({
             submit();
           }}
         >
+          <ContextTreeFormGuidance mode={activeMode} linkedRef={linkedRef} />
           {activeMode === "connect" ? (
             <ConnectTreeFields
               {...{
@@ -273,6 +272,7 @@ function ContextTreeSettingsForm({
                 pending,
                 submitted,
                 linkedRepository,
+                linkedPath,
                 valid,
                 repositoryInput,
                 pathInput,
@@ -289,7 +289,7 @@ function ContextTreeSettingsForm({
             />
           )}
           {cloud ? <p className="text-sm text-kumo-subtle">{m.agent_settings_context_tree_cloud_guidance()}</p> : null}
-          <ContextTreeRestrictions agentId={config.id} online={online} pauseRequired={pauseRequired} />
+          <ContextTreeRestrictions agentId={config.id} online={online} />
           {pending ? <p role="status">{m.agent_settings_context_tree_pending()}</p> : null}
           {formResult ? (
             <ContextTreeResult
@@ -311,12 +311,12 @@ function ContextTreeSettingsForm({
             </Button>
           </div>
         </form>
-      </Dialog>
+      </ContextTreeConnectDialog>
       <DisconnectTreeDialog
         agentId={config.id}
         target={disconnectTarget}
         pending={pending}
-        disabled={pauseRequired || unconfirmed}
+        disabled={unconfirmed}
         result={result}
         cloud={cloud}
         returnFocusRef={disconnectReturnFocus}
@@ -327,9 +327,120 @@ function ContextTreeSettingsForm({
           }
         }}
         onConfirm={() => {
-          if (disconnectTarget && !pauseRequired && !unconfirmed) void run("disconnect", disconnectTarget);
+          if (disconnectTarget && !unconfirmed) void run("disconnect", disconnectTarget);
         }}
       />
+    </div>
+  );
+}
+
+function ContextTreeConnectDialog({
+  agentId,
+  mode,
+  pending,
+  repositoryInput,
+  ownerInput,
+  returnFocus,
+  onClose,
+  children,
+}: {
+  agentId: string;
+  mode?: TreeAction;
+  pending: boolean;
+  repositoryInput: RefObject<HTMLInputElement | null>;
+  ownerInput: RefObject<HTMLInputElement | null>;
+  returnFocus: RefObject<HTMLElement | null>;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const activeMode = mode ?? "connect";
+  const inputRef = activeMode === "connect" ? repositoryInput : ownerInput;
+  return (
+    <Dialog
+      open={mode !== undefined}
+      busy={pending}
+      title={
+        activeMode === "connect"
+          ? m.agent_settings_context_tree_connect_existing()
+          : m.agent_settings_context_tree_create_new()
+      }
+      onClose={onClose}
+      initialFocusRef={inputRef}
+      returnFocusRef={returnFocus}
+    >
+      {mode ? (
+        <ContextTreeFormGate agentId={agentId} mode={mode} inputRef={inputRef} onClose={onClose}>
+          {children}
+        </ContextTreeFormGate>
+      ) : null}
+    </Dialog>
+  );
+}
+
+function ContextTreeFormGuidance({ mode, linkedRef }: { mode: TreeAction; linkedRef?: string }) {
+  return <p className="text-sm text-kumo-subtle">{formGuidance(mode, linkedRef)}</p>;
+}
+
+function ContextTreeFormGate({
+  agentId,
+  mode,
+  inputRef,
+  onClose,
+  children,
+}: {
+  agentId: string;
+  mode: TreeAction;
+  inputRef: RefObject<HTMLInputElement | null>;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const [availability, setAvailability] = useState<ContextTreeAvailabilityResponse | "error">();
+  useEffect(() => {
+    if (availability !== undefined) return;
+    let active = true;
+    void browserApi.contextTreeAvailability(agentId).then(
+      (response) => {
+        if (active) setAvailability(response);
+      },
+      () => {
+        if (active) setAvailability("error");
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [agentId, availability]);
+  const ready =
+    availability !== undefined &&
+    availability !== "error" &&
+    availability.status === "ready" &&
+    (mode === "connect" || !availability.readOnly);
+  useEffect(() => {
+    if (ready) inputRef.current?.focus();
+  }, [ready, inputRef]);
+  if (ready) return children;
+  return (
+    <div className="grid gap-4">
+      {availability === undefined ? (
+        <p role="status">{m.agent_settings_context_tree_checking()}</p>
+      ) : availability === "error" ? (
+        <Banner variant="error" role="alert" description={m.agent_settings_context_tree_check_failed()} />
+      ) : availability.status === "failed" ? (
+        <ContextTreeResult agentId={agentId} result={availability} cloud={false} />
+      ) : (
+        <>
+          <Banner variant="error" role="alert" description={m.agent_settings_context_tree_read_only()} />
+          <ContextTreeConnectorLink agentId={agentId} />
+        </>
+      )}
+      <div className="flex flex-wrap justify-end gap-3 border-t border-kumo-line pt-4">
+        <Button variant="secondary" onClick={onClose}>
+          {m.common_cancel()}
+        </Button>
+        <Button onClick={() => setAvailability(undefined)} disabled={availability === undefined}>
+          {m.common_retry()}
+        </Button>
+      </div>
     </div>
   );
 }
@@ -348,14 +459,12 @@ function treePermissions({
   pendingAction?: ContextTreeOperationRequest["action"];
 }) {
   const selected = config.runtimeConfig.contextTrees;
-  const pauseRequired = selected.length > 0 && config.status !== "suspended";
   const pending = pendingAction !== undefined;
   return {
     selected,
-    pauseRequired,
     pending,
     cloud: computerKind === "cloud",
-    disabled: pending || !online || pauseRequired || unconfirmed,
+    disabled: pending || !online || unconfirmed,
   };
 }
 function currentFormResult(
@@ -447,46 +556,22 @@ function DisconnectTreeDialog({
   );
 }
 
-function ContextTreeRestrictions({
-  agentId,
-  online,
-  pauseRequired,
-}: {
-  agentId: string;
-  online: boolean;
-  pauseRequired: boolean;
-}) {
-  if (online && !pauseRequired) return null;
+function ContextTreeRestrictions({ agentId, online }: { agentId: string; online: boolean }) {
+  if (online) return null;
   return (
     <div className="grid gap-2 text-sm text-kumo-subtle" role="status">
-      {pauseRequired ? (
-        <p>
-          {m.agent_settings_context_tree_pause_required()}{" "}
-          <Link
-            {...agentSettingsSectionLink(agentId, "manage")}
-            target="_blank"
-            rel="noopener noreferrer"
-            title={m.agent_settings_context_tree_settings_link_hint()}
-            className="text-kumo-link underline underline-offset-4"
-          >
-            {m.agent_settings_context_tree_manage_agent()}
-          </Link>
-        </p>
-      ) : null}
-      {!online ? (
-        <p>
-          {m.agent_settings_context_tree_computer_unavailable()}{" "}
-          <Link
-            {...agentSettingsSectionLink(agentId, "computer")}
-            target="_blank"
-            rel="noopener noreferrer"
-            title={m.agent_settings_context_tree_settings_link_hint()}
-            className="text-kumo-link underline underline-offset-4"
-          >
-            {m.agent_settings_context_tree_computer_settings()}
-          </Link>
-        </p>
-      ) : null}
+      <p>
+        {m.agent_settings_context_tree_computer_unavailable()}{" "}
+        <Link
+          {...agentSettingsSectionLink(agentId, "computer")}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={m.agent_settings_context_tree_settings_link_hint()}
+          className="text-kumo-link underline underline-offset-4"
+        >
+          {m.agent_settings_context_tree_computer_settings()}
+        </Link>
+      </p>
     </div>
   );
 }
@@ -496,7 +581,6 @@ function ContextTreeCollection({
   online,
   selected,
   pending,
-  pauseRequired,
   unconfirmed,
   fieldId,
   addButton,
@@ -508,7 +592,6 @@ function ContextTreeCollection({
   online: boolean;
   selected: ContextTreeConnection[];
   pending: boolean;
-  pauseRequired: boolean;
   unconfirmed: boolean;
   fieldId: string;
   addButton: RefObject<HTMLButtonElement | null>;
@@ -518,7 +601,7 @@ function ContextTreeCollection({
 }) {
   return (
     <>
-      <ContextTreeRestrictions agentId={agentId} online={online} pauseRequired={pauseRequired} />
+      <ContextTreeRestrictions agentId={agentId} online={online} />
       {selected.length ? (
         <section
           aria-label={m.agent_settings_context_tree_connected_heading()}
@@ -529,7 +612,7 @@ function ContextTreeCollection({
               key={contextTreeIdentity(entry)}
               source={entry}
               id={`${fieldId}-tree-${index}`}
-              disabled={pending || pauseRequired || unconfirmed}
+              disabled={pending || unconfirmed}
               onDisconnect={() => onDisconnect(entry)}
               buttonRef={(button) => onButton(entry, button)}
             />
@@ -543,7 +626,7 @@ function ContextTreeCollection({
                       ref={addButton}
                       className="max-w-full min-w-0 shrink whitespace-normal text-left"
                       variant="ghost"
-                      disabled={pending || pauseRequired || unconfirmed}
+                      disabled={pending || unconfirmed}
                     />
                   }
                 >
@@ -686,6 +769,7 @@ function ConnectTreeFields({
   pending,
   submitted,
   linkedRepository,
+  linkedPath,
   valid,
   repositoryInput,
   pathInput,
@@ -698,6 +782,7 @@ function ConnectTreeFields({
   pending: boolean;
   submitted: boolean;
   linkedRepository: string | undefined;
+  linkedPath?: string;
   valid: ReturnType<typeof ContextTreeConnectionSchema.safeParse>;
   repositoryInput: RefObject<HTMLInputElement | null>;
   pathInput: RefObject<HTMLInputElement | null>;
@@ -737,7 +822,8 @@ function ConnectTreeFields({
           value={path}
           disabled={pending}
           onChange={(event) => onPathChange(event.target.value)}
-          placeholder="docs"
+          // Shows the folder a pasted /tree/ link already names, so an empty field never looks filled in.
+          placeholder={linkedPath ?? ""}
           aria-invalid={Boolean(submitted && !valid.success && linkedRepository)}
           aria-describedby={`${fieldId}-path-hint${submitted && !valid.success && linkedRepository ? ` ${fieldId}-path-error` : ""}`}
         />
@@ -809,6 +895,14 @@ function RepositoryFields({
   );
 }
 
+/** The dialog's one sentence; a folder link that names a branch says that branch is the one used. */
+function formGuidance(activeMode: TreeAction, linkedRef: string | undefined): string {
+  if (activeMode !== "connect") return m.agent_settings_context_tree_create_guidance();
+  return linkedRef
+    ? m.agent_settings_context_tree_connect_guidance_branch({ branch: linkedRef })
+    : m.agent_settings_context_tree_connect_guidance();
+}
+
 function parseForm(
   activeMode: TreeAction,
   draft: { owner: string; name: string },
@@ -817,30 +911,61 @@ function parseForm(
 ) {
   const owner = draft.owner.trim();
   const name = draft.name.trim();
-  const linkedRepository = repositoryFromUrl(repositoryUrl);
+  const linked = repositoryFromUrl(repositoryUrl);
+  const linkedRepository = linked?.repository;
   const repository = activeMode === "connect" ? (linkedRepository ?? "") : `${owner}/${name}`;
   const ownerValid = ContextTreeRepositorySchema.safeParse(`${owner}/memory`).success;
   const nameValid = ContextTreeRepositorySchema.safeParse(`acme/${name}`).success;
   const source = {
     kind: "git" as const,
     repository,
-    path: activeMode === "create" ? "." : path.trim() || ".",
-    ref: "HEAD",
+    // The directory field overrides the folder a pasted /tree/ link names; empty means the link's folder or root.
+    path: activeMode === "create" ? "." : path.trim() || linked?.path || ".",
+    // A folder link names its branch; connecting follows that branch rather than silently using another.
+    ref: activeMode === "connect" && linked?.ref ? linked.ref : "HEAD",
   };
   const valid = ContextTreeConnectionSchema.safeParse(source);
-  return { source, valid, ownerValid, nameValid, linkedRepository };
+  return { source, valid, ownerValid, nameValid, linkedRepository, linkedPath: linked?.path, linkedRef: linked?.ref };
 }
 
-function repositoryFromUrl(value: string): string | undefined {
+/**
+ * A GitHub repository link, or a folder link copied from GitHub's address bar
+ * (`https://github.com/owner/repository/tree/<branch>/<folder>`). A tree link names its branch and
+ * folder; the branch is read as the first segment, so a branch whose name contains `/` must be
+ * connected from the repository link with the folder typed in.
+ */
+export function repositoryFromUrl(value: string): { repository: string; path?: string; ref?: string } | undefined {
+  const segments = githubPathSegments(value);
+  if (!segments) return undefined;
+  const [owner, name, kind, ref, ...folder] = segments;
+  if (!owner || !name) return undefined;
+  if (kind !== undefined && kind !== "tree") return undefined;
+  // A tree link always names its branch; `…/tree/` alone is not a folder link.
+  if (kind === "tree" && !ref) return undefined;
+  const parsed = ContextTreeRepositorySchema.safeParse(`${owner}/${name.replace(/\.git$/u, "")}`);
+  if (!parsed.success) return undefined;
+  const branch = ref === undefined ? undefined : ContextTreeBranchSchema.safeParse(ref);
+  if (branch && !branch.success) return undefined;
+  const path = folder.join("/");
+  return {
+    repository: parsed.data,
+    ...(path ? { path } : {}),
+    ...(branch?.success ? { ref: branch.data } : {}),
+  };
+}
+
+/**
+ * The decoded path segments of an https://github.com link, or `undefined` when it is not one. The link
+ * is typed live, so a malformed URL or a stray `%` must read as "not a link yet", never throw in render.
+ */
+function githubPathSegments(value: string): string[] | undefined {
   try {
     const url = new URL(value.trim());
     if (url.protocol !== "https:" || url.hostname !== "github.com" || url.port || url.username || url.password) return;
-    const repository = url.pathname
-      .replace(/^\//u, "")
-      .replace(/\/$/u, "")
-      .replace(/\.git$/u, "");
-    const parsed = ContextTreeRepositorySchema.safeParse(repository);
-    return parsed.success ? parsed.data : undefined;
+    return url.pathname
+      .split("/")
+      .filter(Boolean)
+      .map((part) => decodeURIComponent(part));
   } catch {
     return undefined;
   }
@@ -874,16 +999,10 @@ function ContextTreeResult({
         </Collapsible.Root>
       ) : null}
       <div className="flex flex-wrap items-center gap-3 text-sm">
-        {result.code === "authentication_required" ? (
-          <Link
-            {...agentMcpLink(agentId)}
-            target="_blank"
-            rel="noopener noreferrer"
-            title={m.agent_settings_context_tree_settings_link_hint()}
-            className="text-kumo-link underline underline-offset-4"
-          >
-            {m.agent_settings_context_tree_connector_settings()}
-          </Link>
+        {["authentication_required", "github_connector_disabled", "github_connector_unsupported"].includes(
+          result.code,
+        ) ? (
+          <ContextTreeConnectorLink agentId={agentId} />
         ) : null}
         {repository ? (
           <a
@@ -902,6 +1021,20 @@ function ContextTreeResult({
         ) : null}
       </div>
     </div>
+  );
+}
+
+function ContextTreeConnectorLink({ agentId }: { agentId: string }) {
+  return (
+    <Link
+      {...agentMcpLink(agentId)}
+      target="_blank"
+      rel="noopener noreferrer"
+      title={m.agent_settings_context_tree_settings_link_hint()}
+      className="text-kumo-link underline underline-offset-4"
+    >
+      {m.agent_settings_context_tree_connector_settings()}
+    </Link>
   );
 }
 
@@ -940,8 +1073,6 @@ function failureMessage(
       return m.agent_settings_context_tree_computer_unavailable();
     case "busy":
       return m.agent_settings_context_tree_busy();
-    case "pause_required":
-      return m.agent_settings_context_tree_pause_required();
     default:
       return cloud ? m.agent_settings_context_tree_cloud_failed() : m.agent_settings_context_tree_failed();
   }

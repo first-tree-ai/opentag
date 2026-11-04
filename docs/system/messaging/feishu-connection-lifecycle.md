@@ -135,6 +135,19 @@ last trustworthy snapshot. At exhaustion, Check again starts a fresh read window
 a Computer, checking an upstream candidate, creating another authorization, or disconnecting.
 Actual authorizing, waiting-handoff and offline observations retain their existing waiting behavior.
 
+### Paused settings reads
+
+The current Account owner can read binding summaries, configuration, handoff observations, diagnostics, and
+saved setup attempts for active or paused Agents. Deleted Agents and other Accounts are rejected. Authorization
+and stored details share a read-only Repeatable Read snapshot; attempt confirmation reads repeat that check,
+and public attempt reads recheck current ownership before returning. Read DTOs keep secrets, encrypted setup
+context, and ownership tokens private.
+
+Paused handoff and diagnostic reads inspect existing runtime observations without scheduling Provider CLI
+preparation or credential validation. Reads do not activate or cancel a candidate, extend its retention, resume an
+Agent, or call Feishu. Setup creation, explicit activation checks, cancellation, and asynchronous completion keep
+their active-only admission, final mutation guards, and attempt/generation fences.
+
 ### Minimal database migration for `pending_activation`
 
 - Append `pending_activation` to `feishu_setup_state`.
@@ -192,7 +205,55 @@ transaction with Feishu. A crash between external credential issuance and the fi
 commit can still lose the new secret. Large candidate populations also incur scan/decryption
 cost because this change intentionally adds no scheduling index.
 
-## Release and rollback boundary
+## Keeping active bindings connected
+
+Every 10 seconds each Server instance scans `active` Feishu bindings that no instance holds a
+connection lease for, claims one, and opens its long connection. A failed attempt releases the
+lease and waits before the next attempt on that binding: 0.5 seconds, doubling to at most 5 minutes.
+The wait is kept in memory per binding and credential generation, so a reauthorized binding starts
+over.
+
+Each failure is classified (`connection-failure.ts`) by what Feishu itself answered, read only from
+numeric codes, never from provider text:
+
+- **Refused by Feishu.** The tenant token is refused for dead credentials (10015, 20002) or because
+  the App is disabled or not installed (the app-unavailable codes the setup check already uses), the
+  long-connection gateway rejects the App (403, 514), or a different Bot answers.
+- **Not attempted.** The call's circuit is open, so Feishu was never asked.
+- **Transient.** Everything else: network failures, timeouts, rate limits, and the SDK's ambiguous
+  `not_connected`.
+
+Ten consecutive refusals stop the binding. The update moves it from `active` to `error`, stores the
+reason in
+`last_error_code` (`FEISHU_CREDENTIAL_INVALID`, `FEISHU_APP_UNAVAILABLE`,
+`FEISHU_CONNECTION_REJECTED`, or `FEISHU_BOT_IDENTITY_MISMATCH`), clears the lease, and advances the
+credential generation, as a Slack reauthorization requirement does. The scan reads only `active` rows,
+so nothing probes the binding again. The binding summary carries the reason as
+`connectionFailure` (`credentials_rejected`, `app_unavailable`, `connection_rejected`, or
+`bot_mismatch`). The Agent list and Agent page show the connection failure with one action,
+**Reconnect channel**, which opens messaging settings. There one line says why the connection stopped
+and what fixes it, and **Reconnect** runs the same-App reauthorization. Activation, or **Change bot**, makes the binding `active` again, clears
+`last_error_code`, and the scan resumes.
+
+A transient failure breaks a run of refusals, and an attempt the open circuit kept from Feishu leaves
+the run as it was. Transient failures alone never stop a binding; they keep retrying at the capped
+pace. Why: only Feishu's own refusal says that retrying cannot work until someone changes the App,
+while an outage on the path to Feishu resolves without anyone. Stopping still waits for ten refusals,
+so a short-lived refusal, for example while an administrator republishes the App, does not stop a
+working Bot.
+
+The count lives in each instance's memory, so a restart starts it over and delays the stop rather
+than causing a wrong one. No column was added for it. Each attempt records the fencing epoch of its
+claim; when the next claim's epoch is not the one after it, another instance claimed the binding in
+between and may have connected it, so the run starts over.
+
+Every write a maintenance attempt makes, the stop and the stored reason alike, is conditional on the
+claim that made it: the binding is still `active` at the attempt's credential generation, and this
+instance still holds the lease at that epoch. A result that outlived its lease or a reauthorization
+updates no row and is dropped, so it cannot stop a binding another instance now holds, clear that
+instance's lease, or restore a reason that reauthorization cleared.
+
+
 
 Inbound event recovery is separate from setup recovery. Receipts persist bounded
 normalized input before Inbox processing and recover it only through the current

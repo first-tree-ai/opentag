@@ -1,13 +1,29 @@
 name: Unit Coverage
 
 on:
+  # Measure main after every merge that can move coverage, so a floor breach is attributed to the
+  # merge that caused it instead of turning the next unrelated pull request red. The weekly run stays
+  # as a backstop for changes outside these paths (for example a toolchain update).
+  push:
+    branches: [main]
+    paths:
+      - "apps/**"
+      - "packages/**"
+      - "scripts/**"
+      - "vitest.coverage.config.ts"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - ".github/workflows/unit-coverage.yml"
   schedule:
     - cron: "17 3 * * 1"
   workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  # A push run is never cancelled mid-measurement: with frequent merges that would leave main
+  # unmeasured. GitHub keeps at most one pending run per group, so a burst of merges queues only the
+  # newest commit behind the running one.
+  cancel-in-progress: ${{ github.event_name != 'push' }}
 
 permissions:
   contents: read

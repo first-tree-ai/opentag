@@ -87,6 +87,15 @@ newer object. Exhausted transient saves retain local files and can retry on reco
 before journaling the terminal report is reconciled as unknown execution effects and never
 automatically replayed.
 
+A rejected seal clears the Runner's in-flight sealing flag while keeping execution blocked.
+A release drain pauses Cloud Turn admission rather than permanently closing the controller. Only
+a completed report drain can resume admission, after workspace preparation; unacknowledged reports
+keep it paused. Resumption invalidates queued grants and retains the same journal and assignment.
+Permanent Runner shutdown cannot be resumed. A subsequent seal can retry, and reconnect preparation still checks pending saves, terminal
+archive failures, native cleanup failure and committed seals before reopening execution. Failure
+does not roll back local files or clear a terminal archive error. A successful or readback-proven
+seal remains nonexecuting on that allocation.
+
 [IM task feedback](../messaging/im-feedback.md) exposes Account-confirmed save/release and explicit discard
 for a failed Session, reusing these generation-bound operations. The feedback action is recorded before cloud I/O;
 an unknown result is queried without submitting again. Only a verified seal for the exact environment permits a
@@ -116,15 +125,18 @@ behavior; a missing archive alone is not proof of a legacy Instance. The default
 480 seconds to cover drain, checkpoint, final upload, and archive work; individual HTTP transfers
 retain the 120-second deadline.
 
-The Cloud Agent page exposes a collapsed workspace recovery panel, also reachable through
-`/agents/<agentId>?recovery=true`. It pages the existing Account-owned Cloud overview, including
-ordinary checkpoint failures that have no release-error marker. Opening it only reads status.
-Retry save and release uses the ordinary generation-bound Account stop request; it is not an
-in-place resume. Discard requires a second confirmation explaining permanent loss since the last
-successful save and uses the existing explicit discard body. The browser checks the current
+The ordinary Cloud Agent page shows a save-failure notice with administrator guidance and no
+workspace recovery entry. Guided troubleshooting can explicitly open workspace diagnostics at
+`/agents/<agentId>?recovery=true` under the existing Account authorization. This opt-in destination
+is not a separate permission boundary. It pages the existing Account-owned Cloud overview,
+including ordinary checkpoint failures that have no release-error marker. Opening it only reads
+status. Retry save and release uses the ordinary generation-bound Account stop request; it is not
+an in-place resume. Discard requires a second confirmation explaining permanent loss since the
+last successful save and uses the existing explicit discard body. The browser checks the current
 generation before sending either request; the Server's locked generation check remains authoritative.
 An uncertain mutation triggers status reads and never an automatic resubmission. The previous
-complete archive is preserved, and recovery never repeats an external task action.
+complete archive is preserved, and recovery never repeats an external task action. The ordinary
+page does not promise automatic recovery or silently discard files when saving cannot recover.
 
 OOM, SIGKILL, and machine loss cannot guarantee a final save. Changes since the last successful
 boundary may be lost, including progress within a long-running Turn. Already-started operations

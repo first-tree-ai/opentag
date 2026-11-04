@@ -78,7 +78,10 @@ function blockedAgentCardStatus(agent: AgentListItem): AgentCardStatus {
     return { label: m.agents_card_status_no_computer(), tone: "neutral" };
   }
   if (agent.availability.reason === "computer_offline") {
-    return { label: m.agents_card_status_computer_offline(), tone: "warning" };
+    // The same word the computer's own card uses, so one computer never reads as two states.
+    return agent.availability.dependencies.computer.disconnected
+      ? { label: m.agents_card_status_computer_disconnected(), tone: "warning" }
+      : { label: m.agents_card_status_computer_offline(), tone: "warning" };
   }
   if (agent.availability.reason === "runtime_unavailable") {
     return runtimeAgentCardStatus(agent);
@@ -204,7 +207,7 @@ export function agentStatusPresentation(agent: AgentStatusSource): { label: stri
       ? { label: "Working", tone: "info" }
       : { label: "Ready", tone: "success" };
   }
-  if (availability.state === "suspended") return { label: "Suspended", tone: "neutral" };
+  if (availability.state === "suspended") return { label: m.agents_card_status_paused(), tone: "neutral" };
 
   /*
    * Unreadable evidence is one situation to a viewer -- nothing to act on, retried automatically --
@@ -577,12 +580,12 @@ export function agentMessagingStatus(agent: AgentDetailView): AgentDependencySta
       tone: "neutral",
     };
   }
-  const handoff = agent.availability.dependencies.handoff;
+  const handoff = agent.status === "suspended" ? undefined : agent.availability.dependencies.handoff;
   /*
    * The Computer is re-verifying delivery on a connected channel. The phase names what it is doing
    * so the row reads as progress rather than as a verdict; there is no action because none is asked.
    */
-  if (binding.bindingState === "active" && handoff.state === "checking") {
+  if (binding.bindingState === "active" && handoff?.state === "checking") {
     return {
       label:
         handoff.providerCli?.phase === "preparing_cli"
@@ -591,7 +594,7 @@ export function agentMessagingStatus(agent: AgentDetailView): AgentDependencySta
       tone: "info",
     };
   }
-  if (binding.bindingState === "active" && handoff.state === "action_required") {
+  if (binding.bindingState === "active" && handoff?.state === "action_required") {
     return {
       action: setupOrMaintenanceAction(
         agent,
@@ -603,10 +606,10 @@ export function agentMessagingStatus(agent: AgentDetailView): AgentDependencySta
     };
   }
   /*
-   * An active binding whose delivery evidence could not be read is `handoff_unconfirmed`. The
+   * A running Agent whose delivery evidence could not be read is `handoff_unconfirmed`. The
    * channel may well be fine, but this row states what is known, and "Connected" is not known.
    */
-  if (binding.bindingState === "active" && handoff.state === "unconfirmed") {
+  if (binding.bindingState === "active" && handoff?.state === "unconfirmed") {
     return {
       action: settingsAction(agent.id, m.agents_status_action_view_channel(), "messaging"),
       label: m.agents_status_unknown(),

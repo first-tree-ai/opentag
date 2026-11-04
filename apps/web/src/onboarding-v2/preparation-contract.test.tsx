@@ -336,7 +336,8 @@ describe("F6 cross-layer gating, page level", () => {
     }
     expect(rowTitle("runtime")).toContain("Codex");
     expect(rowTitle("messaging-support")).toContain("Messaging support");
-    expect(screen.getByRole("status").textContent).toBe("Checking Codex automatically. No action needed…");
+    // The checking row says so; the footer adds no second line.
+    expect(screen.getByRole("status").textContent).toBe("");
     expect(screen.queryByText("Checking")).toBeNull();
     expect(screen.queryByText("Installing")).toBeNull();
     expect(screen.queryByText("Installation required")).toBeNull();
@@ -351,7 +352,8 @@ describe("F6 cross-layer gating, page level", () => {
 
     expect(screen.getByRole("heading", { name: "Prepare this computer" })).toBeTruthy();
     expectCompactRows();
-    expect(screen.getByRole("status").textContent).toBe("This computer is ready. Continue to connect messaging.");
+    // Every row ready says so; the footer adds no summary line.
+    expect(screen.getByRole("status").textContent).toBe("");
     const continueButton = screen.getByRole("button", { name: "Continue" });
     expect(continueButton.hasAttribute("disabled")).toBe(false);
 

@@ -128,8 +128,12 @@ exchange behaves as before.
 - The name guard leaves one accepted risk. Two machines cloned from one image with the same hostname in the same
   Account can take over each other's offline computer; the original then reruns connect and becomes a new computer.
   Requiring the same name keeps the repair to the case users actually see, two identical entries.
-- A match never raises `COMPUTER_ACCOUNT_CONFLICT`: the per-Account key makes cross-Account matches impossible, and a
-  machine changing hands must not be blocked. That conflict stays tied to the installation ID and presented token.
+- A match never raises `COMPUTER_ACCOUNT_CONFLICT`: the per-Account key makes cross-Account matches impossible. A
+  machine whose local identity was lost and that connects with another Account's code becomes a new Computer in that
+  Account; the other Account's Computer is left untouched and nothing about it is revealed. Without the local identity
+  there is no proof that the same person is connecting, and a machine changing hands must not be blocked. The
+  conflict stays tied to the installation ID and presented token: a machine whose local identity is still present and
+  bound to another Account stops with it.
 - The fingerprint is recorded on create, repair, and already-connected; an exchange without one never clears it. It is
   cleared on delete and onboarding reset, has no backfill, and is never returned by an API or logged.
 
@@ -155,6 +159,17 @@ After a Client accepts custody, it starts or resumes only the Provider pinned by
 the effective runtime snapshot; missing credentials and other start failures
 settle the Turn as typed, recoverable `not_started` failures. The Client never
 falls back to a different Provider.
+
+### Status state outside the Server process
+
+> **Planned — not yet implemented.** Tracking: #1215
+
+Server services keep no in-process state, so the Server can run as more than one instance. High-frequency state that
+can be lost, such as the Computer, runtime and messaging-channel sub-statuses, goes to a TTL key-value cache (Redis,
+about one minute); durable data goes to PostgreSQL. A Computer is offline after three missed heartbeats (90 seconds),
+which voids its other sub-statuses, and the Agent status is derived on read rather than stored; see
+[Agent status pipeline](runtime/computer-status-pipeline.md). This replaces the expiring per-connection observations
+described above.
 
 ## Explicit Web runtime test
 

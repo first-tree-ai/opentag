@@ -16,6 +16,14 @@ skills, tools, MCP Servers, Context Trees, receive mode, credentials, permission
 settings, and its Computer once one is bound. Runtime collaboration creates
 Sessions under an existing Agent; it does not create another Agent.
 
+> **Planned — not yet implemented.** Tracking: #1215
+
+An Agent's Computer, runtime Provider, and messaging channel are fixed once set. Moving any of them is not supported;
+to change one, create a new Agent and add it to the conversation. Why: an Agent's Sessions are bound to the channel,
+the runtime, and the local storage on that Computer (Provider sessions, memory, files), so migration is costly and
+risky; what must survive across Agents belongs in shared knowledge (the Context Tree), not in per-Agent memory. Moves
+of Cloud sandbox storage are internal and never shown, so no migration concept is exposed for Cloud Agents.
+
 A Session is a stable logical identity, not a Provider process or an activity
 status. openTag has channel, thread, and internal Sessions. For Sessions that
 have not ended, an Agent has at most one channel Session per Integration and
@@ -123,6 +131,13 @@ result. Cloud selects specific delivery/message/execution identities on the guar
 retains durable work until terminal evidence. Proof retirement compares the selected proof ID and
 update version; only a successful delete drops that proof's execution correlation. A later reused
 or replaced proof survives an older result.
+
+Local and Cloud final stop admission acquires Agent → Session → placement locks through
+dependent locking CTEs in one SQL statement, retaining the transaction through enqueue.
+Confirmed Local stop retires its captured proof with a single statement that locks the
+matching placement before conditionally deleting that exact proof ID and update version.
+Unfenced revocation retains separate placement locking and deletion statements so it observes
+proofs committed by a preceding mint while it waited for the placement lock.
 
 Local lifecycle stop runs at most 16 complete requests concurrently within one
 30-second dispatch window. Deadline expiry or shared-domain capacity stops new

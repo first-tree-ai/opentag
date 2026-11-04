@@ -139,18 +139,43 @@ or Cloud preparation already made for it. A single exit in a fixed place, the to
 step-by-step Back and a separate Set up later that each led somewhere different. The Agent list is where every
 unfinished setup can be resumed.
 
+> **Planned — not yet implemented.** Tracking: #1215
+
+After setup the same holds for an Agent's Computer, runtime, and messaging channel. They cannot be moved; to change
+one, the person creates a new Agent and adds it to the conversation. Why: an Agent's Sessions are bound to that
+channel, runtime, and the Computer's local storage, so a move is costly and risky (see
+[Agent, Session, and Computer model](../agent-session-computer-model.md)).
+
 When the Agent's runtime is installed but signed out, the setup page's runtime row offers **Sign in** (**去登录**). It
 expands the terminal steps for that computer: open a terminal on it, run `claude` and enter `/login` for Claude Code,
 or run `codex login` for Codex. The page's existing Check again follows. The commands are short enough to type, so they show as inline code with no copy control. The Agent list row and the
 Agent page's runtime row name the same action with the same single link, which opens that setup step with the steps
 already shown. Why: sign-in stays on the user's computer. openTag only checks it and never stores Claude or Codex
 credentials, so the next step is the terminal on that computer, not a Web sign-in.
+Every setup step uses one page surface and one progress rail; the messaging step does not switch to its own
+workspace styling. The steps say only what the rows and controls do not:
+- The Cloud destination card, when the deployment offers no Cloud, stays disabled with its "Temporarily unavailable"
+  badge alone; the reason is the deployment's and the reader can do nothing about it.
+- Choosing a computer lists the Account's computers with their status, and offers **Connect a new computer** in place
+  beside them; a disconnected computer can be chosen and the step goes straight to its restore-connection command.
+- Preparing the computer adds no footer line when every row is ready or while a row is checking: the row status says
+  so. The footer speaks only when the reader has something to do (finish the step above, or check again).
+- The messaging step's heading stands alone, without a "Set up {name}" subtitle repeating the Agent.
+- The Lark step shows its QR code from 768px up, with its expiry relative ("Expires in 15 min"). Below 768px the
+  reader is usually on the phone that would scan it, so the same authorization link opens in Lark instead, and the
+  instruction and waiting line say to confirm in Lark rather than to scan.
+
 The completion screen stays visible until the user navigates away. Its primary action, **View agent**
 (**查看 Agent** in Chinese), opens that Agent's overview. Global navigation provides the return to the Agent list;
 the completion screen does not repeat that destination as a secondary action or redirect automatically.
 
-Cloud Agent home keeps workspace recovery collapsed until explicitly opened or reached through
-`?recovery=true`. The recovery panel pages the existing Account-owned conversation inventory and
+Cloud Agent home shows save-failure guidance without a recovery entry or workspace controls.
+The notice identifies the problem, directs the reader to their administrator and warns against
+resending completed requests without promising automatic recovery. Workspace diagnostics remain
+available only through the explicit `?recovery=true` destination for guided troubleshooting, under
+the same Account authorization. Closing the panel removes its controls; the ordinary page does
+not expose a button to reopen it. This is not a new permission boundary.
+The diagnostic panel pages the existing Account-owned conversation inventory and
 offers only Server-authorized save/release or explicit discard/release. A captured environment
 generation stays fixed through confirmation and is checked again before the request. Busy actions
 cannot be repeated; failed or uncertain mutations cause status reads rather than automatic retries.
@@ -158,20 +183,43 @@ Running, queued and unknown work also requires confirmation before save/release 
 rows without a recorded save failure use a plain save/release label. Discard confirmation explains unsaved-file loss and that external effects are not undone. A
 failed inventory read never becomes an empty list, and revoked access hides cached resources.
 
+## Agent home and settings index
+
+- **Settings has no navigation item of its own.** It opens from the Overview's Settings button, so the Overview stays
+  current in the Agent navigation on every settings page, and each settings page's back link reads **Back to
+  Overview** (**返回概览**) or **Back to Agent settings**. Why: a navigation with nothing current leaves the reader
+  unsure where they are, and a back link carrying a long Agent name wrapped on phones while the name sat beside it.
+- **The Agent's state reads the same everywhere:** **Running · Receiving messages** (**运行中 · 正在接收消息**) or
+  **Paused · Not receiving messages** (**已暂停 · 不接收消息**), and the pause page describes it in the same terms.
+  Why: "active" and "requests" named the same state differently, and requests are not a product concept; people send
+  the Agent messages.
+- **A settings row whose state the reader can fix carries the same single fix as the Agent list and home**, as its
+  own named link beside the row: an offline or disconnected Computer offers **Restore connection** (**恢复连接**),
+  which opens that Computer's card with its command window already shown, and a runtime problem shows the same label
+  as the list (for example "Pi isn't installed") with **Continue setup**. The row itself still opens its settings page.
+  Why: the settings index otherwise read healthy while the list and home showed a problem, and four different words
+  for one fix made it look like four different actions.
+- **A Cloud Computer is named "Cloud" (云端)** on the home, the settings index, and the Computer page, without a
+  machine name or platform, which are openTag's choice and nothing the reader acts on.
+- **The home's Task list asks for work only when work can arrive.** With no messaging app connected, its empty state
+  offers the status card's own **Connect messaging app** (**连接消息应用**) link instead of asking the reader to message
+  the Agent, and **View all** appears only once there is a Task. Why: an Agent without a channel cannot receive the
+  message the old empty state asked for, and View all opened the same empty list.
+
 ## Paused Agent settings
 
-> **Planned — not yet implemented.** Tracking: #1233
+Pausing an Agent does not change which settings its current Account owner can read. Name, Messaging, Computer,
+Model and Soul, Context Trees, Skills, MCP connectors, and Pause/Delete remain accessible. The settings overview,
+Agent status card, and Agent list use the existing channel identity and binding state. Why: an operator often pauses
+an Agent precisely to inspect its configuration or prepare a change, and a configuration they cannot see gives them
+nothing to decide from. A failed read stays unavailable; it is never presented as a missing or successful connection.
 
-Pausing an Agent does not change which of its settings its owner can read. Every settings page of a paused Agent
-(name, messaging, Computer, model and instructions, Context Tree, Skills, connectors, and pause or delete) shows its
-current configuration, and the settings overview, the Agent page's status card, and the Agent list show the real
-messaging status. Actions that a paused Agent cannot take stay disabled with a reason in place rather than hiding the
-page. Why: an operator often pauses an Agent precisely to inspect its configuration or prepare a change, and a
-configuration they cannot see gives them nothing to decide from.
-
-This replaces the current behavior for messaging only. Today the Server refuses every messaging-binding read for a
-paused Agent as not found, so the messaging page shows that refusal and the overview, status card, and list show the
-messaging status as unavailable. The other settings pages are already readable while paused.
+Messaging settings are read-only while paused. Connection, replacement, reauthorization, credential updates,
+disconnection, activation checks, cancellation, and message-trigger changes are disabled with a localized reason.
+Read-only controls keep their action labels; being paused does not show an operation as busy or in progress.
+Saved Feishu attempts and Slack configuration details remain readable without starting setup or refreshing CLI
+credentials. Existing permissions for other settings are unchanged. Deleted Agents, other Accounts, and revoked
+Account sessions remain unauthorized; resuming the Agent is a separate explicit action.
 
 ## Layout and responsive acceptance
 
@@ -206,6 +254,13 @@ running-Task or **Waiting** line as the list row, so the home answers what the A
 own row it never reads as a fact about the Computer or messaging below it. The Server already bounds what it holds: a local Computer without a
 heartbeat for 90 seconds reads as offline, and runtime and messaging observations expire on their own TTLs, so held
 list statuses converge on the Server's next settled answer.
+
+> **Planned — not yet implemented.** Tracking: #1215
+
+Agent status will come straight from the Server, which derives it on read; see
+[Agent status pipeline](../runtime/computer-status-pipeline.md). The Web keeps no hold and no **Refreshing status**
+note, and refetches Agent status every 10 seconds while the tab is in the foreground. This replaces the held-status
+behaviour described above.
 
 UI changes must be checked at these representative widths when the surface can render there:
 

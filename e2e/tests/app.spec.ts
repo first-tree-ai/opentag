@@ -16,7 +16,8 @@ test("Agent Setup renders the destination step and contains the Codex mark", asy
   await page.goto("/agents/setup", { waitUntil: "networkidle" });
   await expect(page.getByRole("heading", { name: AGENT_SETUP_CREATE_HEADING, exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /^Local computer / })).toBeVisible();
-  const cloudComputer = page.getByRole("button", { name: /^Cloud computer Temporarily unavailable / });
+  // The unavailable Cloud card carries its badge alone, with no explanation after it.
+  const cloudComputer = page.getByRole("button", { name: "Cloud computer Temporarily unavailable", exact: true });
   await expect(cloudComputer).toBeVisible();
   await expect(cloudComputer).toBeDisabled();
   await expect(page.getByRole("button", { name: "Continue" })).toBeEnabled();
@@ -28,7 +29,8 @@ test("Agent Setup renders the destination step and contains the Codex mark", asy
   await page.getByRole("button", { name: /^Local computer / }).click();
   await expect(page.getByRole("button", { name: "Continue" })).toBeEnabled();
   await page.getByRole("button", { name: "Continue" }).click();
-  await expect(page.getByRole("button", { name: "Back" })).toBeEnabled();
+  // Setup steps move forward only; there is no in-flow Back.
+  await expect(page.getByRole("button", { name: "Back", exact: true })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Create Agent" })).toBeDisabled();
   const mark = page.locator('[data-brand="codex"]');
   const lightMark = mark.locator(".otv2-codex-mark--light");
@@ -140,7 +142,8 @@ test("Agent Setup Lab exposes recoverable core states through its real controls"
   await page.getByRole("button", { name: "Finish readiness check" }).click();
   await closeLab.click();
   await expect(page.getByRole("heading", { name: "Prepare this computer" })).toBeVisible();
-  await expect(step2Navigation).toContainText("This computer is ready. Continue to connect messaging.");
+  // Every row is ready, so the footer adds no summary line; the enabled Continue is the signal.
+  await expect(step2Navigation.getByRole("status")).toHaveText("");
   await expect(step2Continue).toBeEnabled();
   await step2Continue.click();
   await expect(page.getByRole("heading", { name: "Connect your messaging app" })).toBeVisible();
@@ -224,16 +227,17 @@ test("Agent settings persist a change across reload", async ({ page }) => {
   await page.reload({ waitUntil: "networkidle" });
   await expect(page.getByLabel("Display name")).toHaveValue("E2E Agent Updated");
 
+  // Self-configuration sits with the execution rules, on the Model settings page.
+  await page.goto(`/agents/${agentId}/settings/execution`, { waitUntil: "networkidle" });
   const selfConfiguration = page.getByRole("switch", { name: "Self-configuration" });
   await expect(selfConfiguration).toHaveAttribute("aria-checked", "true");
   await selfConfiguration.click();
-  await expect(page.getByRole("status")).toContainText("Self-configuration setting saved.");
+  await expect(page.getByRole("status").filter({ hasText: "Self-configuration setting saved." })).toBeVisible();
   await expect(selfConfiguration).toHaveAttribute("aria-checked", "false");
   await page.reload({ waitUntil: "networkidle" });
-  await expect(page.getByLabel("Display name")).toHaveValue("E2E Agent Updated");
   await expect(selfConfiguration).toHaveAttribute("aria-checked", "false");
   await selfConfiguration.click();
-  await expect(page.getByRole("status")).toContainText("Self-configuration setting saved.");
+  await expect(page.getByRole("status").filter({ hasText: "Self-configuration setting saved." })).toBeVisible();
   await expect(selfConfiguration).toHaveAttribute("aria-checked", "true");
 });
 

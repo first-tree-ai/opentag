@@ -39,7 +39,12 @@ export type AgentAvailability = {
     | null;
   lastConfirmedAt: string | null;
   dependencies: {
-    computer: { state: "ready" | "action_required" | "not_bound" | "unconfirmed"; lastConfirmedAt: string | null };
+    computer: {
+      state: "ready" | "action_required" | "not_bound" | "unconfirmed";
+      lastConfirmedAt: string | null;
+      /** The Server revoked the computer's access; it needs a repair, not just to come back online. */
+      disconnected?: true;
+    };
     /**
      * Readiness of the Agent's Provider on its Computer. `runtime_unavailable` is diagnosed from
      * this. For a Cloud-bound Agent the status is the managed-service verdict (with `cloud`
@@ -153,6 +158,19 @@ function computerDependencyState(
   return computer.connectionStatus === "online" ? "ready" : "action_required";
 }
 
+function computerDependency(
+  agent: AgentSummary,
+  computer: AccountComputerSummary | undefined,
+): AgentAvailability["dependencies"]["computer"] {
+  return {
+    // Not bound is a fact the Server states, so it is never reported as evidence we could not read:
+    // one is answered by binding a Computer and the other by waiting for a read to succeed.
+    state: computerDependencyState(agent, computer),
+    lastConfirmedAt: computer?.lastSeenAt ?? null,
+    ...(computer?.connectionStatus === "disconnected" ? { disconnected: true as const } : {}),
+  };
+}
+
 export function projectAgentAvailability(
   agent: AgentSummary,
   computer: AccountComputerSummary | undefined,
@@ -167,12 +185,7 @@ export function projectAgentAvailability(
   const runtimeDependency = agentRuntimeDependency(agent, computer, cloudRuntime);
   const handoffState = handoffDependencyState(binding, handoff, bindingEvidenceConfirmed, handoffEvidenceConfirmed);
   const dependencies: AgentAvailability["dependencies"] = {
-    computer: {
-      // Not bound is a fact the Server states, so it is never reported as evidence we could not read:
-      // one is answered by binding a Computer and the other by waiting for a read to succeed.
-      state: computerDependencyState(agent, computer),
-      lastConfirmedAt: computer?.lastSeenAt ?? null,
-    },
+    computer: computerDependency(agent, computer),
     runtime: runtimeDependency,
     handoff: handoffDependency(handoffState, binding, handoff),
     channel: {

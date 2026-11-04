@@ -123,6 +123,27 @@ The Web reads these in four groups (Queued, Running, Completed, Failed) for filt
 neutral **Cancelled** label rather than Completed. Why: the Account withdrew it before it ran, and
 "Completed" would claim work that never happened.
 
+### Task status from deliveries and message handling
+
+> **Planned — not yet implemented.** Tracking: #1215
+
+- **Task status:** it stays a projection over the message delivery table and is never stored separately:
+  - a queued delivery reads as queued;
+  - a delivered or accepted one reads as running;
+  - a completed or failed one reads as completed or failed.
+- **Delivery reporting:** the daemon reports each message's delivery status as it changes. Retry belongs to the
+  Server's queue, and the daemon dedups by message ID.
+- **New messages:** a new message for a topic is always steered into the Agent Session that is already running, right
+  away, and the model decides what to do with it. There is no classifier deciding steer versus append and no re-check
+  before replying. Where a runtime cannot take injected input, the current Turn is interrupted and the message
+  redelivered.
+- **Failures:** every IM failure is a plain message; the person retries by sending a new message (see
+  [IM task feedback](../system/messaging/im-feedback.md)).
+- **Indexing:** the delivery table is queryable by Agent and by Task through an index.
+
+Why: a status derived from the delivery records cannot drift from what happened, and retrying by sending a new message
+reuses the path every message takes. This replaces the precedence rules above once it ships.
+
 Each detail Turn exposes `delivery.isRunning` from the same effective predicate as the list. The Web
 shows progress only when that value is true; persisted `accepted` alone does not prove liveness.
 An unreported inactive Turn, including data from older servers that omit the field, shows that no

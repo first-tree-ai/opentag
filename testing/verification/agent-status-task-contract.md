@@ -39,7 +39,9 @@ PostgreSQL tests use isolated local migrated databases. No real message is repla
 The broad suites ran on feature commit `5ab28aec5` over base `bfcde09f9`. After integrating
 `main@69344cf3c`, affected validation passed: Server API/command/status tests (46), Web
 Computer/setup/status tests (267), CLI tests (801), and the Context Tree integration cases (2).
-Additional Context Tree checks cover Server unit behavior, shared parsing and Web settings.
+Additional Context Tree checks passed: Server unit behavior (56), shared parsing (16) and Web settings (34).
+A later setup-flow update at `main@773f31db6` was integrated and its affected seven-file Web subset
+passed all 246 tests; Web build and type checks passed again.
 Build, type checks and repository checks were rerun for that combination. No package manifest or
 lockfile changed during the base sync.
 

@@ -1584,9 +1584,11 @@ Add custom opens the custom connector form for empty and populated Agents alike;
 Discover, manual-configuration, or import source switch. Initial focus stays on the dialog title,
 leaving the address field idle until the user selects it. Dismissing the form returns focus to Add custom.
 The standalone directory owns its add state.
-The empty state matches Skills: a centered 32px connection icon, the heading **No connectors yet**,
-and concise guidance directly on the page background. Connector choices stay in Discover; there are
-no recommendation cards, example tasks, or duplicate browse actions on the management page.
+The empty state matches Skills and Memory: a centered 32px connection icon, the heading **No connectors
+yet** (尚未添加连接器), and one sentence whose phrases are the first actions, **Discover a connector**
+(opens Discover) **or add a custom one** (opens Add custom), directly on the page background. Connector
+choices stay in Discover; there are no recommendation cards, example tasks, or duplicate browse
+actions on the management page.
 Asana's V2 MCP server requires a pre-registered OAuth application; Linear and Airtable support dynamic registration.
 See [Asana's integration requirements](https://developers.asana.com/docs/integrating-with-asanas-mcp-server),
 [Linear's MCP setup](https://linear.app/docs/mcp), and

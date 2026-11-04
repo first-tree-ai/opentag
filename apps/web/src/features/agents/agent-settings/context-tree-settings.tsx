@@ -208,10 +208,7 @@ function ContextTreeSettingsForm({
   }
   return (
     <div className="grid gap-6">
-      <PageHeader
-        title={m.agent_settings_context_tree_title()}
-        description={m.agent_settings_context_tree_description()}
-      />
+      <PageHeader title={m.agent_settings_context_tree_title()} />
       {refreshNotice}
       <ContextTreeCollection
         agentId={config.id}

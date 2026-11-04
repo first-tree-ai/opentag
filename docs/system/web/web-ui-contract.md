@@ -265,9 +265,12 @@ openTag Web targets WCAG 2.2 AA for product UI:
 - non-essential animation and transition are removed when `prefers-reduced-motion: reduce` is active;
 - a control that changes in place keeps keyboard focus: a switch or button is not disabled while its write is
   pending (it ignores repeat input and reports busy instead), because disabling the focused element drops focus
-  to the page; and
+  to the page;
 - a step change inside one route, such as the next Agent Setup step, moves focus to the new step's heading, as a
-  route change does.
+  route change does;
+- a save bar that goes away after its changes are saved or discarded moves focus that was on it to the first control
+  of its form, such as the Name field; and
+- Pause or Resume Agent keeps focus on the same button while pending; it then reads Resume or Pause.
 
 Automated axe checks are required for representative browser flows, but they do not replace keyboard testing or review
 of contrast, focus order, accessible names, and task completion.
@@ -437,11 +440,13 @@ copy into the message catalog as if it were an omission; the exception and its r
 A state uses one label everywhere it appears. For example, a messaging binding that needs new permissions reads
 "Messaging permissions need updating" (需要更新消息权限) on the Agent list, the Agent page, the settings index, and the
 messaging page, with the single action Update permissions. Page subtitles, field helpers, and notes appear only when they
-add information the title or control does not already give. So the Tasks, messaging, Computer, Usage, and Account pages carry no
+add information the title or control does not already give. So the Tasks, messaging, Computer, Memory, Usage, and Account pages carry no
 subtitle, and Account shows the sign-in email as plain text without explanatory helpers. The Soul editor's description
 holds only the formatting hint while editing. The Model page shows one line by the model field only when the computer's
-model list can't be read. Usage notes unreported Tasks as a muted line under the totals, not a warning banner.
-Self-configuration sits on the Model page beside Ask for approval, with the other rules about what the Agent may do on
+model list can't be read; when the runtime's suggested models are still offered, the line says the computer's
+models couldn't be confirmed and to choose one or "Custom model ID…", rather than claiming there is no list. Usage notes unreported Tasks as a muted line under the totals, not a warning banner.
+Settings pages hold their content in the same surface as Name and Model, the messaging page included, so the pages
+read as one set. Self-configuration sits on the Model page beside Ask for approval, with the other rules about what the Agent may do on
 its own. Why: repeated or differing wording makes one state read as several, and copy that restates the page is more
 to read with nothing more to act on.
 

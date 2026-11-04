@@ -129,6 +129,11 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                             <Text as="h2" variant="heading">
                               {m.im_messaging_app()}
                             </Text>
+                          </>
+                        ) : null}
+                        {/* The same surface as other settings pages, so the page reads as one family. */}
+                        <div className={MESSAGING_SURFACE}>
+                          {binding ? (
                             <div
                               className="grid grid-cols-[auto_minmax(0,1fr)] items-start gap-3"
                               data-ui="messaging-app-identity"
@@ -144,27 +149,27 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                                 />
                               </span>
                             </div>
-                          </>
-                        ) : null}
-                        <MessagingConnectionActions
-                          agent={agent}
-                          binding={binding}
-                          onAgentChanged={onAgentChanged}
-                          busy={feishuSetup.loading || slackConfiguration.loading}
-                          feishuBusy={feishuSetup.loading}
-                          disconnectRef={disableBindingButtonRef}
-                          onSlack={
-                            agent.slackOAuthAvailable !== false ? () => void connectSlack("reauthorize") : undefined
-                          }
-                          onDisconnect={(current) => {
-                            setConfirmationError(undefined);
-                            setConfirmation({ bindingId: current.id, provider: current.provider });
-                          }}
-                          onFeishu={(intent, target) => {
-                            activeFeishuTriggerRef.current = target;
-                            void connectFeishu(intent);
-                          }}
-                        />
+                          ) : null}
+                          <MessagingConnectionActions
+                            agent={agent}
+                            binding={binding}
+                            onAgentChanged={onAgentChanged}
+                            busy={feishuSetup.loading || slackConfiguration.loading}
+                            feishuBusy={feishuSetup.loading}
+                            disconnectRef={disableBindingButtonRef}
+                            onSlack={
+                              agent.slackOAuthAvailable !== false ? () => void connectSlack("reauthorize") : undefined
+                            }
+                            onDisconnect={(current) => {
+                              setConfirmationError(undefined);
+                              setConfirmation({ bindingId: current.id, provider: current.provider });
+                            }}
+                            onFeishu={(intent, target) => {
+                              activeFeishuTriggerRef.current = target;
+                              void connectFeishu(intent);
+                            }}
+                          />
+                        </div>
                       </section>
                       {feishuSetup.feedback}
 
@@ -182,7 +187,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                             </Text>
                             <p className="text-sm text-kumo-subtle">{triggerModeExplanation(binding.provider)}</p>
                           </div>
-                          <div className="grid gap-3">
+                          <div className={MESSAGING_SURFACE}>
                             <fieldset
                               aria-label={m.im_receive_mode()}
                               className="flex w-fit flex-wrap items-center gap-1 rounded-md bg-kumo-recessed p-1"
@@ -250,6 +255,8 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
     </div>
   );
 }
+
+const MESSAGING_SURFACE = "ui-surface grid gap-3 bg-kumo-base p-4";
 
 /** The Slack dialog stays mounted across the unbound-to-bound refresh. */
 function MessagingConnectionActions({

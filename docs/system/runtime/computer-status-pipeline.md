@@ -55,10 +55,16 @@ The decided direction removes the uncertain state instead of working around it.
   - Kept: the setup page's explicit **Check again** button (`POST /agents/:id/setup/refresh`).
 - **Agent status** refetches every 10 seconds, and only while the tab is in the foreground.
 - **Usage, MCP and Skill pages** refetch every 30 seconds.
-- **Latency:**
-  - a change on the Computer shows within 30 seconds (next heartbeat) plus 10 seconds (next refetch);
-  - a clean disconnect shows within one refetch;
-  - a crash shows within 90 seconds.
+- **When a change becomes visible in the Web.** Each bound assumes a 30-second heartbeat, a 10-second foreground
+  refetch, and a request round trip of up to a few seconds:
+  - **local checks** (Computer, runtime/Provider, CLI artifact): within about 40 seconds, the next heartbeat plus the
+    next refetch;
+  - **credentials:** within about 40 seconds after a validation runs. Validation runs on register, a binding change,
+    **Check again**, or the slow timer. Without one of those, a token revoked right after a successful validation can
+    keep reading as valid until the timer (proposed: up to 10 minutes) plus the next refetch;
+  - **clean disconnect:** within the next refetch, about 10 seconds;
+  - **crash or lost network:** up to 90 seconds until the third missed heartbeat, then the next refetch, so about
+    100 seconds.
 
 ## Facts from today's code the implementation must account for
 
@@ -111,12 +117,25 @@ These came out of verification. They are proposals, not decisions.
 - **Older daemons:** every connected daemon is protocol v2, and the heartbeat frame schema is strict.
   - A new payload needs a negotiated capability, proposed name `runtime.selfCheckHeartbeat`, following the existing
     `channelTarget` pattern.
-  - A daemon that does not negotiate it keeps today's requirement/grant frames until the support window ends. Its
-    missing results should read as "update the openTag CLI on this computer", a named problem.
+  - A daemon that does not negotiate it keeps today's requirement/grant frames until the support window ends (see
+    "Older daemons during the transition" below).
+- **Credentials at reconnect:** the daemon holds no messaging credentials. The Server issues the validation grant
+  only after `computer:register`, so the first report can carry fresh local results but not a fresh credential result
+  for the first few seconds. Defaulting to ready would flash Ready for a revoked bot on every reconnect; defaulting to a
+  problem would flash an error for every healthy Agent. One option: keep the last credential result for the same
+  Computer and binding across the reconnect until the new validation returns.
+- **Check again versus an in-flight heartbeat:** with the sealed preparation removed, a heartbeat already in flight
+  when the person presses **Check again** could overwrite the fresh result moments later. One option: record the
+  refresh request (time or sequence) and ignore results checked before it.
+- **Older daemons during the transition:** connected daemons upgrade only on reconnect. Turning their expired
+  evidence into an "update the CLI" problem would flag every connected Local Agent shortly after the Server deploys,
+  so the Server keeps today's requirement/grant refresh for connections without the new capability during the
+  support window.
 - **Credentials that break between validations:** revocations the Server observes from the provider already surface
   as a named problem (Slack `tokens_revoked` moves the binding to "reauthorization required"). An authentication
   failure the Agent hits while sending through the messaging CLI during a Turn does not feed back into status today.
-  Should it?
+  One option: such a failure triggers an immediate credential re-validation, or moves the binding when the provider
+  error is definitive.
 - **Readers of today's expiry windows:** these move to "sub-status in Redis or Computer offline".
 
 | Consumer | Today | After |

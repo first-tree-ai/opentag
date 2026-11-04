@@ -124,6 +124,12 @@ describe("Agent runtime options", () => {
     controller.abort();
     await expect(promise).rejects.toMatchObject({ statusCode: 503 });
     expect(f.frames[1]).toMatchObject({ type: "agent-runtime:options:cancel" });
+    const preAborted = new AbortController();
+    preAborted.abort();
+    const preAbortedPromise = f.owner.start(f.input, preAborted.signal);
+    await expect(preAbortedPromise).rejects.toBeInstanceOf(AgentServiceError);
+    await expect(preAbortedPromise).rejects.toMatchObject({ statusCode: 503, code: "SERVICE_UNAVAILABLE" });
+    expect(f.frames).toHaveLength(2);
   });
 
   it("checks authorization and placement, and never dispatches Cloud model queries locally", async () => {
@@ -194,5 +200,79 @@ describe("Agent runtime options", () => {
     });
     expect(invalid.statusCode).toBe(400);
     expect(f.frames).toHaveLength(1);
+  });
+
+  it("cancels in-flight Computer queries without logging a 503 Request failed error when the HTTP client aborts, while preserving 503/504 for connected clients", async () => {
+    const f = await fixture();
+    const chunks: string[] = [];
+    const authService = {
+      getAuthenticatedUser: vi.fn().mockResolvedValue({
+        tokenExpiresAt: new Date("2030-01-01"),
+        me: { user: { id: userId, email: "test@example.com", displayName: "Test" }, setupCompletedAt: null },
+      }),
+    } as unknown as UserAuthService;
+    const app = createApp({
+      authService,
+      agentService: f.agents as AgentService,
+      agentRuntimeOptionsService: f.service,
+      loggerStream: { write: (chunk) => chunks.push(String(chunk)) },
+    });
+    apps.push(app);
+    let rawRequest: { aborted?: boolean; emit(event: string): boolean } | undefined;
+    app.addHook("onRequest", async (request) => {
+      rawRequest = request.raw;
+    });
+
+    const abortedResponse = app.inject({
+      method: "GET",
+      url: agentRuntimeOptionsPath(agentId),
+      headers: { authorization: "Bearer test" },
+    });
+    await vi.waitFor(() => expect(f.frames).toHaveLength(1));
+    if (!rawRequest) throw new Error("Expected request.raw to be captured");
+    rawRequest.aborted = true;
+    rawRequest.emit("aborted");
+
+    const abortedResult = await abortedResponse;
+    expect(abortedResult.statusCode).toBe(499);
+    expect(f.frames[1]).toMatchObject({
+      type: "agent-runtime:options:cancel",
+      requestId: f.frames[0]?.requestId,
+    });
+    const errorLogs = chunks
+      .flatMap((chunk) => chunk.trim().split("\n"))
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { level?: number; msg?: string })
+      .filter((record) => record.level === 50 && record.msg === "Request failed");
+    expect(errorLogs).toEqual([]);
+
+    const timed = await fixture(true, 20);
+    const timedApp = createApp({
+      authService,
+      agentService: timed.agents as AgentService,
+      agentRuntimeOptionsService: timed.service,
+    });
+    apps.push(timedApp);
+    const timeoutResult = await timedApp.inject({
+      method: "GET",
+      url: agentRuntimeOptionsPath(agentId),
+      headers: { authorization: "Bearer test" },
+    });
+    expect(timeoutResult.statusCode).toBe(504);
+
+    const offlineOwner = new AgentRuntimeOptionsOwner(new ConnectionRegistry());
+    const offlineService = new AgentRuntimeOptionsService(f.agents, offlineOwner, vi.fn().mockResolvedValue("local"));
+    const offlineApp = createApp({
+      authService,
+      agentService: f.agents as AgentService,
+      agentRuntimeOptionsService: offlineService,
+    });
+    apps.push(offlineApp);
+    const offlineResult = await offlineApp.inject({
+      method: "GET",
+      url: agentRuntimeOptionsPath(agentId),
+      headers: { authorization: "Bearer test" },
+    });
+    expect(offlineResult.statusCode).toBe(503);
   });
 });

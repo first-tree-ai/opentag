@@ -624,7 +624,17 @@ type ClassifiedFailure = {
 
 const rateLimitLogWindows = new WeakMap<object, Map<string, number>>();
 
-function logClassifiedFailure(request: FastifyRequest, failure: ClassifiedFailure, error: unknown): void {
+function isClientDisconnected(request: FastifyRequest, reply?: { raw: { destroyed: boolean } }): boolean {
+  return request.raw.aborted || Boolean(reply?.raw.destroyed);
+}
+
+function logClassifiedFailure(
+  request: FastifyRequest,
+  failure: ClassifiedFailure,
+  error: unknown,
+  reply?: { raw: { destroyed: boolean } },
+): void {
+  if (isClientDisconnected(request, reply)) return;
   if (error instanceof AuthServiceError && error.statusCode === 401) return;
 
   const rateLimit = rateLimitFailureMetadata(error);
@@ -652,6 +662,11 @@ function logClassifiedFailure(request: FastifyRequest, failure: ClassifiedFailur
     },
     "Request failed",
   );
+}
+
+function logUnhandledFailure(request: FastifyRequest, reply: { raw: { destroyed: boolean } }, error: unknown): void {
+  if (isClientDisconnected(request, reply)) return;
+  request.log.error({ err: error }, "Request failed");
 }
 
 function contentTypeParserErrorStatus(error: unknown): number | undefined {
@@ -1036,7 +1051,7 @@ export function createApp(options: CreateAppOptions = {}) {
   app.setErrorHandler((error, request, reply) => {
     const feishuFailure = feishuPublicFailure(error);
     if (feishuFailure) {
-      logClassifiedFailure(request, feishuFailure, error);
+      logClassifiedFailure(request, feishuFailure, error, reply);
       const envelope = ErrorEnvelopeSchema.parse({
         error: {
           code: feishuFailure.code,
@@ -1048,11 +1063,16 @@ export function createApp(options: CreateAppOptions = {}) {
       return reply.code(feishuFailure.statusCode).send(envelope);
     }
     if (isAccountFacingError(error)) {
-      logClassifiedFailure(request, error, error);
+      logClassifiedFailure(request, error, error, reply);
       return reply.code(error.statusCode).send(accountFacingErrorEnvelope(error, request.id));
     }
     if (error instanceof SessionCliProofError) {
-      logClassifiedFailure(request, { code: "SESSION_PROOF_INVALID", category: "credential", statusCode: 401 }, error);
+      logClassifiedFailure(
+        request,
+        { code: "SESSION_PROOF_INVALID", category: "credential", statusCode: 401 },
+        error,
+        reply,
+      );
       return reply.code(401).send(
         ErrorEnvelopeSchema.parse({
           error: {
@@ -1065,7 +1085,7 @@ export function createApp(options: CreateAppOptions = {}) {
       );
     }
     if (error instanceof SessionServiceError && error.code === "SESSION_CURSOR_INVALID") {
-      logClassifiedFailure(request, { code: error.code, category: "validation", statusCode: 400 }, error);
+      logClassifiedFailure(request, { code: error.code, category: "validation", statusCode: 400 }, error, reply);
       return reply.code(400).send(
         ErrorEnvelopeSchema.parse({
           error: {
@@ -1078,7 +1098,12 @@ export function createApp(options: CreateAppOptions = {}) {
       );
     }
     if (error instanceof RequestValidationError) {
-      logClassifiedFailure(request, { code: "VALIDATION_ERROR", category: "validation", statusCode: 400 }, error);
+      logClassifiedFailure(
+        request,
+        { code: "VALIDATION_ERROR", category: "validation", statusCode: 400 },
+        error,
+        reply,
+      );
       const envelope = ErrorEnvelopeSchema.parse({
         error: {
           code: "VALIDATION_ERROR",
@@ -1092,7 +1117,7 @@ export function createApp(options: CreateAppOptions = {}) {
     }
     const statusCode = contentTypeParserErrorStatus(error);
     if (statusCode !== undefined) {
-      logClassifiedFailure(request, { code: "VALIDATION_ERROR", category: "validation", statusCode }, error);
+      logClassifiedFailure(request, { code: "VALIDATION_ERROR", category: "validation", statusCode }, error, reply);
       const envelope = ErrorEnvelopeSchema.parse({
         error: {
           code: "VALIDATION_ERROR",
@@ -1103,7 +1128,7 @@ export function createApp(options: CreateAppOptions = {}) {
       });
       return reply.code(statusCode).send(envelope);
     }
-    request.log.error({ err: error }, "Request failed");
+    logUnhandledFailure(request, reply, error);
     const envelope = ErrorEnvelopeSchema.parse({
       error: {
         code: "INTERNAL_ERROR",

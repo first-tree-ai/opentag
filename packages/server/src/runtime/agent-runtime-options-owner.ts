@@ -48,7 +48,7 @@ export class AgentRuntimeOptionsOwner {
     input: Omit<AgentRuntimeOptionsRequestFrame, "type" | "requestId">,
     signal?: AbortSignal,
   ): Promise<AgentRuntimeOptions> {
-    signal?.throwIfAborted();
+    if (signal?.aborted) throw unavailable(503);
     const instanceId = this.registry.currentInstanceId(input.computerId);
     if (!instanceId) throw unavailable(503);
     if (!this.registry.supportsCapability(input.computerId, instanceId, RUNTIME_CAPABILITY.agentRuntimeOptions))

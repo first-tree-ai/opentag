@@ -223,6 +223,11 @@ export function registerAgentRoutes(
           await runtimeOptions.get(authenticatedUserId(request), agentId, model, disconnect.signal),
         );
         return reply.header("Cache-Control", "no-store").send(response);
+      } catch (error) {
+        if (disconnect.signal.aborted) {
+          return reply.sent || reply.raw.writableEnded ? reply : reply.code(499).send();
+        }
+        throw error;
       } finally {
         disconnect.dispose();
       }

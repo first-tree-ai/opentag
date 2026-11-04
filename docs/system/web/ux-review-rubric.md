@@ -44,7 +44,8 @@ Work starts and is acted on in the team's existing IM conversation.
 
 - **M1** Does the product send the user back to their IM where that is the
   natural place to act, instead of asking them to restart work in the Web?
-- **M2** Can a Task seen in the Web be traced to its IM conversation, and back?
+- **M2** Does a Task seen in the Web name the IM and the kind of conversation
+  it came from (private or group chat), so the admin can find it there?
 
 ### H Agent health at a glance
 
@@ -113,10 +114,10 @@ on machines in every state.
 
 - **CX1** One command: it is all a user needs on any machine state, and exits 0
   whenever success is possible.
-- **CX2** No duplicates: never a second Computer for the same machine and
-  Account; a machine that lost its local identity repairs its old Computer when
-  exactly one offline Computer in the Account matches its hardware fingerprint,
-  name, and platform.
+- **CX2** No duplicates: rerunning on a home that keeps its installation never
+  adds a second Computer; the Account's existing Computer for that installation
+  is confirmed or repaired in place (see
+  [Server and Client boundary](../server-client-boundary.md)).
 - **CX3** Healthy rerun: prints the normal one-line success, keeps the same
   Computer and running service, and consumes the code so the Web shows
   connected.

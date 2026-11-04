@@ -255,10 +255,11 @@ it remains available if official configuration rotates.
 
 The existing OAuth start/callback API also retains compatibility with older clients. Its `create` and `reauthorize`
 intents preserve session/Account authority, nonce, expected binding/generation and installation checks; there is no
-`replace` intent. A compatible OAuth `reauthorize` callback with a different App/Team/Bot identity atomically disables the
-old installation and route, ends their active Sessions, creates the replacement installation and route at generation 1,
-and links the disabled records to their replacements. Same-identity reauthorization keeps the route and advances its
-installation generation. This compatibility behavior does not add a replace-App action to the current Web.
+`replace` intent. Both current and compatibility APIs reject a different App/Team/Bot identity,
+including a legacy OAuth reauthorization callback. Same-identity reauthorization keeps the route
+and advances its installation generation. Disconnecting an Agent does not permit a different Bot
+to be attached to that Agent; a different identity requires a new Agent. Empty configuration can
+still finish its initial setup after other Agent edits.
 
 Slack does not guarantee `app_id` in `auth.test` for a Bot Token. The App ID stored from OAuth is therefore projected as
 **configured evidence**, not as Slack API-attested identity. Every request still has an independent proof boundary.
@@ -297,7 +298,7 @@ authority and binding/generation before committing configuration.
 | App, Team, Enterprise, Bot User/Bot identity | Keep | App ID is explicit configured evidence; Team and bot identity come from token inspection; Enterprise is optional. |
 | Team and Bot display metadata | Keep as optional presentation data | Team name, Bot display name, and avatar may be shown in management views, but never authorize configuration, ingress, or runtime access. |
 | Bot Token and Signing Secret | Keep encrypted on the installation | Stored together in the installation credential envelope; never copied onto Agent routes and never returned by management, diagnostics, or runtime-config APIs. The Signing Secret is never projected to runtime. |
-| `credentialGeneration` and credential schema version | Keep on the installation | Installation-authoritative monotonic credential revision. Routes sync a sanitized snapshot for Session fencing and diagnostics. Same-identity reauthorization increments the installation generation. Compatible OAuth reauthorization with a different identity retains disabled history and creates replacement records at generation 1. |
+| `credentialGeneration` and credential schema version | Keep on the installation | Installation-authoritative monotonic credential revision. Routes sync a sanitized snapshot for Session fencing and diagnostics. Same-identity reauthorization increments the installation generation. Different-identity reauthorization is rejected without changing either row. |
 | `grantedCapabilities` | Keep on the installation | Actual token scopes reported by Slack. Routes sync a sanitized snapshot. Active/readiness projections require all eighteen fixed scopes. |
 | `activatedAt`, `disabledAt`, `createdAt`, `updatedAt` | Keep | Durable installation lifecycle timestamps, with sanitized copies on Slack routes. Configuration submission sets activation; inbound events do not. Public APIs project `activatedAt` as `lastValidatedAt`. |
 | `observedAt` | Keep as runtime observation | Installation-authoritative. Updated after a correctly signed Agent-specific URL challenge, or after a correctly signed real event whose App, Team, and bot authorization match. Routes sync the sanitized timestamp. Public APIs project it as `lastRuntimeObservationAt`. It is not configuration evidence and does not change generation. |
@@ -306,8 +307,8 @@ authority and binding/generation before committing configuration.
 | `lastConfirmedAt` | Delete from public APIs | It mixed configuration time with runtime observation. Use `lastValidatedAt` and `lastRuntimeObservationAt`. |
 | `lastErrorCode` | Keep | Durable recovery cause such as `SLACK_SCOPE_REAUTH_REQUIRED` or `SLACK_TOKEN_REVOKED`; observations do not clear configuration errors. |
 | `receiveMode` on the Agent | Keep | Local `mention_only`/`all_message` policy, independent of Slack authorization and credential generation. |
-| `replacementImBindingId` | Keep as cutover provenance | Links a disabled route to its replacement, including a Feishu Bot identity change and compatible Slack OAuth identity replacement. It is not setup progress. |
-| `replacementSlackInstallationId` | Keep as installation provenance | Links a disabled Slack installation to its successor when activation releases an unused same-Agent installation or compatible OAuth reauthorization replaces its identity. It is not a configuration phase or a public replace intent. |
+| `replacementImBindingId` | Keep as cutover provenance | Retains historical replacement provenance. Current Agent configuration does not admit a replacement. It is not setup progress. |
+| `replacementSlackInstallationId` | Keep as installation provenance | Retains historical installation replacement provenance. It is not a configuration phase and cannot authorize replacing the current Agent identity. |
 | Connection owner, lease, and fencing fields | Keep generically | Feishu connection ownership only. Slack has no managed connection lease and these fields stay empty. |
 | Generic setup attempt/context fields | Keep for Feishu | `setupAttemptId`, setup intent/state/owner/heartbeat/expiry, and encrypted setup context remain for Feishu. Slack rows are database-checked so those setup fields stay null. |
 | Slack setup attempt, encrypted temporary context, challenge proof, verification error/time, polling/expiry/cancel state | Delete | No Slack configuration phase exists between token validation and activation. |

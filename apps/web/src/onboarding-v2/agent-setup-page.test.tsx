@@ -3,12 +3,12 @@
  *
  * What is pinned here is the contract the route will rely on: the page renders only what the
  * canonical snapshot says (stage, identities, blockers, permitted actions), it never invents a
- * Provider or a stage, a stale read can never overwrite a newer one, and the only way across
- * Providers is an explicit unbind followed by the fresh choice.
+ * Provider or a stage, a stale read can never overwrite a newer one, and configured identities cannot be replaced, and a disconnected identity requires a new Agent.
  */
 
 import type { AccountComputerSummary, AgentSetupSnapshot } from "@opentag/shared/browser";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, BrowserApi, browserApi } from "../api.js";
@@ -81,7 +81,7 @@ function renderSetup(
   } = {},
 ) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const subject = (
     <QueryClientProvider client={queryClient}>
       <AgentSetupPage
         adapter={adapter}
@@ -94,8 +94,13 @@ function renderSetup(
         reviewMode={props.reviewMode}
         slackOAuthError={props.slackOAuthError}
       />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+  const router = createRouter({
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+    routeTree: createRootRoute({ component: () => subject }),
+  });
+  return render(<RouterProvider router={router as never} />);
 }
 
 function mockComputerInventory() {
@@ -251,6 +256,21 @@ describe("AgentSetupPage stages", () => {
     },
   );
 
+  it("offers a new Agent after a configured messaging identity is disconnected", async () => {
+    const memory = createMemorySetupAdapter({
+      agent: setupAgent(),
+      messaging: { kind: "bound", provider: "feishu", reachable: true },
+    });
+    const current = await memory.adapter.readSnapshot(SETUP_AGENT_ID);
+    if (current.messaging.kind !== "ready") throw new Error("Missing binding fixture");
+    await memory.adapter.unbindMessaging(SETUP_AGENT_ID, "feishu", current.messaging.bindingId);
+    renderSetup(memory.adapter);
+    await settle();
+    expect(screen.getByRole("link", { name: "New Agent" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Connect Lark" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Connect Slack" })).toBeNull();
+  });
+
   it("describes multiple existing Computers as an Agent choice without offering a new connection", async () => {
     const inventory = createMemorySetupAdapter({ agent: setupAgent() });
     const [computer] = (await inventory.computerAdapter.inventory.computers()).computers;
@@ -300,17 +320,19 @@ describe("AgentSetupPage stages", () => {
     expect(issue).toHaveBeenCalledWith({ mode: "create", targetAgentId: SETUP_AGENT_ID });
   });
 
-  it("offers an owned Computer choice when a cross-Account rebind is required", async () => {
+  it("directs an inaccessible bound Computer to a new Agent without offering replacement", async () => {
     mockComputerInventory();
     const memory = createMemorySetupAdapter({ agent: setupAgent({ requiresComputerRebind: true }) });
     renderSetup(memory.adapter);
     await settle();
 
     expect(
-      screen.getByText("Review Mac belongs to another account. Choose a computer from this account for Reviewer."),
+      screen.getByText(
+        "Review Mac belongs to another account. Its binding to Reviewer cannot be replaced. Create a new Agent to use a different computer.",
+      ),
     ).toBeTruthy();
     expectComputerStepLayoutState("requires-rebind");
-    expect(screen.getByText("Connect your computer")).toBeTruthy();
+    expect(screen.getByRole("link", { name: "New Agent" })).toBeTruthy();
   });
 
   it("says an offline Computer is offline and keeps watching it", async () => {
@@ -622,7 +644,7 @@ describe("AgentSetupPage stages", () => {
     expect(screen.getByRole("heading", { name: "Restore your messaging connection" })).toBeTruthy();
     expect(screen.getByText("Lark needs updated permissions.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Update permissions" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Change bot" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Change bot" })).toBeNull();
     expect(screen.getByRole("button", { name: "Disconnect Lark" })).toBeTruthy();
     const recoveryActions = document.querySelector('[data-ui="agent-setup-messaging-recovery-actions"]');
     const destructiveAction = document.querySelector('[data-ui="agent-setup-messaging-destructive-action"]');
@@ -630,7 +652,7 @@ describe("AgentSetupPage stages", () => {
     expect(identity?.contains(screen.getByText("Lark"))).toBe(true);
     expect(identity?.contains(screen.getByText("Needs attention"))).toBe(true);
     expect(recoveryActions?.contains(screen.getByRole("button", { name: "Update permissions" }))).toBe(true);
-    expect(recoveryActions?.contains(screen.getByRole("button", { name: "Change bot" }))).toBe(true);
+
     expect(destructiveAction?.contains(screen.getByRole("button", { name: "Disconnect Lark" }))).toBe(true);
     // No direct switch: the other Provider's start is not offered while a binding is current.
     expect(screen.queryByRole("button", { name: /Your Slack workspace/ })).toBeNull();
@@ -1197,28 +1219,21 @@ describe("AgentSetupPage transitions", () => {
     }
   });
 
-  it("replaces the current Feishu bot through a same-Provider attempt", async () => {
+  it("keeps Feishu reauthorization available and rejects the legacy replace command", async () => {
     const memory = createMemorySetupAdapter({
       agent: setupAgent(),
       messaging: { kind: "bound", provider: "feishu", reachable: true, attention: "reauthorization-required" },
     });
-    const start = vi.spyOn(memory.adapter, "startFeishuAttempt");
     renderSetup(memory.adapter);
     await settle();
-
-    fireEvent.click(screen.getByRole("button", { name: "Change bot" }));
-    await settle(10);
-
-    expect(start).toHaveBeenCalledWith(SETUP_AGENT_ID, "replace", {
-      kind: "bound",
-      provider: "feishu",
-      bindingId: expect.any(String),
-      credentialGeneration: 1,
-    });
-    expect(screen.getByText("Waiting for scan and authorization…")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Change bot" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Update permissions" })).toBeTruthy();
+    await expect(memory.adapter.startFeishuAttempt(SETUP_AGENT_ID, "replace", { kind: "unbound" })).rejects.toThrow(
+      /cannot be replaced/,
+    );
   });
 
-  it("moves across Providers only through an explicit unbind, then offers the fresh choice", async () => {
+  it("requires a new Agent after disconnecting a configured Provider", async () => {
     const memory = createMemorySetupAdapter({
       agent: setupAgent(),
       messaging: { kind: "bound", provider: "slack", reachable: true, attention: "provider-error" },
@@ -1239,9 +1254,10 @@ describe("AgentSetupPage transitions", () => {
     await settle();
 
     expect(unbind).toHaveBeenCalledWith(SETUP_AGENT_ID, "slack", bindingId);
-    // The binding is gone, and only now is a fresh Provider choice offered.
-    expect(screen.getByRole("button", { name: /Lark/ })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Slack/ })).toBeTruthy();
+    expect(dialog.textContent).toContain("This Agent cannot reconnect");
+    expect(screen.getByRole("link", { name: "New Agent" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Lark/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Slack/ })).toBeNull();
   });
 
   it("keeps a failed action's feedback beside it and the snapshot on screen", async () => {

@@ -1,4 +1,6 @@
-import type { AgentSummary, ImBindingSummary } from "@opentag/shared/browser";
+import type { AgentSetupSnapshot, AgentSummary, ImBindingSummary } from "@opentag/shared/browser";
+import { useQuery } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { type RefObject, useEffect, useRef, useState } from "react";
 import { browserApi } from "../../../api.js";
 import { spaceScriptBoundary } from "../../../i18n/format.js";
@@ -7,14 +9,15 @@ import { messagingProviderLabel } from "../../../im/provider-label.js";
 import { SlackConfiguration } from "../../../im/slack-configuration.js";
 import { SlackCustomApp } from "../../../im/slack-custom-app.js";
 import * as m from "../../../paraglide/messages.js";
-import { Banner, Button, Dialog, StatusIndicator, Text } from "../../../ui/design-system.js";
+import { Banner, Button, buttonClassName, Dialog, StatusIndicator, Text } from "../../../ui/design-system.js";
 import { ProviderIcon } from "../../../ui/provider-icon.js";
 import { AsyncState, toResourceState } from "../../resource/resource-state.js";
 import type { AgentDetailView } from "../agent-model.js";
 import { messagingConnectionLabel, messagingConnectionTone } from "../agent-presentation.js";
 import { useImBindingQuery } from "../agent-queries.js";
+import { agentCreateLink, agentSetupLink } from "../agent-routes.js";
 
-type Confirmation = { bindingId: string; provider: ImBindingSummary["provider"] };
+type Confirmation = { bindingId: string; provider: ImBindingSummary["provider"]; configured: boolean };
 
 export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAgentChanged: () => void }) {
   const readOnly = agent.status === "suspended";
@@ -107,7 +110,7 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
             }}
           >
             {(slackConfiguration) => {
-              const connectFeishu = async (intent: "create" | "reauthorize" | "replace" = "create") => {
+              const connectFeishu = async (intent: "create" | "reauthorize" = "create") => {
                 setError(undefined);
                 setSuccessMessage(undefined);
                 await feishuSetup.start(intent);
@@ -150,7 +153,11 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                             }
                             onDisconnect={(current) => {
                               setConfirmationError(undefined);
-                              setConfirmation({ bindingId: current.id, provider: current.provider });
+                              setConfirmation({
+                                bindingId: current.id,
+                                provider: current.provider,
+                                configured: current.bindingState !== "provisioning",
+                              });
                             }}
                             onFeishu={(intent, target) => {
                               activeFeishuTriggerRef.current = target;
@@ -216,7 +223,9 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
         <Dialog
           busy={confirmationBusy}
           description={spaceScriptBoundary(
-            m.im_disconnect_description({ providerName: messagingProviderLabel(confirmation.provider) }),
+            confirmation.configured
+              ? m.im_disconnect_description({ providerName: messagingProviderLabel(confirmation.provider) })
+              : m.im_cancel_initial_setup_description(),
           )}
           returnFocusRef={confirmation?.provider === "slack" ? messagingHeadingRef : disableBindingButtonRef}
           title={spaceScriptBoundary(
@@ -268,8 +277,16 @@ function MessagingConnectionActions({
   disconnectRef: RefObject<HTMLButtonElement | null>;
   onSlack?: () => void;
   onDisconnect: (binding: ImBindingSummary) => void;
-  onFeishu: (intent: "create" | "reauthorize" | "replace", target: HTMLButtonElement) => void;
+  onFeishu: (intent: "create" | "reauthorize", target: HTMLButtonElement) => void;
 }) {
+  const creation = useQuery({
+    queryKey: ["agent-messaging-creation", agent.id],
+    queryFn: () => browserApi.agentSetup(agent.id),
+    gcTime: 0,
+    enabled: !binding,
+  });
+  const canCreate = creation.isSuccess && allowsMessagingCreation(creation.data, readOnly);
+  const needsCreationRecovery = !binding && !canCreate;
   return (
     <div className="flex flex-wrap items-center gap-3">
       {binding?.provider !== "feishu" ? (
@@ -279,19 +296,14 @@ function MessagingConnectionActions({
           bindingId={binding?.id}
           onSaved={onAgentChanged}
           cloud={agent.computerKind === "cloud"}
+          renderTrigger={needsCreationRecovery ? () => null : undefined}
           onOAuth={binding ? onSlack : undefined}
           onDisconnect={binding ? () => onDisconnect(binding) : undefined}
         />
       ) : null}
       {binding?.provider === "feishu" ? (
         <>
-          <MessagingAppActions
-            binding={binding}
-            busy={busy}
-            feishuBusy={feishuBusy}
-            readOnly={readOnly}
-            onFeishu={onFeishu}
-          />
+          <MessagingAppActions binding={binding} busy={busy} readOnly={readOnly} onFeishu={onFeishu} />
           <Button
             disabled={readOnly}
             ref={disconnectRef}
@@ -301,7 +313,7 @@ function MessagingConnectionActions({
             {spaceScriptBoundary(m.im_disconnect({ providerName: messagingProviderLabel(binding.provider) }))}
           </Button>
         </>
-      ) : !binding ? (
+      ) : !binding && canCreate ? (
         <Button
           icon={<ProviderIcon className="size-4" provider="feishu" />}
           loading={feishuBusy}
@@ -312,22 +324,46 @@ function MessagingConnectionActions({
           {m.im_connect_feishu({ provider: messagingProviderLabel("feishu") })}
         </Button>
       ) : null}
+      {needsCreationRecovery ? (
+        <AsyncState state={toResourceState(creation)}>
+          {(snapshot) =>
+            snapshot.messaging.kind === "blocked" &&
+            snapshot.messaging.errorCode === "IM_BINDING_IDENTITY_DISCONNECTED" ? (
+              <div className="grid justify-items-start gap-3">
+                <p>{m.im_identity_disconnected()}</p>
+                <Link {...agentCreateLink()} className={buttonClassName({ variant: "primary" })}>
+                  {m.agents_new_agent()}
+                </Link>
+              </div>
+            ) : (
+              <Link {...agentSetupLink(agent.id)} className={buttonClassName({ variant: "secondary" })}>
+                {m.agents_continue_setup()}
+              </Link>
+            )
+          }
+        </AsyncState>
+      ) : null}
     </div>
+  );
+}
+
+function allowsMessagingCreation(snapshot: AgentSetupSnapshot, readOnly: boolean): boolean {
+  return (
+    snapshot.actions.some((action) => action.kind === "start-messaging") ||
+    (readOnly && snapshot.messaging.kind === "not-configured")
   );
 }
 
 function MessagingAppActions({
   binding,
   busy,
-  feishuBusy,
   readOnly,
   onFeishu,
 }: {
   binding: ImBindingSummary;
   busy: boolean;
-  feishuBusy: boolean;
   readOnly: boolean;
-  onFeishu: (intent: "reauthorize" | "replace", target: HTMLButtonElement) => void;
+  onFeishu: (intent: "reauthorize", target: HTMLButtonElement) => void;
 }) {
   return (
     <>
@@ -340,14 +376,6 @@ function MessagingAppActions({
           {messagingRecoveryLabel(binding)}
         </Button>
       ) : null}
-      <Button
-        loading={feishuBusy}
-        disabled={readOnly || busy || feishuBusy}
-        variant="secondary"
-        onClick={(event) => onFeishu("replace", event.currentTarget)}
-      >
-        {m.im_change_bot()}
-      </Button>
     </>
   );
 }

@@ -1079,7 +1079,7 @@ describe("AgentService", () => {
     await expect(failing.getById(bootstrap.userId, created.id)).rejects.toMatchObject({ code: "RESOURCE_NOT_FOUND" });
   });
 
-  it("rebinds active Sessions, rejects unsafe custody, and handles no-op and missing targets", async () => {
+  it("rejects replacement without moving Sessions and handles same-Computer no-ops", async () => {
     const { bootstrap, computer, service } = await fixture();
     const target = await createComputer(bootstrap.userId, "target");
     const created = await createAgent(service, bootstrap.userId, computer.id, "rebind-agent");
@@ -1089,7 +1089,7 @@ describe("AgentService", () => {
     expect(noOp).toMatchObject({ computerId: computer.id });
     const pending = await createDelivery(binding.id, session.id, { state: "pending" });
     await expect(service.rebindById(bootstrap.userId, created.id, target.id)).rejects.toMatchObject({
-      code: "AGENT_REBIND_BLOCKED",
+      code: "AGENT_LIFECYCLE_CONFLICT",
     });
     await unitDatabase.database.delete(imMessageDeliveries).where(eq(imMessageDeliveries.id, pending.id));
     const accepted = await createDelivery(binding.id, session.id, {
@@ -1098,7 +1098,7 @@ describe("AgentService", () => {
       reportedAt: null,
     });
     await expect(service.rebindById(bootstrap.userId, created.id, target.id)).rejects.toMatchObject({
-      code: "AGENT_REBIND_BLOCKED",
+      code: "AGENT_LIFECYCLE_CONFLICT",
     });
     await unitDatabase.database.delete(imMessageDeliveries).where(eq(imMessageDeliveries.id, accepted.id));
     const expired = await createDelivery(binding.id, session.id, { state: "expired" });
@@ -1107,16 +1107,21 @@ describe("AgentService", () => {
       .set({ dispatchRequestId: crypto.randomUUID(), dispatchInputHash: "e".repeat(64), dispatchPayload: {} as never })
       .where(eq(imMessageDeliveries.id, expired.id));
     await expect(service.rebindById(bootstrap.userId, created.id, target.id)).rejects.toMatchObject({
-      code: "AGENT_REBIND_BLOCKED",
+      code: "AGENT_LIFECYCLE_CONFLICT",
     });
     await unitDatabase.database.delete(imMessageDeliveries).where(eq(imMessageDeliveries.id, expired.id));
-    const rebound = await service.rebindById(bootstrap.userId, created.id, target.id);
-    expect(rebound).toMatchObject({ computerId: target.id, revision: 2 });
+    await expect(service.rebindById(bootstrap.userId, created.id, target.id)).rejects.toMatchObject({
+      code: "AGENT_LIFECYCLE_CONFLICT",
+    });
+    expect(await service.getConfigById(bootstrap.userId, created.id)).toMatchObject({
+      computerId: computer.id,
+      revision: 1,
+    });
     const [placement] = await unitDatabase.database
       .select()
       .from(sessionPlacements)
       .where(eq(sessionPlacements.sessionId, session.id));
-    expect(placement).toMatchObject({ computerId: target.id, generation: 2 });
+    expect(placement).toMatchObject({ computerId: computer.id, generation: 1 });
     await expect(service.rebindById(bootstrap.userId, created.id, crypto.randomUUID())).rejects.toMatchObject({
       code: "COMPUTER_NOT_FOUND",
     });
@@ -1151,13 +1156,10 @@ describe("AgentService", () => {
     onProviderCliPlacementChanged.mockClear();
     await hooked.rebindById(bootstrap.userId, created.id, computer.id);
     expect(onProviderCliPlacementChanged).not.toHaveBeenCalled();
-    await hooked.rebindById(bootstrap.userId, created.id, target.id);
-    expect(onProviderCliPlacementChanged).toHaveBeenCalledWith({
-      agentId: created.id,
-      previousComputerId: computer.id,
-      computerId: target.id,
-      runtimeProvider: "codex",
+    await expect(hooked.rebindById(bootstrap.userId, created.id, target.id)).rejects.toMatchObject({
+      code: "AGENT_LIFECYCLE_CONFLICT",
     });
+    expect(onProviderCliPlacementChanged).not.toHaveBeenCalled();
     const diagnostics: string[] = [];
     const failing = new AgentService(unitDatabase.database, {
       now: () => NOW,

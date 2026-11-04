@@ -16,8 +16,6 @@ skills, tools, MCP Servers, Context Trees, receive mode, credentials, permission
 settings, and its Computer once one is bound. Runtime collaboration creates
 Sessions under an existing Agent; it does not create another Agent.
 
-> **Planned — not yet implemented.** Tracking: #1215
-
 An Agent's Computer, runtime Provider, and messaging channel are fixed once set. Moving any of them is not supported;
 to change one, create a new Agent and add it to the conversation. Why: an Agent's Sessions are bound to the channel,
 the runtime, and the local storage on that Computer (Provider sessions, memory, files), so migration is costly and
@@ -78,6 +76,20 @@ records the explicit Provider, and the Computer when the caller names one,
 without consulting readiness. Readiness can affect route availability and Turn
 execution, but it cannot silently rewrite the Agent's Provider or create a
 Session lifecycle state.
+
+## Configuration identity
+
+An Agent's nonempty Computer, runtime Provider and messaging App/Bot identity cannot be replaced.
+The legacy rebind and Feishu replace commands obey the same boundary. An empty Computer can be
+bound to an owned target at any revision: editing an unbound Agent never requires recreating it.
+Selecting the existing Computer is an idempotent no-op. Same-Computer reconnect, upgrades and
+credential repair, same-App reauthorization, and ordinary model, permissions and profile edits
+remain available. Configured messaging cannot be replaced by disconnecting and recreating it. After disconnection,
+setup names the retired identity and offers a new Agent instead of connection actions. A never-activated
+provisioning slot can still be cleared and creation resumed on the same Agent.
+Operator transfer rejects an Agent with a Computer or configured messaging identity; it preserves
+custody checks and retained data. An unbound, unconfigured Agent may still transfer under the
+existing operator preconditions and finish creation under its owner.
 
 ## Management writes
 

@@ -22,6 +22,7 @@ import { SessionCliProofService } from "../../services/sessions/session-cli-proo
 import { SkillService } from "../../services/skills/skill-service.js";
 import { deferred } from "../support/deferred.js";
 import { FakeSkillObjectStore } from "../support/fake-skill-object-store.js";
+import { moveLegacyAgentFixture, transferLegacyAgentFixture } from "../support/legacy-agent-fixture.js";
 import { createSkillHarness } from "../support/skill-service-harness.js";
 import { startMigratedTestDatabase } from "./migrated-test-database.js";
 
@@ -135,7 +136,7 @@ function pauseAgentUpdate(database: DatabaseClient, pause: () => Promise<void>):
 }
 
 it.each(["enable", "remove", "schedule"] as const)(
-  "serializes final %s authority with an actual Account transfer",
+  "serializes final %s authority with an historical Account ownership change",
   async (operation) => {
     const f = await fixture();
     await f.agentService.suspendById(f.accountId, f.agent.id);
@@ -145,12 +146,13 @@ it.each(["enable", "remove", "schedule"] as const)(
     const reader = client(1);
     const [backend] = await reader.sql<{ pid: number }[]>`select pg_backend_pid() as pid`;
     assert(backend);
-    const transferring = new AgentService(
+    const transferring = transferLegacyAgentFixture(
       pauseAgentUpdate(writer.database, async () => {
         entered.resolve();
         await release.promise;
       }),
-    ).transferToAccount({ agentId: f.agent.id, targetAccountId: f.targetAccountId, slack: "disable" });
+      { agentId: f.agent.id, targetAccountId: f.targetAccountId, slack: "disable" },
+    );
     let pending: Promise<unknown> | undefined;
     try {
       await entered.promise;
@@ -220,7 +222,7 @@ it("refuses a Skill replace prepared before transfer and removes only its unrefe
   try {
     await entered.promise;
     await f.agentService.suspendById(f.accountId, f.agent.id);
-    await f.agentService.transferToAccount({
+    await transferLegacyAgentFixture(f.c.database, {
       agentId: f.agent.id,
       targetAccountId: f.targetAccountId,
       slack: "disable",
@@ -261,7 +263,7 @@ it.each(["revoke", "replace-proof", "placement", "session-end", "connection", "r
         .set({ currentInstanceId: randomUUID() })
         .where(eq(computers.id, f.source.computerId));
     } else {
-      await f.agentService.rebindById(f.accountId, f.agent.id, await f.h.createComputer(f.accountId));
+      await moveLegacyAgentFixture(f.c.database, f.agent.id, await f.h.createComputer(f.accountId));
     }
     const bytes = await f.h.archive("new-skill");
     const beforePuts = f.store.puts;
@@ -596,7 +598,7 @@ it("keeps an Account Skill list on its authorization snapshot during transfer an
   try {
     await entered.promise;
     await f.agentService.suspendById(f.accountId, f.agent.id);
-    await f.agentService.transferToAccount({
+    await transferLegacyAgentFixture(f.c.database, {
       agentId: f.agent.id,
       targetAccountId: f.targetAccountId,
       slack: "disable",

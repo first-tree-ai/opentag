@@ -16,6 +16,10 @@ export function agentScheduleDetailLink(agentId: string, scheduleId: string) {
   return { params: { agentId }, search: { schedule: scheduleId }, to: "/agents/$agentId" } as const;
 }
 
+export function agentCreateLink() {
+  return { search: { action: "create" }, to: "/agents/setup" } as const;
+}
+
 export function agentSetupLink(agentId: string) {
   return { search: { agentId }, to: "/agents/setup" } as const;
 }

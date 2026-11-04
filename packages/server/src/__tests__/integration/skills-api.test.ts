@@ -667,7 +667,11 @@ it.each(["deleted", "transferred"] as const)("rechecks the Agent after PUT when 
     else {
       const accountId = randomUUID();
       await h.sql`insert into users (id, email, display_name) values (${accountId}, ${`${accountId}@example.test`}, 'New owner')`;
-      await lifecycle.transferToAccount({ agentId: h.agentId, targetAccountId: accountId, slack: "disable" });
+      await expect(
+        lifecycle.transferToAccount({ agentId: h.agentId, targetAccountId: accountId, slack: "disable" }),
+      ).rejects.toMatchObject({ reason: "configuration_immutable" });
+      // Historical ownership changes must still invalidate an in-flight upload.
+      await h.sql`update agents set created_by_user_id=${accountId}, computer_id=null, revision=revision+1 where id=${h.agentId}`;
     }
   } finally {
     resume.resolve();

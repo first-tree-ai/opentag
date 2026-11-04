@@ -176,12 +176,15 @@ export function registerRuntimeRoutes(
     });
   });
   const heartbeatTimeoutMs = options.heartbeatTimeoutMs ?? 90_000;
-  const sweep = setInterval(() => {
-    const cutoff = Date.now() - heartbeatTimeoutMs;
-    registry.terminateStale(cutoff, (count) =>
-      logger.warn({ count, cutoff }, "Stale runtime connection sweep terminated connections"),
-    );
-  }, heartbeatTimeoutMs);
+  const sweep = setInterval(
+    () => {
+      const cutoff = Date.now() - heartbeatTimeoutMs;
+      registry.terminateStale(cutoff, (count) =>
+        logger.warn({ count, cutoff }, "Stale runtime connection sweep terminated connections"),
+      );
+    },
+    Math.min(5_000, heartbeatTimeoutMs),
+  );
   sweep.unref();
   let closing: Promise<void> | undefined;
   const beginClose = () => {

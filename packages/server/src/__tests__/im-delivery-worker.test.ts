@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { setImmediate as nextEventLoop } from "node:timers/promises";
 import {
   computeDirectInputHash,
   computeLegacyDirectInputHash,
@@ -36,6 +37,7 @@ import { runImDeliverySteerRecovery } from "../runtime/im-delivery-janitor.js";
 import { ImDeliveryWorker } from "../runtime/im-delivery-worker.js";
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
 import { EffectiveRuntimeSnapshotAssemblerError } from "../services/runtime-config/errors.js";
+import { deferred } from "./support/deferred.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 describe("ImDeliveryWorker diagnostics", () => {
@@ -3460,6 +3462,24 @@ async function cloudFollowUpFixture(unit: UnitDatabase, userId: string) {
   return { agentId, computerId, sessionId, rootDeliveryId, followUpDeliveryId };
 }
 
+async function settleTimedOutDelivery(
+  operation: Promise<void>,
+  deliveryStarted: Promise<void>,
+  signal: AbortSignal,
+): Promise<void> {
+  await Promise.race([deliveryStarted, operation]);
+  let settled = false;
+  const markSettled = () => {
+    settled = true;
+  };
+  void operation.then(markSettled, markSettled);
+  while (!settled && !signal.aborted) {
+    await nextEventLoop();
+    if (!settled && !signal.aborted) await vi.advanceTimersByTimeAsync(100);
+  }
+  await operation;
+}
+
 async function withDeliveryTimeouts(
   unit: UnitDatabase,
   onTestFinished: TestContext["onTestFinished"],
@@ -3478,7 +3498,9 @@ async function withDeliveryTimeouts(
     const fixture = await workerFixture(unit);
     cleanup.signal.throwIfAborted();
     const diagnostic = vi.fn();
+    let deliveryStarted = deferred();
     const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture, {
+      onDelivery: () => deliveryStarted.resolve(),
       deliveryHangUntil: cleanup.signal,
     });
     const activeWorker = new ImDeliveryWorker({
@@ -3496,11 +3518,9 @@ async function withDeliveryTimeouts(
       diagnostic,
       attempt: async () => {
         cleanup.signal.throwIfAborted();
-        const outcomes = await Promise.allSettled([activeWorker.runOnce(), vi.advanceTimersByTimeAsync(1_100)]);
+        await settleTimedOutDelivery(activeWorker.runOnce(), deliveryStarted.promise, cleanup.signal);
         cleanup.signal.throwIfAborted();
-        for (const outcome of outcomes) {
-          if (outcome.status === "rejected") throw outcome.reason;
-        }
+        deliveryStarted = deferred();
         vi.setSystemTime(Date.now() + 31_000);
       },
     });

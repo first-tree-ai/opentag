@@ -76,15 +76,24 @@ function cardActions(target: FeedbackTarget, result: boolean, operationUrl: (kin
       { kind: "save_release", label: "Retry save", url: operationUrl("save_release"), style: "primary" as const },
       { kind: "discard", label: "Discard unsaved changes", url: operationUrl("discard"), style: "danger" as const },
     ];
-  if (target.batchRetryBlocked) return [];
-  return [
-    {
-      kind: "retry_task",
-      label: target.effects === "not_started" ? "Retry" : "Check retry eligibility",
-      url: operationUrl("retry_task"),
-      style: "primary" as const,
-    },
-  ];
+  return [];
+}
+
+export function renderFeedbackText(target: FeedbackTarget, publicUrl: string, action?: FeedbackAction): string {
+  const content = feedbackCardContent(target, action);
+  const detailsUrl = new URL(`/im-feedback/${encodeURIComponent(target.id)}`, publicUrl).href;
+  const code = /^[a-zA-Z0-9_]{1,128}$/.test(target.errorCode ?? "") ? target.errorCode : "task_failed";
+  const lines = content.result
+    ? [content.title]
+    : [
+        content.title,
+        content.impact,
+        target.state === "workspace_blocked"
+          ? content.availability
+          : "Review the Task and the Agent's availability. To try again, send a new message.",
+        code,
+      ];
+  return [...lines, `View details: ${detailsUrl}`].join("\n\n");
 }
 
 export function renderFeedbackCard(target: FeedbackTarget, publicUrl: string, action?: FeedbackAction) {
@@ -100,8 +109,6 @@ export function renderFeedbackCard(target: FeedbackTarget, publicUrl: string, ac
   const text = content.result
     ? content.title
     : `${content.title}\n\n${content.impact}\n\n${content.availability}\n\n${code}`;
-  const canNativeRetry =
-    target.state === "failed" && target.effects === "not_started" && !target.batchRetryBlocked && !content.result;
   return {
     slack: {
       text,
@@ -126,9 +133,8 @@ export function renderFeedbackCard(target: FeedbackTarget, publicUrl: string, ac
               type: "button" as const,
               text: { type: "plain_text" as const, text: a.label },
               style: a.style,
-              ...(a.kind === "retry_task" && canNativeRetry
-                ? { action_id: "opentag_feedback_retry", value: `${target.id}:${target.revision}` }
-                : { action_id: `opentag_feedback_${a.kind}`, url: a.url }),
+              action_id: `opentag_feedback_${a.kind}`,
+              url: a.url,
             })),
             {
               type: "button" as const,
@@ -164,9 +170,7 @@ export function renderFeedbackCard(target: FeedbackTarget, publicUrl: string, ac
               tag: "button",
               text: { tag: "plain_text", content: a.label },
               type: a.style === "danger" ? "danger" : "primary",
-              ...(a.kind === "retry_task" && canNativeRetry
-                ? { value: { feedbackId: target.id, revision: target.revision, kind: "retry_task" } }
-                : { url: a.url }),
+              url: a.url,
             })),
             { tag: "button", text: { tag: "plain_text", content: "View details" }, type: "default", url: detailsUrl },
           ],

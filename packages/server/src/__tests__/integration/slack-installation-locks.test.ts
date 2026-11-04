@@ -20,6 +20,7 @@ import type { SlackApiClient } from "../../services/im-bindings/slack/adapter.js
 import { SlackConfigurationService } from "../../services/im-bindings/slack/configuration-service.js";
 import { SessionService } from "../../services/sessions/index.js";
 import { deferred } from "../support/deferred.js";
+import { transferLegacyAgentFixture } from "../support/legacy-agent-fixture.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 let testDatabase: MigratedTestDatabase;
@@ -391,7 +392,7 @@ describe("Slack installation management and event lock order", () => {
     }
   });
 
-  describe.each(["keep", "disable"] as const)("operator transfer with Slack %s", (slack) => {
+  describe.each(["keep", "disable"] as const)("historical ownership change with Slack %s", (slack) => {
     it.each(eventKinds)("commits before a waiting %s with the original lifecycle result", async (kind) => {
       const value = await fixture();
       try {
@@ -404,7 +405,7 @@ describe("Slack installation management and event lock order", () => {
         const results = await raceAtBinding(
           value,
           (client) =>
-            new AgentService(client.database).transferToAccount({
+            transferLegacyAgentFixture(client.database, {
               agentId: value.agent.id,
               targetAccountId: target.id,
               slack,

@@ -246,28 +246,17 @@ it.each(["mint first", "rebind first"] as const)("preserves the serial control: 
   }
 });
 
-it("retains real cross-Computer movement and rejects the old proof and placement input", async () => {
+it("rejects cross-Computer replacement without revoking the current proof or placement", async () => {
   const f = await fixture();
   try {
     const old = await f.proofs().mint(f.input);
+    const { computerId } = await createComputer(f.observer.database, f.accountId);
+    const before = await f.observer.database.select().from(sessionPlacements);
+    await expect(f.agents.rebindById(f.accountId, f.agent.id, computerId)).rejects.toMatchObject({
+      code: "AGENT_LIFECYCLE_CONFLICT",
+    });
+    expect(await f.observer.database.select().from(sessionPlacements)).toEqual(before);
     expect(await f.proofs().authenticate(old.token)).toMatchObject({ sessionId: f.input.sessionId });
-    const { computerId, instanceId } = await createComputer(f.observer.database, f.accountId);
-    f.connections.set(computerId, instanceId);
-    expect(await f.agents.rebindById(f.accountId, f.agent.id, computerId)).toMatchObject({
-      computerId,
-      revision: f.agent.revision + 1,
-    });
-    expect(await f.observer.database.select().from(sessionPlacements)).toMatchObject([{ computerId, generation: 2 }]);
-    await expect(f.proofs().authenticate(old.token)).rejects.toMatchObject({ code: "invalid_proof" });
-    await expect(f.proofs().mint(f.input)).rejects.toMatchObject({ code: "runtime_unavailable" });
-    const current = await f
-      .proofs()
-      .mint({ ...f.input, computerId, placementGeneration: 2, connectionInstanceId: instanceId });
-    expect(current.proofId).not.toBe(old.proofId);
-    expect(await f.proofs().authenticate(current.token)).toMatchObject({
-      sessionId: f.input.sessionId,
-      agentId: f.agent.id,
-    });
   } finally {
     await f.close();
   }
@@ -275,8 +264,8 @@ it("retains real cross-Computer movement and rejects the old proof and placement
 
 it.each([
   { name: "rejects a destination without Context Tree support", selected: true, supported: false },
-  { name: "moves selected trees to a capable destination", selected: true, supported: true },
-  { name: "keeps no-tree moves independent of Context Tree support", selected: false, supported: false },
+  { name: "rejects replacement even when the destination supports selected trees", selected: true, supported: true },
+  { name: "rejects replacement even without selected trees", selected: false, supported: false },
 ])("$name", async ({ selected, supported }) => {
   const f = await fixture();
   try {
@@ -291,26 +280,10 @@ it.each([
     const before = await service.getConfigById(f.accountId, f.agent.id);
     const placements = await f.observer.database.select().from(sessionPlacements);
     const move = service.rebindById(f.accountId, f.agent.id, target.computerId);
-    if (selected && !supported) {
-      await expect(move).rejects.toMatchObject({
-        code: "AGENT_LIFECYCLE_CONFLICT",
-        statusCode: 409,
-        message:
-          "Update OpenTag on the destination Computer and bring it online before moving an Agent with Context Trees.",
-      });
-      expect(await service.getConfigById(f.accountId, f.agent.id)).toEqual(before);
-      expect(await f.observer.database.select().from(sessionPlacements)).toEqual(placements);
-    } else {
-      await expect(move).resolves.toMatchObject({
-        computerId: target.computerId,
-        runtimeConfig: { contextTrees: trees },
-      });
-      expect(await f.observer.database.select().from(sessionPlacements)).toMatchObject([
-        { sessionId: f.input.sessionId, computerId: target.computerId, generation: 2 },
-      ]);
-    }
-    if (selected) expect(supportsContextTrees).toHaveBeenCalledWith(target.computerId);
-    else expect(supportsContextTrees).not.toHaveBeenCalled();
+    await expect(move).rejects.toMatchObject({ code: "AGENT_LIFECYCLE_CONFLICT", statusCode: 409 });
+    expect(await service.getConfigById(f.accountId, f.agent.id)).toEqual(before);
+    expect(await f.observer.database.select().from(sessionPlacements)).toEqual(placements);
+    expect(supportsContextTrees).not.toHaveBeenCalled();
   } finally {
     await f.close();
   }

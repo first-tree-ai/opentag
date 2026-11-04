@@ -403,6 +403,7 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
         );
       }
     }
+    request.signal.throwIfAborted();
     const rewritten = rewriteOperationResponse(operation, payload, {
       executionId: request.executionId,
       provider: request.provider,

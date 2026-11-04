@@ -81,6 +81,9 @@ export class McpAuthorizationService {
   readonly #probe: McpProbe;
   readonly #servers: McpServerService;
   readonly #reusableClient: NonNullable<McpAuthorizationServiceOptions["reusableClient"]>;
+  #probingClosed = false;
+  #probeClosing: Promise<void> | undefined;
+  readonly #probeTasks = new Set<Promise<McpProbeOutcome>>();
 
   constructor(options: McpAuthorizationServiceOptions) {
     this.#accountSnapshotMaxBytes = options.accountSnapshotMaxBytes ?? MCP_ACCOUNT_TOOL_SNAPSHOT_MAX_BYTES;
@@ -478,8 +481,26 @@ export class McpAuthorizationService {
     });
   }
 
+  closeProbes(): Promise<void> {
+    this.#probingClosed = true;
+    this.#probeClosing ??= Promise.allSettled([...this.#probeTasks]).then(() => undefined);
+    return this.#probeClosing;
+  }
+
   /** Probe this Agent's credential and write the snapshot onto its own authorization row. */
-  async probe(accountId: string, agentId: string, mcpServerId: string): Promise<McpProbeOutcome> {
+  probe(accountId: string, agentId: string, mcpServerId: string): Promise<McpProbeOutcome> {
+    if (this.#probingClosed)
+      return Promise.reject(new McpServiceError(MCP_ERROR_CODES.PROBE_FAILED, "MCP probing stopped"));
+    const operation = this.#runProbe(accountId, agentId, mcpServerId);
+    this.#probeTasks.add(operation);
+    void operation.then(
+      () => this.#probeTasks.delete(operation),
+      () => this.#probeTasks.delete(operation),
+    );
+    return operation;
+  }
+
+  async #runProbe(accountId: string, agentId: string, mcpServerId: string): Promise<McpProbeOutcome> {
     const context = await this.#servers.readProbeContext(accountId, agentId, mcpServerId);
     const authorization = context.authorization;
     if (authorization?.status !== "active") {

@@ -18,6 +18,9 @@ import { RunnerHub } from "../services/sandboxes/runner-hub.js";
 
 /** Echo transport: reports every frame's byte length and binary flag back to the client. */
 const echoProxyTransport = {
+  close() {
+    return Promise.resolve();
+  },
   attach(socket: WebSocket) {
     socket.on("message", (data, binary) =>
       socket.send(JSON.stringify({ length: Buffer.byteLength(data as Buffer), binary })),

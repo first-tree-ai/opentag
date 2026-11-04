@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import {
   ContextTreeBranchSchema,
   type ContextTreeOperationResponse,
@@ -13,7 +12,6 @@ import {
   type GitHubApiClient,
   GitHubApiClientError,
 } from "../github/github-api-client.js";
-import type { GitHubExecutionCredentials } from "../github-proxy/execution-credentials.js";
 import { GitPublicationError } from "../github-proxy/git-packets.js";
 import { GitHubPublicationRemote, type PublicationRemote } from "../github-proxy/git-remote.js";
 import { GitWorkspace } from "../github-proxy/git-workspace.js";
@@ -53,7 +51,6 @@ export interface GitHubContextTreeOperationsOptions {
     GitHubApiClient,
     "createPrivateRepository" | "initializeContextTree" | "getRepository" | "getAuthenticatedUser"
   >;
-  credentials: Pick<GitHubExecutionCredentials, "acquire">;
   /** Exact Computer kind lookup; `undefined` for unknown rows so Cloud is never mistaken for Local. */
   computerKind: (computerId: string) => Promise<"local" | "cloud" | undefined>;
   /** Ephemeral verification root owner; constructed when absent. Closed by `close()`. */
@@ -113,7 +110,6 @@ function parseRepository(raw: string): string {
 }
 
 export class GitHubContextTreeOperations implements GitHubContextTreeOperationRunner {
-  readonly #credentials: Pick<GitHubExecutionCredentials, "acquire">;
   readonly #management: ContextTreeGitHubManagement;
   readonly #api: GitHubContextTreeOperationsOptions["api"];
   readonly #computerKind: (computerId: string) => Promise<"local" | "cloud" | undefined>;
@@ -129,7 +125,6 @@ export class GitHubContextTreeOperations implements GitHubContextTreeOperationRu
   constructor(options: GitHubContextTreeOperationsOptions) {
     this.#management = options.management;
     this.#api = options.api;
-    this.#credentials = options.credentials;
     this.#computerKind = options.computerKind;
     this.#workspace = options.workspace ?? new GitWorkspace();
     this.#treeHeads = options.treeHeads ?? new VerifiedTreeHead({ workspace: this.#workspace });
@@ -233,6 +228,7 @@ export class GitHubContextTreeOperations implements GitHubContextTreeOperationRu
       if (!target.private || target.fullName.toLowerCase() !== repository.toLowerCase() || !target.defaultBranch)
         halt("publication_uncertain");
       await this.#assertFinalFence(input.accountId, input.agentId, connection.id, fence);
+      signal.throwIfAborted();
       return { status: "completed", repository, ref: ContextTreeBranchSchema.parse(target.defaultBranch) };
     } catch (error) {
       // Never retry a write automatically or adopt an existing repository after an uncertain reply.
@@ -286,18 +282,17 @@ export class GitHubContextTreeOperations implements GitHubContextTreeOperationRu
     };
     signal.throwIfAborted();
     const token = async () => {
-      const lease = await this.#credentials.acquire(randomUUID(), {
+      signal.throwIfAborted();
+      const credential = await this.#management.getExecutionUserCredential({
         accountId: input.accountId,
         agentId: input.agentId,
         connectionId: connection.id,
         authorizationRevision: `github:${connection.authorizationVersion}`,
         signal,
       });
-      try {
-        return lease.token;
-      } finally {
-        await lease.release();
-      }
+      signal.throwIfAborted();
+      if (!credential) throw new GitPublicationError("scope_denied");
+      return credential.accessToken;
     };
     await this.#treeHeads.verify({
       repositoryId: target.repositoryId,
@@ -309,6 +304,7 @@ export class GitHubContextTreeOperations implements GitHubContextTreeOperationRu
     });
     await recheck();
     await this.#assertFinalFence(input.accountId, input.agentId, connection.id, fence);
+    signal.throwIfAborted();
     return { status: "completed", repository, ...(input.ref === "HEAD" ? { ref } : {}) };
   }
 

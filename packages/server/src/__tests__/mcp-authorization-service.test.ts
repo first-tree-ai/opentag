@@ -869,3 +869,41 @@ it.each(["success", "failure", "throw"] as const)(
     }
   },
 );
+
+it.each(["success", "failure", "throw"] as const)(
+  "joins an admitted probe and its final SQL after %s",
+  async (outcome) => {
+    const ids = await seed({ defaultAuthKind: "none" });
+    const h = build();
+    await h.authorization.setBearerOrNone(ids.accountId, ids.agentId, ids.mcpServerId, { kind: "none" });
+    const entered = deferred();
+    const release = deferred<McpProbeResult>();
+    h.probe.probe.mockImplementationOnce(() => {
+      entered.resolve();
+      return release.promise;
+    });
+    const running = h.authorization.probe(ids.accountId, ids.agentId, ids.mcpServerId);
+    let closed = false;
+    try {
+      await entered.promise;
+      const closing = h.authorization.closeProbes().then(() => {
+        closed = true;
+      });
+      expect(h.authorization.closeProbes()).toBe(h.authorization.closeProbes());
+      await expect(h.authorization.probe(ids.accountId, ids.agentId, ids.mcpServerId)).rejects.toMatchObject({
+        code: MCP_ERROR_CODES.PROBE_FAILED,
+      });
+      await Promise.resolve();
+      expect(closed).toBe(false);
+      if (outcome === "throw") release.reject(new Error("Controlled probe failure"));
+      else release.resolve(outcome === "success" ? probeSuccess() : probeFailure());
+      await closing;
+      await running;
+      expect((await readRow(ids))?.probeState).toBe(outcome === "success" ? "succeeded" : "failed");
+      expect(h.probe.probe).toHaveBeenCalledOnce();
+    } finally {
+      release.resolve(probeFailure());
+      await Promise.allSettled([running, h.authorization.closeProbes()]);
+    }
+  },
+);

@@ -63,7 +63,8 @@
     },
     "patchedDependencies": {
       "@cloudflare/kumo@2.13.1": "patches/@cloudflare__kumo@2.13.1.patch",
-      "postgres@3.4.9": "patches/postgres@3.4.9.patch"
+      "postgres@3.4.9": "patches/postgres@3.4.9.patch",
+      "@better-auth/core@1.7.2": "patches/@better-auth__core@1.7.2.patch"
     }
   }
 }

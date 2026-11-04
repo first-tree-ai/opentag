@@ -21,7 +21,6 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { drizzle } from "drizzle-orm/postgres-js";
-import postgres from "postgres";
 import { createDatabaseClient } from "../src/db/client.js";
 import { migrateDatabase } from "../src/db/migrate.js";
 import * as schema from "../src/db/schema/index.js";
@@ -38,10 +37,10 @@ const docker = (args: string[]) => execFileSync("docker", args, { encoding: "utf
 
 /** One single-connection client, used for the fixture and for `EXPLAIN`. */
 function openConnection(url: string) {
-  const sql = postgres(url, { max: 1, onnotice: () => undefined });
+  const sql = createDatabaseClient(url, { max: 1 }).sql;
   return {
     database: { unsafe: (query: string, params?: readonly unknown[]) => sql.unsafe(query, params as never[]) },
-    end: () => sql.end(),
+    end: () => sql.end({ timeout: 5 }),
   };
 }
 
@@ -69,7 +68,7 @@ await runBenchmark({
       service: new TaskService(database, { now: () => new Date("2026-10-26T08:00:00Z") }),
       sink: { take: drain, reset: drain },
       timeouts: client.timeouts,
-      end: () => client.sql.end(),
+      end: () => client.sql.end({ timeout: 5 }),
     };
   },
   migrate: (url) => migrateDatabase(url, fileURLToPath(new URL("../drizzle/", import.meta.url))),

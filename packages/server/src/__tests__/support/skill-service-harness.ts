@@ -1,9 +1,21 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { SkillSource } from "@opentag/shared";
 import { eq, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
-import { agentSkills, agents, computers, users } from "../../db/schema/index.js";
+import {
+  agentSkills,
+  agents,
+  computers,
+  imBindings,
+  sessionPlacements,
+  sessions,
+  users,
+} from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
+import {
+  SessionCliProofService,
+  type SessionCliSourceContext,
+} from "../../services/sessions/session-cli-proof-service.js";
 import { SkillService, type SkillUploadInput } from "../../services/skills/index.js";
 import type { FakeSkillObjectStore } from "./fake-skill-object-store.js";
 import { skillManifest, tarGz } from "./skill-archive-fixtures.js";
@@ -16,6 +28,9 @@ import type { UnitDatabase } from "./unit-database.js";
  */
 
 export interface SkillHarness {
+  proofs: SessionCliProofService;
+  runtimeSource(agentId: string): Promise<SessionCliSourceContext>;
+  runtimeProof(agentId: string): Promise<{ source: SessionCliSourceContext; token: string }>;
   database: DatabaseClient;
   sha256(bytes: Uint8Array): string;
   createUser(): Promise<string>;
@@ -41,6 +56,60 @@ export interface SkillHarness {
 
 export function createSkillHarness(unit: Pick<UnitDatabase, "database">): SkillHarness {
   const database = unit.database;
+  const instances = new Map<string, string>();
+  const proofs = new SessionCliProofService(
+    database,
+    {
+      currentInstanceId: (id) => instances.get(id),
+      supportsCapability: (id, instance) => instances.get(id) === instance,
+    },
+    randomBytes(32),
+  );
+
+  async function runtimeProof(agentId: string): Promise<{ source: SessionCliSourceContext; token: string }> {
+    const [agent] = await database.select().from(agents).where(eq(agents.id, agentId));
+    if (!agent) throw new Error("Missing test Agent");
+    const computerId = agent.computerId ?? (await createComputer(agent.createdByUserId));
+    await database.update(agents).set({ computerId }).where(eq(agents.id, agentId));
+    const instanceId = instances.get(computerId) ?? randomUUID();
+    instances.set(computerId, instanceId);
+    await database.update(computers).set({ currentInstanceId: instanceId }).where(eq(computers.id, computerId));
+    let [binding] = await database.select().from(imBindings).where(eq(imBindings.agentId, agentId)).limit(1);
+    if (!binding) {
+      [binding] = await database
+        .insert(imBindings)
+        .values({
+          agentId,
+          provider: "feishu",
+          status: "active",
+          externalAppId: randomUUID(),
+          externalBotId: "fixture-bot",
+          credentialSchemaVersion: 1,
+          credentialGeneration: 1,
+          encryptedCredential: "fixture",
+          activatedAt: new Date(),
+        })
+        .returning();
+    }
+    if (!binding) throw new Error("Missing test binding");
+    const [session] = await database
+      .insert(sessions)
+      .values({ imBindingId: binding.id, kind: "channel", channelId: randomUUID(), conversationKind: "channel" })
+      .returning();
+    if (!session) throw new Error("Missing test Session");
+    await database.insert(sessionPlacements).values({ sessionId: session.id, computerId, generation: 1 });
+    const { token } = await proofs.mint({
+      sessionId: session.id,
+      computerId,
+      placementGeneration: 1,
+      connectionInstanceId: instanceId,
+    });
+    return { source: await proofs.authenticate(token), token };
+  }
+
+  async function runtimeSource(agentId: string): Promise<SessionCliSourceContext> {
+    return (await runtimeProof(agentId)).source;
+  }
 
   const sha256 = (bytes: Uint8Array): string => createHash("sha256").update(bytes).digest("hex");
 
@@ -85,7 +154,7 @@ export function createSkillHarness(unit: Pick<UnitDatabase, "database">): SkillH
   }
 
   function serviceWith(store?: FakeSkillObjectStore): SkillService {
-    return new SkillService({ database, ...(store ? { store } : {}), keyPrefix: "skills" });
+    return new SkillService({ database, proofs, ...(store ? { store } : {}), keyPrefix: "skills" });
   }
 
   async function upload(
@@ -147,15 +216,22 @@ export function createSkillHarness(unit: Pick<UnitDatabase, "database">): SkillH
           return typeof value === "function" ? (...args: unknown[]) => wrap(value.apply(target, args)) : value;
         },
       });
-    return new Proxy(database, {
-      get(target, property, receiver) {
-        const value = Reflect.get(target, property, receiver);
-        if ((property === "update" || property === "delete" || property === "insert") && typeof value === "function") {
-          return (...args: unknown[]) => wrap(value.apply(target, args));
-        }
-        return value;
-      },
-    }) as DatabaseClient;
+    const executor = (database: DatabaseClient | DatabaseTransaction): DatabaseClient | DatabaseTransaction =>
+      new Proxy(database, {
+        get(target, property) {
+          const value = Reflect.get(target, property);
+          if (property === "transaction")
+            return (run: (transaction: DatabaseTransaction) => Promise<unknown>, options: unknown) =>
+              Reflect.apply(value, target, [
+                (transaction: DatabaseTransaction) => run(executor(transaction) as DatabaseTransaction),
+                options,
+              ]);
+          if (property === "update" || property === "delete" || property === "insert")
+            return (...args: unknown[]) => wrap(Reflect.apply(value, target, args));
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    return executor(database) as DatabaseClient;
   }
 
   /** Fails the real admission transaction at its row insert so compensation sees a rollback. */
@@ -197,12 +273,30 @@ export function createSkillHarness(unit: Pick<UnitDatabase, "database">): SkillH
   function committingThenThrowingInsertDatabase(): DatabaseClient {
     return new Proxy(database, {
       get(target, property) {
-        if (property === "transaction")
-          return async (run: (transaction: DatabaseTransaction) => Promise<unknown>) => {
-            await target.transaction(run);
-            throw new Error("forced insert commit-then-throw");
-          };
         const value = Reflect.get(target, property);
+        if (property === "transaction")
+          return async (run: (transaction: DatabaseTransaction) => Promise<unknown>, options: unknown) => {
+            let inserted = false;
+            const result = await Reflect.apply(value, target, [
+              (transaction: DatabaseTransaction) =>
+                run(
+                  new Proxy(transaction, {
+                    get(executor, method) {
+                      const operation = Reflect.get(executor, method);
+                      if (method === "insert")
+                        return (table: Parameters<DatabaseTransaction["insert"]>[0]) => {
+                          if (table === agentSkills) inserted = true;
+                          return executor.insert(table);
+                        };
+                      return typeof operation === "function" ? operation.bind(executor) : operation;
+                    },
+                  }),
+                ),
+              options,
+            ]);
+            if (inserted) throw new Error("forced insert commit-then-throw");
+            return result;
+          };
         return typeof value === "function" ? value.bind(target) : value;
       },
     });
@@ -210,28 +304,33 @@ export function createSkillHarness(unit: Pick<UnitDatabase, "database">): SkillH
 
   /** Wraps the client so a Skill row update fails, exercising the replace compensation path. */
   function failingUpdateDatabase(): DatabaseClient {
-    return new Proxy(database, {
-      get(target, property, receiver) {
-        if (property === "update") {
-          return (table: unknown) => {
-            if (table === agentSkills) {
-              return {
-                set: () => ({
-                  where: () => ({
-                    returning: async () => {
-                      throw new Error("forced Skill row update failure");
-                    },
-                  }),
-                }),
-              };
-            }
-            const update = Reflect.get(target, "update", receiver) as (value: unknown) => unknown;
-            return update.call(target, table);
-          };
-        }
-        return Reflect.get(target, property, receiver);
-      },
-    });
+    const wrap = (executor: DatabaseClient | DatabaseTransaction): DatabaseClient | DatabaseTransaction =>
+      new Proxy(executor, {
+        get(target, property) {
+          const value = Reflect.get(target, property);
+          if (property === "transaction")
+            return (run: (transaction: DatabaseTransaction) => Promise<unknown>, options: unknown) =>
+              Reflect.apply(value, target, [
+                (transaction: DatabaseTransaction) => run(wrap(transaction) as DatabaseTransaction),
+                options,
+              ]);
+          if (property === "update")
+            return (table: Parameters<DatabaseTransaction["update"]>[0]) =>
+              table === agentSkills
+                ? {
+                    set: () => ({
+                      where: () => ({
+                        returning: async () => {
+                          throw new Error("forced Skill row update failure");
+                        },
+                      }),
+                    }),
+                  }
+                : target.update(table);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    return wrap(database) as DatabaseClient;
   }
 
   function capturingLogger(): { logger: ServiceLogger; warns: Array<Record<string, unknown>> } {
@@ -248,6 +347,9 @@ export function createSkillHarness(unit: Pick<UnitDatabase, "database">): SkillH
   }
 
   return {
+    proofs,
+    runtimeSource,
+    runtimeProof,
     database,
     sha256,
     createUser,

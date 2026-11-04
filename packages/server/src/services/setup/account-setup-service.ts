@@ -35,7 +35,6 @@ export class AccountSetupService {
   async completeForAccount(callerUserId: string, agentId: string): Promise<AccountSetupCompletion> {
     const current = await this.#existingCompletion(callerUserId);
     if (current) return current;
-    await this.#ownedActiveAgent(callerUserId, agentId);
 
     return this.#database.transaction(async (transaction) => {
       const [lockedUser] = await transaction
@@ -85,17 +84,6 @@ export class AccountSetupService {
       .where(eq(users.id, callerUserId))
       .limit(1);
     return row?.setupCompletedAt ? this.#projection(row.setupCompletedAt) : undefined;
-  }
-
-  async #ownedActiveAgent(callerUserId: string, agentId: string): Promise<void> {
-    const [agent] = await this.#database
-      .select({ id: agents.id })
-      .from(agents)
-      .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), eq(agents.status, "active")))
-      .limit(1);
-    if (!agent) {
-      throw new AccountSetupServiceError("ACCOUNT_SETUP_AGENT_NOT_FOUND", 404, "The active setup Agent was not found");
-    }
   }
 
   #projection(setupCompletedAt: Date): AccountSetupCompletion {

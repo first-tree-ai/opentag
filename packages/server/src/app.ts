@@ -127,9 +127,15 @@ import { type AccountSetupService, AccountSetupServiceError } from "./services/s
 import { type SkillPresetService, type SkillService, SkillServiceError } from "./services/skills/index.js";
 import type { RemoteSkillService } from "./services/skills/source/remote-skill-service.js";
 import { TaskQueryError, type TaskService } from "./services/tasks/index.js";
+import { closeServerResources, startClosingServerResources } from "./shutdown.js";
 import { registerWebApp } from "./web-app.js";
 
 export interface CreateAppOptions {
+  /** Starts producer shutdown before request/connection drain; cleanup is joined before resource disposal. */
+  beginShutdown?: () => unknown;
+  shutdownSignal?: AbortSignal;
+  /** Final shared-resource cleanup, after request work and child route shutdown. */
+  closeResources?: () => unknown;
   /** Drizzle client used by the readiness probe. The production bootstrap also exposes it through TaskService. */
   database?: DatabaseClient;
   /** Production checks both dedicated connectivity and application-pool availability. */
@@ -727,6 +733,56 @@ export function createApp(options: CreateAppOptions = {}) {
     logger: createFastifyLoggerOptions(options),
     trustProxy: options.trustProxy ?? false,
   });
+  const requestWork = new Set<Promise<unknown>>();
+  let closing = false;
+  let stopping: Promise<void> | undefined;
+  const beginShutdown = () => {
+    closing = true;
+    stopping ??= startClosingServerResources([["server producers", () => options.beginShutdown?.()]]);
+    void stopping.catch(() => undefined);
+    return stopping;
+  };
+  app.addHook("preClose", async () => {
+    void beginShutdown();
+  });
+  // First registered onClose runs last, including hooks registered by asynchronous child plugins.
+  app.addHook("onClose", () =>
+    closeServerResources([
+      ["server producers", () => beginShutdown()],
+      [
+        "HTTP request work",
+        async () => {
+          while (requestWork.size) await Promise.allSettled([...requestWork]);
+        },
+      ],
+      ["cloud billing", () => options.cloudBilling?.close()],
+      ["shared resources", () => options.closeResources?.()],
+    ]),
+  );
+  const retain = (handle: (...args: never[]) => unknown) =>
+    function (this: FastifyInstance, ...args: unknown[]) {
+      const reply = args[1] as import("fastify").FastifyReply;
+      if (closing || options.shutdownSignal?.aborted) return reply.code(503).send({ error: "server_closing" });
+      const result = Reflect.apply(handle, this, args);
+      if (result !== reply && result && typeof (result as PromiseLike<unknown>).then === "function") {
+        const operation = Promise.resolve(result);
+        requestWork.add(operation);
+        void operation.then(
+          () => requestWork.delete(operation),
+          () => requestWork.delete(operation),
+        );
+      }
+      return result;
+    };
+  app.addHook("onRoute", (route) => {
+    if (route.websocket || route.wsHandler) return;
+    for (const phase of ["onRequest", "preParsing", "preValidation", "preHandler", "handler"] as const) {
+      const handle = route[phase];
+      if (typeof handle === "function") Reflect.set(route, phase, retain(handle));
+      else if (Array.isArray(handle)) Reflect.set(route, phase, handle.map(retain));
+    }
+  });
+
   const readiness = options.readiness ?? new BootstrapReadiness();
   const healthDatabase = options.database ?? options.taskService?.database;
   const databaseReadinessProbe = createDatabaseReadinessProbe(

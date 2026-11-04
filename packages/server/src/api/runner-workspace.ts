@@ -155,7 +155,7 @@ export function registerRunnerWorkspaceRoutes(
       done(null, payload);
     });
 
-    scope.addHook("onRequest", async (request, reply) => {
+    const authenticate = async (request: FastifyRequest, reply: FastifyReply) => {
       try {
         request.runnerWorkspaceContext = await workspace.authenticate(request.headers.authorization);
       } catch (error) {
@@ -165,22 +165,26 @@ export function registerRunnerWorkspaceRoutes(
         }
         throw error;
       }
-    });
+    };
 
-    scope.post(`${RUNNER_WORKSPACE_PATH}/claim`, { bodyLimit: 1_024 }, async (request, reply) => {
-      try {
-        const context = requireContext(request);
-        assertEmptyClaimBody(request.body);
-        const object = await workspace.claim(context);
-        reply.header("cache-control", "no-store");
-        return await reply.code(200).send(object);
-      } catch (error) {
-        if (error instanceof RunnerWorkspaceError) return failWith(reply, error);
-        throw error;
-      }
-    });
+    scope.post(
+      `${RUNNER_WORKSPACE_PATH}/claim`,
+      { bodyLimit: 1_024, onRequest: authenticate },
+      async (request, reply) => {
+        try {
+          const context = requireContext(request);
+          assertEmptyClaimBody(request.body);
+          const object = await workspace.claim(context);
+          reply.header("cache-control", "no-store");
+          return await reply.code(200).send(object);
+        } catch (error) {
+          if (error instanceof RunnerWorkspaceError) return failWith(reply, error);
+          throw error;
+        }
+      },
+    );
 
-    scope.get(`${RUNNER_WORKSPACE_PATH}/archive`, async (request, reply) => {
+    scope.get(`${RUNNER_WORKSPACE_PATH}/archive`, { onRequest: authenticate }, async (request, reply) => {
       try {
         const context = requireContext(request);
         const pins = ArchiveQuerySchema.safeParse(request.query);
@@ -200,7 +204,7 @@ export function registerRunnerWorkspaceRoutes(
       }
     });
 
-    scope.put(`${RUNNER_WORKSPACE_PATH}/archive`, async (request, reply) => {
+    scope.put(`${RUNNER_WORKSPACE_PATH}/archive`, { onRequest: authenticate }, async (request, reply) => {
       // The raw parser bypasses Fastify's buffered body limits. Bound elapsed transfer time,
       // including a peer that sends no body bytes, and destroy its stream to unblock store I/O.
       const timer = setTimeout(

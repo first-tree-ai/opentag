@@ -66,6 +66,7 @@ export function issueImBindingValidationRun(
 export const VALIDATION_EXECUTION_MAX_LIFETIME_MS = 10 * 60 * 1_000;
 
 export interface RuntimeValidationExecutionDeps {
+  signal?: AbortSignal;
   registry: RuntimeControlAuthority;
   executions: RuntimeExecutionRegistry;
   validationRuns: RuntimeValidationRunRegistry;
@@ -93,6 +94,7 @@ export async function openRuntimeValidationExecution(
     status: "rejected",
     code,
   });
+  deps.signal?.throwIfAborted();
   const connectionId = context.connectionId;
   if (!connectionId) return rejected("capability_unsupported");
   const decision = await deps.authority.authorize(frame.source, {
@@ -102,6 +104,7 @@ export async function openRuntimeValidationExecution(
     instanceId: context.instanceId,
     placementGeneration: frame.placementGeneration,
   });
+  deps.signal?.throwIfAborted();
   if (decision.status === "not_ready") return rejected("execution_not_ready");
   if (decision.status === "invalid" || !decision.validation) return rejected("execution_source_invalid");
   const run = decision.validation;
@@ -112,6 +115,7 @@ export async function openRuntimeValidationExecution(
     bindingId: run.bindingId,
     agentId: run.agentId,
   });
+  deps.signal?.throwIfAborted();
   if (!snapshot) return rejected("execution_authority_denied");
   const failure = validationFenceFailure(snapshot, {
     provider: run.provider,
@@ -123,10 +127,14 @@ export async function openRuntimeValidationExecution(
   if (snapshot.computer.kind === "cloud" && !(await cloudControlActive(deps, context.computerId))) {
     return rejected("execution_authority_denied");
   }
+  deps.signal?.throwIfAborted();
   const record = openValidationRecord(deps, frame, context, snapshot, run, connectionId);
   if (!record) return rejected("owner_unavailable");
-  const described = await describeValidationProvider(deps, record, run.provider, run.bindingId);
-  if (!described) {
+  const described = await describeValidationProvider(deps, record, run.provider, run.bindingId).catch((error) => {
+    deps.executions.close(record.executionId, "execution_closed");
+    throw error;
+  });
+  if (deps.signal?.aborted || !described) {
     deps.executions.close(record.executionId, "execution_closed");
     return rejected("execution_authority_denied");
   }
@@ -220,7 +228,7 @@ async function describeValidationProvider(
   bindingId: string,
 ) {
   try {
-    return await deps.broker.describeProvider({ execution: record, provider, bindingId });
+    return await deps.broker.describeProvider({ execution: record, provider, bindingId, signal: deps.signal });
   } catch (error) {
     if (error instanceof RuntimeCredentialError) return undefined;
     throw error;
@@ -253,11 +261,12 @@ export async function issueRuntimeValidationRun(
     bindingId: input.bindingId,
     agentId: input.agentId,
   });
-  if (!snapshot) return undefined;
+  if (deps.signal?.aborted || !snapshot) return undefined;
   if (validationFenceFailure(snapshot, input)) return undefined;
   if (snapshot.computer.kind === "cloud" && !(await cloudControlActive(deps, input.computerId))) {
     return undefined;
   }
+  if (deps.signal?.aborted) return undefined;
   try {
     const run = deps.validationRuns.issue({
       provider: input.provider,

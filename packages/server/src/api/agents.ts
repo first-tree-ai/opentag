@@ -36,6 +36,7 @@ import {
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
+import { isRuntimeOptionsAbortError } from "../runtime/agent-runtime-options-owner.js";
 import type { AgentRuntimeOptionsService } from "../services/agents/agent-runtime-options-service.js";
 import type { ContextTreeOperationService } from "../services/agents/context-tree-operation-service.js";
 import type { AgentRuntimeTestService, AgentService, AgentSetupService } from "../services/agents/index.js";
@@ -232,6 +233,11 @@ export function registerAgentRoutes(
           await runtimeOptions.get(authenticatedUserId(request), agentId, model, disconnect.signal),
         );
         return reply.header("Cache-Control", "no-store").send(response);
+      } catch (error) {
+        if (disconnect.signal.aborted && isRuntimeOptionsAbortError(error)) {
+          return reply.sent || reply.raw.writableEnded ? reply : reply.code(499).send();
+        }
+        throw error;
       } finally {
         disconnect.dispose();
       }

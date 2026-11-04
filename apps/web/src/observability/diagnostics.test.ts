@@ -171,8 +171,9 @@ describe("web diagnostics", () => {
   });
 
   it("records unhandled rejections and capture-phase resource failures", () => {
+    let now = 1_000;
     const error = vi.fn();
-    const reporter = new DiagnosticReporter({ error });
+    const reporter = new DiagnosticReporter({ now: () => now, error });
     const remove = installWindowDiagnosticHandlers(window, reporter);
 
     const rejection = new Event("unhandledrejection") as PromiseRejectionEvent;
@@ -186,7 +187,8 @@ describe("web diagnostics", () => {
     expect(reload).toHaveBeenCalledOnce();
     expect(error).toHaveBeenCalledTimes(1);
 
-    // A second failure inside the 60s reload guard window skips reload and reports the failure.
+    // A second failure after the unload grace window inside the 60s reload guard window skips reload and reports the failure.
+    now += 1_000;
     script.dispatchEvent(new ErrorEvent("error"));
 
     expect(reload).toHaveBeenCalledOnce();
@@ -402,6 +404,71 @@ describe("web diagnostics", () => {
     expect(reload).toHaveBeenCalledOnce();
     expect(error).not.toHaveBeenCalled();
     expect(sink).not.toHaveBeenCalled();
+    remove();
+  });
+
+  it("suppresses multiple same-source stale-asset failures within the 500ms unload grace window and reports after it elapses", () => {
+    let now = 50_000;
+    const sink = vi.fn();
+    setErrorReportSink(sink);
+    const error = vi.fn();
+    const reporter = new DiagnosticReporter({ now: () => now, error });
+    const remove = installWindowDiagnosticHandlers(window, reporter);
+
+    const firstLink = document.createElement("link");
+    firstLink.rel = "modulepreload";
+    firstLink.href = "/assets/route-parent-AaBbCc11.js";
+    document.head.append(firstLink);
+    firstLink.dispatchEvent(new ErrorEvent("error"));
+    expect(reload).toHaveBeenCalledOnce();
+
+    now += 10;
+    const secondLink = document.createElement("link");
+    secondLink.rel = "modulepreload";
+    secondLink.href = "/assets/route-child-DdEeFf22.js";
+    document.head.append(secondLink);
+    secondLink.dispatchEvent(new ErrorEvent("error"));
+
+    now += 10;
+    const firstPreload = new Event("vite:preloadError", { cancelable: true });
+    Object.defineProperty(firstPreload, "payload", {
+      value: new TypeError(
+        `Failed to fetch dynamically imported module: ${window.location.origin}/assets/route-parent-AaBbCc11.js`,
+      ),
+    });
+    window.dispatchEvent(firstPreload);
+    expect(firstPreload.defaultPrevented).toBe(true);
+
+    now += 10;
+    const secondPreload = new Event("vite:preloadError", { cancelable: true });
+    Object.defineProperty(secondPreload, "payload", {
+      value: new TypeError(
+        `Failed to fetch dynamically imported module: ${window.location.origin}/assets/route-child-DdEeFf22.js`,
+      ),
+    });
+    window.dispatchEvent(secondPreload);
+    expect(secondPreload.defaultPrevented).toBe(true);
+
+    expect(reload).toHaveBeenCalledOnce();
+    expect(error).not.toHaveBeenCalled();
+    expect(sink).not.toHaveBeenCalled();
+
+    // After the 500ms unload grace window elapses, a subsequent failure within the 60s reload cooldown is reported.
+    now += 10_000;
+    secondLink.dispatchEvent(new ErrorEvent("error"));
+
+    expect(reload).toHaveBeenCalledOnce();
+    expect(error).toHaveBeenCalledOnce();
+    expect(error.mock.calls[0]?.[1]).toMatchObject({
+      code: "resource_load_failed",
+      resourceType: "link",
+      resourcePath: "/assets/route-child-DdEeFf22.js",
+    });
+    expect(sink).toHaveBeenCalledExactlyOnceWith({
+      code: "resource_load_failed",
+      message: "resource_load_failed: /assets/route-child-DdEeFf22.js",
+      dedupeKey: "resource_load_failed",
+    });
     remove();
   });
 

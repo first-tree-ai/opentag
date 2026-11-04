@@ -205,6 +205,13 @@ a ready-triggered attempt that still fails retains bounded backoff. Model/capaci
 dispatches and claimed or accepted work are not reset. Missed notifications retain the regular scan
 and retry fallback; repeated readiness reports on one connection do not repeatedly wake the queue.
 
+An allocation result of `pending` stops before Agent admission and Runner dispatch, and records
+`allocation_wait` as failed. Normal startup uses the existing two-to-thirty-second capped backoff.
+An undispatched input observed behind an automatic claim with `workspace_save_failed` instead
+retries after ten minutes through the same `next_attempt_at` field and readiness wakeup. The
+Sandbox snapshot only chooses a delay; current Account and dispatch authority are still checked.
+The original ingress TTL, ordering, correlation, accepted custody and reports remain authoritative.
+
 Credential and model boundary: the #633 runtime-credential Relay stays in the trusted parent; the
 Sandbox receives only the read-only public material (CA certificate, opaque handles, CLI configuration) and never the platform master key, bootstrap
 token, or raw provider credentials. Platform-supplied model access uses the proxy; the grant is pinned to
@@ -565,10 +572,17 @@ new table). While it is set, execution authority is revoked, a start reports pen
 ingress returns `pending` — never a terminal `environment_stopped` — so a message that arrives
 during recycle or borrow is retried. Lifecycle stays `ready` while sealing; only a proven seal
 moves an automatically reclaimed row to `releasing` for verified deletion. The budget clock is
-always `last_activity_at`; `idle_reclaim_at` only records who owns the reclamation intent, so an
-abandoned claim is retried after the row's original budget, never after a fresh window. Once a
-proven seal moved a row to `releasing`, a failed or interrupted delete is retried on the next
-sweep from the durable marker without waiting out another budget. A failed or unknown seal keeps
+always `last_activity_at`; `idle_reclaim_at` records reclamation intent. Already claimed and
+automatic `releasing` rows also wait ten minutes from `updated_at` before another attempt. The
+candidate queries exclude cooldown rows before their 25-row limit. A conditional update reserves
+each due retry by advancing `updated_at` for that exact lifecycle, generation, resource name/UID
+and claim; only its winner performs external I/O. Failures advance the retry clock, while ordinary
+polls leave it untouched. The initial claim and its successful transition to deletion proceed
+immediately; a failed deletion is not retried again within the same pass. Restart recovery of an
+abandoned claim or release can therefore wait up to ten minutes. This is retry pacing, not an
+exactly-once guarantee for a worker stalled beyond that interval; socket, generation, object CAS
+and UID fences still protect external effects and late results. Explicit generation-bound Account
+save/release bypasses the automatic cooldown. A failed or unknown seal keeps
 the resource binding, the claim and the existing workspace-save marker. A provider-confirmed
 absent UID clears the binding; a failed read never does. An explicit Account stop clears the
 marker in the same transition that precedes cloud DELETE, so a late transfer can never win.

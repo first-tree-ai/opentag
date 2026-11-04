@@ -192,4 +192,73 @@ describe("Runner workspace occupation", () => {
     expect(f.workspace.initialize).not.toHaveBeenCalled();
     expect(f.workspace.save).not.toHaveBeenCalled();
   });
+  it("permits preparation after a transient seal failure", async () => {
+    const f = fixture();
+    await f.controller.prepare();
+    f.workspace.save.mockImplementationOnce(async () => {
+      f.workspace.pendingSave = true;
+      throw new Error("storage unavailable");
+    });
+    await expect(f.controller.seal()).rejects.toThrow("storage unavailable");
+    expect(f.controller.ready).toBe(false);
+    expect(f.state.present).toBe(false);
+    expect(f.controller.sealing).toBe(false);
+    expect(await f.controller.prepare()).toBe(true);
+  });
+  it("coalesces seal retries and keeps terminal failures and committed seals nonexecuting", async () => {
+    const f = fixture();
+    await f.controller.prepare();
+    const entered = deferred();
+    const finish = deferred();
+    f.workspace.save.mockImplementationOnce(async () => {
+      entered.resolve();
+      await finish.promise;
+      f.workspace.terminalFailure = true;
+      throw new Error("unsupported archive entry");
+    });
+    const first = f.controller.seal();
+    const second = f.controller.seal();
+    expect(first).toBe(second);
+    const failures = Promise.allSettled([first, second]);
+    await entered.promise;
+    finish.resolve();
+    await failures;
+    expect(f.workspace.save).toHaveBeenCalledOnce();
+    expect(f.controller.sealing).toBe(false);
+    expect(f.controller.ready).toBe(false);
+    expect(await f.controller.prepare()).toBe(false);
+    expect(f.workspace.rollback).not.toHaveBeenCalled();
+    f.workspace.terminalFailure = false;
+    await f.controller.seal();
+    expect(f.workspace.sealed).toBe(true);
+    expect(f.controller.sealing).toBe(true);
+    expect(await f.controller.prepare()).toBe(false);
+  });
+
+  it("keeps a failed native stop fatal after a rejected seal", async () => {
+    const f = fixture();
+    await f.controller.prepare();
+    f.sandbox.destroy.mockRejectedValueOnce(new Error("native delete failed"));
+    await expect(f.controller.seal()).rejects.toThrow("native delete failed");
+    expect(f.controller.sealing).toBe(false);
+    expect(f.state.fatal).toBe(true);
+    expect(f.controller.ready).toBe(false);
+    expect(await f.controller.prepare()).toBe(false);
+    expect(f.workspace.save).not.toHaveBeenCalled();
+  });
+  it("never reopens a committed seal even if its final local cleanup rejects", async () => {
+    const f = fixture();
+    await f.controller.prepare();
+    f.workspace.save.mockImplementationOnce(async () => {
+      f.workspace.sealed = true;
+      throw new Error("temporary archive cleanup failed");
+    });
+    await expect(f.controller.seal()).rejects.toThrow("temporary archive cleanup failed");
+    const restores = f.workspace.initialize.mock.calls.length;
+    expect(f.controller.sealing).toBe(false);
+    expect(await f.controller.prepare()).toBe(false);
+    expect(f.controller.ready).toBe(false);
+    expect(f.workspace.initialize).toHaveBeenCalledTimes(restores);
+    expect(f.workspace.rollback).not.toHaveBeenCalled();
+  });
 });

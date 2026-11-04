@@ -43,7 +43,7 @@ export class ServeWorkspace {
   }
 
   async prepare(): Promise<boolean> {
-    if (this.#sealing || this.#workspace.sealed || this.#workspace.terminalFailure) return false;
+    if (this.#sealing || this.#workspace.sealed || this.#workspace.terminalFailure || this.#state().fatal) return false;
     if (this.#workspace.initialized && !this.#workspace.pendingSave && this.#state().present && !this.#blocked) {
       return true;
     }
@@ -83,9 +83,14 @@ export class ServeWorkspace {
     if (this.#sealInFlight) return this.#sealInFlight;
     this.#blocked = true;
     this.#sealing = true;
-    const run = this.#seal().finally(() => {
-      this.#sealInFlight = undefined;
-    });
+    const run = this.#seal()
+      .catch((error: unknown) => {
+        this.#sealing = false;
+        throw error;
+      })
+      .finally(() => {
+        this.#sealInFlight = undefined;
+      });
     this.#sealInFlight = run;
     return run;
   }

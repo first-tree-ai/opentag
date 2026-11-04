@@ -29,7 +29,10 @@ import {
 import { SandboxService } from "../services/sandboxes/index.js";
 import { RunnerBootstrapTokenService } from "../services/sandboxes/runner-bootstrap-token.js";
 import { type RunnerControlSocket, RunnerHub, type RunnerScope } from "../services/sandboxes/runner-hub.js";
-import { SandboxRunnerService } from "../services/sandboxes/sandbox-runner-service.js";
+import {
+  SandboxRunnerService,
+  WORKSPACE_RECOVERY_RETRY_DELAY_MS,
+} from "../services/sandboxes/sandbox-runner-service.js";
 import { SessionService } from "../services/sessions/index.js";
 import { FakeCloudRunAdmin } from "./support/fake-cloud-run-admin.js";
 import { FakeWorkspaceObjectStore } from "./support/fake-workspace-store.js";
@@ -490,7 +493,33 @@ describe("E7 automatic idle reclamation", () => {
     expect(stack.fake.liveInstanceCount()).toBe(1);
   });
 
-  it("retains the binding on seal failure, then converges on retry using the same budget", async () => {
+  it.each([true, false])("paces failed seal I/O across 15-second sweeps (Runner connected=%s)", async (connected) => {
+    const accountId = await account();
+    const stack = makeStack();
+    const ready = await readySandbox(stack, accountId, "issue1218", { seal: "fail" });
+    if (!connected) stack.hub.detach(ready.row.id, ready.socket);
+    const getInstance = vi.spyOn(stack.fake, "getInstance");
+    const seal = vi.spyOn(stack.hub, "requestWorkspaceSeal");
+    stack.advance(IDLE_TIMEOUT_MS + 1_000);
+    await stack.service.reclaimIdleSandboxes();
+    expect((await sandboxRow(ready.row.id)).lastErrorCode).toBe("workspace_save_failed");
+    const firstReads = getInstance.mock.calls.length;
+    const firstSeals = seal.mock.calls.length;
+    for (let index = 0; index < 4; index += 1) {
+      stack.advance(15_000);
+      await stack.service.reclaimIdleSandboxes();
+    }
+    expect({
+      cloudReads: getInstance.mock.calls.length - firstReads,
+      seals: seal.mock.calls.length - firstSeals,
+    }).toEqual({
+      cloudReads: 0,
+      seals: 0,
+    });
+    expect(stack.fake.liveInstanceCount()).toBe(1);
+  });
+
+  it("retains a failed seal through cooldown, then releases using the committed proof", async () => {
     const accountId = await account();
     const stack = makeStack();
     const ready = await readySandbox(stack, accountId, "room-save-fail", { seal: "fail" });
@@ -502,7 +531,7 @@ describe("E7 automatic idle reclamation", () => {
     expect(failed.idleReclaimAt).not.toBeNull();
     expect(stack.fake.liveInstanceCount()).toBe(1);
 
-    // A retry after the same budget short-circuits on the sealed proof and releases the resource.
+    // A retry after cooldown short-circuits on the sealed proof and releases the resource.
     stack.store.plant(
       {
         storageUri: ready.row.storageUri,
@@ -512,7 +541,7 @@ describe("E7 automatic idle reclamation", () => {
       },
       { saved: true, sealed: true, ownerGeneration: ready.row.environmentGeneration },
     );
-    stack.advance(IDLE_TIMEOUT_MS + 1_000);
+    stack.advance(WORKSPACE_RECOVERY_RETRY_DELAY_MS);
     await stack.service.reclaimIdleSandboxes();
     expect((await sandboxRow(ready.row.id)).lifecycle).toBe("unallocated");
     expect(stack.fake.liveInstanceCount()).toBe(0);
@@ -571,22 +600,22 @@ describe("E7 automatic idle reclamation", () => {
     expect(stack.fake.liveInstanceCount()).toBe(1);
   });
 
-  it("retries an automatic releasing row after a delete failure without waiting out another budget", async () => {
+  it("retries an automatic releasing row after a delete failure after a durable cooldown across restart", async () => {
     const accountId = await account();
     const stack = makeStack();
     const ready = await readySandbox(stack, accountId, "room-retry");
     stack.advance(IDLE_TIMEOUT_MS + 1_000);
-    // Two failures: the ready-phase delete and the same-pass automatic-releasing retry.
-    stack.fake.deleteFailures = 2;
+    // The same-pass releasing scan must not retry this failure.
+    stack.fake.deleteFailures = 1;
     const first = await stack.service.reclaimIdleSandboxes();
     expect(first.released).toBe(0);
-    expect(first.failed).toBeGreaterThanOrEqual(2);
+    expect(first.failed).toBe(1);
     const releasing = await sandboxRow(ready.row.id);
     expect(releasing.lifecycle).toBe("releasing");
     expect(releasing.idleReclaimAt).not.toBeNull();
     expect(stack.fake.liveInstanceCount()).toBe(1);
-    // The budget was already spent before the transition: the durable marker alone authorizes the
-    // retry — here from a fresh Server process over the same database — without a second window.
+    expect((await restartService(stack).reclaimIdleSandboxes()).released).toBe(0);
+    stack.advance(WORKSPACE_RECOVERY_RETRY_DELAY_MS);
     const second = await restartService(stack).reclaimIdleSandboxes();
     expect(second.released).toBe(1);
     expect((await sandboxRow(ready.row.id)).lifecycle).toBe("unallocated");
@@ -598,7 +627,7 @@ describe("E7 automatic idle reclamation", () => {
     const stack = makeStack();
     const ready = await readySandbox(stack, accountId, "room-stop-releasing");
     stack.advance(IDLE_TIMEOUT_MS + 1_000);
-    stack.fake.deleteFailures = 3;
+    stack.fake.deleteFailures = 2;
     await stack.service.reclaimIdleSandboxes();
     expect((await sandboxRow(ready.row.id)).idleReclaimAt).not.toBeNull();
     await expect(stack.service.stopForAccount(accountId, ready.row.id)).rejects.toMatchObject({ statusCode: 503 });
@@ -632,7 +661,7 @@ describe("E7 automatic idle reclamation", () => {
     expect(stack.fake.liveInstanceCount()).toBe(0);
   });
 
-  it("uses lastActivityAt as the only budget clock for an abandoned claim", async () => {
+  it("requires the activity budget and retry cooldown for an abandoned claim", async () => {
     // Separate accounts: one account's second start would legitimately borrow the first sibling.
     const spentAccount = await account();
     const freshAccount = await account();
@@ -642,7 +671,11 @@ describe("E7 automatic idle reclamation", () => {
     const now = stack.now();
     await unit.database
       .update(sandboxes)
-      .set({ idleReclaimAt: now, lastActivityAt: new Date(now.getTime() - IDLE_TIMEOUT_MS - 1_000) })
+      .set({
+        idleReclaimAt: new Date(now.getTime() - WORKSPACE_RECOVERY_RETRY_DELAY_MS),
+        updatedAt: new Date(now.getTime() - WORKSPACE_RECOVERY_RETRY_DELAY_MS),
+        lastActivityAt: new Date(now.getTime() - IDLE_TIMEOUT_MS - 1_000),
+      })
       .where(eq(sandboxes.id, spent.row.id));
     await unit.database
       .update(sandboxes)
@@ -652,7 +685,7 @@ describe("E7 automatic idle reclamation", () => {
     const result = await stack.service.reclaimIdleSandboxes();
     expect(result.released).toBe(1);
     expect((await sandboxRow(spent.row.id)).lifecycle).toBe("unallocated");
-    // The fresh claim marker is NOT a new clock: the row's activity budget has not passed.
+    // A new claim is not eligible for a retry, even while another abandoned claim is due.
     expect((await sandboxRow(fresh.row.id)).lifecycle).toBe("ready");
     expect((await sandboxRow(fresh.row.id)).idleReclaimAt).not.toBeNull();
   });

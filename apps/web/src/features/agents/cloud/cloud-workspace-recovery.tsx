@@ -10,24 +10,37 @@ import { Banner, Button, Dialog, Text } from "../../../ui/design-system.js";
 import { isTerminalResourceError, usePersistedSettledError } from "../../resource/resource-state.js";
 import { CloudProgressNotice } from "./cloud-progress-notice.js";
 
-export function CloudWorkspaceRecovery({ agentId, initialOpen = false }: { agentId: string; initialOpen?: boolean }) {
-  const [open, setOpen] = useState(initialOpen);
+/**
+ * Cloud workspace recovery, kept with the Agent's other recovery records at the foot of its home: a
+ * failed save is announced at the top by its own banner, whose action opens this same panel. The
+ * caller owns `open` so that banner and the collapsed control below open one panel.
+ */
+export function CloudWorkspaceRecovery({
+  agentId,
+  open,
+  onOpenChange,
+}: {
+  agentId: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const panel = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (initialOpen) setOpen(true);
-  }, [initialOpen]);
-  return (
-    <div className="grid gap-3">
-      <CloudProgressNotice agentId={agentId} onRecover={() => setOpen(true)} />
-      {open ? (
-        <WorkspaceRecoveryPanel key={agentId} agentId={agentId} onClose={() => setOpen(false)} />
-      ) : (
-        <Button className="w-fit" size="compact" variant="ghost" onClick={() => setOpen(true)}>
-          {m.cloud_recovery_open()}
-        </Button>
-      )}
+    // Opened from the banner or a link far above it, the panel scrolls into view.
+    if (open) panel.current?.scrollIntoView?.({ block: "nearest" });
+  }, [open]);
+  return open ? (
+    <div ref={panel} className="grid basis-full">
+      <WorkspaceRecoveryPanel key={agentId} agentId={agentId} onClose={() => onOpenChange(false)} />
     </div>
+  ) : (
+    <Button className="w-fit" variant="secondary" onClick={() => onOpenChange(true)}>
+      {m.cloud_recovery_open()}
+    </Button>
   );
 }
+
+export { CloudProgressNotice };
 
 type Feedback = { error: boolean; text: string };
 type WorkspaceConfirmation = { target: CloudSessionSummary; discard: boolean };

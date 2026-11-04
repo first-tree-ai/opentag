@@ -81,6 +81,7 @@
   "tasks_message_truncated": "This message was truncated.",
   "tasks_no_activity": "No activity recorded",
   "tasks_no_activity_detail": "Messages and Agent results will appear here.",
+  "tasks_no_channel_detail": "Connect a messaging app, then message this Agent there to put it to work.",
   "tasks_no_tasks_found": "No Tasks found",
   "tasks_no_tasks_found_detail": "Try a different search or filter.",
   "tasks_no_tasks_yet_detail": "Message this Agent in your chat app to put it to work.",

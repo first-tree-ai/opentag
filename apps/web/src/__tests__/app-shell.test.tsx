@@ -280,8 +280,10 @@ describe("Workspace and Agent navigation boundaries", () => {
     const navigation = await screen.findByRole("navigation", { name: "Agent" });
     const home = screen.getByRole("link", { name: "All Agents" });
     expect(home.getAttribute("aria-current")).not.toBe("page");
-    if (section.startsWith("/settings")) {
-      expect(within(navigation).getByRole("link", { name: "Overview" }).getAttribute("aria-current")).not.toBe("page");
+    // /settings/instructions redirects to the Instructions page, which has its own item.
+    if (section.startsWith("/settings") && section !== "/settings/instructions") {
+      // Settings opens from the Overview and has no item of its own, so the Overview stays current.
+      expect(within(navigation).getByRole("link", { name: "Overview" }).getAttribute("aria-current")).toBe("page");
     }
     const frame = document.querySelector('[data-ui="content-page-frame"]');
     fireEvent.click(home);

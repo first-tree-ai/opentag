@@ -4,10 +4,22 @@ import type {
   CloudSessionSummary,
 } from "@opentag/shared/browser";
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { useState } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { renderInRouter } from "../../../__tests__/support/router.js";
 import { ApiError, browserApi } from "../../../api.js";
-import { CloudWorkspaceRecovery } from "./cloud-workspace-recovery.js";
+import { CloudProgressNotice, CloudWorkspaceRecovery } from "./cloud-workspace-recovery.js";
+
+/** The Agent home owns the save-failure banner and whether the panel is open; this stands in for it. */
+function Recovery({ initialOpen = false }: { initialOpen?: boolean }) {
+  const [open, setOpen] = useState(initialOpen);
+  return (
+    <>
+      <CloudProgressNotice agentId={AGENT} onRecover={() => setOpen(true)} />
+      <CloudWorkspaceRecovery agentId={AGENT} open={open} onOpenChange={setOpen} />
+    </>
+  );
+}
 
 const AGENT = "11111111-1111-4111-8111-111111111111";
 const SESSION = "33333333-3333-4333-8333-333333333333";
@@ -78,14 +90,14 @@ function setup(rows = [row()]) {
   };
 }
 async function renderPanel() {
-  await renderInRouter(<CloudWorkspaceRecovery agentId={AGENT} initialOpen />);
+  await renderInRouter(<Recovery initialOpen />);
   return screen.findByRole("listitem", { name: "Chat · 33333333" });
 }
 afterEach(() => vi.restoreAllMocks());
 
 it("offers recovery without a release-failure marker and does not mutate on opening", async () => {
   const fixture = setup();
-  await renderInRouter(<CloudWorkspaceRecovery agentId={AGENT} />);
+  await renderInRouter(<Recovery />);
   expect(screen.queryByRole("region", { name: "Workspace recovery" })).toBeNull();
   fireEvent.click(await screen.findByRole("button", { name: "Recover workspace" }));
   await screen.findByRole("region", { name: "Workspace recovery" });
@@ -245,7 +257,7 @@ it("does not treat a failed overview read as an empty workspace inventory", asyn
     if (options?.limit === 100) return overview([]);
     throw new Error("private inventory detail");
   });
-  await renderInRouter(<CloudWorkspaceRecovery agentId={AGENT} initialOpen />);
+  await renderInRouter(<Recovery initialOpen />);
   await screen.findByText(/Workspace status could not be read/);
   expect(screen.queryByText("No conversation workspaces are available.")).toBeNull();
   expect(screen.queryByRole("button", { name: "Save and release" })).toBeNull();

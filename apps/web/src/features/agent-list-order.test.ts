@@ -525,6 +525,10 @@ describe("Agent availability model and presentation", () => {
     ).toBe("No messaging app connected");
     expect(agentSettingsSummary(detail(base.availability), config, "identity")).toBe(agent.displayName);
     expect(agentSettingsSummary(detail(base.availability), config, "computer")).toContain("macOS");
-    expect(agentSettingsSummary(detail(base.availability), config, "manage")).toBe("Active · Accepting requests");
+    // The Cloud is named as such, without its machine name or platform.
+    expect(agentSettingsSummary({ ...detail(base.availability), computerKind: "cloud" }, config, "computer")).toBe(
+      "Cloud · Online",
+    );
+    expect(agentSettingsSummary(detail(base.availability), config, "manage")).toBe("Running · Receiving messages");
   });
 });

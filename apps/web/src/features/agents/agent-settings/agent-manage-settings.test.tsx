@@ -279,7 +279,7 @@ describe("Agent lifecycle actions", () => {
     fireEvent.click(screen.getByRole("button", { name: "Pause Agent" }));
     await screen.findByRole("alert");
     expect(screen.getByRole("alert").textContent).toBe("Couldn’t pause this Agent. Try again.");
-    fireEvent.click(screen.getByRole("button", { name: "Keep active" }));
+    fireEvent.click(screen.getByRole("button", { name: "Keep running" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 

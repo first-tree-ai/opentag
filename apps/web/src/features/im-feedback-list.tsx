@@ -1,12 +1,16 @@
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import { browserApi } from "../api.js";
 import { m } from "../paraglide/messages.js";
 import { queryKeys } from "../query/keys.js";
 import { Button } from "../ui/design-system.js";
 
-export function ImFeedbackList({ agentId }: { agentId: string }) {
+/**
+ * `children` are other recovery controls for the same Agent (a Cloud Agent's workspace recovery);
+ * they sit beside the records so the home has one place for recovery rather than two.
+ */
+export function ImFeedbackList({ agentId, children }: { agentId: string; children?: ReactNode }) {
   const [open, setOpen] = useState(false);
   const query = useInfiniteQuery({
     queryKey: queryKeys.imFeedbackList(agentId),
@@ -18,9 +22,12 @@ export function ImFeedbackList({ agentId }: { agentId: string }) {
   });
   return (
     <section className="space-y-3 rounded-lg border border-kumo-line p-4">
-      <Button variant="secondary" onClick={() => setOpen(!open)} aria-expanded={open}>
-        {m.im_feedback_history()}
-      </Button>
+      <div className="flex flex-wrap items-start gap-3">
+        <Button variant="secondary" onClick={() => setOpen(!open)} aria-expanded={open}>
+          {m.im_feedback_history()}
+        </Button>
+        {children}
+      </div>
       {open ? (
         <div className="space-y-3">
           {query.isPending ? (

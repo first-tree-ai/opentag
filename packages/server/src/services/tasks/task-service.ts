@@ -360,8 +360,9 @@ export class TaskService {
    * to a detail page that answers 404.
    *
    * This runs before every annotatable provider write, so it never reads the `tasks` rollup: the
-   * creator chain is walked once, and qualification is an existence probe that stops at the first
-   * qualifying delivery instead of deriving the Task's status over its whole history.
+   * creator chain is walked once, and qualification is a set of bounded index-range existence probes
+   * that each stop at their first row, also when the history holds only superseded deliveries,
+   * instead of deriving the Task's status over its whole history.
    */
   async hasLinkableTask(sessionId: string): Promise<boolean> {
     return this.database.transaction(

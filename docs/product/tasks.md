@@ -47,7 +47,9 @@ is one chat Session.
   internal Session whose creator chain reaches one, or a Session that cannot be found gets plain
   `Session <shortId>` text. The check runs before every annotated provider write, so it never reads
   the Task's status rollup: it resolves the Session's Task once and asks whether a qualifying
-  delivery exists, which stops at the first index match however long the history is. Footers that
+  delivery exists through a few bounded index-range probes, each stopping at its first match, so a
+  Task costs the same whether it qualifies or holds only superseded deliveries, however long the
+  history is. Footers that
   older replies carry anchor on a request's message id and keep resolving.
 - `createdAt` is the earlier of the Session's creation and its first addressed message.
 

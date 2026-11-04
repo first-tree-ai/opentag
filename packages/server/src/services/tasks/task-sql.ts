@@ -1,5 +1,17 @@
 import { TASK_CANCELLED_DELIVERY_REASON } from "@opentag/shared";
 import { type SQL, sql } from "drizzle-orm";
+import { imDeliveryState } from "../../db/schema/index.js";
+
+/** The reason a delivery expires with when a newer revision of its message replaced it. */
+const SUPERSEDED_REVISION = sql.raw("'superseded_revision'");
+
+/** Every delivery state but `expired`, read from the enum so a new state is never left out. */
+const UNEXPIRED_STATES = sql.raw(
+  imDeliveryState.enumValues
+    .filter((state) => state !== "expired")
+    .map((state) => `'${state}'`)
+    .join(", "),
+);
 
 /**
  * The Task filter shared by every Task read.
@@ -101,7 +113,7 @@ export function messageOwnerTaskId(messageAlias: string): SQL {
 function isExecution(deliveryAlias: string, sessionAlias: string): SQL {
   const d = sql.raw(deliveryAlias);
   const ss = sql.raw(sessionAlias);
-  return sql`not (${d}.state = 'expired' and ${d}.reason = 'superseded_revision')
+  return sql`not (${d}.state = 'expired' and ${d}.reason = ${SUPERSEDED_REVISION})
     and not (
       ${d}.attention = 'ambient'
       and ${ss}.kind = 'channel'
@@ -130,7 +142,7 @@ function threadRootAddressed(sessionAlias: string): SQL {
       inner join im_message_deliveries rd
         on rd.message_id = rm.id
         and rd.attention = 'direct'
-        and not (rd.state = 'expired' and rd.reason = 'superseded_revision')
+        and not (rd.state = 'expired' and rd.reason = ${SUPERSEDED_REVISION})
       where rm.im_binding_id = ${ts}.im_binding_id
         and rm.channel_id = ${ts}.channel_id
         and rm.external_message_id = ${threadRootExternalId(sessionAlias)}
@@ -139,33 +151,62 @@ function threadRootAddressed(sessionAlias: string): SQL {
 }
 
 /**
+ * Whether a Session holds a delivery with one attention that a newer revision of its message did not
+ * supersede: `isExecution`'s superseded rule, asked as fixed range probes over the deliveries'
+ * `(session_id, attention, state, reason, message_id)` index instead of as a filter. A negated
+ * `state`/`reason` pair is not an index range, so a filter would read every superseded delivery in
+ * the Session before answering `false`. Each probe below is instead one index range bounded by the
+ * Session, the attention and either the states other than `expired` or `expired` with a reason on
+ * one side of `superseded_revision`, so superseded deliveries sit outside every range and each probe
+ * stops at its first row. An expired delivery with no reason falls outside every range, as it falls
+ * outside `isExecution`, whose negated comparison is null for it (every writer that expires a
+ * delivery records a reason).
+ */
+function liveDeliveryExists(sessionAlias: string, attention: "direct" | "ambient"): SQL {
+  const s = sql.raw(sessionAlias);
+  const probe = (bounds: SQL) => sql`exists (
+    select 1
+    from im_message_deliveries d
+    where d.session_id = ${s}.id
+      and d.attention = ${sql.raw(`'${attention}'`)}
+      and ${bounds}
+  )`;
+  return sql`(
+    ${probe(sql`d.state in (${UNEXPIRED_STATES})`)}
+    or ${probe(sql`d.state = 'expired' and d.reason < ${SUPERSEDED_REVISION}`)}
+    or ${probe(sql`d.state = 'expired' and d.reason > ${SUPERSEDED_REVISION}`)}
+  )`;
+}
+
+/**
  * Whether the Task `scoped_sessions` holds qualifies, decided by existence instead of the
  * `tasks` rollup: the rollup keeps a Task that has an execution and either a direct execution or
  * an addressed thread root, and this asks exactly that without deriving status, activity or
- * reports. Each probe stops at its first match through the deliveries' Session index, so a Task
- * that qualifies costs a few index rows however long its history is. The outer query must expose
- * `scoped_sessions` scoped to one Task, and reads it once so the planner keeps it inlined.
+ * reports.
+ *
+ * It is `isExecution` restated for the two shapes it is asked in, so the equivalence is spelled out
+ * here (and proven against the list by the footer-eligibility test): a direct delivery is an
+ * execution exactly when it was not superseded, since the observer-copy rule only drops ambient
+ * deliveries; and in a thread Session the observer-copy rule never applies, so its executions are
+ * its non-superseded deliveries of either attention. The direct probe has already answered for the
+ * direct ones when the thread branch runs, which leaves the ambient ones; they are probed before the
+ * thread root is looked up, so a thread without a live delivery never reads its root mapping.
+ *
+ * Every probe is a bounded range of the deliveries' Session index that stops at its first row, so a
+ * Task costs a few index pages whether it qualifies or holds only superseded deliveries, however
+ * long its history is. The outer query must expose `scoped_sessions` scoped to one Task, and reads
+ * it once so the planner keeps it inlined.
  */
 export function taskQualifies(): SQL {
   return sql`exists (
     select 1
     from scoped_sessions ss
-    where exists (
-        select 1
-        from im_message_deliveries d
-        where d.session_id = ss.id
-          and d.attention = 'direct'
-          and ${isExecution("d", "ss")}
-      )
+    where ${liveDeliveryExists("ss", "direct")}
       or (
         ss.id = ss.task_id
+        and ss.kind = 'thread'
+        and ${liveDeliveryExists("ss", "ambient")}
         and ${threadRootAddressed("ss")}
-        and exists (
-          select 1
-          from im_message_deliveries d
-          where d.session_id = ss.id
-            and ${isExecution("d", "ss")}
-        )
       )
   )`;
 }

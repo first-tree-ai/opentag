@@ -1063,6 +1063,58 @@ describe("TaskService", () => {
     await createDelivery(superseded.id, old.id, { state: "expired", reason: "superseded_revision" });
     track("superseded-only channel", superseded.id, superseded.id);
 
+    // The negative superseded-only range in both attentions, and expired deliveries on each side of
+    // the superseded reason, which the bounded probes must still count as executions; an expired
+    // delivery without a reason is no execution for the list either.
+    const supersededMixed = await createSession(binding.id, { channelId: "oc_superseded_mixed" });
+    for (const attention of ["direct", "ambient"] as const) {
+      const message = await createMessage(binding.id, { channelId: "oc_superseded_mixed", occurredAt: minutes(0) });
+      await createDelivery(supersededMixed.id, message.id, {
+        attention,
+        state: "expired",
+        reason: "superseded_revision",
+      });
+    }
+    track("superseded-only channel in both attentions", supersededMixed.id, supersededMixed.id);
+    for (const [name, reason] of [
+      ["expired channel without a reason", null],
+      ["expired channel cancelled", "cancelled"],
+      ["expired channel timed out", "turn_timeout"],
+    ] as const) {
+      const channelId = `oc_${name.replaceAll(" ", "_")}`;
+      const session = await createSession(binding.id, { channelId });
+      const message = await createMessage(binding.id, { channelId, occurredAt: minutes(0) });
+      await createDelivery(session.id, message.id, { state: "expired", ...(reason ? { reason } : {}) });
+      track(name, session.id, session.id);
+    }
+
+    // A thread whose root was addressed but whose own deliveries were all superseded: the thread
+    // branch's execution probe meets only superseded rows in both attentions.
+    const supersededRootChannel = await createSession(binding.id, { channelId: "oc_superseded_thread" });
+    const supersededThread = await createSession(binding.id, {
+      channelId: "oc_superseded_thread",
+      kind: "thread",
+      threadKey: "om_t3",
+    });
+    const addressedRoot = await createMessage(binding.id, {
+      channelId: "oc_superseded_thread",
+      externalMessageId: "om_t3",
+    });
+    await createDelivery(supersededRootChannel.id, addressedRoot.id, { at: minutes(1), reported: true });
+    for (const attention of ["direct", "ambient"] as const) {
+      const message = await createMessage(binding.id, {
+        channelId: "oc_superseded_thread",
+        threadKey: "om_t3",
+        occurredAt: minutes(2),
+      });
+      await createDelivery(supersededThread.id, message.id, {
+        attention,
+        state: "expired",
+        reason: "superseded_revision",
+      });
+    }
+    track("addressed-root thread with only superseded executions", supersededThread.id, supersededThread.id);
+
     // A thread whose root revision was superseded and whose only own delivery is ambient; a second
     // thread whose root was addressed but which has no execution of its own; the channel Session
     // that only holds the ambient observer copy of a thread reply.
@@ -1122,6 +1174,11 @@ describe("TaskService", () => {
       "internal under ambient channel": false,
       "nested internal under ambient channel": false,
       "superseded-only channel": false,
+      "superseded-only channel in both attentions": false,
+      "expired channel without a reason": false,
+      "expired channel cancelled": true,
+      "expired channel timed out": true,
+      "addressed-root thread with only superseded executions": false,
       "observer-copy channel": false,
       "thread with superseded root": false,
       "internal under that thread": false,

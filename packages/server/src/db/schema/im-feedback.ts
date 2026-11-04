@@ -37,6 +37,7 @@ export const imFeedbackTargets = pgTable(
     revision: bigint("revision", { mode: "number" }).notNull().default(1),
     appliedRevision: bigint("applied_revision", { mode: "number" }).notNull().default(0),
     cardRevision: bigint("card_revision", { mode: "number" }).notNull().default(0),
+    messageFormat: text("message_format").$type<"interactive_v1" | "text_v1">().notNull().default("interactive_v1"),
     cardState: text("card_state")
       .$type<"none" | "pending" | "sending" | "sent" | "send_unknown" | "blocked">()
       .notNull()
@@ -70,6 +71,7 @@ export const imFeedbackTargets = pgTable(
       "im_feedback_targets_reactions",
       sql`${t.desiredReaction} in ('working','none','warning') and (${t.appliedReaction} is null or ${t.appliedReaction} in ('working','none','warning'))`,
     ),
+    check("im_feedback_targets_message_format", sql`${t.messageFormat} in ('interactive_v1','text_v1')`),
     check(
       "im_feedback_targets_card_state",
       sql`${t.cardState} in ('none','pending','sending','sent','send_unknown','blocked')`,

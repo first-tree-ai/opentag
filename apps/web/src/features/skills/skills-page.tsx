@@ -1,6 +1,7 @@
 import { SKILL_ERROR_CODES, type Skill, type SkillArchiveFormat } from "@opentag/shared/browser";
 import { useEffect, useRef, useState } from "react";
 import { ApiError } from "../../api.js";
+import { InlineActionSentence } from "../../components/inline-action-sentence.js";
 import { PageHeader } from "../../components/kumo/page-header/page-header.js";
 import * as m from "../../paraglide/messages.js";
 import { Banner, Button, DropdownMenu, Icon, Loader, Text } from "../../ui/design-system.js";
@@ -266,7 +267,10 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
 
       <SkillList
         hasData={skills.data !== undefined}
+        importDisabled={!storageAvailable || uploadBusy}
         isPending={skills.isPending}
+        onInstall={openInstaller}
+        onUpload={openFilePicker}
         onViewDetails={(skill, trigger) => {
           detailsTrigger.current = trigger;
           setDetailsTarget(skill);
@@ -319,13 +323,19 @@ function SkillsPageBody({ agentId }: { agentId: string }) {
  */
 function SkillList({
   hasData,
+  importDisabled,
   isPending,
   onDelete,
+  onInstall,
+  onUpload,
   onViewDetails,
   skills,
 }: {
   hasData: boolean;
+  importDisabled: boolean;
   isPending: boolean;
+  onInstall: () => void;
+  onUpload: () => void;
   onDelete: (skill: Skill, trigger: HTMLButtonElement) => void;
   onViewDetails: (skill: Skill, trigger: HTMLElement) => void;
   skills: Skill[];
@@ -349,7 +359,11 @@ function SkillList({
             {m.skills_empty()}
           </Text>
           <Text as="p" size="sm" variant="secondary">
-            {m.skills_empty_description()}
+            <InlineActionSentence
+              render={({ first, second }) => m.skills_empty_description({ install: first, upload: second })}
+              first={{ label: m.skills_empty_install(), disabled: importDisabled, onClick: onInstall }}
+              second={{ label: m.skills_empty_upload(), disabled: importDisabled, onClick: onUpload }}
+            />
           </Text>
         </div>
       </div>

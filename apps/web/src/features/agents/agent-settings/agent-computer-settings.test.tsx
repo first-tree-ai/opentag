@@ -52,16 +52,12 @@ describe("Agent Computer settings", () => {
     expect(screen.queryByText("Not ready")).toBeNull();
   });
 
-  it("offers connecting another computer without issuing a command or moving the Agent", async () => {
+  it("does not offer replacing a bound Computer", async () => {
     const issue = vi.spyOn(browserApi, "issueComputerConnectCode");
     const bind = vi.spyOn(browserApi, "rebindAgentComputer");
     const value = agent(COMPUTER_ID, "ready");
     await renderInRouter(<AgentComputerSettings agent={value} onAgentChanged={vi.fn()} />);
-    const href = screen.getByRole("link", { name: "Connect a new computer" }).getAttribute("href");
-    expect(href).toContain("/agents/computers?");
-    expect(href).toContain("connect=another");
-    expect(href).toContain(`fromAgent=${value.id}`);
-    expect(href).not.toContain("computerId=");
+    expect(screen.queryByRole("link", { name: "Connect a new computer" })).toBeNull();
     expect(issue).not.toHaveBeenCalled();
     expect(bind).not.toHaveBeenCalled();
   });

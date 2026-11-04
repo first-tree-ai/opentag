@@ -1047,7 +1047,7 @@ export class AgentService {
         throw this.#lifecycleConflict("Only an active Agent can be rebound to a Computer");
       }
       const target = await this.#lockOwnedComputer(transaction, callerUserId, computerId);
-      await this.#assertRebindMode(transaction, scope.computerId, target, scope.agent.runtimeProvider);
+      this.#assertComputerBinding(scope.computerId, target, scope.agent.runtimeProvider);
       const active = await transaction
         .select({
           endedAt: sessions.endedAt,
@@ -1260,6 +1260,12 @@ export class AgentService {
       const targets = await this.#assertTransferSessionsClear(transaction, agent.id);
       const runtimeConfig = await this.#lockRuntimeConfig(transaction, agent.id);
       const imBinding = await this.#lockLiveMessagingBinding(transaction, agent.id);
+      const [configuredBinding] = await transaction
+        .select({ id: imBindings.id })
+        .from(imBindings)
+        .where(and(eq(imBindings.agentId, agent.id), gte(imBindings.credentialGeneration, 1)))
+        .limit(1);
+      if (agent.computerId !== null || configuredBinding) throw new AgentTransferError("configuration_immutable");
       const now = this.#now();
       const imBindingOutcome = await this.#settleTransferMessaging(transaction, agent.id, imBinding, input.slack, now);
       await this.#deleteMcpBindings(transaction, agent.id);
@@ -1621,30 +1627,17 @@ export class AgentService {
     return computer;
   }
 
-  async #assertRebindMode(
-    transaction: DatabaseTransaction,
+  #assertComputerBinding(
     currentComputerId: string | null,
     target: { id: string; kind: "local" | "cloud" },
     runtimeProvider: AgentRuntimeProvider,
-  ): Promise<void> {
-    const currentKind =
-      currentComputerId === null
-        ? "local"
-        : currentComputerId === target.id
-          ? target.kind
-          : await this.#computerKind(transaction, currentComputerId);
-    if (currentKind === target.kind) {
-      if (target.kind === "cloud") {
-        assertCloudAgentBinding(this.#cloudIdentitiesEnabled, runtimeProvider, "cloud");
-      }
-      return;
+  ): void {
+    if (currentComputerId !== null && currentComputerId !== target.id) {
+      throw this.#lifecycleConflict("An Agent's Computer cannot be replaced. Create a new Agent instead.");
     }
-    throw new AgentServiceError(
-      "AGENT_LIFECYCLE_CONFLICT",
-      "deterministic",
-      "The Agent cannot switch between Local and Cloud Computers",
-      409,
-    );
+    if (target.kind === "cloud") {
+      assertCloudAgentBinding(this.#cloudIdentitiesEnabled, runtimeProvider, "cloud");
+    }
   }
 
   async #computerKind(executor: QueryExecutor, computerId: string): Promise<"local" | "cloud"> {

@@ -9,10 +9,11 @@ Account → Computer manages the connection. Agent settings identifies the assig
 computer opens directly; existing multi-computer accounts retain explicit selection. Do not add Agent lists or runtime
 configuration to this surface.
 
-Every confirmed inventory offers **Connect a new computer** here. Agent settings offers the same entry next to an
-assigned Local computer or an existing choice; it opens this page and starts the one shared create flow. That request
-is consumed once and removed from the URL, so reload or Back never issues another command. Connecting a computer
-never moves an Agent; choosing it for an Agent stays an explicit step in Agent settings.
+Every confirmed inventory offers **Connect a new computer** here. Agent settings offers that entry
+while the Agent has no Computer. A bound Agent offers repair of its existing Computer and cannot
+select a replacement. The create request is consumed once and removed from the URL, so reload or
+Back never issues another command. Connecting a Computer never moves an Agent. An edited Agent
+with an empty Computer can still finish its initial binding.
 
 ## State and interaction
 

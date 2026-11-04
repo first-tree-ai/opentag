@@ -1,5 +1,5 @@
 {
-  "id": "1d3103db-2454-4b3c-a86d-f9688fb55e81",
+  "id": "f2026f00-cb88-4f41-85c4-355aa7b35cf0",
   "prevId": "7991222e-575f-46c6-836a-96dc9d6dd69c",
   "version": "7",
   "dialect": "postgresql",
@@ -2144,12 +2144,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "machine_fingerprint": {
-          "name": "machine_fingerprint",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -2193,28 +2187,6 @@
           ],
           "isUnique": true,
           "where": "\"computers\".\"deleted_at\" IS NULL",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
-        "computers_owner_machine_fingerprint_idx": {
-          "name": "computers_owner_machine_fingerprint_idx",
-          "columns": [
-            {
-              "expression": "owner_account_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "machine_fingerprint",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": false,
-          "where": "\"computers\".\"deleted_at\" IS NULL AND \"computers\".\"machine_fingerprint\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -3689,6 +3661,13 @@
           "notNull": true,
           "default": 0
         },
+        "message_format": {
+          "name": "message_format",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'interactive_v1'"
+        },
         "card_state": {
           "name": "card_state",
           "type": "text",
@@ -3932,6 +3911,10 @@
         "im_feedback_targets_reactions": {
           "name": "im_feedback_targets_reactions",
           "value": "\"im_feedback_targets\".\"desired_reaction\" in ('working','none','warning') and (\"im_feedback_targets\".\"applied_reaction\" is null or \"im_feedback_targets\".\"applied_reaction\" in ('working','none','warning'))"
+        },
+        "im_feedback_targets_message_format": {
+          "name": "im_feedback_targets_message_format",
+          "value": "\"im_feedback_targets\".\"message_format\" in ('interactive_v1','text_v1')"
         },
         "im_feedback_targets_card_state": {
           "name": "im_feedback_targets_card_state",

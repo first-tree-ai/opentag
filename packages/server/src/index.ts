@@ -63,6 +63,7 @@ import { PostgresRuntimeDurableWorkStore } from "./runtime/runtime-durable-work-
 import { SlackAutoSetupOwner } from "./runtime/slack-auto-setup-owner.js";
 import { AgentRuntimeOptionsService } from "./services/agents/agent-runtime-options-service.js";
 import { AgentSlackProvisionService } from "./services/agents/agent-slack-provision-service.js";
+import { AgentStatusService } from "./services/agents/agent-status-service.js";
 import { ContextTreeOperationService } from "./services/agents/context-tree-operation-service.js";
 import { GitHubContextTreeOperations } from "./services/agents/github-context-tree-operations.js";
 import {
@@ -832,7 +833,9 @@ export async function startServer(): Promise<void> {
           };
         })()
       : undefined;
+    let providerCliReconcileOwner: ProviderCliReconcileOwner | undefined;
     const platformRuntime = await createPlatformRuntime({
+      onCredentialFailure: (input) => providerCliReconcileOwner?.onCredentialFailure(input),
       slackWorkingStatus: false,
       config,
       database,
@@ -883,7 +886,6 @@ export async function startServer(): Promise<void> {
     };
     const runtimeReadyForAgent = async (agentId: string): Promise<boolean> =>
       (await agentRuntimeReadinessForAgent(agentId)) === "ready";
-    let providerCliReconcileOwner: ProviderCliReconcileOwner | undefined;
     const refreshProviderCliReadiness = (agentId: string, computerId: string): void => {
       void providerCliReconcileOwner?.ensureActiveReadiness({ agentId, computerId }).catch(() => {
         reportDiagnostic("PROVIDER_CLI_READINESS_REFRESH_FAILED");
@@ -1336,6 +1338,14 @@ export async function startServer(): Promise<void> {
       computerService,
       sandboxService,
       cloudAvailability: () => cloudAvailability(config),
+      agentStatusService: new AgentStatusService(database, registry, applicationCipher, {
+        cloudAvailability: (now) => cloudAvailability(config, now),
+        refreshLegacy: (computerId) => {
+          void providerCliReconcileOwner?.ensureLegacyReadinessForComputer(computerId).catch(() => {
+            app?.log.warn({ computerId, code: "LEGACY_STATUS_REFRESH_FAILED" }, "Legacy runtime status refresh failed");
+          });
+        },
+      }),
       ...cloudAppOptions({
         runnerRuntime: cloudRunnerRuntime,
         composition: cloudDelivery,

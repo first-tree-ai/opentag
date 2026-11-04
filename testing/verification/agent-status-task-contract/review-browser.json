@@ -1,0 +1,33 @@
+{
+  "errors": [],
+  "unexpected": [],
+  "widths": [
+    {
+      "width": 320,
+      "scroll": 320
+    },
+    {
+      "width": 390,
+      "scroll": 390
+    },
+    {
+      "width": 768,
+      "scroll": 768
+    },
+    {
+      "width": 1440,
+      "scroll": 1440
+    }
+  ],
+  "reads": [
+    "/api/v1/me",
+    "/api/v1/me/setup/reset",
+    "/api/v1/agents",
+    "/api/v1/agents/status",
+    "/api/v1/agents/2e20d5b7-4d12-45e5-94f7-bca91d472f40/im-binding/feishu/setup-attempts",
+    "/api/v1/agents/2e20d5b7-4d12-45e5-94f7-bca91d472f40/im-binding",
+    "/api/v1/agents/2e20d5b7-4d12-45e5-94f7-bca91d472f40/im-binding/slack/configuration",
+    "/api/v1/agents/2e20d5b7-4d12-45e5-94f7-bca91d472f40/setup"
+  ],
+  "axeViolations": []
+}

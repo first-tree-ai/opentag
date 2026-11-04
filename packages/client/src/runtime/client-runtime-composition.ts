@@ -9,6 +9,8 @@ import {
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
   type RuntimeExecutionSandbox,
   type RuntimeProviderReadinessObservation,
+  type RuntimeSelfCheckReport,
+  RuntimeSelfCheckRequestSchema,
 } from "@opentag/shared";
 import type {
   AgentRuntimeConfigurationOptionsRequest,
@@ -161,7 +163,7 @@ interface SharedProviderRefreshContext {
   readonly publishChecking: boolean;
 }
 
-async function waitForSharedRefresh(refresh: Promise<boolean>, signal?: AbortSignal): Promise<boolean> {
+async function waitForSharedRefresh<T>(refresh: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return refresh;
   signal.throwIfAborted();
   let rejectAborted!: (reason: unknown) => void;
@@ -362,7 +364,14 @@ export class ComposedClientRuntime {
   readonly #providerCliReconciler?: { close(): Promise<void>; refreshPublishedImCliReadiness(): Promise<void> };
   readonly #providerCliTurnPlans?: { recover(): Promise<void> };
   readonly #runtime: ClientRuntime;
-  readonly #refreshCapability: () => Promise<void>;
+  readonly #refreshCapability: (fresh?: boolean) => Promise<void>;
+  readonly #connection?: RuntimeConnection;
+  readonly #selfCheckLogger: ClientLogger;
+  readonly #unsubscribeSelfCheck?: () => void;
+  #selfCheckId?: string;
+  #selfCheckSequence = 0;
+  #pendingFreshSelfCheck = false;
+  readonly #selfCheckReports = new Set<Promise<void>>();
   readonly #capabilityRefreshIntervalMs: number;
   readonly #capabilityAbort: AbortController;
   #capabilityTimer?: ReturnType<typeof setInterval>;
@@ -384,7 +393,9 @@ export class ComposedClientRuntime {
       runner: AgentTurnRunner;
       runtimeManager: SessionRuntimeManager;
       workspace: AgentWorkspaceManager;
-      refreshCapability: () => Promise<void>;
+      refreshCapability: (fresh?: boolean) => Promise<void>;
+      connection?: RuntimeConnection;
+      selfCheckLogger?: ClientLogger;
       capabilityRefreshIntervalMs: number;
       capabilityAbort: AbortController;
       providerCliReconciler?: { close(): Promise<void>; refreshPublishedImCliReadiness(): Promise<void> };
@@ -406,6 +417,14 @@ export class ComposedClientRuntime {
     this.runtimeManager = components.runtimeManager;
     this.workspace = components.workspace;
     this.#refreshCapability = components.refreshCapability;
+    this.#connection = components.connection;
+    this.#selfCheckLogger = components.selfCheckLogger ?? createLogger("self-check");
+    this.#unsubscribeSelfCheck = components.connection?.subscribeBusinessFrames((frame) => {
+      const request = RuntimeSelfCheckRequestSchema.safeParse(frame);
+      if (!request.success || !this.#connection?.supportsCapability(RUNTIME_CAPABILITY.selfCheckHeartbeat)) return;
+      this.#selfCheckId = request.data.requestId;
+      this.#refreshSelfCheck(true);
+    });
     this.#capabilityRefreshIntervalMs = components.capabilityRefreshIntervalMs;
     this.#capabilityAbort = components.capabilityAbort;
   }
@@ -479,11 +498,13 @@ export class ComposedClientRuntime {
 
   async #performShutdown(): Promise<void> {
     this.#stopCapabilityMonitor();
+    this.#unsubscribeSelfCheck?.();
     this.#capabilityAbort.abort(new Error("Client Runtime stopped"));
     this.sessionMessageInbox.stop();
     this.runner.stop();
     await Promise.all([
-      this.#capabilityRefreshInFlight?.catch(() => undefined),
+      this.#capabilityRefreshInFlight,
+      Promise.allSettled([...this.#selfCheckReports]),
       this.runner.settled(),
       this.sessionMessageInbox.settled(),
     ]);
@@ -500,20 +521,55 @@ export class ComposedClientRuntime {
     }
   }
 
+  #refreshSelfCheck(fresh = false): void {
+    if (this.#stopped) return;
+    if (this.#capabilityRefreshInFlight) {
+      this.#pendingFreshSelfCheck ||= fresh;
+      return;
+    }
+    const selfCheckId = this.#selfCheckId;
+    const sequence = ++this.#selfCheckSequence;
+    const operations = [
+      ["runtime", this.#refreshCapability(fresh)],
+      ["messaging_cli", this.#providerCliReconciler?.refreshPublishedImCliReadiness() ?? Promise.resolve()],
+    ] as const;
+    const actual = Promise.allSettled(operations.map(([, work]) => work)).then(() => undefined);
+    this.#capabilityRefreshInFlight = actual;
+    const report = Promise.all(
+      operations.map(async ([part, work]) => {
+        const deadline = AbortSignal.timeout(10_000);
+        try {
+          await waitForSharedRefresh(work, AbortSignal.any([deadline, this.#capabilityAbort.signal]));
+          return undefined;
+        } catch {
+          return { part, reason: deadline.aborted ? ("check_timed_out" as const) : ("check_failed" as const) };
+        }
+      }),
+    ).then(async (results) => {
+      if (this.#stopped || !selfCheckId) return;
+      const problems: RuntimeSelfCheckReport["problems"] = results.filter((result) => result !== undefined);
+      await this.#connection?.publishSelfCheck(selfCheckId, sequence, new Date().toISOString(), problems);
+    });
+    this.#selfCheckReports.add(report);
+    void report.then(
+      () => this.#selfCheckReports.delete(report),
+      () => this.#selfCheckReports.delete(report),
+    );
+    void report.catch(() =>
+      this.#selfCheckLogger.warn({ code: "SELF_CHECK_REPORT_FAILED" }, "Self-check report could not be sent"),
+    );
+    void actual.finally(() => {
+      this.#capabilityRefreshInFlight = undefined;
+      if (this.#pendingFreshSelfCheck) {
+        this.#pendingFreshSelfCheck = false;
+        this.#refreshSelfCheck(true);
+      }
+    });
+  }
+
   #startCapabilityMonitor(): void {
     if (this.#capabilityTimer || this.#stopped) return;
-    this.#capabilityTimer = setInterval(() => {
-      if (this.#capabilityRefreshInFlight || this.#stopped) return;
-      const refresh = this.#refreshCapability();
-      this.#capabilityRefreshInFlight = refresh;
-      void refresh
-        .catch(() => undefined)
-        .finally(() => {
-          void this.#providerCliReconciler?.refreshPublishedImCliReadiness().catch(() => undefined);
-          /* v8 ignore else -- only the newest refresh clears the in-flight slot. */
-          if (this.#capabilityRefreshInFlight === refresh) this.#capabilityRefreshInFlight = undefined;
-        });
-    }, this.#capabilityRefreshIntervalMs);
+    this.#capabilityTimer = setInterval(() => this.#refreshSelfCheck(), this.#capabilityRefreshIntervalMs);
     this.#capabilityTimer.unref();
   }
 
@@ -621,6 +677,7 @@ export async function createClientRuntime(
   options: CreateClientRuntimeOptions,
 ): Promise<ComposedClientRuntime> {
   const moduleLogger = (module: string) => options.logger?.child({ module }) ?? createLogger(module);
+  connection.setSelfCheckEnabled(true);
   const sourceEnvironment = options.environment ?? process.env;
   options.signal?.throwIfAborted();
   const layout = await materializeProductionProviderLayout(options, sourceEnvironment);
@@ -666,7 +723,9 @@ export async function createClientRuntime(
       }
     }
   };
-  const refreshCapability = async (): Promise<void> => {
+  const refreshCapability = async (fresh = false): Promise<void> => {
+    if (fresh) await Promise.allSettled([...sharedProviderRefreshes.values()].map((owner) => owner.promise));
+    readinessSignal.throwIfAborted();
     const results = await Promise.allSettled([
       ...providers.providerIds().map((providerId) => refreshProviderReadiness(providerId, undefined, false)),
     ]);
@@ -877,6 +936,8 @@ export async function createClientRuntime(
     handleTurnActivityResult: runner.handleActivityResult.bind(runner),
   });
   return new ComposedClientRuntime(runtime, {
+    connection,
+    selfCheckLogger: moduleLogger("self-check"),
     admission,
     bindingStore,
     custody,

@@ -90,7 +90,7 @@ describe("Feishu adapter", () => {
     }
   });
 
-  it("persists actual profiles, refreshes reauthorization, and clears metadata on replacement", async () => {
+  it("preserves profiles through reauthorization and rejected replacement", async () => {
     const value = await connectionFixture();
     const input = {
       agentId: value.agent.id,
@@ -116,8 +116,10 @@ describe("Feishu adapter", () => {
     expect((await read())?.bot).toEqual(newer);
     await value.imBindings.activateFeishu(input);
     expect((await read())?.bot).toEqual(newer);
-    await value.imBindings.activateFeishu({ ...input, appId: "cli_replacement", botOpenId: "ou_other" });
-    expect((await read())?.bot).toEqual({ displayName: null, avatarUrl: null });
+    await expect(
+      value.imBindings.activateFeishu({ ...input, appId: "cli_replacement", botOpenId: "ou_other" }),
+    ).rejects.toMatchObject({ code: "IM_BINDING_CONFIGURATION_CONFLICT" });
+    expect((await read())?.bot).toEqual(newer);
   });
 
   it("maps Channel SDK message, thread, mention, and resource fields", () => {

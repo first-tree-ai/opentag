@@ -373,7 +373,12 @@
     },
     {
       "idx": 74,
-      "tag": "0074_computer_machine_fingerprint",
+      "tag": "0074_im_feedback_message_format",
+      "sha256": "3df92e19abc93e4ebdd33d98176bd4d4ba042b4e5f938c70610fd1d28a2730dc"
+    },
+    {
+      "idx": 75,
+      "tag": "0075_computer_machine_fingerprint",
       "sha256": "90d218d3695244469712c9032a446aba9f0dad77e8c1c29d26ff391fa943d230"
     }
   ]

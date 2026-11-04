@@ -11,7 +11,6 @@ import { EmptyState, Page } from "../layout/page.js";
 import { AsyncState } from "../resource/resource-state.js";
 import { useAccount } from "../session/session-context.js";
 import { AgentAvatar } from "./agent-avatar.js";
-import { type AgentListStatusMemory, observeAgentListStatus } from "./agent-list-status.js";
 import type { AgentListItem } from "./agent-model.js";
 import { agentCardStatus, agentRowAction } from "./agent-presentation.js";
 import { useAgentListView } from "./agent-queries.js";
@@ -57,14 +56,7 @@ export function AgentsContent({ agents }: { agents: AgentListItem[] }) {
 
 export function AgentList({ agents }: { agents: AgentListItem[] }) {
   const shownOrder = useRef<readonly string[]>([]);
-  const statusMemory = useRef<AgentListStatusMemory>(new Map());
-  /*
-   * Also written during render: the settled answer a row shows must never lag a frame behind the
-   * read that produced it, and reapplying the same read leaves the memory unchanged. Every refresh,
-   * failed or not, re-renders the list, so the refreshing note appears on the read that earns it.
-   */
-  const now = Date.now();
-  const byId = new Map(agents.map((agent) => [agent.id, observeAgentListStatus(statusMemory.current, agent, now)]));
+  const byId = new Map(agents.map((agent) => [agent.id, agent]));
   /*
    * Written during render on purpose. `orderAgentIds` is stable under reapplication, so a
    * repeated render of the same list produces the same order; deferring it to an effect would
@@ -85,9 +77,7 @@ export function AgentList({ agents }: { agents: AgentListItem[] }) {
       >
         {order.map((id) => {
           const row = byId.get(id);
-          return row ? (
-            <AgentRow agent={row.shown} checking={row.checking} key={id} refreshing={row.refreshing} />
-          ) : null;
+          return row ? <AgentRow agent={row} key={id} /> : null;
         })}
       </div>
     </section>

@@ -24,6 +24,7 @@ contents, and machine-specific operational logs outside the repository.
 
 ## Verification by feature
 
+- [Agent status, Task feedback and configuration identity](verification/agent-status-task-contract.md)
 - [Paused messaging settings](verification/paused-messaging-settings.md)
 
 - [Provider CLI identity validation](verification/provider-cli-validation.md)

@@ -1,12 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type {
-  ErrorCategory,
   ImBindingAdminDetail,
   ImBindingDiagnostics,
   ImBindingHandoffStatus,
   ImBindingState,
   ImBindingSummary,
-  ImBindingUnbindRequiredDetail,
   ImCliReadinessStatus,
   IntegrationCredentialExecutionReason,
   IntegrationCredentialExecutionStatus,
@@ -22,7 +20,6 @@ import {
   FEISHU_REQUIRED_TENANT_SCOPES,
   hasRequiredFeishuTenantScopes,
   hasRequiredSlackBotScopes,
-  ImBindingUnbindRequiredDetailSchema,
   SLACK_REQUIRED_BOT_SCOPES,
 } from "@opentag/shared";
 import { and, asc, eq, inArray, ne, sql } from "drizzle-orm";
@@ -43,7 +40,12 @@ import {
 } from "../../runtime-credentials/runtime-validation-execution.js";
 import type { ApplicationCipher } from "../crypto.js";
 import { activeBindingValues } from "./active-binding-values.js";
-import { readBindingActivity, readBindingDiagnostics } from "./binding-read-snapshot.js";
+import {
+  type BindingObservation,
+  readBindingActivity,
+  readBindingDiagnostics,
+  readBindingObservation,
+} from "./binding-read-snapshot.js";
 import { type BotProfile, sameBotProfileIdentity, storedBotProfile } from "./bot-profile.js";
 import { computerKindFor, localRawGrantAllowed } from "./computer-kind.js";
 import {
@@ -62,12 +64,14 @@ import {
 } from "./credential-material.js";
 import { currentBindingOf } from "./current-binding.js";
 import { disableImBindingInTransaction } from "./disable-im-binding.js";
+import { ImBindingServiceError } from "./errors.js";
 import { connectionFailureOf, listFeishuConnectionCandidates, stopFeishuConnection } from "./feishu-connection-rows.js";
 import {
   ImBindingProviderCli,
   type ImBindingReadiness,
   type ImBindingReadinessInput,
 } from "./im-binding-provider-cli.js";
+import { assertFeishuIdentity, assertSlackIdentity, disconnectedSetupBinding } from "./messaging-identity.js";
 
 type QueryExecutor = Pick<DatabaseClient, "select">;
 type CredentialMaterialWithId = CredentialMaterialInput & { id?: string };
@@ -171,35 +175,8 @@ interface ActivatedBinding {
   botId: string;
   credentialGeneration: number;
 }
-export class ImBindingServiceError extends Error {
-  constructor(
-    readonly code: string,
-    readonly statusCode: number,
-    message: string,
-    readonly category: ErrorCategory = "deterministic",
-    options: { cause?: unknown } = {},
-  ) {
-    super(message, options.cause === undefined ? undefined : { cause: options.cause });
-  }
-}
 
-/**
- * A cross-Provider messaging start fails closed: the Account must explicitly unbind the exact current
- * binding first, then bind any Provider. The structured identity lets the caller offer that unbind
- * without a second lookup. Same-Provider reauthorization and replacement never raise it.
- */
-export class ImBindingUnbindRequiredError extends ImBindingServiceError {
-  readonly unbindRequired: ImBindingUnbindRequiredDetail;
-  constructor(detail: ImBindingUnbindRequiredDetail) {
-    super(
-      "IM_BINDING_UNBIND_REQUIRED",
-      409,
-      "Unbind the current messaging connection before starting a different Provider",
-    );
-    this.name = "ImBindingUnbindRequiredError";
-    this.unbindRequired = ImBindingUnbindRequiredDetailSchema.parse(detail);
-  }
-}
+export { ImBindingServiceError, ImBindingUnbindRequiredError } from "./errors.js";
 
 /** Whether a thrown error (or any error in its cause chain) is a PostgreSQL unique violation on one constraint. */
 export function isImBindingUniqueViolation(error: unknown, constraintName: string): boolean {
@@ -791,8 +768,12 @@ export class ImBindingService {
 
   /** Internal captured row for Feishu projection; only the public binding view may be serialized. */
   async readSetupForAgent(callerUserId: string, agentId: string) {
-    const observed = await this.#observeForAgent(callerUserId, agentId);
-    if (!observed) return undefined;
+    const selected = await this.readForAgent(callerUserId, agentId, (transaction) =>
+      readBindingObservation(transaction, agentId, true),
+    );
+    if (!selected) return undefined;
+    if (selected.binding.status === "disabled") return disconnectedSetupBinding(selected.binding);
+    const observed = await this.#observeBinding(selected);
     return {
       row: observed.row,
       binding: {
@@ -813,23 +794,13 @@ export class ImBindingService {
   }
 
   async #observeForAgent(callerUserId: string, agentId: string): Promise<ObservedAgentBinding | undefined> {
-    const selected = await this.readForAgent(callerUserId, agentId, async (transaction) => {
-      const [row] = await transaction
-        .select({
-          binding: imBindings,
-          slackInstallation: slackInstallations,
-          computerKind: computers.kind,
-          agentStatus: agents.status,
-        })
-        .from(imBindings)
-        .innerJoin(agents, eq(agents.id, imBindings.agentId))
-        .leftJoin(computers, eq(computers.id, agents.computerId))
-        .leftJoin(slackInstallations, eq(slackInstallations.id, imBindings.slackInstallationId))
-        .where(currentBindingOf(agentId))
-        .limit(1);
-      return row;
-    });
-    if (!selected) return undefined;
+    const selected = await this.readForAgent(callerUserId, agentId, (transaction) =>
+      readBindingObservation(transaction, agentId),
+    );
+    return selected ? this.#observeBinding(selected) : undefined;
+  }
+
+  async #observeBinding(selected: BindingObservation): Promise<ObservedAgentBinding> {
     const row = {
       ...selected.binding,
       slackInstallation: selected.slackInstallation,
@@ -976,7 +947,8 @@ export class ImBindingService {
    * The explicit Account-owned unbind. Naming the exact current Provider and binding fences the mutation
    * against a stale view: anything else fails closed and nothing is disabled. The atomic disable clears the
    * effective credential, setup attempt context and owner, and connection leases, terminates active chat
-   * sessions, and retains message and session history. Afterwards any Provider may bind.
+   * sessions, and retains message, session and configured identity history. A configured identity cannot
+   * reconnect here; only a never-activated slot can be cleared so creation can resume.
    */
   async unbindForAgent(
     callerUserId: string,
@@ -1463,6 +1435,7 @@ export class ImBindingService {
         .where(and(eq(imBindings.agentId, input.agentId), ne(imBindings.status, "disabled")))
         .limit(1)
         .for("update");
+      await assertSlackIdentity(transaction, input, currentRoute);
       if (currentRoute && currentRoute.provider !== "slack") {
         throw new ImBindingServiceError(
           "IM_BINDING_PROVIDER_IMMUTABLE",
@@ -1935,6 +1908,7 @@ export class ImBindingService {
         .where(and(eq(imBindings.agentId, input.agentId), ne(imBindings.status, "disabled")))
         .limit(1)
         .for("update");
+      await assertFeishuIdentity(transaction, input.agentId, current, input.identity.appId);
       if (current && current.provider !== input.provider) {
         throw new ImBindingServiceError(
           "IM_BINDING_PROVIDER_IMMUTABLE",
@@ -1996,7 +1970,6 @@ export class ImBindingService {
           "The authorized Feishu Bot identity does not match the current App binding",
         );
       }
-      const sameIdentity = sameProviderApp;
       const activated = (id: string, credentialGeneration: number): ActivatedBinding => ({
         id,
         agentId: activationInput.agentId,
@@ -2006,20 +1979,6 @@ export class ImBindingService {
         botId: activationInput.identity.botId,
         credentialGeneration,
       });
-      if (current && current.status !== "provisioning" && !sameIdentity) {
-        await disableImBindingInTransaction(transaction, current.id, now);
-        const replacementId = randomUUID();
-        const [created] = await transaction
-          .insert(imBindings)
-          .values({ id: replacementId, ...activeBindingValues(activationInput, encryptFor(replacementId), 1, now) })
-          .returning({ id: imBindings.id });
-        if (!created) throw new Error("Replacement IM binding insert did not return an id");
-        await transaction
-          .update(imBindings)
-          .set({ replacementImBindingId: created.id })
-          .where(eq(imBindings.id, current.id));
-        return activated(created.id, 1);
-      }
       if (current) {
         const nextGeneration = current.credentialGeneration + 1;
         const [updated] = await transaction

@@ -510,7 +510,7 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(computers);
     expect(await screen.findByRole("heading", { level: 1, name: "Computer" })).toBeTruthy();
     expect(screen.queryByRole("heading", { name: "Connected Computers" })).toBeNull();
-    expect(screen.getByText("Ada's Mac")).toBeTruthy();
+    expect(await screen.findByText("Ada's Mac")).toBeTruthy();
     expect(screen.getByText("Online")).toBeTruthy();
     expect(window.location.pathname).toBe("/agents/computers");
     expect(screen.queryByRole("menu", { name: "Account" })).toBeNull();

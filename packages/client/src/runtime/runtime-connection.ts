@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
   type AgentRuntimeProvider,
-  IM_CLI_PROVIDERS,
   negotiateRuntimeCapabilities,
   PROVIDER_READINESS_V1_HEADER,
   PROVIDER_READINESS_V2_HEADER,
@@ -24,6 +23,7 @@ import {
   type RuntimeProtocolVersion,
   type RuntimeProviderReadinessCollection,
   type RuntimeProviderReadinessObservation,
+  type RuntimeSelfCheckReport,
   requiredTurnReportVersion,
   runtimeFrameByteLength,
   runtimeNegotiatedCapabilitiesEqual,
@@ -57,8 +57,16 @@ import {
   connectionErrorCategory,
   listenerFailureCategory,
   raceWithAbort,
+  waitForRuntimeTimer,
   withoutConnectionId,
 } from "./runtime-connection-utils.js";
+import {
+  currentImCliReadiness,
+  currentProviderReadiness,
+  HeartbeatAcknowledgements,
+  heartbeatProviderReadiness,
+  publishSelfCheck,
+} from "./runtime-self-check.js";
 
 export {
   RuntimeConnectionError,
@@ -178,7 +186,10 @@ export class RuntimeConnection {
   #stopped = false;
   #protocolVersion: RuntimeProtocolVersion = RUNTIME_PROTOCOL_VERSION;
   #negotiatedCapabilities: RuntimeNegotiatedCapabilities = {};
-  #supportedCapabilities: RuntimeCapabilityOffers = RUNTIME_CLIENT_CAPABILITY_OFFERS;
+  #supportedCapabilities: RuntimeCapabilityOffers = Object.fromEntries(
+    Object.entries(RUNTIME_CLIENT_CAPABILITY_OFFERS).filter(([name]) => name !== RUNTIME_CAPABILITY.selfCheckHeartbeat),
+  );
+  #readinessProviders: readonly AgentRuntimeProvider[] = [];
   #verifiedCapabilities: RuntimeClientCapabilities = { imCredentialGrant: 0 };
   #verifiedCapabilitiesExpiresAt = 0;
   readonly #providerReadiness = new Map<
@@ -237,13 +248,39 @@ export class RuntimeConnection {
   /** Composition must advertise only the credential path it actually installed. */
   setCredentialProxyEnabled(enabled: boolean): void {
     if (this.#hasRun) throw new Error("Credential proxy mode must be configured before connecting");
+    const selfCheckEnabled = this.#supportedCapabilities[RUNTIME_CAPABILITY.selfCheckHeartbeat] !== undefined;
     this.#supportedCapabilities = { ...RUNTIME_CLIENT_CAPABILITY_OFFERS };
+    if (!selfCheckEnabled) delete this.#supportedCapabilities[RUNTIME_CAPABILITY.selfCheckHeartbeat];
     delete this.#supportedCapabilities[RUNTIME_CAPABILITY.githubUserTask];
     if (!enabled) {
       delete this.#supportedCapabilities[RUNTIME_CAPABILITY.runtimeCredential];
       delete this.#supportedCapabilities[RUNTIME_CAPABILITY.providerProxy];
       delete this.#supportedCapabilities[RUNTIME_CAPABILITY.contextTreeExecution];
     }
+  }
+
+  setSelfCheckEnabled(enabled: boolean): void {
+    if (this.#hasRun) throw new Error("Self-check composition must be configured before connecting");
+    if (enabled) this.#supportedCapabilities[RUNTIME_CAPABILITY.selfCheckHeartbeat] = { min: 1, max: 1 };
+    else delete this.#supportedCapabilities[RUNTIME_CAPABILITY.selfCheckHeartbeat];
+  }
+
+  publishSelfCheck(
+    selfCheckId: string,
+    sequence: number,
+    checkedAt: string,
+    problems: RuntimeSelfCheckReport["problems"] = [],
+  ): Promise<void> {
+    return publishSelfCheck(
+      this,
+      selfCheckId,
+      sequence,
+      checkedAt,
+      problems,
+      this.#currentProviderReadiness(this.#readinessProviders),
+      this.#currentImCliReadiness(),
+      this.#now(),
+    );
   }
 
   setVerifiedCapabilities(
@@ -301,21 +338,11 @@ export class RuntimeConnection {
   }
 
   #currentImCliReadiness(): RuntimeImCliReadinessCollection {
-    const now = this.#now();
-    return IM_CLI_PROVIDERS.flatMap((provider) => {
-      const current = this.#imCliReadiness.get(provider);
-      return current && now <= current.expiresAt ? [{ ...current.observation }] : [];
-    });
+    return currentImCliReadiness(this.#imCliReadiness, this.#now());
   }
 
   #currentProviderReadiness(providers: readonly AgentRuntimeProvider[]): RuntimeProviderReadinessCollection {
-    const now = this.#now();
-    return providers.flatMap((provider) => {
-      const lease = this.#providerReadinessLeases.get(provider);
-      if (lease) return [{ ...lease.observation }];
-      const current = this.#providerReadiness.get(provider);
-      return current && now <= current.expiresAt ? [{ ...current.observation }] : [];
-    });
+    return currentProviderReadiness(providers, this.#providerReadiness, this.#providerReadinessLeases, this.#now());
   }
 
   subscribeState(listener: (state: RuntimeConnectionState) => void): () => void {
@@ -502,6 +529,7 @@ export class RuntimeConnection {
       let authRequestId: string | undefined;
       let registerRequestId: string | undefined;
       let pendingHeartbeatRequestId: string | undefined;
+      const fixedHeartbeats = new HeartbeatAcknowledgements(this.#scheduler, () => socket.terminate());
       let heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
       let heartbeatResultTimer: ReturnType<typeof setTimeout> | undefined;
       let handshakeTimer: ReturnType<typeof setTimeout> | undefined;
@@ -510,6 +538,7 @@ export class RuntimeConnection {
       let established = false;
 
       const clearTimers = () => {
+        fixedHeartbeats.clear();
         for (const timer of [heartbeatTimer, heartbeatResultTimer, handshakeTimer, silenceTimer]) {
           if (timer) this.#scheduler.clearTimeout(timer);
         }
@@ -537,39 +566,44 @@ export class RuntimeConnection {
         if (silenceTimer) this.#scheduler.clearTimeout(silenceTimer);
         silenceTimer = this.#scheduler.setTimeout(() => socket.terminate(), welcome.heartbeatTimeoutMs);
       };
+      const heartbeatSent = (requestId: string, fixedCadence: boolean, timeoutMs: number) => {
+        if (settled || fixedCadence || pendingHeartbeatRequestId !== requestId) return;
+        heartbeatResultTimer = this.#scheduler.setTimeout(() => socket.terminate(), timeoutMs);
+      };
+      const sendHeartbeat = (heartbeatPolicy: ServerWelcomeFrame) => {
+        const fixedCadence = this.supportsCapability(RUNTIME_CAPABILITY.selfCheckHeartbeat);
+        const requestId = randomUUID();
+        if (fixedCadence && !fixedHeartbeats.track(requestId, heartbeatPolicy.heartbeatTimeoutMs)) {
+          socket.terminate();
+          return;
+        }
+        if (!fixedCadence) pendingHeartbeatRequestId = requestId;
+        void this.send(
+          {
+            type: "heartbeat",
+            requestId,
+            installationId: this.#options.computer.computerId,
+            instanceId,
+            capabilities: this.#currentCapabilities(),
+            ...(protocolVersion === RUNTIME_PROTOCOL_V2 ? { protocolVersion: RUNTIME_PROTOCOL_V2 } : {}),
+            ...heartbeatProviderReadiness(heartbeatPolicy, (providers) => this.#currentProviderReadiness(providers)),
+            imCliReadiness: this.#currentImCliReadiness(),
+          },
+          { priority: "control", deadline: this.#now() + heartbeatPolicy.heartbeatTimeoutMs },
+        ).then(
+          () => {
+            heartbeatSent(requestId, fixedCadence, heartbeatPolicy.heartbeatTimeoutMs);
+          },
+          () => socket.terminate(),
+        );
+        if (fixedCadence) scheduleHeartbeat();
+      };
       const scheduleHeartbeat = () => {
         if (!welcome || settled || pendingHeartbeatRequestId) return;
         const heartbeatPolicy = welcome;
         heartbeatTimer = this.#scheduler.setTimeout(() => {
           if (settled || this.#state !== "registered" || this.#active !== socket) return;
-          const requestId = randomUUID();
-          pendingHeartbeatRequestId = requestId;
-          void this.send(
-            {
-              type: "heartbeat",
-              requestId,
-              installationId: this.#options.computer.computerId,
-              instanceId,
-              capabilities: this.#currentCapabilities(),
-              ...(protocolVersion === RUNTIME_PROTOCOL_V2 ? { protocolVersion: RUNTIME_PROTOCOL_V2 } : {}),
-              ...(heartbeatPolicy.providerReadiness
-                ? {
-                    providerReadiness: this.#currentProviderReadiness(heartbeatPolicy.providerReadiness.providers),
-                  }
-                : {}),
-              imCliReadiness: this.#currentImCliReadiness(),
-            },
-            { priority: "control", deadline: this.#now() + heartbeatPolicy.heartbeatTimeoutMs },
-          ).then(
-            () => {
-              if (settled || pendingHeartbeatRequestId !== requestId) return;
-              heartbeatResultTimer = this.#scheduler.setTimeout(
-                () => socket.terminate(),
-                heartbeatPolicy.heartbeatTimeoutMs,
-              );
-            },
-            () => socket.terminate(),
-          );
+          sendHeartbeat(heartbeatPolicy);
         }, heartbeatPolicy.heartbeatIntervalMs);
       };
 
@@ -757,6 +791,7 @@ export class RuntimeConnection {
           if (handshakeTimer) this.#scheduler.clearTimeout(handshakeTimer);
           this.#setState("registered");
           this.#resolveRegisteredWaiters();
+          this.#readinessProviders = welcome?.providerReadiness?.providers ?? [];
           onRegistered();
           this.#logger.info({ state: "registered" }, "Runtime connection registered");
           armSilence();
@@ -764,7 +799,13 @@ export class RuntimeConnection {
           return;
         }
         if (this.#state === "registered" && frame.type === "heartbeat:result") {
-          if (frame.requestId !== pendingHeartbeatRequestId) {
+          const fixedCadence = this.supportsCapability(RUNTIME_CAPABILITY.selfCheckHeartbeat);
+          const acknowledged = fixedCadence && fixedHeartbeats.wasAcknowledged(frame.requestId);
+          if (
+            fixedCadence
+              ? !fixedHeartbeats.isPending(frame.requestId) && !acknowledged
+              : frame.requestId !== pendingHeartbeatRequestId
+          ) {
             failProtocol("The server returned an unmatched heartbeat result", "Heartbeat request mismatch");
             return;
           }
@@ -778,6 +819,7 @@ export class RuntimeConnection {
             failProtocol("The Server returned a stale heartbeat fence", "Heartbeat fence mismatch");
             return;
           }
+          if (acknowledged) return;
           if (!frame.ok) {
             socket.close(4403, "Heartbeat rejected");
             const category = runtimeConnectionErrorCategory(frame.errorCode, true, false);
@@ -790,7 +832,9 @@ export class RuntimeConnection {
             );
             return;
           }
-          pendingHeartbeatRequestId = undefined;
+          if (fixedCadence) {
+            fixedHeartbeats.acknowledge(frame.requestId);
+          } else pendingHeartbeatRequestId = undefined;
           if (heartbeatResultTimer) this.#scheduler.clearTimeout(heartbeatResultTimer);
           notifyTarget(
             protocolVersion,
@@ -799,7 +843,7 @@ export class RuntimeConnection {
             this.#options.onChannelTarget,
             this.#logger,
           );
-          scheduleHeartbeat();
+          if (!fixedCadence) scheduleHeartbeat();
           return;
         }
         if (frame.type === "error") {
@@ -1024,21 +1068,6 @@ export class RuntimeConnection {
       await raceWithAbort(this.#options.waitForRetry(milliseconds, signal), signal);
       return;
     }
-    await new Promise<void>((resolve, reject) => {
-      if (signal.aborted) {
-        reject(abortError());
-        return;
-      }
-      const timer = this.#scheduler.setTimeout(() => {
-        signal.removeEventListener("abort", onAbort);
-        resolve();
-      }, milliseconds);
-      const onAbort = () => {
-        this.#scheduler.clearTimeout(timer);
-        signal.removeEventListener("abort", onAbort);
-        reject(abortError());
-      };
-      signal.addEventListener("abort", onAbort, { once: true });
-    });
+    await waitForRuntimeTimer(milliseconds, signal, this.#scheduler);
   }
 }

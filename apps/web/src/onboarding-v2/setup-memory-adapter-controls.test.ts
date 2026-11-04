@@ -128,7 +128,7 @@ describe("createMemorySetupAdapter Computer legs", () => {
   it("binds only a Computer this Account lists, for the exact Agent", async () => {
     const spareId = crypto.randomUUID();
     const memory = createMemorySetupAdapter({
-      agent: setupAgent({ requiresComputerRebind: true }),
+      agent: setupAgent({ computer: null }),
       computers: [
         {
           computerId: spareId,
@@ -147,7 +147,7 @@ describe("createMemorySetupAdapter Computer legs", () => {
 
     await expect(inventory.bindComputer(SETUP_OTHER_AGENT_ID, spareId)).rejects.toThrow(/No such Agent/);
     await expect(inventory.bindComputer(SETUP_AGENT_ID, crypto.randomUUID())).rejects.toThrow(/No such Computer/);
-    expect((await memory.adapter.readSnapshot(SETUP_AGENT_ID)).computer).toMatchObject({ kind: "requires-rebind" });
+    expect((await memory.adapter.readSnapshot(SETUP_AGENT_ID)).computer).toMatchObject({ kind: "not-bound" });
 
     await inventory.bindComputer(SETUP_AGENT_ID, spareId);
     const snapshot = await memory.adapter.readSnapshot(SETUP_AGENT_ID);
@@ -219,7 +219,7 @@ describe("createMemorySetupAdapter write guards", () => {
     const slack = createMemorySetupAdapter({ agent: setupAgent() });
     await slack.adapter.startSlackInstall(SETUP_AGENT_ID, "create", { kind: "unbound" });
     await expect(slack.adapter.startSlackInstall(SETUP_AGENT_ID, "create", { kind: "unbound" })).rejects.toThrow(
-      /unbind before a fresh install/,
+      /unconfigured Agent/,
     );
   });
 
@@ -246,7 +246,7 @@ describe("createMemorySetupAdapter write guards", () => {
         bindingId: crypto.randomUUID(),
         credentialGeneration: 1,
       }),
-    ).rejects.toThrow(/does not name the current Messaging binding generation/);
+    ).rejects.toThrow(/cannot be replaced/);
     // A Slack reauthorization cannot ride on a Lark binding even when it names that binding exactly.
     await expect(
       adapter.startSlackInstall(SETUP_AGENT_ID, "reauthorize", {

@@ -93,7 +93,9 @@ describe("Account / Agent / Computer cross-connection lock order", () => {
         const other = await value.machineAuth.exchangeConnectCode(
           exchangeInput((await value.machineAuth.issueForAccount(value.accountId, {})).code),
         );
-        await value.agents.rebindById(value.accountId, agent.id, other.computerId);
+        await expect(value.agents.rebindById(value.accountId, agent.id, other.computerId)).rejects.toMatchObject({
+          code: "AGENT_LIFECYCLE_CONFLICT",
+        });
       }
       const service = new AgentService(value.first.database, {
         afterAgentLocked: async () => {
@@ -124,7 +126,7 @@ describe("Account / Agent / Computer cross-connection lock order", () => {
 
   it("rebinds without acquiring an Account lock", async () => {
     const value = await fixture();
-    const agent = await value.agents.createForAccount(value.accountId, agentInput(value.computer.computerId));
+    const agent = await value.agents.createForAccount(value.accountId, agentInput());
     const targetCode = await value.machineAuth.issueForAccount(value.accountId, {});
     const target = await value.machineAuth.exchangeConnectCode(exchangeInput(targetCode.code));
     const locked = deferred();

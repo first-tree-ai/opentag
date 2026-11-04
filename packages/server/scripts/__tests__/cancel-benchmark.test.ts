@@ -21,6 +21,7 @@ import {
   CASE_SIZES,
   type CancelBenchmarkDeps,
   type CancelOwnerPort,
+  DEFAULT_RESULTS_PATH,
   isExplainable,
   MINIMUM_TABLE_ROWS,
   ownerSourceOrThrow,
@@ -34,7 +35,6 @@ import {
   SAMPLES,
   SEED_FIXTURE_PATH,
   summarizeSamples,
-  TRACKED_RESULTS_PATH,
 } from "../cancel-benchmark.js";
 import {
   defaultCancelBenchmarkDeps,
@@ -221,7 +221,7 @@ function benchmarkDeps(overrides: Partial<CancelBenchmarkDeps> & { fixture?: Fix
       beforeModuleFile: "/tmp/.benchmark-before-1.ts",
       migrationsFolder: "/tmp/drizzle",
       seedFile: "/tmp/seed.sql",
-      trackedResultsFile: "/repo/testing/performance/cancel-deliveries/results.json",
+      defaultResultsFile: "/tmp/opentag-benchmarks/cancel-deliveries/results.json",
     },
     sessionId: SESSION,
     startDatabaseContainer: () => "postgres://postgres:local@127.0.0.1:5432/opentag_benchmark",
@@ -311,7 +311,7 @@ describe("cancellation benchmark orchestration", () => {
     expect(final.environment).toMatchObject({
       beforeRef: "d2fc9e8aa045dc1a214ab3f0a953cbdcde088c92",
       migrationCount: 69,
-      resultsPath: TRACKED_RESULTS_PATH,
+      resultsPath: DEFAULT_RESULTS_PATH,
       resultsPathOverridden: false,
       seedFixture: SEED_FIXTURE_PATH,
       tableCount: 2,
@@ -462,14 +462,14 @@ describe("cancellation benchmark fixture rules", () => {
     ).toThrow(/every stop outcome is no_connection: received cancelled, send_failed/);
   });
 
-  it("keeps the tracked results path as the recorded label unless the run overrides it", () => {
-    expect(resolveResultsTarget({}, "/repo/testing/performance/cancel-deliveries/results.json")).toEqual({
-      label: TRACKED_RESULTS_PATH,
-      outputPath: "/repo/testing/performance/cancel-deliveries/results.json",
+  it("keeps the default results path as the recorded label unless the run overrides it", () => {
+    expect(resolveResultsTarget({}, "/tmp/opentag-benchmarks/cancel-deliveries/results.json")).toEqual({
+      label: DEFAULT_RESULTS_PATH,
+      outputPath: "/tmp/opentag-benchmarks/cancel-deliveries/results.json",
     });
     const overridden = resolveResultsTarget(
       { OPENTAG_BENCHMARK_OUTPUT: "/tmp/cancel-benchmark/results.json" },
-      "/repo/testing/performance/cancel-deliveries/results.json",
+      "/tmp/opentag-benchmarks/cancel-deliveries/results.json",
     );
     expect(overridden.label).toBe("<overridden>");
     expect(overridden.outputPath).toBe("/tmp/cancel-benchmark/results.json");
@@ -839,16 +839,15 @@ describe("cancellation benchmark production ports", () => {
     }
   });
 
-  it("wires the production ports to the tracked fixture and evidence without running anything", () => {
+  it("wires the production ports to the tracked fixture and external output without running anything", () => {
     const deps = defaultCancelBenchmarkDeps({ OPENTAG_BENCHMARK_BEFORE_REF: "abc123" });
     expect(deps.env.OPENTAG_BENCHMARK_BEFORE_REF).toBe("abc123");
     expect(deps.sessionId).toBe(SESSION);
     expect(deps.containerName).toMatch(/^opentag-cancel-benchmark-w49-\d+$/);
-    // A fresh checkout must resolve the tracked fixture and the tracked evidence file.
     expect(deps.paths.seedFile.endsWith(SEED_FIXTURE_PATH)).toBe(true);
     expect(existsSync(deps.paths.seedFile)).toBe(true);
-    expect(deps.paths.trackedResultsFile.endsWith(TRACKED_RESULTS_PATH)).toBe(true);
-    expect(existsSync(deps.paths.trackedResultsFile)).toBe(true);
+    expect(deps.paths.defaultResultsFile.endsWith(DEFAULT_RESULTS_PATH)).toBe(true);
+    expect(deps.paths.defaultResultsFile).toBe(join(tmpdir(), "opentag-benchmarks", DEFAULT_RESULTS_PATH));
     expect(deps.paths.migrationsFolder.endsWith("packages/server/drizzle/")).toBe(true);
     expect(deps.paths.beforeModuleFile).toContain("src/services/sandboxes/.benchmark-before-");
     expect(deps.paths.beforeModuleFile).toMatch(/\.ts$/);

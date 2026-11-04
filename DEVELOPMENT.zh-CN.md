@@ -1,7 +1,7 @@
 # openTag 开发指南
 
 > 权威来源：[DEVELOPMENT.md](./DEVELOPMENT.md)
-> 同步日期：2026-10-26
+> 同步日期：2026-11-04
 
 ## 从源码在本地运行
 
@@ -154,6 +154,18 @@ pnpm --filter @opentag/server start
 
 数据库及读写改动先遵循[数据库读写规范](./docs/system/database-read-write-standards.md)。
 在变更方案和评审中说明适用的规范编号、例外及验证范围。
+
+### 发布回归与任务记录
+
+每次发布前，在专用回归电脑上执行 [Markdown 发布回归目录](./testing/regression/README.md)。新增或修改产品
+功能时，在同一变更中补充或更新对应回归用例。回归缺陷指派给 `yuezengwu`。`testing/regression/` 是
+`testing/` 下唯一存放测试内容的子目录，父目录 README 仅作为入口。已有自动化单元测试、集成测试、E2E 测试
+及其 CI 继续由各自目录维护。
+
+普通任务测试计划、验收结果、截图、性能报告、原始验证证据和本地测试环境配置不提交到仓库。任务产物保存在
+源码仓库外，有保留价值的脱敏结论记录到关联 GitHub PR/Issue，注明版本、命令、范围、结果与限制。这些执行
+记录也不属于知识库。性能工具默认写入系统临时目录的 `opentag-benchmarks/`，需要保留时通过输出参数指定
+该任务拥有的存储位置和保留方式。
 
 ### 本地验证
 

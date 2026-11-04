@@ -76,20 +76,20 @@ async function insertUser(userId: string): Promise<void> {
 }
 
 describe("benchmark accounting helpers", () => {
-  it("resolves the output directory from the argument, the environment, then the tracked path", () => {
-    const trackedDirectory = "/tmp/tracked";
-    expect(resolveOutputDirectory({ argv: [], env: {}, trackedDirectory })).toBe(trackedDirectory);
-    expect(resolveOutputDirectory({ argv: [], env: { OPENTAG_BENCHMARK_OUT: "/tmp/env" }, trackedDirectory })).toBe(
+  it("resolves the output directory from the argument, the environment, then the default path", () => {
+    const defaultDirectory = "/tmp/opentag-benchmarks/agent-session";
+    expect(resolveOutputDirectory({ argv: [], env: {}, defaultDirectory })).toBe(defaultDirectory);
+    expect(resolveOutputDirectory({ argv: [], env: { OPENTAG_BENCHMARK_OUT: "/tmp/env" }, defaultDirectory })).toBe(
       "/tmp/env",
     );
     expect(
       resolveOutputDirectory({
         argv: ["--out", "/tmp/flag"],
         env: { OPENTAG_BENCHMARK_OUT: "/tmp/env" },
-        trackedDirectory,
+        defaultDirectory,
       }),
     ).toBe("/tmp/flag");
-    expect(() => resolveOutputDirectory({ argv: ["--out"], env: {}, trackedDirectory })).toThrow(
+    expect(() => resolveOutputDirectory({ argv: ["--out"], env: {}, defaultDirectory })).toThrow(
       "--out requires a directory",
     );
   });

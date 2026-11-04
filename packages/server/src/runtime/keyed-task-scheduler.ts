@@ -1,3 +1,5 @@
+import { AsyncResource } from "node:async_hooks";
+import { getCurrentPerformanceContext, runWithPerformanceContext } from "../observability/performance-logger.js";
 import type { KeyedTaskSchedulerOptions, TaskLane } from "./keyed-task-scheduler.types.js";
 
 /**
@@ -39,7 +41,12 @@ export class KeyedTaskScheduler {
       return false;
     }
     if (!this.#lanes.has(key)) this.#lanes.set(key, lane);
-    lane.queue.push({ run: task, onDrop, enqueuedAt: this.#now() });
+    const currentPerf = getCurrentPerformanceContext();
+    const perfSnapshot = currentPerf ? { ...currentPerf } : undefined;
+    const boundTask = AsyncResource.bind(() =>
+      perfSnapshot ? runWithPerformanceContext({ ...perfSnapshot }, task) : task(),
+    );
+    lane.queue.push({ run: boundTask, onDrop, enqueuedAt: this.#now() });
     this.#queued += 1;
     if (!lane.running) this.#markReady(key);
     this.#pump();

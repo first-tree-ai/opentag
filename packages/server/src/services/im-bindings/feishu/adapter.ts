@@ -13,7 +13,13 @@ import {
   WSClient,
 } from "@larksuiteoapi/node-sdk";
 import { type NormalizedInboundImEvent, NormalizedInboundImEventSchema, truncateImText } from "@opentag/shared";
-import { emitRootSpan, imAttrs, outcomeAttrs } from "../../../observability/index.js";
+import {
+  emitRootSpan,
+  imAttrs,
+  outcomeAttrs,
+  type PerformanceLogger,
+  traceExternalCall,
+} from "../../../observability/index.js";
 import { ExternalCallPolicy } from "../../im/external-call-policy.js";
 import { type BotProfile, httpsAvatar } from "../bot-profile.js";
 import { contentBlocksWithMentions } from "../mention-content.js";
@@ -458,10 +464,13 @@ class ReliableFeishuChannel implements FeishuChannel {
   botIdentity?: { openId: string; name?: string };
   readonly #outbound: LarkChannel;
   readonly #wsClient: WSClient;
+  readonly #dispatcher: EventDispatcher;
   #handlers: Parameters<FeishuChannel["on"]>[0] = {};
   readonly #ready: Promise<void>;
   #resolveReady: () => void = () => undefined;
   #rejectReady: (error: unknown) => void = () => undefined;
+  #started = false;
+  #closed = false;
 
   constructor(input: {
     appId: string;
@@ -483,7 +492,7 @@ class ReliableFeishuChannel implements FeishuChannel {
       outbound: { retry: { maxAttempts: 1 } },
       source: "opentag",
     });
-    const dispatcher = createReliableFeishuDispatcher(async (message) => {
+    this.#dispatcher = createReliableFeishuDispatcher(async (message) => {
       const handler = this.#handlers.message;
       if (!handler) throw new Error("FEISHU_ADMISSION_NOT_READY");
       await handler(message);
@@ -497,7 +506,9 @@ class ReliableFeishuChannel implements FeishuChannel {
       autoReconnect: true,
       source: "opentag",
       handshakeTimeoutMs: 15_000,
-      onReady: () => this.#resolveReady(),
+      onReady: () => {
+        if (!this.#closed) this.#resolveReady();
+      },
       onError: (error) => {
         this.#rejectReady(new Error("FEISHU_CONNECTION_ERROR"));
         this.#handlers.error?.(error);
@@ -505,17 +516,78 @@ class ReliableFeishuChannel implements FeishuChannel {
       onReconnecting: () => this.#handlers.reconnecting?.(),
       onReconnected: () => this.#handlers.reconnected?.(),
     });
-    void this.#wsClient.start({ eventDispatcher: dispatcher });
   }
 
   async connect(signal?: AbortSignal): Promise<void> {
-    if (signal?.aborted) throw signal.reason;
-    await this.#outbound.connect();
-    this.botIdentity = this.#outbound.botIdentity;
+    if (this.#closed) throw new Error("FEISHU_CHANNEL_CLOSED");
+    if (signal?.aborted) throw signal.reason ?? new Error("FEISHU_CONNECT_ABORTED");
+    if (!this.#started) {
+      this.#started = true;
+      void this.#wsClient.start({ eventDispatcher: this.#dispatcher });
+    }
+    const state = { cancelled: false };
+    const connectPromise = this.#connectAndWaitReady(state, signal);
+    if (!signal) {
+      await connectPromise;
+      return;
+    }
+    let onAbort: (() => void) | undefined;
+    try {
+      await Promise.race([
+        connectPromise,
+        new Promise<never>((_, reject) => {
+          onAbort = () => {
+            this.#quarantineAbortedConnect(state);
+            reject(signal.reason ?? new Error("FEISHU_CONNECT_ABORTED"));
+          };
+          if (signal.aborted) onAbort();
+          else signal.addEventListener("abort", onAbort, { once: true });
+        }),
+      ]);
+    } finally {
+      if (onAbort) signal.removeEventListener("abort", onAbort);
+    }
+  }
+
+  async #connectAndWaitReady(state: { cancelled: boolean }, signal?: AbortSignal): Promise<void> {
+    const outboundPromise = this.#outbound.connect();
+    void outboundPromise.then(
+      async () => {
+        if (state.cancelled || this.#closed || signal?.aborted) {
+          this.botIdentity = undefined;
+          await this.#outbound.disconnect().catch(() => undefined);
+        }
+      },
+      () => undefined,
+    );
+    await outboundPromise;
+    if (state.cancelled || this.#closed || signal?.aborted) {
+      await this.#failAbortedConnect(signal);
+    }
     await this.#ready;
+    if (state.cancelled || this.#closed || signal?.aborted) {
+      await this.#failAbortedConnect(signal);
+    }
+    this.botIdentity = this.#outbound.botIdentity;
+  }
+
+  async #failAbortedConnect(signal?: AbortSignal): Promise<never> {
+    this.botIdentity = undefined;
+    await this.disconnect().catch(() => undefined);
+    throw signal?.reason ?? new Error("FEISHU_CONNECT_ABORTED");
+  }
+
+  #quarantineAbortedConnect(state: { cancelled: boolean }): void {
+    state.cancelled = true;
+    this.#closed = true;
+    this.botIdentity = undefined;
+    this.#wsClient.close({ force: true });
+    void this.#outbound.disconnect().catch(() => undefined);
   }
 
   async disconnect(): Promise<void> {
+    this.#closed = true;
+    this.botIdentity = undefined;
     this.#wsClient.close({ force: true });
     await this.#outbound.disconnect();
   }
@@ -572,6 +644,7 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
   readonly #scopeList: () => Promise<FeishuScopeListResponse>;
   readonly #teamId: string | null;
   readonly #policy: ExternalCallPolicy;
+  readonly #perfLogger: PerformanceLogger | undefined;
 
   constructor(input: {
     onCardAction?: (event: unknown) => Promise<unknown>;
@@ -583,6 +656,7 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
     http?: FeishuHttpCapability;
     scopeList?: () => Promise<FeishuScopeListResponse>;
     /* type-only */ policy?: ExternalCallPolicy;
+    performanceLogger?: PerformanceLogger;
   }) {
     this.#appId = input.appId;
     this.#teamId = input.teamId;
@@ -591,6 +665,7 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
       new ExternalCallPolicy({
         allowedHosts: ["open.feishu.cn", "open.larksuite.com"],
       });
+    this.#perfLogger = input.performanceLogger ?? this.#policy.performanceLogger;
     const domain = feishuDomainForWorkspaceBrand(input.teamBrand);
     const clientOptions = {
       appId: input.appId,
@@ -635,7 +710,7 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
           input.externalMessageId,
           input.failed,
         ),
-      { circuitKey: "feishu:message-reactions", maxAttempts: 1, timeoutMs: 8_000 },
+      { circuitKey: `feishu:message-reactions:${this.#appId}`, maxAttempts: 1, timeoutMs: 8_000 },
     );
   }
 
@@ -646,7 +721,15 @@ export class FeishuAdapter implements ImProviderAdapter<VerifiedFeishuEnvelope> 
 
   async validateBinding(signal?: AbortSignal): Promise<VerifiedBotIdentity> {
     const channel = this.channel;
-    await channel.connect(signal);
+    await traceExternalCall(
+      this.#perfLogger,
+      {
+        provider: "feishu",
+        operation: "external.feishu.channel.connect",
+      },
+      () => channel.connect(signal),
+      { fallbackErrorCode: "FEISHU_CONNECT_FAILED" },
+    );
     const bot = channel.botIdentity;
     if (!bot) throw new Error("FEISHU_BOT_IDENTITY_MISSING");
     return { externalAppId: this.#appId, externalTeamId: this.#teamId ?? this.#appId, externalBotId: bot.openId };

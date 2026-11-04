@@ -1,6 +1,7 @@
 import { request as httpRequest, type RequestOptions } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { SKILL_SOURCE_HTTP_TIMEOUT_MS } from "@opentag/shared";
+import { markExternalCallTimedOut } from "../../../observability/external-call-logger.js";
 import type { OutboundDestinationPin } from "../../outbound/destination-policy.js";
 import { skillSourceTooLarge, skillSourceUnreachable } from "../errors.js";
 
@@ -138,11 +139,18 @@ export const nodeSkillSourceTransport: SkillSourceTransport = (input) => {
         resolve({ status: response.statusCode ?? 0, bytes: merge(chunks, total) });
       });
     });
-    const timer = setTimeout(() => request.destroy(new Error("deadline exceeded")), timeoutMs);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      request.destroy(new Error("deadline exceeded"));
+    }, timeoutMs);
     timer.unref();
     const abort = () => request.destroy(new Error("aborted"));
     input.signal?.addEventListener("abort", abort, { once: true });
-    request.on("error", () => fail(skillSourceUnreachable()));
+    request.on("error", () => {
+      const err = skillSourceUnreachable();
+      fail(timedOut ? markExternalCallTimedOut(err) : err);
+    });
     request.on("close", () => {
       clearTimeout(timer);
       input.signal?.removeEventListener("abort", abort);

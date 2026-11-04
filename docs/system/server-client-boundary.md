@@ -127,19 +127,23 @@ Computer; it is not an authentication or readiness claim.
 
 ## Response compatibility
 
-The Server and the CLI ship separately. A Server release applies to everyone at
-once, while a CLI upgrades only on its next connect, so released CLIs keep
-reading responses from newer Servers for a long time. The HTTP contract
-therefore follows one convention:
+The Server, the CLI, and already-open Web SPA tabs can run at different
+versions. A Server release applies to everyone at once, while a CLI upgrades
+only on its next connect and an open Web browser tab keeps running its loaded
+bundle (polling every 30 seconds) until the user navigates or reloads. The HTTP
+contract therefore follows one convention:
 
 - The Server changes responses additively: it may add fields, but it does not
   remove, rename, or retype an existing field.
-- The client (`packages/client`, which the CLI uses) ignores response fields it
-  does not know. It parses each response with the strict shared schema and, when
-  the only problems are unrecognized keys, drops exactly those keys at the paths
-  the schema reports and parses again. Every known field stays fully validated,
-  and the dropped key paths (never values) go to the client's debug log so
-  version skew is visible when diagnosing.
+- Both the CLI client (`packages/client`) and the Web SPA (`apps/web`) ignore
+  response fields they do not know through `parseResponseIgnoringUnknownKeys` in
+  `@opentag/shared` (`@opentag/shared/browser`). Each response is parsed with
+  the strict shared schema and, when the only problems are unrecognized keys,
+  drops exactly those keys at the paths the schema reports and parses again.
+  Every known field stays fully validated, so additive Server response fields do
+  not break released CLIs or open browser tabs before their next navigation or
+  reload. In `packages/client`, the dropped key paths (never values) go to the
+  client's debug log so version skew is visible when diagnosing.
 - Removing, renaming, or retyping a field, adding an enum value, or any other
   change an older client cannot read still needs version negotiation or a client
   capability header (an `x-opentag-*` request header that opts a newer client

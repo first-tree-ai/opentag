@@ -27,6 +27,7 @@ import {
   users,
 } from "../db/schema/index.js";
 import { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
+import { createPerformanceLogger, type PerformanceLogger } from "../observability/performance-logger.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import { ImDeliveryInputError, validateFreshImRequest } from "../runtime/im-delivery-content.js";
 import { fitDeliveryFrame } from "../runtime/im-delivery-custody.js";
@@ -2915,7 +2916,133 @@ describe("ImDeliveryWorker database workflow", () => {
     await worker.notifyComputerReady(fixture.computerId);
     expect(await readDue()).toBe(clock + 30_000);
   });
+
+  it("populates delivery row performance context for subsequent DB and runtime operations across deliver, steer, and recover", async () => {
+    const records: Record<string, unknown>[] = [];
+    const perfLogger = createPerformanceLogger(
+      () =>
+        ({
+          debug: (payload: Record<string, unknown>) => records.push(payload),
+          info: (payload: Record<string, unknown>) => records.push(payload),
+          warn: (payload: Record<string, unknown>) => records.push(payload),
+        }) as never,
+    );
+    const db = wrapDbWithPerformanceLogger(unit.database, perfLogger);
+
+    const deliverFixture = await workerFixture(unit);
+    await unit.database.update(agents).set({ status: "active" }).where(eq(agents.id, deliverFixture.agentId));
+    const deliverWorker = new ImDeliveryWorker({
+      database: db,
+      domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), deliverFixture, {
+        reconcileStatus: "running",
+      }) as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(deliverFixture.runtime) },
+      registry: deliverFixture.registry,
+    });
+    await perfLogger.traceAsync({ module: "im-delivery", category: "worker", operation: "test.deliver" }, () =>
+      deliverWorker.runOnce(),
+    );
+    const firstDeliverPostRead = records.find(
+      (r) => r.operation === "db.update" && r.outcome === "completed" && r.deliveryId === deliverFixture.deliveryId,
+    );
+    expect(firstDeliverPostRead).toMatchObject({
+      accountId: deliverFixture.userId,
+      agentId: deliverFixture.agentId,
+      computerId: deliverFixture.computerId,
+      sessionId: deliverFixture.sessionId,
+      deliveryId: deliverFixture.deliveryId,
+    });
+
+    records.length = 0;
+    const clock = Date.now();
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({
+        state: "accepted",
+        inputHash: "frozen-hash",
+        turnId: "turn-recover",
+        reportOwnerInstanceId: deliverFixture.instanceId,
+        acceptedAt: new Date(clock),
+        nextAttemptAt: new Date(clock - 1),
+      })
+      .where(eq(imMessageDeliveries.id, deliverFixture.deliveryId));
+    await perfLogger.traceAsync({ module: "im-delivery", category: "worker", operation: "test.recover" }, () =>
+      deliverWorker.runOnce(),
+    );
+    const firstRecoverPostRead = records.find(
+      (r) => r.operation === "db.update" && r.outcome === "completed" && r.deliveryId === deliverFixture.deliveryId,
+    );
+    expect(firstRecoverPostRead).toMatchObject({
+      accountId: deliverFixture.userId,
+      agentId: deliverFixture.agentId,
+      computerId: deliverFixture.computerId,
+      sessionId: deliverFixture.sessionId,
+      deliveryId: deliverFixture.deliveryId,
+      turnId: "turn-recover",
+    });
+
+    await unit.reset();
+    records.length = 0;
+    const steer = await steerFixture(unit);
+    const steerWorker = new ImDeliveryWorker({
+      database: db,
+      domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), steer) as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(steer.runtime) },
+      registry: steer.registry,
+    });
+    await perfLogger.traceAsync({ module: "im-delivery", category: "worker", operation: "test.steer" }, () =>
+      steerWorker.runOnce(),
+    );
+    const steerSelects = records.filter(
+      (r) => r.operation === "db.select" && r.outcome === "completed" && r.deliveryId === steer.deliveryId,
+    );
+    expect(steerSelects[1]).toMatchObject({
+      accountId: steer.userId,
+      agentId: steer.agentId,
+      computerId: steer.computerId,
+      sessionId: steer.sessionId,
+      deliveryId: steer.deliveryId,
+      turnId: "turn-root",
+    });
+  });
 });
+
+function wrapDbWithPerformanceLogger(
+  database: UnitDatabase["database"],
+  perfLogger: PerformanceLogger,
+): UnitDatabase["database"] {
+  const wrapBuilder = <T extends object>(builder: T, operation: string): T =>
+    new Proxy(builder, {
+      get(target, prop, receiver) {
+        if (prop === "then") {
+          const thenFn = Reflect.get(target, prop, receiver);
+          if (typeof thenFn !== "function") return thenFn;
+          return (onFulfilled?: (v: unknown) => unknown, onRejected?: (e: unknown) => unknown) =>
+            perfLogger
+              .traceAsync(
+                { module: "db", category: "db", operation },
+                () => new Promise((resolve, reject) => thenFn.call(target, resolve, reject)),
+              )
+              .then(onFulfilled, onRejected);
+        }
+        const value = Reflect.get(target, prop, receiver);
+        if (typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          const next = value.apply(target, args);
+          return next && typeof next === "object" ? wrapBuilder(next, operation) : next;
+        };
+      },
+    });
+  return new Proxy(database, {
+    get(target, prop, receiver) {
+      const value = Reflect.get(target, prop, receiver);
+      if ((prop === "select" || prop === "update") && typeof value === "function") {
+        return (...args: unknown[]) => wrapBuilder(value.apply(target, args), `db.${String(prop)}`);
+      }
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+}
 
 async function workerFixture(unit: UnitDatabase) {
   const now = new Date(Date.now() + 60 * 60_000);

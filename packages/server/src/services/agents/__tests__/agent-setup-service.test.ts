@@ -903,6 +903,32 @@ describe("Agent setup projection Messaging states", () => {
     return { agentId, computerId };
   }
 
+  it.each(["feishu", "slack"] as const)(
+    "keeps a disconnected %s identity blocked without advertising another connection",
+    async (provider) => {
+      const bootstrap = await account();
+      const { imBindingService, service } = harness({ runtimeReadiness: runtimeReadiness("ready") });
+      const { agentId } = await messagingReadyAgent(bootstrap.userId);
+      const { imBindingId } =
+        provider === "feishu"
+          ? await activateFeishuBinding(imBindingService, agentId)
+          : await activateSlackBinding(imBindingService, agentId);
+      await imBindingService.unbindForAgent(bootstrap.userId, agentId, { provider, bindingId: imBindingId });
+      const snapshot = await service.getSetupById(bootstrap.userId, agentId);
+      expectContractValid(snapshot);
+      expect(snapshot.messaging).toMatchObject({
+        kind: "blocked",
+        provider,
+        bindingId: imBindingId,
+        errorCode: "IM_BINDING_IDENTITY_DISCONNECTED",
+      });
+      expect(snapshot.actions).toEqual([]);
+      expect(await imBindingService.getForAgent(bootstrap.userId, agentId)).toBeUndefined();
+      const outsider = await otherAccount();
+      await expect(service.getSetupById(outsider.userId, agentId)).rejects.toMatchObject({ statusCode: 404 });
+    },
+  );
+
   it("turns a persistent Messaging observation failure into a structured retry blocker", async () => {
     const bootstrap = await account();
     const { agentService } = harness();

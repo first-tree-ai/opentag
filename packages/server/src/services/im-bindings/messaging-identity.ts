@@ -1,5 +1,5 @@
 import type { SlackBindingActivation } from "@opentag/shared";
-import { and, eq, gt } from "drizzle-orm";
+import { and, desc, eq, gt } from "drizzle-orm";
 import type { DatabaseTransaction } from "../../db/client.js";
 import { imBindings } from "../../db/schema/index.js";
 import { ImBindingServiceError } from "./errors.js";
@@ -60,4 +60,26 @@ async function assertNoPreviousMessagingIdentity(transaction: DatabaseTransactio
       409,
       "An Agent's messaging identity cannot be replaced after disconnecting it. Create a new Agent instead.",
     );
+}
+
+export async function readDisconnectedSetupBinding(transaction: DatabaseTransaction, agentId: string) {
+  const [row] = await transaction
+    .select()
+    .from(imBindings)
+    .where(
+      and(eq(imBindings.agentId, agentId), eq(imBindings.status, "disabled"), gt(imBindings.credentialGeneration, 0)),
+    )
+    .orderBy(desc(imBindings.updatedAt), desc(imBindings.id))
+    .limit(1);
+  if (!row) return undefined;
+  return {
+    row,
+    binding: {
+      bindingId: row.id,
+      provider: row.provider,
+      credentialGeneration: row.credentialGeneration,
+      errorCode: "IM_BINDING_IDENTITY_DISCONNECTED",
+      handoff: { bindingState: "disabled" as const, handoffReady: false as const },
+    },
+  };
 }

@@ -83,6 +83,59 @@ describe("ConnectionRegistry", () => {
     expect(registry.providerReadiness(computerId)[0]?.observation.status).toBe("unavailable");
   });
 
+  it("expires registration evidence without a first valid self-check despite continuing heartbeats", async () => {
+    let monotonic = 0;
+    const registry = new ConnectionRegistry({ monotonicNow: () => monotonic });
+    const entry = {
+      computerId: randomUUID(),
+      installationId: randomUUID(),
+      instanceId: randomUUID(),
+      connectionId: randomUUID(),
+      negotiatedCapabilities: { [RUNTIME_CAPABILITY.selfCheckHeartbeat]: 1 },
+      providerReadinessProviders: ["codex" as const],
+      providerReadiness: [{ provider: "codex" as const, status: "ready" as const }],
+      providerReadinessObservedAt: 1000,
+      imCliReadiness: [{ provider: "feishu" as const, status: "ready" as const }],
+      imCliReadinessObservedAt: 1000,
+      lastHeartbeatAt: 1000,
+      socket: { ...socket(), readyState: WebSocket.OPEN } as WebSocket,
+    };
+    await registry.register(entry, async () => undefined);
+    const epoch = registry.requestSelfCheck(entry.computerId, entry.instanceId, 1000);
+    for (const tick of [30_000, 60_000, 74_999]) {
+      monotonic = tick;
+      registry.touch(
+        entry.computerId,
+        entry.instanceId,
+        entry.socket,
+        1000 + tick,
+        undefined,
+        undefined,
+        undefined,
+        tick,
+      );
+    }
+    expect(registry.selfCheckState(entry.computerId)?.stale).toBe(false);
+    expect(
+      registry.recordSelfCheck(entry.computerId, entry.instanceId, entry.connectionId, {
+        type: "runtime:self-check:report",
+        requestId: randomUUID(),
+        selfCheckId: randomUUID(),
+        sequence: 1,
+        checkedAt: new Date().toISOString(),
+        problems: [],
+        providerReadiness: [],
+        imCliReadiness: [],
+      }),
+    ).toBe(false);
+    monotonic = 75_000;
+    expect(registry.connectionStatus(entry.computerId)).toBe("online");
+    expect(registry.selfCheckState(entry.computerId)?.stale).toBe(true);
+    expect(registry.providerReadiness(entry.computerId)[0]?.observation.status).toBe("unavailable");
+    expect(registry.imCliReadiness(entry.computerId)[0]?.observation.status).toBe("unavailable");
+    expect(epoch).toBeDefined();
+  });
+
   it.each([
     undefined,
     "bad",

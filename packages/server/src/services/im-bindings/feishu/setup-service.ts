@@ -697,7 +697,12 @@ export class FeishuSetupService {
   ): Promise<AgentSetupMessagingObservation | undefined> {
     const read = () => this.#imBindings.readSetupForAgent(callerUserId, agentId);
     const observed = await this.#observeRead(await read(), read);
-    return observed ? { binding: observed.binding, attempt: observed.attempt } : undefined;
+    return observed
+      ? {
+          binding: observed.binding,
+          attempt: observed.binding.handoff.bindingState === "disabled" ? undefined : observed.attempt,
+        }
+      : undefined;
   }
 
   async #observeRead<T extends { row: SetupRow; binding?: AgentSetupBindingState }>(

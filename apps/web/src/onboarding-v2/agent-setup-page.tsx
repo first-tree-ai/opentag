@@ -2070,6 +2070,15 @@ function BlockedMessaging({
 }) {
   const [unbindAsked, setUnbindAsked] = useState(false);
   const unbindButtonRef = useRef<HTMLButtonElement>(null);
+  if (messaging.errorCode === "IM_BINDING_IDENTITY_DISCONNECTED")
+    return (
+      <div className="grid gap-3" data-ui="agent-setup-messaging-disconnected">
+        <p>{m.im_identity_disconnected()}</p>
+        <Link {...agentCreateLink()} className={buttonClassName({ variant: "primary" })}>
+          {m.agents_new_agent()}
+        </Link>
+      </div>
+    );
   const binding = currentBindingOf(messaging);
   const switchBlocker = snapshot.blockers.find(
     (blocker): blocker is Extract<AgentSetupSnapshot["blockers"][number], { code: "messaging-unbind-required" }> =>
@@ -2083,10 +2092,6 @@ function BlockedMessaging({
       action.provider === binding.provider &&
       action.bindingId === binding.bindingId,
   );
-  const replace = snapshot.actions.find(
-    (action): action is Extract<AgentSetupAction, { kind: "replace-messaging" }> =>
-      action.kind === "replace-messaging" && binding !== undefined && action.bindingId === binding.bindingId,
-  );
   const unbind = snapshot.actions.find(
     (action): action is Extract<AgentSetupAction, { kind: "unbind-messaging" }> =>
       action.kind === "unbind-messaging" &&
@@ -2094,7 +2099,7 @@ function BlockedMessaging({
       action.provider === binding.provider &&
       action.bindingId === binding.bindingId,
   );
-  const hasActions = [unbind, replace, reauthorize, snapshot.actions.find(isFeishuStartAction)].some(Boolean);
+  const hasActions = [unbind, reauthorize, snapshot.actions.find(isFeishuStartAction)].some(Boolean);
   const busy = controller.busyKey !== undefined;
   return (
     <div className="otv2-messaging-recovery" data-ui="agent-setup-messaging-recovery">
@@ -2139,16 +2144,6 @@ function BlockedMessaging({
             </div>
           ) : null}
           <div className="otv2-messaging-recovery__actions" data-ui="agent-setup-messaging-recovery-actions">
-            {replace ? (
-              <Button
-                disabled={busy}
-                loading={controller.busyKey?.kind === "replace-messaging"}
-                onClick={() => void controller.act(replace)}
-                variant="secondary"
-              >
-                {m.im_change_bot()}
-              </Button>
-            ) : null}
             <RetryInitialAuthorization controller={controller} snapshot={snapshot} />
             {reauthorize ? (
               <Button
@@ -2168,6 +2163,7 @@ function BlockedMessaging({
       {unbind && unbindAsked ? (
         <UnbindMessagingDialog
           action={unbind}
+          configured={messaging.credentialGeneration !== 0}
           busyKey={controller.busyKey}
           error={controller.actionError}
           onAct={controller.act}
@@ -2208,12 +2204,14 @@ function RetryInitialAuthorization({
  */
 function UnbindMessagingDialog({
   action,
+  configured = true,
   busyKey,
   error,
   onAct,
   onClose,
   returnFocusRef,
 }: {
+  readonly configured?: boolean;
   readonly action: Extract<AgentSetupAction, { kind: "unbind-messaging" }>;
   readonly busyKey: AgentSetupAction | undefined;
   readonly error: string | undefined;
@@ -2226,7 +2224,7 @@ function UnbindMessagingDialog({
   return (
     <Dialog
       busy={busy}
-      description={m.im_disconnect_description({ providerName })}
+      description={configured ? m.im_disconnect_description({ providerName }) : m.im_cancel_initial_setup_description()}
       returnFocusRef={returnFocusRef}
       role="alertdialog"
       title={m.im_disconnect_title({ providerName })}

@@ -1402,6 +1402,49 @@ describe("RuntimeSession direct protocol coverage", () => {
     expect(v2.socket.closeCode).toBeUndefined();
   });
 
+  it("keeps an admitted heartbeat live while its database authority check is blocked", async () => {
+    let monotonic = 0;
+    const clock = vi.spyOn(performance, "now").mockImplementation(() => monotonic);
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const registry = new ConnectionRegistry({ monotonicNow: () => monotonic });
+    const touch = vi.spyOn(registry, "touch");
+    const runtime = directRuntimeSession({
+      registry,
+      computers: {
+        heartbeat: vi.fn(async () => {
+          await blocked;
+          return true;
+        }),
+      },
+    });
+    try {
+      await registerDirectV2(runtime);
+      monotonic = 89_000;
+      runtime.socket.emit(
+        "message",
+        JSON.stringify(heartbeatFrame(runtime.socket, runtime.context.installationId, runtime.instanceId)),
+        false,
+      );
+      await vi.waitFor(() => expect(runtime.computers.heartbeat).toHaveBeenCalledTimes(1));
+      monotonic = 100_000;
+      expect(registry.connectionStatus(runtime.context.computerId)).toBe("online");
+      expect(registry.terminateStale(Date.now() - 90_000)).toBe(0);
+      expect(touch).not.toHaveBeenCalled();
+      release();
+      await vi.waitFor(() => expect(touch).toHaveBeenCalledTimes(1));
+      monotonic = 179_001;
+      expect(registry.connectionStatus(runtime.context.computerId)).toBe("offline");
+      expect(registry.terminateStale(Date.now() - 90_000)).toBe(1);
+    } finally {
+      release();
+      runtime.socket.emit("close", 1000);
+      clock.mockRestore();
+    }
+  });
+
   it("handles heartbeat fences, duplicate heartbeats, and replacement races", async () => {
     const mismatch = directRuntimeSession();
     await registerDirect(mismatch);
@@ -1636,6 +1679,7 @@ function directRuntimeSession(
       disconnect: ReturnType<typeof vi.fn>;
     }>;
     logger?: ServiceLogger;
+    registry?: ConnectionRegistry;
   } = {},
 ) {
   const socket = new RuntimeTestSocket();
@@ -1652,7 +1696,7 @@ function directRuntimeSession(
     heartbeat: input.computers?.heartbeat ?? vi.fn().mockResolvedValue(true),
     disconnect: input.computers?.disconnect ?? vi.fn().mockResolvedValue(true),
   };
-  const registry = new ConnectionRegistry();
+  const registry = input.registry ?? new ConnectionRegistry();
   const session = new RuntimeSession(socket as never, auth as never, computers as never, registry, {
     business: input.business,
     logger: input.logger,
@@ -1744,6 +1788,9 @@ function heartbeatFrame(socket: RuntimeTestSocket, installationId: string, insta
 }
 
 class RuntimeTestSocket extends EventEmitter {
+  terminate(): void {
+    this.emit("close", 1006);
+  }
   readyState: number = WebSocket.OPEN;
   readonly frames: unknown[] = [];
   closeCode?: number;

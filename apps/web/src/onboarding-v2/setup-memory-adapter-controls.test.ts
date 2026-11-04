@@ -219,7 +219,7 @@ describe("createMemorySetupAdapter write guards", () => {
     const slack = createMemorySetupAdapter({ agent: setupAgent() });
     await slack.adapter.startSlackInstall(SETUP_AGENT_ID, "create", { kind: "unbound" });
     await expect(slack.adapter.startSlackInstall(SETUP_AGENT_ID, "create", { kind: "unbound" })).rejects.toThrow(
-      /unbind before a fresh install/,
+      /unconfigured Agent/,
     );
   });
 

@@ -84,7 +84,9 @@ The legacy rebind and Feishu replace commands obey the same boundary. An empty C
 bound to an owned target at any revision: editing an unbound Agent never requires recreating it.
 Selecting the existing Computer is an idempotent no-op. Same-Computer reconnect, upgrades and
 credential repair, same-App reauthorization, and ordinary model, permissions and profile edits
-remain available. Configured messaging cannot be replaced by disconnecting and recreating it.
+remain available. Configured messaging cannot be replaced by disconnecting and recreating it. After disconnection,
+setup names the retired identity and offers a new Agent instead of connection actions. A never-activated
+provisioning slot can still be cleared and creation resumed on the same Agent.
 Operator transfer rejects an Agent with a Computer or configured messaging identity; it preserves
 custody checks and retained data. An unbound, unconfigured Agent may still transfer under the
 existing operator preconditions and finish creation under its owner.

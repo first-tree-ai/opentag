@@ -68,7 +68,7 @@ export interface MemorySetupSeed {
   /**
    * The exact Agent, as the Account summary knows it. `agent.computer` decides the Computer leg:
    * `null` is not-bound; `requiresComputerRebind` keeps the stale identity visible while the
-   * reader chooses a Computer that this Account owns.
+   * reader sees why a new Agent is required.
    */
   readonly agent: AgentSummary;
   /** The Account inventory used by Computer choice and connect flows in Review Lab. */
@@ -160,6 +160,7 @@ type MemoryMessagingState =
       bindingId: string;
       credentialGeneration: number;
       reachable: boolean;
+      disconnected?: boolean;
       attention: AgentSetupMessagingBlockerCode | undefined;
     };
 
@@ -194,6 +195,11 @@ function attemptExpiresAt(): string {
   return new Date(Date.now() + ATTEMPT_TTL_MS).toISOString();
 }
 
+function assertMessagingNotDisconnected(messaging: MemoryMessagingState): void {
+  if (messaging.kind === "bound" && messaging.disconnected)
+    throw new Error("Create a new Agent to connect messaging again");
+}
+
 function deriveMessaging(state: MemoryMessagingState): AgentSetupMessagingState {
   switch (state.kind) {
     case "not-configured":
@@ -212,6 +218,15 @@ function deriveMessaging(state: MemoryMessagingState): AgentSetupMessagingState 
     case "slack-install":
       return { kind: "authorizing", provider: "slack", expiresAt: attemptExpiresAt() };
     case "bound":
+      if (state.disconnected)
+        return {
+          kind: "blocked",
+          provider: state.provider,
+          bindingId: state.bindingId,
+          credentialGeneration: state.credentialGeneration,
+          code: "provider-error",
+          errorCode: "IM_BINDING_IDENTITY_DISCONNECTED",
+        };
       if (state.attention) {
         return {
           kind: "blocked",
@@ -381,7 +396,7 @@ function deriveMessagingActions(messaging: MemoryMessagingState): AgentSetupActi
     case "slack-install":
       return [{ kind: "refresh" }];
     case "bound":
-      return deriveBoundActions(messaging);
+      return messaging.disconnected ? [] : deriveBoundActions(messaging);
   }
 }
 
@@ -685,6 +700,7 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
     },
     startFeishuAttempt: async (agentId, intent, expectedMessaging) => {
       if (agentId !== state.agent.id) throw new Error(`No such Agent: ${agentId}`);
+      assertMessagingNotDisconnected(state.messaging);
       if (intent === "replace") throw new Error("An Agent's messaging App cannot be replaced");
       assertExpectedMessaging(state, expectedMessaging, `${intent} ${messagingProviderLabel("feishu")}`);
       const current = state.messaging.kind === "bound" ? state.messaging : undefined;
@@ -733,11 +749,12 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
     },
     startSlackInstall: async (agentId, intent, expectedMessaging) => {
       if (agentId !== state.agent.id) throw new Error(`No such Agent: ${agentId}`);
+      assertMessagingNotDisconnected(state.messaging);
       assertExpectedMessaging(state, expectedMessaging, `${intent} ${messagingProviderLabel("slack")}`);
       const prior = state.messaging.kind === "bound" ? state.messaging : undefined;
       if (intent === "create" && state.messaging.kind !== "not-configured") {
         throw new Error(
-          `${messagingProviderLabel("slack")} install requires the Agent to be unbound; unbind before a fresh install`,
+          `${messagingProviderLabel("slack")} install requires an unconfigured Agent; create a new Agent to use another identity`,
         );
       }
       if (intent === "reauthorize" && prior?.provider !== "slack") {
@@ -754,7 +771,10 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
       if (current.bindingId !== bindingId || current.provider !== provider) {
         throw new Error(`Binding ${bindingId} is not the current binding`);
       }
-      state.messaging = { kind: "not-configured" };
+      state.messaging =
+        current.credentialGeneration > 0
+          ? { ...current, credentialGeneration: current.credentialGeneration + 1, reachable: false, disconnected: true }
+          : { kind: "not-configured" };
       changed();
     },
   };
@@ -832,7 +852,7 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
         throw new Error(`No ${messagingProviderLabel("feishu")} attempt is waiting for a scan`);
       }
       const { bindingId, intent, prior } = state.messaging;
-      // A first connection still owes the Server's observation; a reauthorization or replace
+      // A first connection still owes the Server's observation; a reauthorization
       // returns to the binding it was maintaining, with the attention it was raised to clear gone.
       state.messaging =
         intent === "create" || prior === undefined

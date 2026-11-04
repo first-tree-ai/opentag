@@ -90,6 +90,7 @@ export interface RuntimeConnectionEntry {
   selfCheckSequence?: number;
   selfCheckHash?: string;
   selfCheckStartedAt?: number;
+  selfCheckStartedMonotonicAt?: number;
   selfCheckReceivedAt?: number;
   selfCheckMonotonicAt?: number;
   selfCheckCheckedAt?: string;
@@ -164,7 +165,10 @@ export class ConnectionRegistry {
       }
       this.#retainedCredentials.delete(entry.computerId);
       entry.lastHeartbeatMonotonicAt = this.#monotonicNow();
-      if (selfChecking(entry)) entry.selfCheckStartedAt = entry.lastHeartbeatAt;
+      if (selfChecking(entry)) {
+        entry.selfCheckStartedAt = entry.lastHeartbeatAt;
+        entry.selfCheckStartedMonotonicAt = entry.lastHeartbeatMonotonicAt;
+      }
       this.#entries.set(entry.computerId, entry);
       if (previous && previous.socket !== entry.socket) {
         previous.socket.close(4001, "Replaced by a newer daemon instance");
@@ -216,8 +220,9 @@ export class ConnectionRegistry {
       startedAt: entry.selfCheckStartedAt,
       problems: [...(entry.selfCheckProblems ?? [])],
       stale:
-        entry.selfCheckMonotonicAt !== undefined &&
-        this.#monotonicNow() - entry.selfCheckMonotonicAt >= RUNTIME_SELF_CHECK_STALE_MS,
+        this.#monotonicNow() -
+          (entry.selfCheckMonotonicAt ?? entry.selfCheckStartedMonotonicAt ?? Number.NEGATIVE_INFINITY) >=
+        RUNTIME_SELF_CHECK_STALE_MS,
     };
   }
 
@@ -229,6 +234,7 @@ export class ConnectionRegistry {
     entry.selfCheckSequence = 0;
     delete entry.selfCheckHash;
     entry.selfCheckStartedAt = now;
+    entry.selfCheckStartedMonotonicAt ??= this.#monotonicNow();
     return { type: "runtime:self-check", requestId };
   }
 
@@ -677,6 +683,33 @@ export class ConnectionRegistry {
         resolve();
       });
     });
+  }
+
+  recordHeartbeatReceipt(input: {
+    computerId: string;
+    installationId: string;
+    instanceId: string;
+    connectionId: string | undefined;
+    socket: WebSocket;
+    receivedAt: number;
+    receivedMonotonicAt: number;
+  }): boolean {
+    const current = this.#entries.get(input.computerId);
+    if (
+      !current ||
+      current.active === false ||
+      current.socket !== input.socket ||
+      current.instanceId !== input.instanceId ||
+      current.installationId !== input.installationId ||
+      current.connectionId !== input.connectionId
+    )
+      return false;
+    current.lastHeartbeatAt = Math.max(current.lastHeartbeatAt, input.receivedAt);
+    current.lastHeartbeatMonotonicAt = Math.max(
+      current.lastHeartbeatMonotonicAt ?? input.receivedMonotonicAt,
+      input.receivedMonotonicAt,
+    );
+    return true;
   }
 
   touch(

@@ -269,32 +269,7 @@ export class RuntimeSession {
 
     if (this.#state !== "registered") return;
     if (envelope.data.type === "heartbeat") {
-      const parsed = ClientRuntimeFrameSchema.safeParse(decoded);
-      if (!parsed.success || parsed.data.type !== "heartbeat") {
-        this.#fail("PROTOCOL_ERROR", "The heartbeat frame is invalid", 4400, envelope.data.requestId);
-        return;
-      }
-      if (!this.#heartbeatMatchesConnection(parsed.data)) {
-        this.#fail("COMPUTER_NOT_REGISTERED", "The runtime connection fence is stale", 4409, parsed.data.requestId);
-        return;
-      }
-      if (this.#heartbeatAdmissionBlocked()) {
-        this.#fail("PROTOCOL_ERROR", "A heartbeat is already in progress", 4400, parsed.data.requestId);
-        return;
-      }
-      const receivedAt = this.#options.now().getTime();
-      const receivedMonotonicAt = performance.now();
-      this.#pendingHeartbeats += 1;
-      const heartbeat = parsed.data;
-      const work = Promise.resolve(this.#heartbeatWork).then(() =>
-        this.#heartbeat(heartbeat, receivedAt, receivedMonotonicAt),
-      );
-      this.#heartbeatWork = work;
-      const settled = () => {
-        this.#pendingHeartbeats -= 1;
-        if (this.#heartbeatWork === work) this.#heartbeatWork = undefined;
-      };
-      void work.then(settled, settled);
+      this.#admitHeartbeat(decoded, envelope.data.requestId);
       return;
     }
     if (CLIENT_CONTROL_FRAME_TYPES.has(envelope.data.type)) {
@@ -451,6 +426,55 @@ export class RuntimeSession {
     } catch (error) {
       this.#handleRequestError(error, frame.requestId);
     }
+  }
+
+  #admitHeartbeat(decoded: unknown, requestId?: string): void {
+    const parsed = ClientRuntimeFrameSchema.safeParse(decoded);
+    if (!parsed.success || parsed.data.type !== "heartbeat") {
+      this.#fail("PROTOCOL_ERROR", "The heartbeat frame is invalid", 4400, requestId);
+      return;
+    }
+    if (!this.#heartbeatMatchesConnection(parsed.data)) {
+      this.#fail("COMPUTER_NOT_REGISTERED", "The runtime connection fence is stale", 4409, parsed.data.requestId);
+      return;
+    }
+    if (this.#heartbeatAdmissionBlocked()) {
+      this.#fail("PROTOCOL_ERROR", "A heartbeat is already in progress", 4400, parsed.data.requestId);
+      return;
+    }
+    const heartbeat = parsed.data;
+    const auth = this.#authContext;
+    if (!this.#acceptsProviderReadiness(heartbeat.providerReadiness)) {
+      this.#fail("PROTOCOL_ERROR", "Provider readiness was not negotiated", 4400, heartbeat.requestId);
+      return;
+    }
+    const receivedAt = this.#options.now().getTime();
+    const receivedMonotonicAt = performance.now();
+    if (
+      !auth ||
+      !this.#registry.recordHeartbeatReceipt({
+        computerId: auth.computerId,
+        installationId: heartbeat.installationId,
+        instanceId: heartbeat.instanceId,
+        connectionId: this.#connectionId,
+        socket: this.#socket,
+        receivedAt,
+        receivedMonotonicAt,
+      })
+    ) {
+      this.#fail("COMPUTER_NOT_REGISTERED", "The Computer instance was replaced", 4409, heartbeat.requestId);
+      return;
+    }
+    this.#pendingHeartbeats += 1;
+    const work = Promise.resolve(this.#heartbeatWork).then(() =>
+      this.#heartbeat(heartbeat, receivedAt, receivedMonotonicAt),
+    );
+    this.#heartbeatWork = work;
+    const settled = () => {
+      this.#pendingHeartbeats -= 1;
+      if (this.#heartbeatWork === work) this.#heartbeatWork = undefined;
+    };
+    void work.then(settled, settled);
   }
 
   #heartbeatAdmissionBlocked(): boolean {

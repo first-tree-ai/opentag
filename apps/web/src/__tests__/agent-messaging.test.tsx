@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../api.js";
 import { App } from "../app.js";
 import { pendingSlackConfiguration, setupSlackConfiguration } from "../onboarding-v2/agent-setup-test-fixtures.js";
+import { createMemorySetupAdapter } from "../onboarding-v2/setup-memory-adapter.js";
 import { agentId, computerId, installApi, json, resetWebAppState } from "./support/app-fixtures.js";
 import { withLocaleAsync } from "./support/with-locale.js";
 
@@ -70,6 +71,28 @@ describe("OpenTag Web App Shell", () => {
       }
       rendered.unmount();
     }
+  });
+
+  it("offers a new Agent instead of connection buttons for a disconnected identity", async () => {
+    installApi({ bound: false });
+    const original = browserApi.agentSetup.bind(browserApi);
+    vi.spyOn(browserApi, "agentSetup").mockImplementation(async (id) => {
+      const { agent } = await original(id);
+      const { adapter } = createMemorySetupAdapter({
+        agent,
+        messaging: { kind: "bound", provider: "feishu", reachable: true },
+      });
+      const snapshot = await adapter.readSnapshot(id);
+      if (snapshot.messaging.kind !== "ready") throw new Error("Missing messaging fixture");
+      await adapter.unbindMessaging(id, "feishu", snapshot.messaging.bindingId);
+      return adapter.readSnapshot(id);
+    });
+    window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
+    render(<App />);
+    expect(await screen.findByRole("link", { name: "New Agent" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Connect Slack" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Connect Lark" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Change bot" })).toBeNull();
   });
 
   it("offers messaging app setup only when the missing binding is confirmed", async () => {
@@ -227,7 +250,7 @@ describe("OpenTag Web App Shell", () => {
       screen.getByText("This Agent always receives direct messages. Choose when it receives messages in group chats."),
     ).toBeTruthy();
     expect(screen.getByRole("group", { name: "Receive mode" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Change bot" }).className).toContain("ui-button");
+    expect(screen.queryByRole("button", { name: "Change bot" })).toBeNull();
     const disconnect = screen.getByRole("button", { name: "Disconnect Lark" });
     expect(disconnect.className).toContain("ui-button");
     expect(disconnect.className).toContain("text-kumo-danger");
@@ -518,14 +541,15 @@ describe("OpenTag Web App Shell", () => {
     expect(await screen.findByText("Messaging permissions need updating")).toBeTruthy();
     expect(screen.queryByText(/Online/)).toBeNull();
     expect(screen.getByRole("button", { name: /Update permissions$/ })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Change bot" }));
-    expect(await screen.findByRole("dialog", { name: "Change Lark bot" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Change bot" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Update permissions$/ }));
+    expect(await screen.findByRole("dialog", { name: "Update Lark permissions" })).toBeTruthy();
     const request = vi
       .mocked(fetch)
       .mock.calls.find(
         ([input, init]) => String(input).endsWith("/im-binding/feishu/setup-attempts") && init?.method === "POST",
       );
-    expect(JSON.parse(String(request?.[1]?.body))).toEqual({ intent: "replace" });
+    expect(JSON.parse(String(request?.[1]?.body))).toEqual({ intent: "reauthorize" });
   });
 
   it("keeps Agent delivery state separate from its connected messaging app", async () => {
@@ -555,12 +579,12 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("link", { name: "View Computer" })).toBeNull();
   });
 
-  it("shows a safe occupied-App recovery and retries the original replacement intent", async () => {
-    installApi({ bound: true, setupFailureCode: "FEISHU_APP_ALREADY_BOUND" });
+  it("keeps occupied-App recovery on the original first-connection intent", async () => {
+    installApi({ bound: false, setupFailureCode: "FEISHU_APP_ALREADY_BOUND" });
     window.history.replaceState({}, "", `/agents/${agentId}/settings/messaging`);
     render(<App />);
-    fireEvent.click(await screen.findByRole("button", { name: "Change bot" }));
-    const setupNotice = await screen.findByRole("dialog", { name: "Change Lark bot" });
+    fireEvent.click(await screen.findByRole("button", { name: "Connect Lark" }));
+    const setupNotice = await screen.findByRole("dialog", { name: "Connect Lark" });
     expect(setupNotice?.textContent).toContain(
       "This Lark bot is already connected to another Agent. Choose a different bot and try again.",
     );
@@ -573,8 +597,8 @@ describe("OpenTag Web App Shell", () => {
         );
       expect(requests).toHaveLength(2);
       expect(requests.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
-        { intent: "replace" },
-        { intent: "replace" },
+        { intent: "create" },
+        { intent: "create" },
       ]);
     });
   });

@@ -197,7 +197,8 @@ binding and credential generation.
 The daemon checks local runtime and CLI state every 30 seconds and publishes completed results
 immediately. Each component has a ten-second logical deadline. A timeout reports a named problem;
 the owner retains the actual work until settlement, preventing overlapping probes and joining it
-on shutdown. A missing completed report becomes stale after 75 seconds. Heartbeats run every
+on shutdown. Freshness starts at registration even if no first report is accepted. A missing completed report
+becomes stale after 75 seconds; heartbeats and rejected reports do not extend that deadline. Heartbeats run every
 30 seconds independently of the previous acknowledgement, with at most three outstanding IDs.
 Delayed and out-of-order acknowledgements keep their exact connection fence. Read-time presence
 uses a monotonic 90-second deadline; the stale socket sweep runs at most five seconds apart.

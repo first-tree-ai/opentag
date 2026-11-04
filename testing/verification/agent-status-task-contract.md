@@ -117,3 +117,24 @@ The final follow-up also incorporates `main@1bca6c9a8`, which classifies inbound
 expected deferrals. The same four-file coverage validation passed all 171 cases with that base and
 the repository-compatible deferred-promise fixture. Root type checks passed; the edited Web
 combination also built successfully.
+
+## Review contract corrections
+
+Admitted heartbeats now advance connection-fenced liveness before waiting for database authority.
+Readiness and capability publication still wait for that authority. A blocked-database regression
+checks both online classification and stale sweeping, and proves that completing persistence later
+does not extend the receipt deadline. Self-check freshness also starts monotonically at registration
+when no report has been accepted; continuing heartbeats and rejected reports cannot retain initial
+Provider or messaging CLI readiness beyond 75 seconds.
+
+Settings no longer offers Change bot, and same-App permission repair still sends reauthorization.
+After a configured identity is disconnected, an owner-authorized setup read projects its retained
+identity as blocked and offers a new Agent. Settings confirms setup authority before offering first
+connection actions; it retains the Slack dialog instance during a successful binding refresh.
+Never-activated generation-zero slots can still be cleared and creation resumed; their confirmation
+copy explicitly differs from a configured identity's irreversible messaging disconnection.
+
+The review correction subsets passed 193 Server and 197 Web cases. A native PostgreSQL smoke reused
+the existing local server: both Providers exposed the disconnected identity to its owner, refused a
+foreign owner with 404, and rolled every fixture back. A readback verified no probe users remained;
+no temporary container was started. The script and machine-specific log stay outside the repository.

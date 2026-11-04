@@ -3,8 +3,7 @@
  *
  * What is pinned here is the contract the route will rely on: the page renders only what the
  * canonical snapshot says (stage, identities, blockers, permitted actions), it never invents a
- * Provider or a stage, a stale read can never overwrite a newer one, and the only way across
- * Providers is an explicit unbind followed by the fresh choice.
+ * Provider or a stage, a stale read can never overwrite a newer one, and configured identities cannot be replaced, and a disconnected identity requires a new Agent.
  */
 
 import type { AccountComputerSummary, AgentSetupSnapshot } from "@opentag/shared/browser";
@@ -256,6 +255,21 @@ describe("AgentSetupPage stages", () => {
       expect(screen.queryByRole("button", { name: "Copy" })).toBeNull();
     },
   );
+
+  it("offers a new Agent after a configured messaging identity is disconnected", async () => {
+    const memory = createMemorySetupAdapter({
+      agent: setupAgent(),
+      messaging: { kind: "bound", provider: "feishu", reachable: true },
+    });
+    const current = await memory.adapter.readSnapshot(SETUP_AGENT_ID);
+    if (current.messaging.kind !== "ready") throw new Error("Missing binding fixture");
+    await memory.adapter.unbindMessaging(SETUP_AGENT_ID, "feishu", current.messaging.bindingId);
+    renderSetup(memory.adapter);
+    await settle();
+    expect(screen.getByRole("link", { name: "New Agent" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Connect Lark" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Connect Slack" })).toBeNull();
+  });
 
   it("describes multiple existing Computers as an Agent choice without offering a new connection", async () => {
     const inventory = createMemorySetupAdapter({ agent: setupAgent() });
@@ -1219,7 +1233,7 @@ describe("AgentSetupPage transitions", () => {
     );
   });
 
-  it("moves across Providers only through an explicit unbind, then offers the fresh choice", async () => {
+  it("requires a new Agent after disconnecting a configured Provider", async () => {
     const memory = createMemorySetupAdapter({
       agent: setupAgent(),
       messaging: { kind: "bound", provider: "slack", reachable: true, attention: "provider-error" },
@@ -1240,9 +1254,10 @@ describe("AgentSetupPage transitions", () => {
     await settle();
 
     expect(unbind).toHaveBeenCalledWith(SETUP_AGENT_ID, "slack", bindingId);
-    // The binding is gone, and only now is a fresh Provider choice offered.
-    expect(screen.getByRole("button", { name: /Lark/ })).toBeTruthy();
-    expect(screen.getByRole("button", { name: /Slack/ })).toBeTruthy();
+    expect(dialog.textContent).toContain("This Agent cannot reconnect");
+    expect(screen.getByRole("link", { name: "New Agent" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Lark/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Slack/ })).toBeNull();
   });
 
   it("keeps a failed action's feedback beside it and the snapshot on screen", async () => {

@@ -65,7 +65,7 @@ import {
   type ImBindingReadiness,
   type ImBindingReadinessInput,
 } from "./im-binding-provider-cli.js";
-import { assertFeishuIdentity, assertSlackIdentity } from "./messaging-identity.js";
+import { assertFeishuIdentity, assertSlackIdentity, readDisconnectedSetupBinding } from "./messaging-identity.js";
 
 type QueryExecutor = Pick<DatabaseClient, "select">;
 type CredentialMaterialWithId = CredentialMaterialInput & { id?: string };
@@ -769,7 +769,10 @@ export class ImBindingService {
   /** Internal captured row for Feishu projection; only the public binding view may be serialized. */
   async readSetupForAgent(callerUserId: string, agentId: string) {
     const observed = await this.#observeForAgent(callerUserId, agentId);
-    if (!observed) return undefined;
+    if (!observed)
+      return this.#readForAgent(callerUserId, agentId, (transaction) =>
+        readDisconnectedSetupBinding(transaction, agentId),
+      );
     return {
       row: observed.row,
       binding: {

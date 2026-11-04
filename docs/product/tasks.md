@@ -45,8 +45,12 @@ is one chat Session.
   their Task. A footer links only when that Task qualifies under the same rule the Task list and
   detail use, so an emitted link never opens a 404: an ambient-only group channel Session, an
   internal Session whose creator chain reaches one, or a Session that cannot be found gets plain
-  `Session <shortId>` text. Footers that older replies carry anchor on a request's message id and
-  keep resolving.
+  `Session <shortId>` text. The check runs before every annotated provider write, so it never reads
+  the Task's status rollup: it resolves the Session's Task once and asks whether a qualifying
+  delivery exists through a few bounded index-range probes, each stopping at its first match, so a
+  Task costs the same whether it qualifies or holds only superseded deliveries, however long the
+  history is. Footers that
+  older replies carry anchor on a request's message id and keep resolving.
 - `createdAt` is the earlier of the Session's creation and its first addressed message.
 
 A Task reports `sessionKind: "thread"` and the Session's thread key for a group thread Session.
@@ -64,8 +68,9 @@ in `sections` — all three when it names none — each with its own `nextCursor
 also page independently at `/detail/turns`, `/detail/internal-sessions` and
 `/detail/collaboration-messages`, so a reader that needs more of one section asks for that section
 alone. Each section returns at most 100 rows and 20 by default. Naming a subset is the point of the
-contract: the Web conversation renders the summary and the Turns, asks for `sections=turns`, and
-never reads the Internal Session or collaboration history it would discard. Reading any of them
+contract: the Web conversation renders the summary and the Turns and asks for `sections=turns`; it
+reads the internal Sessions from their own section, page by page, and never reads the collaboration
+history it does not show. Reading any of them
 resolves the Task and serves the requested sections from one read-only Repeatable Read transaction,
 so an authorized Task is read from a single snapshot and no wait spans external I/O. The captured-replies
 subresource also resolves its Task and reads replies in one read-only snapshot. It reads chat
@@ -271,6 +276,24 @@ once.
 Internal Sessions are read earliest first, with ended Sessions included, so paging walks the whole
 attributed history rather than only what is alive now. Both sections page on `(createdAt, id)`; a
 message or Session is never repeated across pages.
+
+Each internal Session row carries a `title`: its stored manual or generated title, or else the start
+of the first collaboration message it received, which is the work it was created for, collapsed to
+one line and bounded at 120 characters (code points). The Server does the collapsing, with one
+definition of whitespace that includes Unicode spaces such as NBSP and the ideographic space, so a
+body that opens with any run of whitespace still yields its words; a title that is only whitespace
+counts as absent. It also carries `lastActivityAt`: the latest of its
+creation, its end, and the newest collaboration message it sent or received. Both fields are
+optional in the shared schema, so a reader still accepts an older Server's rows.
+
+The Web Task detail lists the internal Sessions above the conversation, under an **Internal
+Sessions** heading, from the `/detail/internal-sessions` section under the canonical Task id. It
+shows the first page and loads the next one on **Load more internal Sessions**. Each row shows the
+Session's title, or its model or id when it has none, with its id beside a title. It reads
+**Active** until the Session ends and **Ended** afterwards, and shows the relative time of its
+latest activity. The section appears only when the Task has internal Sessions. A page that cannot
+be read says so in the section's place and leaves the conversation in place. Collaboration messages
+are not shown.
 
 ## Boundaries
 

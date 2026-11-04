@@ -199,6 +199,13 @@ export const TaskInternalSessionSchema = z
     endedAt: z.string().datetime().nullable(),
     runtimeModel: z.string().nullable(),
     runtimeReasoningEffort: z.string().nullable(),
+    /**
+     * Its stored title, or the start of the first collaboration message it received: what it was
+     * created to do. Optional so a reader still accepts an older Server's rows.
+     */
+    title: z.string().min(1).nullable().optional(),
+    /** Its creation, its end, or its newest collaboration message, whichever is latest. */
+    lastActivityAt: z.string().datetime().optional(),
   })
   .strict();
 

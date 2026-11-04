@@ -415,6 +415,7 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
     expect(local).toContain("An accepted result means the target accepted the message for processing");
     expect(local).toContain("retry with the same messageId and exactly the same semantic input");
     expect(local).not.toContain("its final text is not automatically returned to its parent");
+    expect(local).toContain("pass `--max-duration-ms` with headroom");
 
     const cloud = renderManagedSystemPrompt(snapshot, cloudSession);
     expect(cloud).toContain("Session collaboration is available through these commands:");
@@ -426,6 +427,7 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
     expect(cloud).toContain("An accepted result means the target accepted the message for processing");
     expect(cloud).toContain("retry with the same messageId and exactly the same semantic input");
     expect(cloud).toContain("its final text is not automatically returned to its parent");
+    expect(cloud).toContain("pass `--max-duration-ms` with headroom");
   });
 
   it("renders session-specific instructions from the snapshot on both environments", () => {

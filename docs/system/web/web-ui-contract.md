@@ -78,6 +78,19 @@ nothing is deleted and the dialog says so. If the delete fails after the pause, 
 and Try again retries only the delete. A missing permission is named as such. Why: the reader has already confirmed
 the delete, so a separate pause step adds nothing for them, and each failure has to say which state it left.
 
+### Paused Agent settings
+
+Pausing an Agent does not change which settings its current Account owner can read. Name, Model and Soul,
+Computer, Context Trees, Skills, MCP connectors, Messaging, and Pause/Delete remain accessible. Messaging
+shows the stored channel identity and binding state on the settings page, settings overview, and Agent status card.
+A failed read stays unavailable; it is never presented as a missing connection or a successful connection.
+
+Messaging settings are read-only while paused. Connection, replacement, reauthorization, credential updates,
+disconnection, activation checks, cancellation, and message-trigger changes are disabled with a localized reason.
+Saved Feishu attempts and Slack configuration details remain readable without starting setup or refreshing CLI
+credentials. Existing permissions for other settings are unchanged. Deleted Agents, other Accounts, and revoked
+Account sessions remain unauthorized; resuming the Agent is a separate explicit action.
+
 Every full-screen state that replaces the application shell must keep a way to sign out, because an Account that has
 not finished setup is shown nothing else. First-time creation and exact setup headers reuse the shared Account menu,
 aligned with their navigation action. Until Account setup is complete, that menu offers only Sign out; navigation links

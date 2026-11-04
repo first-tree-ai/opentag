@@ -577,12 +577,12 @@ export function agentMessagingStatus(agent: AgentDetailView): AgentDependencySta
       tone: "neutral",
     };
   }
-  const handoff = agent.availability.dependencies.handoff;
+  const handoff = agent.status === "suspended" ? undefined : agent.availability.dependencies.handoff;
   /*
    * The Computer is re-verifying delivery on a connected channel. The phase names what it is doing
    * so the row reads as progress rather than as a verdict; there is no action because none is asked.
    */
-  if (binding.bindingState === "active" && handoff.state === "checking") {
+  if (binding.bindingState === "active" && handoff?.state === "checking") {
     return {
       label:
         handoff.providerCli?.phase === "preparing_cli"
@@ -591,7 +591,7 @@ export function agentMessagingStatus(agent: AgentDetailView): AgentDependencySta
       tone: "info",
     };
   }
-  if (binding.bindingState === "active" && handoff.state === "action_required") {
+  if (binding.bindingState === "active" && handoff?.state === "action_required") {
     return {
       action: setupOrMaintenanceAction(
         agent,
@@ -603,10 +603,10 @@ export function agentMessagingStatus(agent: AgentDetailView): AgentDependencySta
     };
   }
   /*
-   * An active binding whose delivery evidence could not be read is `handoff_unconfirmed`. The
+   * A running Agent whose delivery evidence could not be read is `handoff_unconfirmed`. The
    * channel may well be fine, but this row states what is known, and "Connected" is not known.
    */
-  if (binding.bindingState === "active" && handoff.state === "unconfirmed") {
+  if (binding.bindingState === "active" && handoff?.state === "unconfirmed") {
     return {
       action: settingsAction(agent.id, m.agents_status_action_view_channel(), "messaging"),
       label: m.agents_status_unknown(),

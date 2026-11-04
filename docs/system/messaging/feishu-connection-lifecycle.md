@@ -135,6 +135,19 @@ last trustworthy snapshot. At exhaustion, Check again starts a fresh read window
 a Computer, checking an upstream candidate, creating another authorization, or disconnecting.
 Actual authorizing, waiting-handoff and offline observations retain their existing waiting behavior.
 
+### Paused settings reads
+
+The current Account owner can read binding summaries, configuration, handoff observations, diagnostics, and
+saved setup attempts for active or paused Agents. Deleted Agents and other Accounts are rejected. Authorization
+and stored details share a read-only Repeatable Read snapshot; attempt confirmation reads repeat that check,
+and public attempt reads recheck current ownership before returning. Read DTOs keep secrets, encrypted setup
+context, and ownership tokens private.
+
+Paused handoff and diagnostic reads inspect existing runtime observations without scheduling Provider CLI
+preparation or credential validation. Reads do not activate or cancel a candidate, extend its retention, resume an
+Agent, or call Feishu. Setup creation, explicit activation checks, cancellation, and asynchronous completion keep
+their active-only admission, final mutation guards, and attempt/generation fences.
+
 ### Minimal database migration for `pending_activation`
 
 - Append `pending_activation` to `feishu_setup_state`.

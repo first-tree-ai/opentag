@@ -74,6 +74,7 @@
   "im_messaging_page_title": "Messaging",
   "im_no_messaging_app": "No messaging app connected",
   "im_qr_scan_alt": "Scan this QR code in {provider}",
+  "im_paused_read_only": "This Agent is paused. Messaging settings are read-only until it resumes.",
   "im_receive_mode": "Receive mode",
   "im_receive_mode_failed": "Couldn’t update the message setting. Try again.",
   "im_reconnect": "Reconnect",

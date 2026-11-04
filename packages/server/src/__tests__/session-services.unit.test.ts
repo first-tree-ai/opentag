@@ -16,8 +16,9 @@ import {
   sessions,
   users,
 } from "../db/schema/index.js";
+import { withAgentSessionStopAuthority } from "../runtime/agent-session-stop-authority.js";
 import { RuntimeDomainRequestError } from "../runtime/runtime-domain-owner.js";
-import { AgentService } from "../services/agents/index.js";
+import { AgentService, type AgentSessionStopTarget } from "../services/agents/index.js";
 import type { ExternalCallPolicy } from "../services/im/external-call-policy.js";
 import {
   classifyImInboundPersistenceError,
@@ -98,6 +99,56 @@ describe("SessionService with the unit database", () => {
   beforeEach(async () => {
     await db.reset();
     fixture = await seedFixture(db);
+  });
+
+  async function suspendedTarget() {
+    await new SessionService(db.database).ensureChatSession(
+      { imBindingId: fixture.bindingId, channelId: "C1", conversationKind: "channel" },
+      "channel",
+    );
+    const stopSessions = vi.fn(async (_targets: AgentSessionStopTarget[]) => undefined);
+    await new AgentService(db.database, { stopSessions }).suspendById(fixture.userId, fixture.agentId);
+    const target = stopSessions.mock.calls[0]?.[0][0];
+    if (!target) throw new Error("Suspension must capture its Session stop target");
+    return target;
+  }
+
+  it.each(["current", "reactivated", "newer revision", "other Session", "newer placement", "other Computer"])(
+    "admits only the captured lifecycle stop authority: %s",
+    async (change) => {
+      const target = await suspendedTarget();
+      if (change === "reactivated")
+        await db.database.update(agents).set({ status: "active" }).where(eq(agents.id, fixture.agentId));
+      if (change === "newer revision")
+        await db.database
+          .update(agents)
+          .set({ revision: target.agentRevision + 1 })
+          .where(eq(agents.id, fixture.agentId));
+      if (change === "other Session") target.sessionId = randomUUID();
+      if (change === "newer placement")
+        await db.database
+          .update(sessionPlacements)
+          .set({ generation: target.placementGeneration + 1 })
+          .where(eq(sessionPlacements.sessionId, target.sessionId));
+      if (change === "other Computer") target.computerId = randomUUID();
+      const enqueue = vi.fn(async () => "enqueued");
+      const result = await withAgentSessionStopAuthority(db.database, target, enqueue);
+      expect(result).toBe(change === "current" ? "enqueued" : undefined);
+      expect(enqueue).toHaveBeenCalledTimes(change === "current" ? 1 : 0);
+    },
+  );
+
+  it("rolls back work on the final stop executor when enqueue fails", async () => {
+    const target = await suspendedTarget();
+    const failure = new Error("Stop enqueue failed");
+    await expect(
+      withAgentSessionStopAuthority(db.database, target, async (transaction) => {
+        await transaction.update(agents).set({ displayName: "Uncommitted" }).where(eq(agents.id, fixture.agentId));
+        throw failure;
+      }),
+    ).rejects.toBe(failure);
+    const [agent] = await db.database.select().from(agents).where(eq(agents.id, fixture.agentId));
+    expect(agent?.displayName).toBe("Assistant");
   });
 
   it("validates chat scope and converges an existing session and placement", async () => {

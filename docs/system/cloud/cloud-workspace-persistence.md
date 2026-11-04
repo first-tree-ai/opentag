@@ -81,6 +81,15 @@ newer object. Exhausted transient saves retain local files and can retry on reco
 before journaling the terminal report is reconciled as unknown execution effects and never
 automatically replayed.
 
+A rejected seal clears the Runner's in-flight sealing flag while keeping execution blocked.
+A release drain pauses Cloud Turn admission rather than permanently closing the controller. Only
+a completed report drain can resume admission, after workspace preparation; unacknowledged reports
+keep it paused. Resumption invalidates queued grants and retains the same journal and assignment.
+Permanent Runner shutdown cannot be resumed. A subsequent seal can retry, and reconnect preparation still checks pending saves, terminal
+archive failures, native cleanup failure and committed seals before reopening execution. Failure
+does not roll back local files or clear a terminal archive error. A successful or readback-proven
+seal remains nonexecuting on that allocation.
+
 [IM task feedback](../messaging/im-feedback.md) exposes Account-confirmed save/release and explicit discard
 for a failed Session, reusing these generation-bound operations. The feedback action is recorded before cloud I/O;
 an unknown result is queried without submitting again. Only a verified seal for the exact environment permits a

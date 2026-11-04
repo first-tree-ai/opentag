@@ -469,7 +469,7 @@ describe("Agent setup projection Computer states", () => {
       computer: { kind: "requires-rebind", computerId, displayName: "workstation", platform: "linux" },
       runtime: { kind: "unavailable", provider: "codex", reason: "computer-rebind-required" },
       blockers: [{ code: "computer-rebind-required" }],
-      actions: [{ kind: "bind-computer" }],
+      actions: [],
     });
   });
 
@@ -1287,7 +1287,7 @@ describe("Agent setup projection Messaging states", () => {
     });
   });
 
-  it("reports a ready Feishu binding with same-Provider replacement allowed", async () => {
+  it("reports a ready Feishu binding with same-identity reauthorization", async () => {
     const bootstrap = await account();
     const { imBindingService, service } = harness({
       runtimeReadiness: runtimeReadiness("ready"),
@@ -1306,7 +1306,6 @@ describe("Agent setup projection Messaging states", () => {
       blockers: [],
       actions: [
         { kind: "reauthorize-messaging", provider: "feishu", bindingId: imBindingId },
-        { kind: "replace-messaging", provider: "feishu", bindingId: imBindingId },
         { kind: "unbind-messaging", provider: "feishu", bindingId: imBindingId },
       ],
     });
@@ -1361,7 +1360,6 @@ describe("Agent setup projection Messaging states", () => {
       },
       actions: [
         { kind: "reauthorize-messaging", provider: "feishu", bindingId: imBindingId },
-        { kind: "replace-messaging", provider: "feishu", bindingId: imBindingId },
         { kind: "unbind-messaging", provider: "feishu", bindingId: imBindingId },
       ],
     });

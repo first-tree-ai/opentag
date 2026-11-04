@@ -21,6 +21,8 @@ contents, and machine-specific operational logs outside the repository.
 
 ## Verification by feature
 
+- [Agent status, Task feedback and configuration identity](verification/agent-status-task-contract.md)
+
 - [Provider CLI identity validation](verification/provider-cli-validation.md)
 
 - [SQL caller repairs: Agent and Task authority](verification/sql-caller-repairs-01.md)

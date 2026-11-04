@@ -126,7 +126,7 @@ export const AgentSummarySchema = AgentIdentitySchema.extend({
     .nullable(),
   /**
    * Present when the Agent creator does not own the bound Computer. The Agent stays visible; execution
-   * is rejected until the creator rebinds it to an owned Computer.
+   * is rejected; its Computer identity remains fixed, so a different Computer requires a new Agent.
    */
   requiresComputerRebind: z.boolean().optional(),
   /** Whether this deployment can start the first-party Slack OAuth flow. */
@@ -329,6 +329,7 @@ export const UpdateAgentRequestSchema = z
 export const ListAgentsResponseSchema = z
   .object({
     agents: z.array(AgentListItemSchema),
+    statusVersion: z.literal(1).optional(),
   })
   .strict();
 

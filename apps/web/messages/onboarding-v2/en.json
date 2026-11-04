@@ -242,7 +242,7 @@
   "onboarding_v2_runtime_sign_in_follow": " and follow the prompts to sign in.",
   "onboarding_v2_runtime_sign_in_open_terminal": "Open a terminal on {computerName}.",
   "onboarding_v2_runtime_sign_in_run": "Run",
-  "onboarding_v2_setup_computer_rebind": "{computerName} belongs to another account. Choose a computer from this account for {name}.",
+  "onboarding_v2_setup_computer_rebind": "{computerName} belongs to another account. Its binding to {name} cannot be replaced. Create a new Agent to use a different computer.",
   "onboarding_v2_setup_load_failed": "We couldn't read your agent's setup.",
   "onboarding_v2_setup_messaging_computer_attention": "Repair the {provider} connection in your Agent on this computer, then check again.",
   "onboarding_v2_setup_messaging_confirming_computer": "Confirming the computer can connect to {provider}…",

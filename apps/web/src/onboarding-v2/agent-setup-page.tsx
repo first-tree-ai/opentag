@@ -11,7 +11,7 @@
  * Custom Slack Apps additionally read their authenticated configuration endpoint; that entry is
  * independent of first-party OAuth availability and does not extend the setup action contract.
  * The actions map one-to-one onto the shared contract. Messaging can be started only from a
- * not-configured snapshot; a current binding is reauthorized (or, for Feishu, replaced) in place;
+ * not-configured snapshot; a current binding is reauthorized in place;
  * moving to a different Provider is an explicit unbind followed by the fresh choice the cleared
  * snapshot then offers. There is no direct switch.
  */
@@ -24,11 +24,13 @@ import type {
   ProviderCliHandoffProgress,
 } from "@opentag/shared/browser";
 import { useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { type ComponentProps, type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useAgentSetupStageReport } from "../analytics/milestones.js";
 import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, browserApi, CancelledRequestError, withDeadline } from "../api.js";
 import { AgentComputerChoice, type AgentComputerInventoryAdapter } from "../features/agents/agent-computer-choice.js";
 import { platformLabel } from "../features/agents/agent-presentation.js";
+import { agentCreateLink } from "../features/agents/agent-routes.js";
 import {
   type ComputerConnectAdapter,
   createAgentTargetedComputerConnectAdapter,
@@ -48,6 +50,7 @@ import { QrCode, WAITING_LINE } from "../setup/index.js";
 import {
   Banner,
   Button,
+  buttonClassName,
   Collapsible,
   Dialog,
   Icon,
@@ -1362,7 +1365,6 @@ function ComputerSetupSection({
     );
   }
   if (computer.kind === "requires-rebind") {
-    const canBind = snapshot.actions.some((action) => action.kind === "bind-computer");
     return (
       <section className="otv2-computer-step flex flex-col" data-state={computer.kind} data-ui="agent-setup-computer">
         <ComputerStepHeader />
@@ -1379,14 +1381,9 @@ function ComputerSetupSection({
               name: snapshot.agent.displayName,
             })}
           </p>
-          {canBind ? (
-            <AgentComputerChoice
-              adapter={computerConnectAdapter}
-              agentId={agentId}
-              inventoryAdapter={computerAdapter?.inventory}
-              onBound={afterBind}
-            />
-          ) : null}
+          <Link {...agentCreateLink()} className={buttonClassName({ variant: "primary" })}>
+            {m.agents_new_agent()}
+          </Link>
         </div>
       </section>
     );

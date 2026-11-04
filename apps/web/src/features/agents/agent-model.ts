@@ -2,6 +2,7 @@ import type {
   AccountComputerSummary,
   AgentDetail,
   AgentListItem as AgentListApiItem,
+  AgentStatusSnapshot,
   AgentSummary,
   CloudAvailability,
   ImBindingHandoffStatus,
@@ -64,6 +65,7 @@ export type AgentAvailability = {
 };
 
 export type AgentListItem = AgentListApiItem & {
+  serverStatus?: AgentStatusSnapshot;
   availability: AgentAvailability;
   evidenceConfirmed: boolean;
 };
@@ -77,6 +79,7 @@ export function agentDetailFromListItem(item: AgentListApiItem): AgentDetail {
 export type DetailEvidence<T> = { kind: "ready"; value: T | undefined } | { kind: "unconfirmed" };
 
 export type AgentDetailView = AgentDetail & {
+  serverStatus?: AgentStatusSnapshot;
   availability: AgentAvailability;
   messaging: DetailEvidence<ImBindingSummary>;
   /** The bound Computer's exact kind when the Account read confirmed it; Cloud-only settings rely on it. */
@@ -309,4 +312,85 @@ export function markAgentDetailUnconfirmed(agent: AgentDetailView): AgentDetailV
   };
 }
 
-export type AgentStatusSource = Pick<AgentListItem, "activity" | "availability">;
+export type AgentStatusSource = Pick<AgentListItem, "activity" | "availability" | "serverStatus">;
+
+const statusReasons: Record<NonNullable<AgentStatusSnapshot["reason"]>, AgentAvailability["reason"]> = {
+  agent_paused: "agent_suspended",
+  computer_access_required: "computer_unconfirmed",
+  computer_not_bound: "computer_not_bound",
+  computer_offline: "computer_offline",
+  first_validation: "handoff_checking",
+  legacy_checking: "handoff_checking",
+  runtime_unavailable: "runtime_unavailable",
+  runtime_check_timed_out: "runtime_unavailable",
+  self_check_report_stale: "runtime_unavailable",
+  im_not_connected: "im_not_connected",
+  im_provisioning: "im_provisioning",
+  im_reauthorization_required: "im_reauthorization_required",
+  im_error: "im_error",
+  messaging_cli_unavailable: "handoff_unavailable",
+  messaging_cli_check_timed_out: "handoff_unavailable",
+  credential_validation_failed: "handoff_unavailable",
+  credential_validation_timeout: "handoff_unavailable",
+  credential_rate_limited: "handoff_unavailable",
+};
+function availabilityState(status: AgentStatusSnapshot): AgentAvailability["state"] {
+  if (status.state === "ready") return "ready";
+  if (status.state === "initializing") return "setting_up";
+  return status.reason === "agent_paused" ? "suspended" : "action_required";
+}
+
+export function availabilityFromStatus(status: AgentStatusSnapshot): AgentAvailability {
+  const reason = status.reason === null ? null : statusReasons[status.reason];
+  return {
+    state: availabilityState(status),
+    reason,
+    lastConfirmedAt: status.checkedAt,
+    dependencies: {
+      computer: {
+        state: !status.computer ? "not_bound" : status.computer.online ? "ready" : "action_required",
+        lastConfirmedAt: status.computer?.lastSeenAt ?? null,
+      },
+      runtime: {
+        provider: status.runtimeProvider,
+        status: status.runtimeStatus,
+        ...(status.cloud ? { cloud: status.cloud } : {}),
+      },
+      handoff: {
+        state: status.state === "ready" ? "ready" : status.state === "initializing" ? "checking" : "action_required",
+        lastConfirmedAt: status.checkedAt,
+      },
+      channel: {
+        state: status.messaging?.bindingState === "active" ? "connected" : "not_connected",
+        provider: status.messaging?.provider ?? null,
+        botDisplayName: status.messaging?.bot.displayName ?? null,
+      },
+    },
+  };
+}
+
+export function applyAgentStatus<T extends AgentDetail>(agent: T, status: AgentStatusSnapshot) {
+  return {
+    ...agent,
+    status: status.agentStatus,
+    runtimeProvider: status.runtimeProvider,
+    updatedAt: status.agentUpdatedAt,
+    computer: status.computer
+      ? {
+          computerId: status.computer.computerId,
+          displayName: status.computer.displayName,
+          platform: status.computer.platform,
+        }
+      : null,
+    serverStatus: status,
+    availability: availabilityFromStatus(status),
+    evidenceConfirmed: true,
+    messaging: { kind: "ready" as const, value: status.messaging ?? undefined },
+    ...(status.computer
+      ? {
+          computerKind: status.computer.kind,
+          computerConnectionStatus: status.computer.online ? ("online" as const) : ("offline" as const),
+        }
+      : {}),
+  };
+}

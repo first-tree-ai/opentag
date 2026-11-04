@@ -85,7 +85,7 @@ describe("createMemorySetupAdapter", () => {
     expect(rebindSnapshot.stage).toBe("needs-computer");
     expect(rebindSnapshot.computer).toMatchObject({ kind: "requires-rebind", computerId: SETUP_COMPUTER_ID });
     expect(rebindSnapshot.blockers).toEqual([{ code: "computer-rebind-required" }]);
-    expect(rebindSnapshot.actions).toEqual([{ kind: "bind-computer" }]);
+    expect(rebindSnapshot.actions).toEqual([]);
 
     const offline = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
     const offlineSnapshot = await offline.adapter.readSnapshot(SETUP_AGENT_ID);
@@ -210,7 +210,6 @@ describe("createMemorySetupAdapter", () => {
     const credentialGeneration = ready.messaging.kind === "ready" ? ready.messaging.credentialGeneration : undefined;
     expect(ready.actions).toEqual([
       { kind: "reauthorize-messaging", provider: "feishu", bindingId, credentialGeneration },
-      { kind: "replace-messaging", provider: "feishu", bindingId, credentialGeneration },
       { kind: "unbind-messaging", provider: "feishu", bindingId },
     ]);
   });

@@ -5,6 +5,7 @@ import {
   HTTP_PATHS,
   PROVIDER_READINESS_V1_HEADER,
   PROVIDER_READINESS_V2_HEADER,
+  RUNTIME_CAPABILITY,
   RUNTIME_CLIENT_CAPABILITY_OFFERS,
   RUNTIME_MAX_FRAME_BYTES,
   RUNTIME_PROTOCOL_V2,
@@ -28,7 +29,9 @@ import type { ComputerService } from "../services/computers/index.js";
 const apps: ReturnType<typeof createApp>[] = [];
 const v2Registration = {
   protocolVersion: RUNTIME_PROTOCOL_V2,
-  supportedCapabilities: RUNTIME_CLIENT_CAPABILITY_OFFERS,
+  supportedCapabilities: Object.fromEntries(
+    Object.entries(RUNTIME_CLIENT_CAPABILITY_OFFERS).filter(([name]) => name !== RUNTIME_CAPABILITY.selfCheckHeartbeat),
+  ),
   requiredServerCapabilities: [],
 };
 const connectionIds = new WeakMap<WebSocket, string>();

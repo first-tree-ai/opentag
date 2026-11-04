@@ -122,9 +122,8 @@ export class ClientRuntime {
   }
 
   async #handleBusinessFrame(input: unknown): Promise<void> {
-    const parsed = ServerRuntimeBusinessFrameSchema.safeParse(input);
-    if (!parsed.success || this.#abort.signal.aborted) return;
-    const frame = parsed.data;
+    const frame = ownedBusinessFrame(input, this.#abort.signal.aborted);
+    if (!frame) return;
     if (frame.type === "session:reconcile") {
       const fields = {
         agentId: frame.agentId,
@@ -321,4 +320,10 @@ function rejectedDelivery(request: DirectImMessageDeliveryRequest, reason: Input
     status: "rejected",
     reason,
   };
+}
+
+function ownedBusinessFrame(input: unknown, aborted: boolean) {
+  const parsed = ServerRuntimeBusinessFrameSchema.safeParse(input);
+  if (!parsed.success || aborted || parsed.data.type === "runtime:self-check") return undefined;
+  return parsed.data;
 }

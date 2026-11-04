@@ -362,14 +362,6 @@ function deriveBoundActions(messaging: MemoryBound): AgentSetupAction[] {
       credentialGeneration: messaging.credentialGeneration,
     },
   ];
-  if (messaging.provider === "feishu") {
-    actions.push({
-      kind: "replace-messaging",
-      provider: "feishu",
-      bindingId: messaging.bindingId,
-      credentialGeneration: messaging.credentialGeneration,
-    });
-  }
   actions.push({ kind: "unbind-messaging", provider: messaging.provider, bindingId: messaging.bindingId });
   return actions;
 }
@@ -398,9 +390,7 @@ function deriveActions(state: MemoryState, components: AgentSetupComponent[]): A
   if (state.cloudService !== undefined) return deriveCloudActions(state);
   if (observationFailure === "computer") return [{ kind: "refresh" }];
   if (agent.computer === null) return [{ kind: "bind-computer" }];
-  if (agent.requiresComputerRebind === true) {
-    return [{ kind: "bind-computer" }];
-  }
+  if (agent.requiresComputerRebind === true) return [];
   if (!computerOnline) {
     return [{ kind: "refresh" }, { kind: "repair-computer", computerId: agent.computer.computerId }];
   }
@@ -695,6 +685,7 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
     },
     startFeishuAttempt: async (agentId, intent, expectedMessaging) => {
       if (agentId !== state.agent.id) throw new Error(`No such Agent: ${agentId}`);
+      if (intent === "replace") throw new Error("An Agent's messaging App cannot be replaced");
       assertExpectedMessaging(state, expectedMessaging, `${intent} ${messagingProviderLabel("feishu")}`);
       const current = state.messaging.kind === "bound" ? state.messaging : undefined;
       const retry = isRetryableFeishu(state.messaging);
@@ -806,6 +797,9 @@ export function createMemorySetupAdapter(seed: MemorySetupSeed): MemorySetupAdap
       if (agentId !== state.agent.id) throw new Error(`No such Agent: ${agentId}`);
       const computer = state.computers.find((candidate) => candidate.computerId === computerId);
       if (!computer) throw new Error(`No such Computer: ${computerId}`);
+      if (state.agent.computer !== null && state.agent.computer.computerId !== computerId) {
+        throw new Error("An Agent's Computer cannot be replaced");
+      }
       state.agent = {
         ...state.agent,
         computer: {

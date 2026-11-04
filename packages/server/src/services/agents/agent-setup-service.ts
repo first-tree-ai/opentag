@@ -556,9 +556,8 @@ function deriveSetupActions(
   switch (stage) {
     case "needs-computer":
       if (computer.kind === "observation-failed") return [{ kind: "refresh" }];
-      if (computer.kind === "not-bound" || computer.kind === "requires-rebind") {
-        return [{ kind: "bind-computer" }];
-      }
+      if (computer.kind === "not-bound") return [{ kind: "bind-computer" }];
+      if (computer.kind === "requires-rebind") return [];
       return [{ kind: "refresh" }, { kind: "repair-computer", computerId: computer.computerId }];
     case "needs-runtime":
       return [{ kind: "refresh" }];
@@ -655,9 +654,6 @@ function currentBindingActions(
   const actions: AgentSetupAction[] = [];
   if (provider !== "slack" || slackOAuthAvailable) {
     actions.push({ kind: "reauthorize-messaging", provider, bindingId, credentialGeneration });
-  }
-  if (provider === "feishu") {
-    actions.push({ kind: "replace-messaging", provider: "feishu", bindingId, credentialGeneration });
   }
   actions.push({ kind: "unbind-messaging", provider, bindingId });
   return actions;

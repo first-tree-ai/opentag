@@ -167,24 +167,24 @@ disconnected or failed channel uses **Reconnect channel**; an offline Computer u
 Agent and states that resolve on their own offer no action. A fixable row without a way out reads as a dead end next
 to rows that have one, so every fixable state carries the same single link.
 
-Agent roster status stays steady through background refreshes. Transient evidence (a refresh that failed, a
-paused offline read, delivery credentials being re-verified, or a runtime Provider probe still running) does not
-replace a row's last settled status; the row keeps it until the next settled answer. A check with no settled answer
-behind it reads as a neutral **Checking**, never Ready: right after a load the first check can still find a problem,
-and a row that flips from Ready to that problem seconds later has told the reader something false. Unreadable
-evidence with nothing settled reads as Status unavailable. A confirmed problem replaces Ready as soon as it is read.
-A confirmed problem also outranks a check: while a runtime Provider check is still running, a messaging binding the
-same read confirmed as needing new permissions, failed, or turned off is the row's status, with its action. Why: the
-check is not an answer, and showing Checking over a problem already known delays both the fact and its fix. A
-confirmed runtime problem still comes first, as the dependency the Agent needs before messaging matters. When a row's evidence stays transient for a full refresh interval, that row
-alone adds a quiet **Refreshing status** note under its held status; there is no page-level notice. A flickering
-status or a page-wide error reads as an outage when only one Agent's check is late, so the list keeps what it last
-knew and flags only the row whose answer is overdue. The Agent's own
-page keeps the exact current dependency states. Its status card starts with a **Work** row carrying the same
-running-Task or **Waiting** line as the list row, so the home answers what the Agent is doing as the list does; as its
-own row it never reads as a fact about the Computer or messaging below it. The Server already bounds what it holds: a local Computer without a
-heartbeat for 90 seconds reads as offline, and runtime and messaging observations expire on their own TTLs, so held
-list statuses converge on the Server's next settled answer.
+Agent list and detail availability use the Server's current status snapshot. A foreground page polls
+`GET /api/v1/agents/status?ids=...` every ten seconds, batching up to 100 unique visible Agent IDs per
+request; hidden tabs do not poll. The Account identity list negotiates this resource with
+`x-opentag-agent-status: 1` and an optional `statusVersion: 1` response. Older Servers retain the
+existing read path. New status reads replace the per-Agent Computer, binding and handoff fanout.
+Other ordinary live resources keep their existing cadence and cache policy.
+
+The Server reads Agent ownership, owned Computers, and binding/installation scope with at most three
+batch SELECTs in one short read-only Repeatable Read transaction. A missing or foreign ID refuses
+the whole batch as 404. A changed live connection fence retries the whole snapshot once, then
+returns a conflict. Responses are private and non-cacheable and contain no credential material.
+
+The browser renders the current Server verdict directly. It does not retain a previous settled
+status, add a Refreshing status hold, or start a preparation POST on entry. Normal query cache,
+request deduplication and error presentation remain. Offline overrides other dependencies. First
+credential initialization is neutral for at most 15 seconds; completed failures, stale reports and
+check timeouts name the problem. Rechecks retain the last complete result at the Server. The
+Agent's Work row still describes running Tasks separately from availability.
 
 UI changes must be checked at these representative widths when the surface can render there:
 

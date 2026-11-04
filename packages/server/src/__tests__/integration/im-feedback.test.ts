@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import { computeTurnResultHash, SLACK_REQUIRED_BOT_SCOPES, type TurnReportRequest } from "@opentag/shared";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -69,32 +69,42 @@ async function failed() {
   if (!target) throw new Error("Missing feedback");
   const service = new ImFeedbackActionsService({ database: client.database, secret: "test-secret", now: () => clock });
   const view = await service.getForAccount(target.accountId, target.id);
-  const action = view.actions[0];
-  if (!action) throw new Error("Missing retry");
+  expect(view.actions).toEqual([]);
+  const body = Buffer.from(
+    JSON.stringify({
+      accountId: target.accountId,
+      id: target.id,
+      revision: view.revision,
+      kind: "retry_task",
+      expires: clock.getTime() + 5 * 60_000,
+    }),
+  ).toString("base64url");
+  const key = createHmac("sha256", "test-secret").update("opentag/im-feedback-confirmation/v1").digest();
+  const legacyConfirmation = `${body}.${createHmac("sha256", key).update(body).digest("base64url")}`;
   return {
     ...h,
     frame,
     report,
     target,
     service,
-    input: { kind: "retry_task" as const, revision: view.revision, confirmation: action.confirmation },
+    input: { kind: "retry_task" as const, revision: view.revision, confirmation: legacyConfirmation },
   };
 }
 describe("PostgreSQL feedback operations", () => {
-  it("coalesces simultaneous clicks on independent connections into one new attempt", async () => {
+  it("rejects concurrent legacy Retry confirmations without adding an attempt", async () => {
     const h = await failed();
     const results = await Promise.allSettled([
       h.service.submitForAccount(h.target.accountId, h.target.id, h.input),
       h.service.submitForAccount(h.target.accountId, h.target.id, h.input),
     ]);
-    expect(results.map((r) => r.status)).toEqual(["fulfilled", "fulfilled"]);
+    expect(results.map((r) => r.status)).toEqual(["rejected", "rejected"]);
     const deliveries = await client.database
       .select()
       .from(imMessageDeliveries)
       .where(eq(imMessageDeliveries.messageId, h.target.messageId));
-    expect(deliveries).toHaveLength(2);
+    expect(deliveries).toHaveLength(1);
     expect(deliveries.find((d) => d.attemptOrdinal === 0)?.turnReport).toEqual(h.report);
-    expect(await client.database.select().from(imFeedbackActions)).toHaveLength(1);
+    expect(await client.database.select().from(imFeedbackActions)).toHaveLength(0);
   });
   it("admits only one of simultaneous save/discard decisions before cloud I/O", async () => {
     const h = await failed();
@@ -204,39 +214,51 @@ describe("PostgreSQL feedback operations", () => {
     expect(JSON.stringify(owner)).toContain("im_feedback_targets_card_owner_idx");
     expect(JSON.stringify(message)).toContain("im_feedback_targets_message_idx");
   });
-  it("reconciles a lost COMMIT response by stable action identity", async () => {
+  it("retains a previously admitted retry after a lost response without authorizing another attempt", async () => {
     const h = await failed();
-    let loseResponse = true;
-    const database = new Proxy(client.database, {
-      get(target, property) {
-        if (property === "transaction")
-          return async (
-            callback: Parameters<typeof target.transaction>[0],
-            options?: Parameters<typeof target.transaction>[1],
-          ) => {
-            const result = await target.transaction(callback, options);
-            if (loseResponse && options?.accessMode !== "read only") {
-              loseResponse = false;
-              throw new Error("COMMIT response lost after commit");
-            }
-            return result;
-          };
-        return Reflect.get(target, property);
-      },
+    const [delivery] = await client.database
+      .insert(imMessageDeliveries)
+      .values({
+        messageId: h.target.messageId,
+        sessionId: h.target.sessionId,
+        attention: "direct",
+        placementGeneration: h.target.placementGeneration,
+        attemptOrdinal: 1,
+        retryOfDeliveryId: h.target.deliveryId,
+        expiresAt: h.target.actionsExpireAt,
+      })
+      .returning();
+    if (!delivery) throw new Error("Missing admitted delivery");
+    await client.database.insert(imFeedbackActions).values({
+      feedbackId: h.target.id,
+      feedbackRevision: h.target.revision,
+      kind: "retry_task",
+      state: "succeeded",
+      actorAccountId: h.target.accountId,
+      actorDisplayName: "Account",
+      bindingGeneration: h.target.bindingGeneration,
+      sessionId: h.target.sessionId,
+      placementGeneration: h.target.placementGeneration,
+      reportHash: h.target.reportHash,
+      idempotencyKey: `${h.target.id}:${h.target.revision}:retry_task`,
+      resultDeliveryId: delivery.id,
+      resultCode: "retry_queued",
+      confirmedAt: clock,
+      expiresAt: h.target.actionsExpireAt,
     });
-    const uncertain = new ImFeedbackActionsService({ database, secret: "test-secret", now: () => clock });
-    await expect(uncertain.submitForAccount(h.target.accountId, h.target.id, h.input)).rejects.toThrow(
-      "COMMIT response lost",
-    );
-    const current = await uncertain.getForAccount(h.target.accountId, h.target.id);
-    expect(current.action).toMatchObject({ kind: "retry_task", state: "succeeded", resultCode: "retry_queued" });
-    await uncertain.submitForAccount(h.target.accountId, h.target.id, h.input);
+    await h.service.submitForAccount(h.target.accountId, h.target.id, h.input);
+    expect((await h.service.getForAccount(h.target.accountId, h.target.id)).action).toMatchObject({
+      kind: "retry_task",
+      state: "succeeded",
+      resultCode: "retry_queued",
+    });
     expect(
       await client.database
         .select()
         .from(imMessageDeliveries)
         .where(eq(imMessageDeliveries.messageId, h.target.messageId)),
     ).toHaveLength(2);
+    expect(await client.database.select().from(imFeedbackActions)).toHaveLength(1);
   });
   it("keeps the source and feedback rows unlocked while the provider call is blocked", async () => {
     const h = await failed();

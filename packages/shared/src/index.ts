@@ -81,6 +81,7 @@ export {
 export * from "./agent-permissions.js";
 export * from "./agent-self.js";
 export * from "./agent-setup.js";
+export * from "./agent-status.js";
 export {
   type AuthIdentityProvider,
   AuthIdentityProviderSchema,
@@ -747,6 +748,18 @@ export {
   type ServerWelcomeV2Frame,
   ServerWelcomeV2FrameSchema,
 } from "./runtime-protocol.js";
+export {
+  RUNTIME_CREDENTIAL_CHECK_INTERVAL_MS,
+  RUNTIME_SELF_CHECK_INITIAL_TIMEOUT_MS,
+  RUNTIME_SELF_CHECK_INTERVAL_MS,
+  RUNTIME_SELF_CHECK_STALE_MS,
+  type RuntimeCredentialFailureHint,
+  RuntimeCredentialFailureHintSchema,
+  type RuntimeSelfCheckReport,
+  RuntimeSelfCheckReportSchema,
+  type RuntimeSelfCheckRequest,
+  RuntimeSelfCheckRequestSchema,
+} from "./runtime-self-check.js";
 export * from "./sandbox.js";
 export * from "./schedules.js";
 export {

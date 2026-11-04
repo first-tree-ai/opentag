@@ -360,6 +360,7 @@ export class FeishuSetupService {
     await this.#imBindings.assertCanManage(callerUserId, agentId);
     const current = await this.#currentForAgent(agentId);
     this.#assertMessagingStartAllowed(current, intent, expectedMessaging);
+    await this.#assertNoDisconnectedIdentity(agentId, current);
     const reusedEarly = this.#openAttemptReuse(current);
     if (reusedEarly) return reusedEarly;
 
@@ -453,6 +454,7 @@ export class FeishuSetupService {
         // authoritative, so a durable candidate is reused instead of being overwritten by this QR.
         const fenced = await this.#currentForAgent(agentId, transaction, true);
         this.#assertMessagingStartAllowed(fenced, intent, expectedMessaging);
+        await this.#assertNoDisconnectedIdentity(agentId, fenced, transaction);
         const reused = await this.#reuseOpenAttemptUnderLock(transaction, fenced, now);
         if (reused) return { kind: "reused", row: reused } satisfies SlotAdmission;
         // Either nothing was reusable, or the reuse check just terminated the attempt and released its
@@ -1430,8 +1432,27 @@ export class FeishuSetupService {
    * One guard for every Feishu setup command. A current binding owned by another Provider fails closed
    * with the structured unbind-required identity; there is no direct Provider switch. A declared
    * expectation must match the exact current binding and credential generation. Same-Provider
-   * reauthorization and replacement stay legal; create never replaces a configured binding.
+   * reauthorization stays legal; neither create nor replace can replace a configured binding.
    */
+  async #assertNoDisconnectedIdentity(
+    agentId: string,
+    current: SetupRow | undefined,
+    database: Pick<DatabaseClient, "select"> = this.#database,
+  ): Promise<void> {
+    if (current && current.credentialGeneration > 0) return;
+    const [previous] = await database
+      .select({ id: imBindings.id })
+      .from(imBindings)
+      .where(and(eq(imBindings.agentId, agentId), gt(imBindings.credentialGeneration, 0)))
+      .limit(1);
+    if (previous)
+      throw new ImBindingServiceError(
+        "IM_BINDING_CONFIGURATION_CONFLICT",
+        409,
+        "The Agent already has a messaging identity. Create a new Agent instead.",
+      );
+  }
+
   #assertMessagingStartAllowed(
     current: SetupRow | undefined,
     intent: FeishuSetupIntent,
@@ -1474,11 +1495,18 @@ export class FeishuSetupService {
   }
 
   #assertIntentAllowed(configured: SetupRow | undefined, intent: FeishuSetupIntent): void {
+    if (intent === "replace") {
+      throw new ImBindingServiceError(
+        "IM_BINDING_CONFIGURATION_CONFLICT",
+        409,
+        "An Agent's messaging App cannot be replaced. Create a new Agent instead.",
+      );
+    }
     if (intent === "create" && configured) {
       throw new ImBindingServiceError(
         "IM_BINDING_CONFIGURATION_CONFLICT",
         409,
-        "The Agent already has a configured Feishu connection; reauthorize, replace, or unbind it first",
+        "The Agent already has a configured Feishu connection; reauthorize the same App",
       );
     }
     if (intent === "reauthorize" && !configured?.externalAppId) {
@@ -1486,13 +1514,6 @@ export class FeishuSetupService {
         "IM_BINDING_CONFIGURATION_CONFLICT",
         409,
         "Feishu reauthorization requires a current configured binding",
-      );
-    }
-    if (intent === "replace" && !configured) {
-      throw new ImBindingServiceError(
-        "IM_BINDING_CONFIGURATION_CONFLICT",
-        409,
-        "Feishu replacement requires a current configured binding",
       );
     }
   }

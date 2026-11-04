@@ -19,9 +19,13 @@ import {
   AccountSetupCompletionSchema,
   AccountSetupResetRequestSchema,
   AGENT_ACTIVITY_TASK_COUNT_HEADER,
+  AGENT_STATUS_HEADER,
+  AGENT_STATUS_PATH,
+  AGENT_STATUS_VERSION,
   AgentAdminConfigSchema,
   AgentCreationIntentIdSchema,
   AgentCreationIntentResultSchema,
+  AgentStatusQuerySchema,
   type ChannelName,
   CLOUD_IDENTITY_CAPABILITY_HEADER,
   type CloudAvailability,
@@ -68,6 +72,7 @@ import {
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
+import type { AgentStatusService } from "../services/agents/agent-status-service.js";
 import type { AgentService } from "../services/agents/index.js";
 import { AuthServiceError, type UserAuthService } from "../services/auth/index.js";
 import {
@@ -148,6 +153,7 @@ export interface AccountRoutesOptions {
    */
   cloudModelOptions?: () => Promise<CloudModelOptions>;
   agentService?: AgentService;
+  agentStatusService?: AgentStatusService;
   computerConnectCode?: { downloadBaseUrl: string; environment: ChannelName; publicUrl: string };
   computerService?: ComputerService;
   sandboxService?: SandboxService;
@@ -197,6 +203,14 @@ export function registerAccountRoutes(
 ): void {
   const preHandler = createUserAuthPreHandler(authService, options.authOptions ?? {});
 
+  if (options.agentStatusService) {
+    const statuses = options.agentStatusService;
+    app.get(AGENT_STATUS_PATH, { preHandler }, async (request, reply) => {
+      const { ids } = parseRequest(AgentStatusQuerySchema, request.query);
+      return reply.header("Cache-Control", "private, no-store").send(await statuses.read(accountId(request), ids));
+    });
+  }
+
   app.get(HTTP_PATHS.accountCloudComputer, { preHandler }, async (_request, reply) => {
     const availability = options.cloudAvailability?.() ?? {
       enabled: false,
@@ -243,6 +257,9 @@ export function registerAccountRoutes(
       const includeTaskCount = requestsAgentActivityTaskCount(request.headers[AGENT_ACTIVITY_TASK_COUNT_HEADER]);
       return reply.code(200).send(
         ListAgentsResponseSchema.parse({
+          ...(options.agentStatusService && request.headers[AGENT_STATUS_HEADER] === AGENT_STATUS_VERSION
+            ? { statusVersion: 1 }
+            : {}),
           agents: response.agents.map((agent) => ({
             ...agent,
             activity: projectAgentActivityForClient(agent.activity, includeTaskCount),

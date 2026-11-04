@@ -80,6 +80,7 @@ export * from "./web-service.js";
 export * from "./write-outcome.js";
 
 export interface RuntimeCredentialServicesOptions {
+  onCredentialFailure?: import("./provider-proxy-adapter.js").ImProviderProxyAdapterOptions["onCredentialFailure"];
   slackWorkingStatus?: boolean;
   publicOrigin?: string;
   database: DatabaseClient;
@@ -505,6 +506,7 @@ function createImAdapters(
         registry: new ProviderOperationRegistry(operations),
         urlHandles,
         outboundCapture,
+        onCredentialFailure: options.onCredentialFailure,
         resolveTaskAnchor,
         ...(options.publicOrigin ? { publicOrigin: options.publicOrigin } : {}),
         ...(providerFetch ? { fetchImpl: providerFetch } : {}),

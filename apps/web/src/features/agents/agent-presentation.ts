@@ -25,7 +25,7 @@ type AgentCardStatus = {
 };
 
 export function agentCardStatus(agent: AgentListItem): AgentCardStatus {
-  const status = agentAvailabilityCardStatus(agent);
+  const status = serverStatusPresentation(agent) ?? agentAvailabilityCardStatus(agent);
   const detail = agentActivityDetail(agent, status.tone === "success");
   return detail ? { ...status, detail } : status;
 }
@@ -198,6 +198,10 @@ export function runtimeProviderName(provider: AgentSummary["runtimeProvider"]): 
  * runtime, and collapsing those facts into one warning made the old status impossible to interpret.
  */
 export function agentStatusPresentation(agent: AgentStatusSource): { label: string; tone: StatusTone } {
+  return serverStatusPresentation(agent) ?? legacyAgentStatusPresentation(agent);
+}
+
+function legacyAgentStatusPresentation(agent: AgentStatusSource): { label: string; tone: StatusTone } {
   const { availability } = agent;
   if (availability.state === "ready") {
     return agent.activity.state === "working"
@@ -210,12 +214,7 @@ export function agentStatusPresentation(agent: AgentStatusSource): { label: stri
    * Unreadable evidence is one situation to a viewer -- nothing to act on, retried automatically --
    * so it is named for the dependency it covers rather than for which read failed.
    */
-  if (availability.state === "unconfirmed") {
-    if (availability.reason === "computer_unconfirmed" || availability.reason === "runtime_unconfirmed") {
-      return { label: "Computer unknown", tone: "neutral" };
-    }
-    return { label: "Status unknown", tone: "neutral" };
-  }
+  if (availability.state === "unconfirmed") return unconfirmedStatus(availability);
 
   if (availability.reason === "computer_not_bound") {
     return { label: m.agents_computer_not_bound_label(), tone: "warning" };
@@ -246,6 +245,16 @@ export function agentStatusPresentation(agent: AgentStatusSource): { label: stri
 }
 
 /** The Provider-specific wording tells a viewer what to do; a single "runtime not available" does not. */
+function unconfirmedStatus(availability: AgentAvailability): { label: string; tone: StatusTone } {
+  return {
+    label:
+      availability.reason === "computer_unconfirmed" || availability.reason === "runtime_unconfirmed"
+        ? "Computer unknown"
+        : "Status unknown",
+    tone: "neutral",
+  };
+}
+
 function runtimeStatusPresentation({ provider, status }: AgentAvailability["dependencies"]["runtime"]): {
   label: string;
   tone: StatusTone;
@@ -640,4 +649,25 @@ function agentMessagingConnectionLabel(binding: ImBindingSummary): string {
     disabled: m.agents_status_channel_disabled(),
   };
   return labels[binding.bindingState];
+}
+
+function serverStatusPresentation(
+  agent: Pick<AgentStatusSource, "serverStatus" | "availability">,
+): AgentCardStatus | undefined {
+  const status = agent.serverStatus;
+  if (!status || agent.availability.state === "unconfirmed") return undefined;
+  if (status.state === "computer_offline") return { label: m.agents_card_status_computer_offline(), tone: "warning" };
+  if (status.state === "initializing") return { label: m.agents_status_initializing(), tone: "neutral" };
+  const labels: Partial<Record<NonNullable<typeof status.reason>, () => string>> = {
+    runtime_check_timed_out: m.agents_status_runtime_timeout,
+    self_check_report_stale: m.agents_status_report_stale,
+    messaging_cli_check_timed_out: m.agents_status_cli_timeout,
+    messaging_cli_unavailable: m.agents_status_cli_unavailable,
+    credential_validation_failed: m.agents_status_credential_failed,
+    credential_validation_timeout: m.agents_status_credential_timeout,
+    credential_rate_limited: m.agents_status_credential_rate_limited,
+    computer_access_required: m.agents_status_computer_access,
+  };
+  const label = status.reason ? labels[status.reason]?.() : undefined;
+  return label ? { label, tone: "warning" } : undefined;
 }

@@ -71,6 +71,18 @@ without consulting readiness. Readiness can affect route availability and Turn
 execution, but it cannot silently rewrite the Agent's Provider or create a
 Session lifecycle state.
 
+## Configuration identity
+
+An Agent's nonempty Computer, runtime Provider and messaging App/Bot identity cannot be replaced.
+The legacy rebind and Feishu replace commands obey the same boundary. An empty Computer can be
+bound to an owned target at any revision: editing an unbound Agent never requires recreating it.
+Selecting the existing Computer is an idempotent no-op. Same-Computer reconnect, upgrades and
+credential repair, same-App reauthorization, and ordinary model, permissions and profile edits
+remain available. Configured messaging cannot be replaced by disconnecting and recreating it.
+Operator transfer rejects an Agent with a Computer or configured messaging identity; it preserves
+custody checks and retained data. An unbound, unconfigured Agent may still transfer under the
+existing operator preconditions and finish creation under its owner.
+
 ## Management writes
 
 Agent rebind and targeted Computer connect-code issuance/exchange lock the Agent

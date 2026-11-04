@@ -105,11 +105,26 @@ same cancellation retains the publication-uncertain result and never retries the
 ## Preparation
 
 OpenTag writes authorized selections to its own configuration at
-`WORKSPACE/.opentag/context-tree/project/.context-tree.json` **before fetching**.
-Repository-owned `.context-tree.json` files are left alone. Those files can describe
-local directory trees used through the normal repository workflow.
+`WORKSPACE/.opentag/context-tree/project/.context-tree.json`. Repository-owned
+`.context-tree.json` files are left alone. Those files can describe local directory trees
+used through the normal repository workflow.
+
+Preparation is local. OpenTag does not run `context-tree sync` when it prepares or starts an
+Agent, in the foreground or background, on Local or Cloud. Preparation writes the project
+configuration, the `context-tree` shim, and the packaged Skills, and supplies the managed GitHub
+transport. Missing managed authorization, a missing package, an unwritable shim, or a failed Skill
+installation reports each selected source as unavailable; Local retries an unwritable shim after a
+one-minute cooldown. On Cloud, a Runner without the package opens the execution without the command
+gateway, and the Turn still runs; a source is advertised as available only when the gateway is
+present and the packaged Skills were assembled, otherwise it is reported unavailable. Because the result depends only on the selection and this local state, it is
+the same for every preparation of an unchanged selection.
 
 Managed synchronization and write commands route through a per-execution Context Tree command gateway in the trusted Local Daemon or Cloud Runner. Only its pinned CLI child receives a GitHub handle; the Agent receives a Unix socket or fixed Cloud loopback endpoint. The Server separately admits each command against the live parent, current Agent GitHub MCP authorization and exact selected tree. See [GitHub platform integration](github-platform-integration.md#context-tree-command-boundary).
+
+A gateway `sync` without `--tree` runs one CLI child per selected source concurrently, each with
+its own child execution and handle. Proxied GitHub traffic reaches the child execution whose
+handle the request carries. The combined output keeps source order; when any source fails, the
+first failing source in that order is returned, and a thrown failure stops the other children.
 
 Gateway close returns one memoized cleanup Promise to parent-abort and owner callers,
 including failures. It joins the active command and attempts directory cleanup even
@@ -117,24 +132,29 @@ if closing the listener fails. Local CLI stdout uses Node's UTF-8 stream decoder
 counts incoming bytes before retaining each chunk, and stops collection permanently
 on overflow. The existing process-group TERM/KILL cleanup still joins owned descendants.
 
-Preparation uses `context-tree sync --project-path PROJECT` through this gateway. Responses are parsed
-with the package's public contracts; OpenTag never reads the package's internal registry.
-The path returned by the current sync is the read snapshot. A failed refresh can use
-`sync --offline` to recover cached context, explicitly marked stale. Modified snapshots
-are unavailable and preserved for recovery.
+Configuration, repository caches, snapshots, and write sessions live below
+`.opentag/context-tree` and survive Cloud workspace save/restore. Credentials come from the
+current execution and are never stored there. Providers receive the bounded Context Tree state
+directory needed to create write sessions.
 
-Local preparation is serialized. Concurrent starts join the same work; a five-second
-startup budget lets the Session proceed while preparation continues. Failed sources
-observe a one-minute retry cooldown. Changed selections or missing managed authorization invalidate
-cached results. Rotating execution tokens preserve ready read snapshots; in-flight work remains
-bound to its original token. Providers receive the bounded Context Tree state directory needed to create
-write sessions, not just the read snapshot path.
+## Read freshness and prompt placement
 
-Cloud preparation allows 25 seconds for refresh and reserves a separate five-second
-budget for offline recovery. Caller cancellation stops both. A failed source does not
-hide successful entries returned by the CLI. Configuration, repository caches, snapshots,
-and write sessions live below `.opentag/context-tree` and survive workspace save/restore.
-Credentials come from the current execution and are never stored there.
+The cross-host sync contract and the CLI's cache and fetch behavior are recorded in the team
+Context Tree; OpenTag follows the same contract as Claude Code and Codex.
+
+- The managed system prompt names each connected tree (name, repository/directory, branch, and
+  selector), the project path, and the rule to read Context through the `context-tree-read` skill:
+  run `context-tree sync --project-path PROJECT` at each task boundary and keep the returned
+  `treeRoot` for that task. It carries no snapshot path or commit SHA, because those change with
+  every new revision and would invalidate the provider's prompt cache; its wording is stable
+  across Turns.
+- Agents run `context-tree sync` through the same command gateway on Local and Cloud. Responses
+  follow the package's public contracts. A failed sync is reported; `sync --offline` returns the
+  cached snapshot, which the Agent reads as possibly stale. Modified snapshots are reported by the
+  CLI and preserved for recovery. Writes keep using `context-tree write prepare` and `write finish`
+  through that gateway.
+- Cloud workspace persistence keeps the Context Tree repository caches and snapshots; see
+  [Cloud workspace persistence](../cloud/cloud-workspace-persistence.md).
 
 ## Authorization and writes
 
@@ -160,11 +180,18 @@ transport's URL rewrite does not change the selected repository's identity.
 
 ## Distribution
 
-OpenTag pins `@first-tree-ai/context-tree` to `1.0.2-alpha.202611020650`. New managed
-Git subtree snapshots and write sessions use cone-mode sparse checkout with a full
-Git index, requiring Git 2.36 or newer. Snapshot identity includes the selected
-directory and commit; repository-root sources use full checkouts. Existing snapshots
-and unpublished write sessions are preserved. Portable builds and Cloud images
+OpenTag pins `@first-tree-ai/context-tree` to `1.1.1`. New managed repository caches
+are treeless partial clones (`--filter=tree:0`). Git subtree snapshots and write sessions
+use a literal non-cone sparse checkout of only the selected directory with a full Git
+index, requiring Git 2.36 or newer. Snapshot identity includes the selected directory and
+commit; repository-root sources use full checkouts. Existing snapshots and unpublished
+write sessions are preserved. `sync` reuses a fetch made within the last 60 seconds on
+the same machine (`--max-age <seconds>`, `0` forces a fetch); `connect` and
+`write prepare` always fetch. A publish advances that machine's cached branch, so an
+immediate `sync` resolves the published commit. A `sync` removes that repository's other
+clean, unlocked snapshots that have not been resolved for 24 hours; a removed snapshot is
+recreated at the same path when resolved again. Repository-cache and snapshot locks wait
+up to two minutes before failing. Portable builds and Cloud images
 include its CLI, public contracts, and six skills: init, connect, read, write, cleanup,
 and schedule-cleanup. Native cleanup schedules belong on persistent supported hosts,
 not ephemeral Cloud sandboxes. Server, Local runtimes, and Cloud images use the same

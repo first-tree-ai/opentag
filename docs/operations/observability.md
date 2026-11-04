@@ -138,7 +138,7 @@ Each phase has `start` and `end` or `failure` records. `durationMs` measures the
 `elapsedMs` measures worker elapsed time, and `seq` orders worker records. All use process-local
 monotonic clocks; `receivedElapsedMs` is the parent's independent receive clock. Never subtract
 clocks across processes. The `worker_preparation` `end` record also attaches optional sub-phase
-durations (`proxyStartMs`, `contextTreeSyncMs`, and `skillsAssembleMs`) when reached. The parent
+durations (`proxyStartMs`, `contextTreePreparationMs`, and `skillsAssembleMs`) when reached. The parent
 `worker_end` summary uses `durationMs` for the entire native exec span (not the last RPC) and
 attaches `credentialOpenMs` for the parent-side credential bridge open latency. Existing
 RPC budgets, compaction handling, Turn deadlines, cancellation, retry, stdout completion, and report
@@ -303,7 +303,7 @@ In addition to paired performance spans, the Server and Cloud Runner emit struct
 streaming telemetry:
 
 - **Sandbox lifecycle (`module="sandboxes"`)** — `sandbox.lifecycle.provision` (`startupMode="cold_start"`), `sandbox.lifecycle.borrow` (`startupMode="warm_reuse"`), `sandbox.lifecycle.ready` (`startupDurationMs` on initial promotion, `startupMode="cold_start" | "warm_reuse" | "reconnect"`, `runnerVersion`), `sandbox.lifecycle.seal` (`durationMs`, `outcome`), and `sandbox.lifecycle.release` (`previousLifecycle`).
-- **Workspace persistence (`module="sandboxes"` on Server, `module="cloud-runner"` on Runner)** — Server-side `runner.workspace.claim`, `runner.workspace.download`, and `runner.workspace.upload` log `sandboxId`, `sessionId`, `environmentGeneration`, `workspaceGeneration`, `archiveBytes`, `saved`, and `sealed`. Runner-side `runner.workspace.restore`, `runner.workspace.save`, and `runner.workspace.seal` emit single-line JSON records to stderr with `durationMs`, `archiveBytes`, `workspaceBytes`, `entryCount`, `omittedCleanRepoCount`, `workspaceGeneration`, `saved`, and `sealed` (never workspace file paths or contents).
+- **Workspace persistence (`module="sandboxes"` on Server, `module="cloud-runner"` on Runner)** — Server-side `runner.workspace.claim`, `runner.workspace.download`, and `runner.workspace.upload` log `sandboxId`, `sessionId`, `environmentGeneration`, `workspaceGeneration`, `archiveBytes`, `saved`, and `sealed`. Runner-side `runner.workspace.restore`, `runner.workspace.save`, and `runner.workspace.seal` emit single-line JSON records to stderr with `durationMs`, `archiveBytes`, `workspaceBytes`, `entryCount`, `workspaceGeneration`, `saved`, and `sealed` (never workspace file paths or contents).
 - **Runner native sandbox lifecycle (`module="cloud-runner"`)** — `runner.native_sandbox.start`, `runner.native_sandbox.probe`, `runner.native_sandbox.reset`, and `runner.boot.ready` emit single-line JSON records to stderr with `durationMs`, `thresholdMs`, `slow`, `outcome`, and `runnerVersion`.
 - **Cloud Model streaming (`module="cloud-model-proxy"`, `operation="cloud_model.chat_completions"`)** — Records `firstEventMs` (time to first upstream chunk), `streamDurationMs`, `responseBytes`, `retryCount`, and `retryWaitMs`.
 - **MCP probe and Skill archive operations** — `McpProbe` logs `durationMs` on both `"MCP probe succeeded"` and `"MCP probe failed"`. `SkillService` records `normalizeDurationMs` on archive validation and `durationMs` on bundle opening, while `RemoteSkillService` records `openDurationMs` and `durationMs` on source resolution and installation.

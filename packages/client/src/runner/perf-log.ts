@@ -21,7 +21,6 @@ export interface RunnerPerformanceMetrics {
   readonly archiveBytes?: number;
   readonly workspaceBytes?: number;
   readonly entryCount?: number;
-  readonly omittedCleanRepoCount?: number;
   readonly workspaceGeneration?: string;
   readonly saved?: boolean;
   readonly sealed?: boolean;

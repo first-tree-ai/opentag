@@ -256,7 +256,8 @@ file maps, and enforces the unchanged 80% changed-line threshold. Missing report
 ownership fail the check. Inside a measured workspace the gate judges exactly the files the coverage run instruments,
 read from the same scope (`scripts/coverage-scope.mjs`), so test helpers, smoke harnesses and tooling config are never
 judged. A judged file with no coverage entry was not measured and fails the check on its own, whatever the percentage
-and even when its change has no executable line. The Unit Coverage workflow measures the complete baseline on `main` after every merge that touches source, scripts, or
+and even when its change has no executable line,
+as for a pure rename. The Unit Coverage workflow measures the complete baseline on `main` after every merge that touches source, scripts, or
 dependencies, and weekly, and fails when `main` falls below a floor, so a breach is attributed to the merge that
 caused it.
 

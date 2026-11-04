@@ -117,6 +117,54 @@ export function extractChangedLines(diffText) {
   return changed;
 }
 
+/** Undo Git's C-style quoting of a path that holds special characters (`"a\\303\\251.ts"`). */
+function unquoteGitPath(value) {
+  if (!(value.length >= 2 && value.startsWith('"') && value.endsWith('"'))) return value;
+  const bytes = [];
+  const body = value.slice(1, -1);
+  const simple = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, "\\": 92 };
+  for (let index = 0; index < body.length; index += 1) {
+    const character = body[index];
+    if (character !== "\\") {
+      bytes.push(...Buffer.from(character, "utf8"));
+      continue;
+    }
+    const octal = /^[0-7]{3}/.exec(body.slice(index + 1));
+    if (octal) {
+      bytes.push(Number.parseInt(octal[0], 8));
+      index += 3;
+    } else {
+      bytes.push(simple[body[index + 1]] ?? body.charCodeAt(index + 1));
+      index += 1;
+    }
+  }
+  return Buffer.from(bytes).toString("utf8");
+}
+
+/**
+ * Every path that exists after the change, whether or not it gained a line: the `+++ b/` target of a
+ * modified or added file, and the `rename to` / `copy to` target of a rename or copy, which a pure
+ * rename emits with no hunk at all. Deleted files (`+++ /dev/null`) are not targets.
+ */
+export function extractChangedTargets(diffText) {
+  if (typeof diffText !== "string") {
+    throw new Error(`A unified diff string is required, received ${diffText === null ? "null" : typeof diffText}`);
+  }
+  const targets = new Set();
+  for (const rawLine of diffText.split("\n")) {
+    const line = rawLine.replace(/\r$/, "");
+    const target = line.startsWith("+++ b/")
+      ? line.slice(6)
+      : line.startsWith('+++ "b/')
+        ? unquoteGitPath(line.slice(4)).slice(2)
+        : /^(?:rename|copy) to /.test(line)
+          ? unquoteGitPath(line.replace(/^(?:rename|copy) to /, ""))
+          : undefined;
+    if (target) targets.add(normalizePath(target));
+  }
+  return targets;
+}
+
 export function normalizeCoveragePath(rawPath, repositoryRoot) {
   const value = String(rawPath).replaceAll("\\", "/");
   return normalizePath(isAbsolute(value) ? relative(repositoryRoot, value) : value);
@@ -197,6 +245,12 @@ export function evaluatePatchCoverage({ diff, coverage, repositoryRoot, threshol
     total += result.total;
     uncovered.push(...result.uncovered);
     if (result.unmeasured) unmeasured.push(file);
+  }
+  // A surviving file with no added line, such as a pure rename, contributes nothing to the percentage,
+  // but it must still have been measured: a rename that dropped out of coverage reads as green otherwise.
+  for (const file of extractChangedTargets(diff)) {
+    if (changedLines.has(file) || !isSupportedSourcePath(file) || lineHitsByFile.has(file)) continue;
+    unmeasured.push(file);
   }
 
   // A changed file the run should have measured but did not blocks on its own, whatever the

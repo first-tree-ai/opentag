@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { isMeasuredSourcePath } from "../coverage-scope.mjs";
-import { evaluatePatchCoverage, isSupportedSourcePath, SUPPORTED_SOURCE_EXTENSIONS } from "../unit-coverage-gate.mjs";
+import {
+  evaluatePatchCoverage,
+  extractChangedTargets,
+  isSupportedSourcePath,
+  SUPPORTED_SOURCE_EXTENSIONS,
+} from "../unit-coverage-gate.mjs";
 
 function statementCoverage(file, line, hits) {
   return {
@@ -443,4 +448,31 @@ test("a legitimately empty diff string keeps the explicit no-executable-lines pa
   assert.equal(result.covered, 0);
   assert.equal(result.passed, true);
   assert.equal(result.reason, "no executable changed lines");
+});
+
+test("surviving targets include renames, copies and quoted paths, but not deletions", () => {
+  const diff = [
+    "diff --git a/packages/shared/src/a.ts b/packages/shared/src/b.ts",
+    "similarity index 100%",
+    "rename from packages/shared/src/a.ts",
+    "rename to packages/shared/src/b.ts",
+    "diff --git a/packages/shared/src/c.ts b/packages/shared/src/d.ts",
+    "copy from packages/shared/src/c.ts",
+    "copy to packages/shared/src/d.ts",
+    "--- a/packages/shared/src/gone.ts",
+    "+++ /dev/null",
+    '+++ "b/packages/shared/src/caf\\303\\251.ts"',
+    "--- a/packages/shared/src/kept.ts",
+    "+++ b/packages/shared/src/kept.ts",
+    "",
+  ].join("\n");
+  assert.deepEqual(
+    [...extractChangedTargets(diff)].sort(),
+    [
+      "packages/shared/src/b.ts",
+      "packages/shared/src/café.ts",
+      "packages/shared/src/d.ts",
+      "packages/shared/src/kept.ts",
+    ].sort(),
+  );
 });

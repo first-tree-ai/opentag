@@ -255,3 +255,58 @@ test("coverage planning detects deleted and renamed source files without quoted 
     );
   });
 });
+
+test("a pure rename must keep its coverage entry, while a deletion passes", async () => {
+  await withRepository(async (repository) => {
+    const source = "packages/shared/src/old.ts";
+    const renamed = "packages/shared/src/new.ts";
+    const removed = "packages/shared/src/removed.ts";
+    await mkdir(join(repository, "packages/shared/src"), { recursive: true });
+    await writeFile(join(repository, source), "export const value = 1;\n");
+    await writeFile(join(repository, removed), "export const gone = 1;\n");
+    git(repository, ["add", "."]);
+    git(repository, ["commit", "-m", "base"]);
+    const baseSha = git(repository, ["rev-parse", "HEAD"]).trim();
+
+    // A 100%-similarity rename: Git emits `rename from` / `rename to` and no hunk or `+++` header.
+    git(repository, ["mv", source, renamed]);
+    git(repository, ["commit", "-m", "rename"]);
+    const renameDiff = captureMergeBaseDiff({ baseSha, repositoryRoot: repository });
+    assert.match(renameDiff, /^rename to packages\/shared\/src\/new\.ts$/m);
+    assert.doesNotMatch(renameDiff, /^\+\+\+ /m);
+
+    const missing = evaluatePatchCoverage({
+      coverage: {},
+      diff: renameDiff,
+      repositoryRoot: repository,
+      threshold: 80,
+    });
+    assert.equal(missing.total, 0);
+    assert.equal(missing.passed, false, "a renamed file that dropped out of coverage must fail");
+    assert.deepEqual(missing.unmeasured, [renamed]);
+
+    const measured = evaluatePatchCoverage({
+      coverage: { [join(repository, renamed)]: { path: join(repository, renamed), s: {}, statementMap: {} } },
+      diff: renameDiff,
+      repositoryRoot: repository,
+      threshold: 80,
+    });
+    assert.equal(measured.passed, true, "a renamed file measured at its new path passes");
+    assert.deepEqual(measured.unmeasured, []);
+
+    // A deletion leaves nothing to measure.
+    git(repository, ["rm", "-q", removed]);
+    git(repository, ["commit", "-m", "delete"]);
+    const deleteBase = git(repository, ["rev-parse", "HEAD~1"]).trim();
+    const deleteDiff = captureMergeBaseDiff({ baseSha: deleteBase, repositoryRoot: repository });
+    assert.match(deleteDiff, /^\+\+\+ \/dev\/null$/m);
+    const deleted = evaluatePatchCoverage({
+      coverage: {},
+      diff: deleteDiff,
+      repositoryRoot: repository,
+      threshold: 80,
+    });
+    assert.equal(deleted.passed, true);
+    assert.deepEqual(deleted.unmeasured, []);
+  });
+});

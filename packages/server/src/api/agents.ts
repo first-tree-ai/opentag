@@ -25,6 +25,7 @@ import {
   AgentSetupSnapshotSchema,
   AgentUsageDetailSchema,
   AgentUsageWindowDaysSchema,
+  ContextTreeAvailabilityResponseSchema,
   ContextTreeOperationRequestSchema,
   ContextTreeOperationResponseSchema,
   projectAgentActivityForClient,
@@ -35,6 +36,7 @@ import {
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { createUserAuthPreHandler, type UserAuthPreHandlerOptions } from "../plugins/user-auth.js";
+import { isRuntimeOptionsAbortError } from "../runtime/agent-runtime-options-owner.js";
 import type { AgentRuntimeOptionsService } from "../services/agents/agent-runtime-options-service.js";
 import type { ContextTreeOperationService } from "../services/agents/context-tree-operation-service.js";
 import type { AgentRuntimeTestService, AgentService, AgentSetupService } from "../services/agents/index.js";
@@ -203,7 +205,14 @@ export function registerAgentRoutes(
     });
   }
 
-  if (contextTree)
+  if (contextTree) {
+    app.get(AGENT_CONTEXT_TREE_TEMPLATE, { preHandler }, async (request, reply) => {
+      const { agentId } = parseRequest(AgentParamsSchema, request.params);
+      const response = ContextTreeAvailabilityResponseSchema.parse(
+        await contextTree.availability(authenticatedUserId(request), agentId),
+      );
+      return reply.header("Cache-Control", "no-store").code(200).send(response);
+    });
     app.post(AGENT_CONTEXT_TREE_TEMPLATE, { preHandler }, async (request, reply) => {
       const { agentId } = parseRequest(AgentParamsSchema, request.params);
       const input = parseRequest(ContextTreeOperationRequestSchema, request.body);
@@ -212,6 +221,7 @@ export function registerAgentRoutes(
       );
       return reply.header("Cache-Control", "no-store").code(200).send(response);
     });
+  }
 
   if (runtimeOptions)
     app.get(AGENT_RUNTIME_OPTIONS_TEMPLATE, { preHandler }, async (request, reply) => {
@@ -223,6 +233,11 @@ export function registerAgentRoutes(
           await runtimeOptions.get(authenticatedUserId(request), agentId, model, disconnect.signal),
         );
         return reply.header("Cache-Control", "no-store").send(response);
+      } catch (error) {
+        if (disconnect.signal.aborted && isRuntimeOptionsAbortError(error)) {
+          return reply.sent || reply.raw.writableEnded ? reply : reply.code(499).send();
+        }
+        throw error;
       } finally {
         disconnect.dispose();
       }

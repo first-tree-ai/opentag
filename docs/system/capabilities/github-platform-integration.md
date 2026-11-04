@@ -37,9 +37,11 @@ retiring local maintenance does not revoke them or the OAuth App grant.
 ## User experience
 
 **Memory** remains visible in each Agent's navigation even without GitHub authorization. Users can
-view saved tree selections and disconnect a tree. Existing connect/create controls report missing,
-disabled or unsupported authorization in their original error area, directing users to that Agent's
-ordinary Connectors. They do not open OAuth automatically or add a second authorization entry.
+view saved tree selections and disconnect a tree. Connect/create controls check deployment configuration, Computer compatibility and the selected
+Agent MCP authorization before showing repository fields. Missing deployment configuration directs
+users to the server administrator; missing, disabled or unsupported authorization links to that Agent's
+ordinary Connectors. Read-only authorization allows connect but blocks create. The check only reads
+existing local authority and returns readiness, never credential or binding details. They do not open OAuth automatically or add a second authorization entry.
 Account settings no longer has a separate Context Tree GitHub authorization section. Retired v1/v2
 Account integration routes, including callbacks, return 410 before credential reads or writes.
 

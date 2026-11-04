@@ -19,6 +19,7 @@ import {
   GitHubContextTreeOperations,
   type GitHubContextTreeOperationsOptions,
 } from "../services/agents/github-context-tree-operations.js";
+import { AgentGitHubAuthorizationError } from "../services/github/agent-github-credential-service.js";
 import { GitHubConnectionServiceError } from "../services/github/errors.js";
 import { GitPublicationError } from "../services/github-proxy/git-packets.js";
 import { type GitProcessOptions, runTrustedProcess } from "../services/github-proxy/git-process.js";
@@ -161,6 +162,7 @@ function operations(
 
 function presentOperations(operation: GitHubContextTreeOperations) {
   return {
+    availability: (accountId: string, agentId: string) => operation.availability(accountId, agentId),
     execute: (input: Parameters<GitHubContextTreeOperations["run"]>[0]) => operation.run(input),
     run: async (input: Parameters<GitHubContextTreeOperations["run"]>[0]) => (await operation.run(input)).result,
     close: () => operation.close(),
@@ -392,6 +394,7 @@ function dispatchFixture(kind: "local" | "cloud" | undefined, config = agentConf
     updateContextTreeSelection: vi.fn(async () => config),
   };
   const cloud = {
+    availability: async () => ({ status: "ready" as const, readOnly: false }),
     computerKind: vi.fn(async () => kind),
     run: vi.fn(async () => ({ result: { status: "completed", repository: "acme/memory" } }) as const),
   };
@@ -852,4 +855,57 @@ it.each(["missing", "abort"] as const)("keeps direct settings credential failure
     await running;
     await operation.close();
   }
+});
+
+describe("Context Tree GitHub availability", () => {
+  it.each([false, true])(
+    "reports readOnly=%s from the selected MCP authority without remote work",
+    async (readOnly) => {
+      const m = management(connection());
+      m.getOverview = vi.fn(async () => ({ ...overview(connection()), connection: { ...connection(), readOnly } }));
+      const api = {
+        getAuthenticatedUser: vi.fn(),
+        createPrivateRepository: vi.fn(),
+        initializeContextTree: vi.fn(),
+        getRepository: vi.fn(),
+      };
+      const op = operations(m, { api });
+      try {
+        expect(await op.availability(ACCOUNT, AGENT)).toEqual({ status: "ready", readOnly });
+        expect(m.getOverview).toHaveBeenCalledWith(ACCOUNT, AGENT);
+        expect(m.getExecutionUserCredential).not.toHaveBeenCalled();
+        for (const call of Object.values(api)) expect(call).not.toHaveBeenCalled();
+      } finally {
+        await op.close();
+      }
+    },
+  );
+  it.each(["authentication_required", "github_connector_disabled", "github_connector_unsupported"] as const)(
+    "reports %s before repository details are requested",
+    async (code) => {
+      const m = management(null);
+      if (code !== "authentication_required")
+        m.getOverview = vi.fn(async () => {
+          throw new AgentGitHubAuthorizationError(code);
+        });
+      const op = operations(m);
+      try {
+        expect(await op.availability(ACCOUNT, AGENT)).toEqual({ status: "failed", code });
+      } finally {
+        await op.close();
+      }
+    },
+  );
+  it("propagates unexpected read failures for explicit retry", async () => {
+    const m = management(null);
+    m.getOverview = vi.fn(async () => {
+      throw new Error("database unavailable");
+    });
+    const op = operations(m);
+    try {
+      await expect(op.availability(ACCOUNT, AGENT)).rejects.toThrow("database unavailable");
+    } finally {
+      await op.close();
+    }
+  });
 });

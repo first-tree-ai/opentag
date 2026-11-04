@@ -109,7 +109,7 @@ export async function openRuntimeSessionExecution(
   deps.signal?.throwIfAborted();
   const services = frame.contextTree ? [] : await describeSessionServices(deps, frame, context, snapshot);
   /*
-   * An internal Cloud collaboration child can legitimately run with no provider and no platform
+   * An internal collaboration child can legitimately run with no provider and no platform
    * service: its authority is the explicit collaboration negotiation plus the accepted Session
    * message, and its Session CLI proof is the actual capability it needs. It still never receives
    * a provider binding — an internal child must not inherit the parent/visible IM credential.
@@ -168,9 +168,7 @@ function checkSessionOpen(
   | { ok: true; snapshot: RuntimeScopeSnapshot; internal: boolean }
   | { ok: false; code: RuntimeExecutionOpenRejectCode } {
   if (!snapshot) return { ok: false, code: "agent_mismatch" };
-  // An internal Session is denied unless the exact open is an explicitly negotiated Cloud
-  // collaboration child of an accepted Session message. Local internal Sessions keep the existing
-  // denial, and a Cloud frame without the negotiated capability stays denied as well.
+  // Internal execution requires an explicitly negotiated collaboration message, never an IM delivery.
   const internal = internalCollaborationAuthorized(frame, context, snapshot);
   if (snapshot.sessionKind === "internal" && !internal) {
     return { ok: false, code: "execution_authority_denied" };
@@ -193,11 +191,11 @@ function checkSessionOpen(
 }
 
 /**
- * The narrow internal-authority predicate: an internal Cloud Session whose accepted Session
+ * The narrow internal-authority predicate: an internal Session whose accepted Session
  * message opens over a connection that explicitly negotiated Session collaboration. The exact
  * connection, current Sandbox allocation, current Runner, and accepted source are all fenced
  * separately, so this predicate only establishes that an internal child is the intended subject
- * at all. It is never true for Local internal Sessions.
+ * at all. Internal children never inherit the visible Session's IM provider.
  */
 function internalCollaborationAuthorized(
   frame: ExecutionOpenFrame,
@@ -206,7 +204,6 @@ function internalCollaborationAuthorized(
 ): boolean {
   return (
     snapshot.sessionKind === "internal" &&
-    snapshot.computer.kind === "cloud" &&
     frame.source.kind === "session-message" &&
     // Any negotiated Session-collaboration version qualifies: the capability's minimum (2) is the
     // version that introduced Session messages; newer versions only widen the message vocabulary.
@@ -264,7 +261,7 @@ function openSessionRecord(
       purpose,
       ...(frame.contextTree ? { contextTree: frame.contextTree } : {}),
       computerKind: snapshot.computer.kind,
-      ...(internal ? { internalAuthority: "cloud-session-collaboration" as const } : {}),
+      ...(internal ? { internalAuthority: `${snapshot.computer.kind}-session-collaboration` as const } : {}),
       ...(frame.sandbox ? { sandbox: frame.sandbox } : {}),
       providers: new Map(),
       ...(services.length > 0 ? { services } : {}),

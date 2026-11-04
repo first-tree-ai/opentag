@@ -19,6 +19,7 @@ import {
   imBindings,
   imMessageDeliveries,
   type imMessages,
+  type sandboxes,
   sessionPlacements,
   sessions,
   users,
@@ -31,6 +32,7 @@ import type { CloudDeliveryOwner } from "../services/sandboxes/cloud-delivery-ow
 import { CloudDeliveryDispatchError } from "../services/sandboxes/cloud-delivery-owner.js";
 import { CloudCapacityExceededError } from "../services/sandboxes/errors.js";
 import { loadSandboxRecordBySessionId } from "../services/sandboxes/owned-sandbox.js";
+import { WORKSPACE_RECOVERY_RETRY_DELAY_MS } from "../services/sandboxes/sandbox-runner-service.js";
 import { appendPendingImBatch } from "./im-delivery-batch.js";
 import { ImDeliveryInputError, validateFreshImRequest } from "./im-delivery-content.js";
 import type { DeliveryOccupancySubject } from "./im-delivery-custody.js";
@@ -387,11 +389,16 @@ export class CloudDeliveryCoordinator {
     attempt: DeliveryAttempt,
     signal: AbortSignal,
   ): Promise<boolean> {
-    const sandboxId = await this.#ensureSandboxRow(row, attempt, signal);
-    if (signal.aborted || !sandboxId) return false;
-    updateCurrentPerformanceContext({ sandboxId });
+    const sandbox = await this.#ensureSandboxRow(row, attempt, signal);
+    if (signal.aborted || !sandbox) return false;
+    updateCurrentPerformanceContext({ sandboxId: sandbox.id });
     if (!this.#options.cloudAllocation) return true;
-    return this.#convergeAllocation(attempt, row.agent.createdByUserId, sandboxId);
+    const blocked =
+      row.delivery.dispatchRequestId === null &&
+      row.delivery.dispatchPayload === null &&
+      sandbox.idleReclaimAt !== null &&
+      sandbox.lastErrorCode === "workspace_save_failed";
+    return this.#convergeAllocation(attempt, row.agent.createdByUserId, sandbox.id, blocked, signal);
   }
 
   /** Create the Session Sandbox through the existing SandboxService when it is missing. */
@@ -399,10 +406,10 @@ export class CloudDeliveryCoordinator {
     row: Pick<CloudDeliveryClaimRow, "session" | "agent">,
     attempt: DeliveryAttempt,
     signal: AbortSignal,
-  ): Promise<string | undefined> {
+  ): Promise<typeof sandboxes.$inferSelect | undefined> {
     const existing = await loadSandboxRecordBySessionId(this.#options.database, row.session.id);
     if (signal.aborted) return undefined;
-    if (existing) return existing.id;
+    if (existing) return existing;
     const port = this.#options.cloudAllocation;
     if (!port) {
       await this.#options.recordFailure(attempt, "IM_DELIVERY_CLOUD_ALLOCATION_UNAVAILABLE");
@@ -439,12 +446,27 @@ export class CloudDeliveryCoordinator {
       await this.#options.recordFailure(attempt, "IM_DELIVERY_CLOUD_ALLOCATION_FAILED");
       return undefined;
     }
-    return created.id;
+    return created;
   }
 
-  async #convergeAllocation(attempt: DeliveryAttempt, accountId: string, sandboxId: string): Promise<boolean> {
+  async #convergeAllocation(
+    attempt: DeliveryAttempt,
+    accountId: string,
+    sandboxId: string,
+    workspaceBlocked: boolean,
+    signal: AbortSignal,
+  ): Promise<boolean> {
     try {
       const outcome = await this.#options.cloudAllocation?.ensureEnvironmentAllocated({ accountId, sandboxId });
+      if (signal.aborted) return false;
+      if (outcome === "pending") {
+        await this.#options.recordFailure(attempt, "IM_DELIVERY_CLOUD_ENVIRONMENT_NOT_READY", {
+          retryDelayMs: workspaceBlocked
+            ? WORKSPACE_RECOVERY_RETRY_DELAY_MS
+            : cloudDispatchRetryDelayMs(attempt.attemptCount),
+        });
+        return false;
+      }
       if (outcome === "restore_required") {
         // E5 guard: never allocate a blank replacement for previously used storage. This is a
         // permanent condition for the input, so it terminates explicitly instead of retrying.
@@ -459,6 +481,7 @@ export class CloudDeliveryCoordinator {
       }
       return true;
     } catch (error) {
+      if (signal.aborted) return false;
       if (error instanceof CloudCapacityExceededError) {
         // Capacity is transient for IM: the input stays in the existing bounded queue ("waiting
         // for cloud resources") with the same capped backoff and ingress TTL.

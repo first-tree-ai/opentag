@@ -160,6 +160,7 @@ test("the workflow's inline gate program fails an uncovered changed line and pas
       join(REPOSITORY_ROOT, "scripts/unit-coverage-gate.mjs"),
       join(repository, "scripts/unit-coverage-gate.mjs"),
     );
+    await copyFile(join(REPOSITORY_ROOT, "scripts/coverage-scope.mjs"), join(repository, "scripts/coverage-scope.mjs"));
 
     const sourceFile = "packages/shared/src/workflow-gate-fixture.ts";
     await mkdir(join(repository, "packages/shared/src"), { recursive: true });
@@ -217,6 +218,21 @@ test("the workflow's inline gate program fails an uncovered changed line and pas
       `a covered changed line must pass the gate:\nstdout:\n${covered.stdout}\nstderr:\n${covered.stderr}`,
     );
     assert.match(covered.stdout, /Patch coverage: 1\/1 lines/, "the nonzero denominator must survive a pass too");
+
+    // A type-only change has no executable line; with its file missing from the report, the
+    // workflow must fail rather than take the no-executable-lines pass.
+    await writeFile(join(repository, sourceFile), "export const original = 1;\nexport type Added = string;\n");
+    git(repository, ["add", "."]);
+    git(repository, ["commit", "-m", "make the change type-only"]);
+    await writeFile(join(repository, "coverage/unit/coverage-final.json"), JSON.stringify({}));
+    const unmeasured = runWorkflowProgram();
+    assert.equal(
+      unmeasured.status,
+      1,
+      `an unmeasured type-only change must fail the gate:\nstdout:\n${unmeasured.stdout}\nstderr:\n${unmeasured.stderr}`,
+    );
+    assert.match(unmeasured.stdout, /did not measure:\npackages\/shared\/src\/workflow-gate-fixture\.ts/);
+    assert.doesNotMatch(unmeasured.stdout, /explicit pass/);
   });
 });
 
@@ -237,5 +253,108 @@ test("coverage planning detects deleted and renamed source files without quoted 
       () => captureMergeBaseChangedPaths({ baseSha: "f".repeat(40), repositoryRoot: repository }),
       /git diff.*failed/,
     );
+  });
+});
+
+test("a pure rename must keep its coverage entry, while a deletion passes", async () => {
+  await withRepository(async (repository) => {
+    const source = "packages/shared/src/old.ts";
+    const renamed = "packages/shared/src/new.ts";
+    const removed = "packages/shared/src/removed.ts";
+    await mkdir(join(repository, "packages/shared/src"), { recursive: true });
+    await writeFile(join(repository, source), "export const value = 1;\n");
+    await writeFile(join(repository, removed), "export const gone = 1;\n");
+    git(repository, ["add", "."]);
+    git(repository, ["commit", "-m", "base"]);
+    const baseSha = git(repository, ["rev-parse", "HEAD"]).trim();
+
+    // A 100%-similarity rename: Git emits `rename from` / `rename to` and no hunk or `+++` header.
+    git(repository, ["mv", source, renamed]);
+    git(repository, ["commit", "-m", "rename"]);
+    const renameDiff = captureMergeBaseDiff({ baseSha, repositoryRoot: repository });
+    assert.match(renameDiff, /^rename to packages\/shared\/src\/new\.ts$/m);
+    assert.doesNotMatch(renameDiff, /^\+\+\+ /m);
+
+    const missing = evaluatePatchCoverage({
+      coverage: {},
+      diff: renameDiff,
+      repositoryRoot: repository,
+      threshold: 80,
+    });
+    assert.equal(missing.total, 0);
+    assert.equal(missing.passed, false, "a renamed file that dropped out of coverage must fail");
+    assert.deepEqual(missing.unmeasured, [renamed]);
+
+    const measured = evaluatePatchCoverage({
+      coverage: { [join(repository, renamed)]: { path: join(repository, renamed), s: {}, statementMap: {} } },
+      diff: renameDiff,
+      repositoryRoot: repository,
+      threshold: 80,
+    });
+    assert.equal(measured.passed, true, "a renamed file measured at its new path passes");
+    assert.deepEqual(measured.unmeasured, []);
+
+    // A deletion leaves nothing to measure.
+    git(repository, ["rm", "-q", removed]);
+    git(repository, ["commit", "-m", "delete"]);
+    const deleteBase = git(repository, ["rev-parse", "HEAD~1"]).trim();
+    const deleteDiff = captureMergeBaseDiff({ baseSha: deleteBase, repositoryRoot: repository });
+    assert.match(deleteDiff, /^\+\+\+ \/dev\/null$/m);
+    const deleted = evaluatePatchCoverage({
+      coverage: {},
+      diff: deleteDiff,
+      repositoryRoot: repository,
+      threshold: 80,
+    });
+    assert.equal(deleted.passed, true);
+    assert.deepEqual(deleted.unmeasured, []);
+  });
+});
+
+test("a quoted source path keeps its changed lines and is judged by the threshold", async () => {
+  await withRepository(async (repository) => {
+    const source = "packages/shared/src/café.ts";
+    await mkdir(join(repository, "packages/shared/src"), { recursive: true });
+    await writeFile(join(repository, source), "export const original = 1;\n");
+    git(repository, ["add", "."]);
+    git(repository, ["commit", "-m", "base"]);
+    const baseSha = git(repository, ["rev-parse", "HEAD"]).trim();
+    await writeFile(join(repository, source), "export const original = 1;\nexport const added = 2;\n");
+    git(repository, ["add", "."]);
+    git(repository, ["commit", "-m", "add a line"]);
+
+    const diff = captureMergeBaseDiff({ baseSha, repositoryRoot: repository });
+    // Git quotes a non-ASCII path in C style.
+    assert.ok(diff.includes('+++ "b/packages/shared/src/caf\\303\\251.ts"'), diff);
+
+    const coverageWith = (hits) => ({
+      [join(repository, source)]: {
+        path: join(repository, source),
+        s: { 0: hits },
+        statementMap: { 0: { start: { line: 2, column: 0 }, end: { line: 2, column: 24 } } },
+      },
+    });
+    const uncovered = evaluatePatchCoverage({
+      coverage: coverageWith(0),
+      diff,
+      repositoryRoot: repository,
+      threshold: 80,
+    });
+    assert.equal(uncovered.total, 1);
+    assert.equal(uncovered.passed, false);
+    assert.deepEqual(uncovered.uncovered, [`${source}:2`]);
+
+    const covered = evaluatePatchCoverage({
+      coverage: coverageWith(1),
+      diff,
+      repositoryRoot: repository,
+      threshold: 80,
+    });
+    assert.equal(covered.total, 1);
+    assert.equal(covered.passed, true);
+
+    const missing = evaluatePatchCoverage({ coverage: {}, diff, repositoryRoot: repository, threshold: 80 });
+    assert.equal(missing.passed, false);
+    assert.deepEqual(missing.unmeasured, [source]);
   });
 });

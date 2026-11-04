@@ -10,23 +10,51 @@ export function deferred<T>() {
   return { promise, resolve };
 }
 
-/** Holds an actual SQL result after its snapshot was read, preserving any existing transaction. */
-export function pausedBindingRead(client: DatabaseClient) {
-  return pausedTableRead(client, imBindings);
+interface ReadPauseOptions {
+  // PGlite has one connection; release a captured read transaction before a concurrent fixture write.
+  afterTransaction?: boolean;
 }
 
-export function pausedTableRead(client: DatabaseClient, targetTable: PgTable) {
+/** Holds an actual SQL result after its snapshot was read, preserving transactions by default. */
+export function pausedBindingRead(client: DatabaseClient, options: ReadPauseOptions = {}) {
+  return pausedTableRead(client, imBindings, options);
+}
+
+export function pausedTableRead(client: DatabaseClient, targetTable: PgTable, options: ReadPauseOptions = {}) {
   const captured = deferred<void>();
   const released = deferred<void>();
   let armed = false;
-  const wrap = <T extends DatabaseClient | DatabaseTransaction>(executor: T): T =>
+  const pauseAfterRead = async (rows: unknown, boundary?: { captured: boolean }) => {
+    if (!armed) return rows;
+    armed = false;
+    if (boundary) boundary.captured = true;
+    else {
+      captured.resolve();
+      await released.promise;
+    }
+    return rows;
+  };
+  const wrap = <T extends DatabaseClient | DatabaseTransaction>(executor: T, boundary?: { captured: boolean }): T =>
     new Proxy(executor, {
       get(target, property) {
         const value = Reflect.get(target, property);
         if (typeof value !== "function") return value;
         if (property === "transaction") {
-          return (read: (transaction: DatabaseTransaction) => Promise<unknown>, ...options: unknown[]) =>
-            Reflect.apply(value, target, [(transaction: DatabaseTransaction) => read(wrap(transaction)), ...options]);
+          return async (
+            read: (transaction: DatabaseTransaction) => Promise<unknown>,
+            ...transactionOptions: unknown[]
+          ) => {
+            const current = boundary ?? (options.afterTransaction ? { captured: false } : undefined);
+            const result = await Reflect.apply(value, target, [
+              (transaction: DatabaseTransaction) => read(wrap(transaction, current)),
+              ...transactionOptions,
+            ]);
+            if (!boundary && current?.captured) {
+              captured.resolve();
+              await released.promise;
+            }
+            return result;
+          };
         }
         if (property !== "select") return typeof value === "function" ? value.bind(target) : value;
         return (...selection: unknown[]) => {
@@ -43,14 +71,7 @@ export function pausedTableRead(client: DatabaseClient, targetTable: PgTable) {
                   Object.defineProperty(query, "then", {
                     configurable: true,
                     value: (resolve: (rows: unknown) => unknown, reject: (error: unknown) => unknown) =>
-                      then(async (rows: unknown) => {
-                        if (armed) {
-                          armed = false;
-                          captured.resolve();
-                          await released.promise;
-                        }
-                        return rows;
-                      }).then(resolve, reject),
+                      then((rows: unknown) => pauseAfterRead(rows, boundary)).then(resolve, reject),
                   });
                 }
                 return query;

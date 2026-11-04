@@ -143,6 +143,7 @@ const DELETE_VERIFY_DEFAULT_MS = 60_000;
 const IDLE_RECLAIM_DEFAULT_MS = 120_000;
 /** Bounded batch of idle rows one sweep pass may consider. */
 const IDLE_RECLAIM_BATCH = 25;
+export const WORKSPACE_RECOVERY_RETRY_DELAY_MS = 10 * 60_000;
 /** Durable create-phase markers recorded in `lastErrorCode`. */
 const MARKER_RETRYABLE = ["cloud_create_rejected", "cloud_create_failed"] as const;
 type Marker =
@@ -1508,7 +1509,7 @@ export class SandboxRunnerService {
    * until the sealed archive is proven (or proven unnecessary), and every failure is recorded
    * without erasing create-phase or workspace-phase evidence.
    */
-  async #releaseCurrentAllocation(row: typeof sandboxes.$inferSelect): Promise<void> {
+  async #releaseCurrentAllocation(row: typeof sandboxes.$inferSelect, automatic = false): Promise<void> {
     try {
       if (this.#workspace) {
         await this.#releaseSavingWorkspace(row);
@@ -1522,7 +1523,10 @@ export class SandboxRunnerService {
       if (error instanceof WorkspaceSaveError) {
         // The sealed archive could not be proven: keep the physical resource binding and the
         // releasing lifecycle so a later stop retries. Never erased by delete-phase writes.
-        await this.#recordError(row, WORKSPACE_SAVE_FAILED, error, { preserveCreateMarkers: true });
+        await this.#recordError(row, WORKSPACE_SAVE_FAILED, error, {
+          preserveCreateMarkers: true,
+          automaticAttempt: automatic ? row : undefined,
+        });
         throw new WorkspaceSaveFailedError(
           `Failed to release the Sandbox environment: the workspace could not be saved (${error.message})`,
         );
@@ -1533,7 +1537,10 @@ export class SandboxRunnerService {
       // and `cloud_instance_unverified` is a diagnostic that must survive. Without this, one
       // failed `getInstance` during stop strands the row in `releasing` forever: the next
       // stop reads 404, finds no definitive marker, and can never clear.
-      await this.#recordError(row, "cloud_delete_incomplete", error, { preserveCreateMarkers: true });
+      await this.#recordError(row, "cloud_delete_incomplete", error, {
+        preserveCreateMarkers: true,
+        automaticAttempt: automatic ? row : undefined,
+      });
       throw mapCloudError(error, "release the Sandbox environment");
     }
   }
@@ -1869,10 +1876,8 @@ export class SandboxRunnerService {
    * One bounded automatic idle sweep, safe under restarts and concurrent Server processes:
    * - a ready environment idle past the single budget is claimed (execution authority blocked),
    *   sealed through E5, then transitioned to releasing for verified deletion;
-   * - a row already claimed by an abandoned borrow is retried once its own `last_activity_at`
-   *   budget has passed; the claim timestamp is ownership/intent evidence, never a second clock;
-   * - an automatic row already in `releasing` resumes from the durable marker without another
-   *   budget, and a provider-confirmed absent binding is cleared without a delete call;
+   * - already claimed or releasing rows retry after a durable cooldown on `updatedAt`;
+   * - a provider-confirmed absent binding is cleared without a delete call;
    * - unknown reads and fail-create phases never clear a reference.
    * No transaction is held across cloud or storage I/O.
    */
@@ -1890,9 +1895,7 @@ export class SandboxRunnerService {
     let released = 0;
     let failed = 0;
 
-    // 1) Ready rows past the single idle budget. The budget clock is ALWAYS `lastActivityAt`:
-    //    `idleReclaimAt` only records who owns the reclamation intent, so an abandoned claim is
-    //    retried on the next pass after the row's original budget, never after a fresh window.
+    // The business idle budget stays on lastActivityAt; claimed rows also obey retry pacing.
     for (const candidate of await this.#idleReadyCandidates(idleCutoff)) {
       const outcome = await this.#reclaimIdleCandidate(candidate.id);
       if (outcome.claimed) claimed += 1;
@@ -1900,14 +1903,13 @@ export class SandboxRunnerService {
       if (outcome.failed) failed += 1;
     }
 
-    // 2) Automatic rows already in `releasing`: a failed or interrupted delete resumes from the
-    //    durable marker without waiting out another budget, because the budget was already spent
-    //    before the transition. Explicit stop rows carry no marker and stay outside the sweep.
+    // Explicit stop rows carry no automatic marker and stay outside this sweep.
     for (const candidate of await this.#automaticReleasingCandidates()) {
-      const [row] = await this.#rowById(candidate.id);
-      if (!row || row.idleReclaimAt === null) continue;
+      const [current] = await this.#rowById(candidate.id);
+      const reserved = current ? await this.#reserveAutomaticRetry(current, "releasing") : undefined;
+      if (!reserved) continue;
       try {
-        await this.#releaseCurrentAllocation(row);
+        await this.#releaseCurrentAllocation(reserved, true);
         released += 1;
       } catch {
         // The release funnel already recorded the durable failure state for the next sweep.
@@ -1930,6 +1932,7 @@ export class SandboxRunnerService {
           isNotNull(sandboxes.currentResourceName),
           isNotNull(sandboxes.currentResourceUid),
           lte(sandboxes.lastActivityAt, cutoff),
+          or(isNull(sandboxes.idleReclaimAt), this.#automaticRetryDue()),
         ),
       )
       .orderBy(asc(sandboxes.updatedAt), asc(sandboxes.id))
@@ -1941,9 +1944,45 @@ export class SandboxRunnerService {
     return this.#database
       .select({ id: sandboxes.id })
       .from(sandboxes)
-      .where(and(eq(sandboxes.lifecycle, "releasing"), isNotNull(sandboxes.idleReclaimAt)))
+      .where(and(eq(sandboxes.lifecycle, "releasing"), isNotNull(sandboxes.idleReclaimAt), this.#automaticRetryDue()))
       .orderBy(asc(sandboxes.updatedAt), asc(sandboxes.id))
       .limit(IDLE_RECLAIM_BATCH);
+  }
+
+  #automaticRetryDue() {
+    return lte(sandboxes.updatedAt, new Date(this.#now().getTime() - WORKSPACE_RECOVERY_RETRY_DELAY_MS));
+  }
+
+  #automaticAttemptMatches(row: typeof sandboxes.$inferSelect) {
+    return and(
+      eq(sandboxes.id, row.id),
+      eq(sandboxes.lifecycle, row.lifecycle),
+      eq(sandboxes.environmentGeneration, row.environmentGeneration),
+      row.currentResourceName === null
+        ? isNull(sandboxes.currentResourceName)
+        : eq(sandboxes.currentResourceName, row.currentResourceName),
+      row.currentResourceUid === null
+        ? isNull(sandboxes.currentResourceUid)
+        : eq(sandboxes.currentResourceUid, row.currentResourceUid),
+      row.idleReclaimAt === null ? isNull(sandboxes.idleReclaimAt) : eq(sandboxes.idleReclaimAt, row.idleReclaimAt),
+      eq(sandboxes.updatedAt, row.updatedAt),
+    );
+  }
+
+  async #reserveAutomaticRetry(row: typeof sandboxes.$inferSelect, lifecycle: "ready" | "releasing") {
+    const [reserved] = await this.#database
+      .update(sandboxes)
+      .set({ updatedAt: this.#now() })
+      .where(
+        and(
+          this.#automaticAttemptMatches(row),
+          eq(sandboxes.lifecycle, lifecycle),
+          isNotNull(sandboxes.idleReclaimAt),
+          this.#automaticRetryDue(),
+        ),
+      )
+      .returning();
+    return reserved;
   }
 
   /**
@@ -2055,55 +2094,52 @@ export class SandboxRunnerService {
 
   /** One bounded candidate: claim, prove the save, then release. Failures stay durably recorded. */
   async #reclaimIdleCandidate(sandboxId: string): Promise<{ claimed: boolean; released: boolean; failed: boolean }> {
-    // Rotate every attempted candidate, including an unsupported or busy Instance. This is
-    // scheduling fairness only: eligibility continues to use lastActivityAt exclusively.
+    // Rotate unclaimed candidates for fairness without postponing a claimed row's retry.
     await this.#database
       .update(sandboxes)
       .set({ updatedAt: this.#now() })
-      .where(and(eq(sandboxes.id, sandboxId), eq(sandboxes.lifecycle, "ready")));
+      .where(and(eq(sandboxes.id, sandboxId), eq(sandboxes.lifecycle, "ready"), isNull(sandboxes.idleReclaimAt)));
     let claimed = false;
+    let row: typeof sandboxes.$inferSelect | undefined;
     try {
-      claimed = (await this.#claimIdle(sandboxId, { automatic: true })) !== undefined;
+      row = await this.#claimIdle(sandboxId, { automatic: true });
+      claimed = row !== undefined;
     } catch {
       // Provider failure before the claim must not block ingress or the remainder of this pass.
       return { claimed: false, released: false, failed: true };
     }
-    // The busy decision is made by `#claimIdle` UNDER the Sandbox row lock; this re-read only
-    // classifies the visible state for the sweep counters.
     if (!claimed && this.#hub.isBusy(sandboxId)) return { claimed: false, released: false, failed: true };
-    const [row] = await this.#rowById(sandboxId);
-    if (!row || row.idleReclaimAt === null) return { claimed, released: false, failed: false };
+    if (!row) {
+      const [current] = await this.#rowById(sandboxId);
+      if (current?.lifecycle !== "ready" || current.idleReclaimAt === null)
+        return { claimed, released: false, failed: false };
+      row = await this.#reserveAutomaticRetry(current, "ready");
+    }
+    if (!row) return { claimed, released: false, failed: false };
     try {
       // Seal BEFORE leaving `ready`: a failed save keeps the resource binding and the durable
-      // claim so the next sweep retries; a proven archive short-circuits the Runner round-trip.
+      // claim for a paced retry; a proven archive short-circuits the Runner round-trip.
       await this.#sealWorkspaceIfOwed(row);
       const now = this.#now();
       const [releasing] = await this.#database
         .update(sandboxes)
         .set({ lifecycle: "releasing", updatedAt: now })
-        .where(
-          and(
-            eq(sandboxes.id, row.id),
-            eq(sandboxes.lifecycle, "ready"),
-            eq(sandboxes.environmentGeneration, row.environmentGeneration),
-            eq(sandboxes.currentResourceName, row.currentResourceName as string),
-            eq(sandboxes.currentResourceUid, row.currentResourceUid as string),
-            isNotNull(sandboxes.idleReclaimAt),
-          ),
-        )
+        .where(this.#automaticAttemptMatches(row))
         .returning();
       if (!releasing) return { claimed, released: false, failed: false }; // stop or borrow won
-      await this.#releaseCurrentAllocation(releasing);
+      await this.#releaseCurrentAllocation(releasing, true);
       return { claimed, released: true, failed: false };
     } catch (error) {
       if (error instanceof WorkspaceSaveError) {
-        await this.#recordError(row, WORKSPACE_SAVE_FAILED, error, { preserveCreateMarkers: true }).catch(
-          () => undefined,
-        );
+        await this.#recordError(row, WORKSPACE_SAVE_FAILED, error, {
+          preserveCreateMarkers: true,
+          automaticAttempt: row,
+        }).catch(() => undefined);
       } else if (!(error instanceof SandboxServiceError)) {
-        await this.#recordError(row, "cloud_delete_incomplete", error, { preserveCreateMarkers: true }).catch(
-          () => undefined,
-        );
+        await this.#recordError(row, "cloud_delete_incomplete", error, {
+          preserveCreateMarkers: true,
+          automaticAttempt: row,
+        }).catch(() => undefined);
       }
       return { claimed, released: false, failed: true };
     }
@@ -2721,7 +2757,7 @@ export class SandboxRunnerService {
     row: { id: string; environmentGeneration: number },
     code: string,
     original: unknown,
-    options: { preserveCreateMarkers?: boolean } = {},
+    options: { preserveCreateMarkers?: boolean; automaticAttempt?: typeof sandboxes.$inferSelect } = {},
   ): Promise<void> {
     try {
       const now = this.#now();
@@ -2732,6 +2768,7 @@ export class SandboxRunnerService {
           and(
             eq(sandboxes.id, row.id),
             eq(sandboxes.environmentGeneration, row.environmentGeneration),
+            ...(options.automaticAttempt ? [this.#automaticAttemptMatches(options.automaticAttempt)] : []),
             or(
               inArray(sandboxes.lifecycle, ["preparing", "releasing"]),
               // E7: a ready row claimed for idle reclamation still owns its physical binding and

@@ -1,6 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { evaluatePatchCoverage, isSupportedSourcePath, SUPPORTED_SOURCE_EXTENSIONS } from "../unit-coverage-gate.mjs";
+import { isMeasuredSourcePath } from "../coverage-scope.mjs";
+import {
+  evaluatePatchCoverage,
+  extractChangedTargets,
+  isSupportedSourcePath,
+  SUPPORTED_SOURCE_EXTENSIONS,
+} from "../unit-coverage-gate.mjs";
 
 function statementCoverage(file, line, hits) {
   return {
@@ -91,18 +97,95 @@ test("CRLF diff lines are parsed without changing the new-line numbers", () => {
   assert.equal(result.total, 1);
 });
 
-test("a changed executable line missing from coverage-final.json fails closed", () => {
-  const result = evaluatePatchCoverage({
-    diff: ["--- a/src/missing.ts", "+++ b/src/missing.ts", "@@ -1,0 +7 @@", "+export const missing = 1;", ""].join(
-      "\n",
-    ),
-    coverage: {},
-    repositoryRoot: "/repo",
-    threshold: 80,
-  });
-  assert.equal(result.total, 1);
+test("a measured file missing from coverage-final.json fails closed even when the percentage passes", () => {
+  // Diluted on purpose: nine covered lines and one line in a file the run should have measured but
+  // did not. 90% clears the threshold, so only the fail-closed rule can fail this patch.
+  const covered = "packages/shared/src/covered.ts";
+  const missing = "packages/shared/src/missing.ts";
+  const diff = [
+    `--- a/${covered}`,
+    `+++ b/${covered}`,
+    "@@ -0,0 +1,9 @@",
+    ...Array.from({ length: 9 }, (_, index) => `+export const value${index} = ${index};`),
+    `--- a/${missing}`,
+    `+++ b/${missing}`,
+    "@@ -1,0 +7 @@",
+    "+export const missing = 1;",
+    "",
+  ].join("\n");
+  const coverage = {
+    [covered]: {
+      path: covered,
+      s: Object.fromEntries(Array.from({ length: 9 }, (_, index) => [index, 1])),
+      statementMap: Object.fromEntries(
+        Array.from({ length: 9 }, (_, index) => [
+          index,
+          { start: { line: index + 1, column: 0 }, end: { line: index + 1, column: 20 } },
+        ]),
+      ),
+    },
+  };
+  const result = evaluatePatchCoverage({ diff, coverage, repositoryRoot: "/repo", threshold: 80 });
+  assert.equal(result.total, 10);
+  assert.equal(result.covered, 9);
+  assert.equal(result.percent, 90);
   assert.equal(result.passed, false);
-  assert.deepEqual(result.uncovered, ["src/missing.ts:7 (missing coverage entry)"]);
+  assert.deepEqual(result.unmeasured, [missing]);
+  assert.deepEqual(result.uncovered, [`${missing}:7 (missing coverage entry)`]);
+});
+
+test("a changed line in a file coverage never instruments neither counts nor blocks", () => {
+  // The same diluted shape, with the tenth line in a shared test helper: excluded by configuration,
+  // so no test could ever give it an entry, and the gate must not demand one.
+  const covered = "packages/shared/src/covered.ts";
+  const helper = "apps/web/src/__tests__/support/router.tsx";
+  const diff = [
+    `--- a/${covered}`,
+    `+++ b/${covered}`,
+    "@@ -0,0 +1 @@",
+    "+export const value = 1;",
+    `--- a/${helper}`,
+    `+++ b/${helper}`,
+    "@@ -9,0 +10 @@",
+    "+export const route = true;",
+    "",
+  ].join("\n");
+  const coverage = {
+    [covered]: {
+      path: covered,
+      s: { 0: 1 },
+      statementMap: { 0: { start: { line: 1, column: 0 }, end: { line: 1, column: 20 } } },
+    },
+  };
+  const result = evaluatePatchCoverage({ diff, coverage, repositoryRoot: "/repo", threshold: 80 });
+  assert.equal(result.total, 1);
+  assert.equal(result.passed, true);
+  assert.deepEqual(result.unmeasured, []);
+});
+
+test("inside a measured workspace the gate judges exactly what coverage instruments", () => {
+  for (const path of [
+    "packages/client/src/smoke/pi-agent-runtime-e2e.ts",
+    "packages/skill-presets/src/__tests__/fixture.ts",
+    "packages/mcp-presets/src/__tests__/fixture.ts",
+    "apps/web/src/paraglide/messages.js",
+    "packages/shared/src/legacy.mjs",
+    "packages/client/scripts/tool.ts",
+    "apps/web/src/vite-env.d.ts",
+  ]) {
+    assert.equal(isSupportedSourcePath(path), false, path);
+    assert.equal(isMeasuredSourcePath(path), false, path);
+  }
+  for (const path of [
+    "packages/server/scripts/check.ts",
+    "packages/skill-presets/src/index.ts",
+    "apps/web/src/page.tsx",
+    // Coverage excludes only `src/__tests__`, so a nested `__tests__` fixture is instrumented and judged.
+    "packages/server/src/services/tasks/__tests__/fixture.ts",
+  ]) {
+    assert.equal(isSupportedSourcePath(path), true, path);
+    assert.equal(isMeasuredSourcePath(path), true, path);
+  }
 });
 
 test("an uncovered changed line counts against the threshold without imposing 100 percent", () => {
@@ -146,14 +229,75 @@ test("a diff with no executable changes passes explicitly", () => {
       "+// new comment",
       "",
     ].join("\n"),
-    coverage: {},
+    // Measured, with nothing executable on the changed line.
+    coverage: { "src/example.ts": { path: "src/example.ts", s: {}, statementMap: {} } },
     repositoryRoot: "/repo",
     threshold: 80,
   });
   assert.equal(result.total, 0);
   assert.equal(result.covered, 0);
   assert.equal(result.passed, true);
+  assert.deepEqual(result.unmeasured, []);
   assert.equal(result.reason, "no executable changed lines");
+});
+
+const typeOnlyFile = "packages/shared/src/types.ts";
+const typeOnlyDiff = [
+  `--- a/${typeOnlyFile}`,
+  `+++ b/${typeOnlyFile}`,
+  "@@ -0,0 +1,2 @@",
+  "+export type Value = string;",
+  "+export interface Shape { readonly value: Value }",
+];
+
+test("a type-only change in an unmeasured file fails closed beside a covered change", () => {
+  // Diluted: one covered executable line elsewhere makes the percentage 100%. The type-only file
+  // has no executable line, but the provider reports even such a file with an empty statement map,
+  // so its missing entry means it was not measured.
+  const covered = "packages/shared/src/covered.ts";
+  const diff = [
+    `--- a/${covered}`,
+    `+++ b/${covered}`,
+    "@@ -0,0 +1 @@",
+    "+export const value = 1;",
+    ...typeOnlyDiff,
+    "",
+  ].join("\n");
+  const coverage = {
+    [covered]: {
+      path: covered,
+      s: { 0: 1 },
+      statementMap: { 0: { start: { line: 1, column: 0 }, end: { line: 1, column: 20 } } },
+    },
+  };
+  const result = evaluatePatchCoverage({ diff, coverage, repositoryRoot: "/repo", threshold: 80 });
+  assert.equal(result.total, 1);
+  assert.equal(result.percent, 100);
+  assert.equal(result.passed, false);
+  assert.deepEqual(result.unmeasured, [typeOnlyFile]);
+});
+
+test("an all-type-only patch in an unmeasured file fails closed despite zero executable lines", () => {
+  const result = evaluatePatchCoverage({
+    diff: [...typeOnlyDiff, ""].join("\n"),
+    coverage: {},
+    repositoryRoot: "/repo",
+    threshold: 80,
+  });
+  assert.equal(result.total, 0);
+  assert.equal(result.reason, "no executable changed lines");
+  assert.equal(result.passed, false);
+  assert.deepEqual(result.unmeasured, [typeOnlyFile]);
+
+  // The same patch against the empty entry the provider emits for a type-only file passes.
+  const measured = evaluatePatchCoverage({
+    diff: [...typeOnlyDiff, ""].join("\n"),
+    coverage: { [typeOnlyFile]: { path: typeOnlyFile, s: {}, statementMap: {} } },
+    repositoryRoot: "/repo",
+    threshold: 80,
+  });
+  assert.equal(measured.passed, true);
+  assert.deepEqual(measured.unmeasured, []);
 });
 
 test("supported script extensions are included while coverage artifacts remain excluded", () => {
@@ -167,9 +311,8 @@ test("supported script extensions are included while coverage artifacts remain e
   assert.equal(isSupportedSourcePath("src/example.d.ts"), false);
 });
 
-test("package test infrastructure is excluded without excluding unrelated __tests__ folders", () => {
+test("package test infrastructure is excluded", () => {
   assert.equal(isSupportedSourcePath("apps/web/src/__tests__/support/app-fixtures.tsx"), false);
-  assert.equal(isSupportedSourcePath("packages/server/src/services/tasks/__tests__/fixture.ts"), false);
   assert.equal(isSupportedSourcePath("src/__tests__/production.ts"), true);
   assert.equal(isSupportedSourcePath("tools/__tests__/production.ts"), true);
 
@@ -305,4 +448,31 @@ test("a legitimately empty diff string keeps the explicit no-executable-lines pa
   assert.equal(result.covered, 0);
   assert.equal(result.passed, true);
   assert.equal(result.reason, "no executable changed lines");
+});
+
+test("surviving targets include renames, copies and quoted paths, but not deletions", () => {
+  const diff = [
+    "diff --git a/packages/shared/src/a.ts b/packages/shared/src/b.ts",
+    "similarity index 100%",
+    "rename from packages/shared/src/a.ts",
+    "rename to packages/shared/src/b.ts",
+    "diff --git a/packages/shared/src/c.ts b/packages/shared/src/d.ts",
+    "copy from packages/shared/src/c.ts",
+    "copy to packages/shared/src/d.ts",
+    "--- a/packages/shared/src/gone.ts",
+    "+++ /dev/null",
+    '+++ "b/packages/shared/src/caf\\303\\251.ts"',
+    "--- a/packages/shared/src/kept.ts",
+    "+++ b/packages/shared/src/kept.ts",
+    "",
+  ].join("\n");
+  assert.deepEqual(
+    [...extractChangedTargets(diff)].sort(),
+    [
+      "packages/shared/src/b.ts",
+      "packages/shared/src/café.ts",
+      "packages/shared/src/d.ts",
+      "packages/shared/src/kept.ts",
+    ].sort(),
+  );
 });

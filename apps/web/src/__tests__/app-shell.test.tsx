@@ -154,7 +154,6 @@ describe("OpenTag Web App Shell", () => {
 
   it("keeps removed Agent repository assignment navigation absent even with Internal Tools", async () => {
     installApi({
-      internalNavigationVisibility: { integrations: true },
       internalToolsOffered: true,
     });
     window.history.replaceState({}, "", `/agents/${agentId}`);
@@ -280,8 +279,10 @@ describe("Workspace and Agent navigation boundaries", () => {
     const navigation = await screen.findByRole("navigation", { name: "Agent" });
     const home = screen.getByRole("link", { name: "All Agents" });
     expect(home.getAttribute("aria-current")).not.toBe("page");
-    if (section.startsWith("/settings")) {
-      expect(within(navigation).getByRole("link", { name: "Overview" }).getAttribute("aria-current")).not.toBe("page");
+    // /settings/instructions redirects to the Instructions page, which has its own item.
+    if (section.startsWith("/settings") && section !== "/settings/instructions") {
+      // Settings opens from the Overview and has no item of its own, so the Overview stays current.
+      expect(within(navigation).getByRole("link", { name: "Overview" }).getAttribute("aria-current")).toBe("page");
     }
     const frame = document.querySelector('[data-ui="content-page-frame"]');
     fireEvent.click(home);
@@ -328,4 +329,20 @@ it("switches Agents within Tasks without sharing their search state", async () =
   fireEvent.click(await screen.findByRole("menuitem", { name: "Reviewer" }));
   await waitFor(() => expect(window.location.pathname).toBe(`/agents/${agentId}/tasks`));
   expect((screen.getByRole("searchbox", { name: "Search Tasks" }) as HTMLInputElement).value).toBe("deployment");
+});
+
+it("puts the switcher's Agents in their own focusable, named scroll region", async () => {
+  resetWebAppState();
+  installApi({ agentList: [agentListItem, secondAgentListItem] });
+  window.history.replaceState({}, "", `/agents/${agentId}`);
+  render(<App />);
+  fireEvent.click(await screen.findByRole("button", { name: "Switch Agent, current Agent Reviewer" }));
+  // A long roster scrolls here, so the region is reachable by keyboard and has a name.
+  const roster = await screen.findByRole("group", { name: "Agents" });
+  expect(roster.getAttribute("tabindex")).toBe("0");
+  expect(within(roster).getByRole("menuitem", { name: "Reviewer" })).toBeTruthy();
+  expect(within(roster).getByRole("menuitem", { name: "Helper" })).toBeTruthy();
+  // All Agents and New Agent stay outside it, so they remain in view however long the list is.
+  expect(within(roster).queryByRole("menuitem", { name: "All Agents" })).toBeNull();
+  expect(screen.getByRole("menuitem", { name: "New Agent" })).toBeTruthy();
 });

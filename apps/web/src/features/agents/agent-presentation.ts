@@ -287,10 +287,13 @@ export function sharedConversationDestination(provider: ImBindingSummary["provid
   );
 }
 
-/**
- * Feishu gives each Agent its own bot, so the handle addresses it. Slack uses the bound Bot identity,
- * so the verified Bot name is used and no per-Agent handle is synthesized.
- */
+/** The overview names the connected Bot; an internal Agent handle is not a verified IM address. */
+export function messagingBotLabel(binding: ImBindingSummary): string {
+  const provider = messagingProviderLabel(binding.provider);
+  return binding.bot.displayName ? `${provider} · ${binding.bot.displayName}` : provider;
+}
+
+/** Settings-index summary, kept separate from the overview's Bot identity. */
 export function messagingChannelLabel(agent: AgentDetailView, binding: ImBindingSummary): string {
   const provider = messagingProviderLabel(binding.provider);
   if (binding.provider === "feishu") return `${provider} · @${agent.name}`;

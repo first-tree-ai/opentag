@@ -24,6 +24,8 @@ contents, and machine-specific operational logs outside the repository.
 
 ## Verification by feature
 
+- [Agent overview Bot identity](verification/returning-use-discovery-audit.md)
+
 - [Provider CLI identity validation](verification/provider-cli-validation.md)
 
 - [SQL caller repairs: Agent and Task authority](verification/sql-caller-repairs-01.md)

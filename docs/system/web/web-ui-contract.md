@@ -232,6 +232,12 @@ own row it never reads as a fact about the Computer or messaging below it. The S
 heartbeat for 90 seconds reads as offline, and runtime and messaging observations expire on their own TTLs, so held
 list statuses converge on the Server's next settled answer.
 
+The Agent overview's Messaging row identifies the connected Bot by its stored provider name for
+both Feishu and Slack. If that name is unknown, it shows only the provider. The overview header
+does not present the internal Agent handle as an IM address; the Agent's own name and identity
+remain unchanged. This display rule does not add a chat entry or change the settings index or
+legacy capability pages.
+
 > **Planned — not yet implemented.** Tracking: #1215
 
 Agent status will come straight from the Server, which derives it on read; see

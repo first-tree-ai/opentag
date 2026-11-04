@@ -9,7 +9,7 @@ import {
   agentComputerStatus,
   agentMessagingStatus,
   agentRuntimeIssue,
-  messagingChannelLabel,
+  messagingBotLabel,
   platformLabel,
   runtimeProviderName,
 } from "./agent-presentation.js";
@@ -27,7 +27,7 @@ export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
   const computerIdentity = agent.computer
     ? `${agent.computer.displayName} · ${platformLabel(agent.computer.platform)} · ${provider}`
     : provider;
-  const messagingIdentity = binding ? messagingChannelLabel(agent, binding) : "";
+  const messagingIdentity = binding ? messagingBotLabel(binding) : "";
   return (
     <section
       className="@container/agent-status grid ui-surface bg-kumo-base p-6 max-[640px]:p-5 ring ring-kumo-line"

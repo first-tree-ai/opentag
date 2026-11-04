@@ -31,7 +31,7 @@ export function AgentDetailPage({
     <AsyncState state={state}>
       {(agent) => (
         <section className="grid gap-6">
-          <AgentObjectHeader agent={agent} showBackLink={false} />
+          <AgentObjectHeader agent={agent} showBackLink={false} showHandle={false} />
           <div className="grid gap-6">
             <AgentLifecycleNotice agent={agent} />
             {/*
@@ -59,19 +59,23 @@ export function AgentObjectHeader({
   agent,
   backToSettings,
   showBackLink = true,
+  showHandle = true,
 }: {
   agent: AgentDetailView;
   backToSettings?: boolean;
   showBackLink?: boolean;
+  showHandle?: boolean;
 }) {
   const { me } = useAccount();
   const showCreator = agent.createdBy.userId !== me.user.id;
   /*
-   * The handle addresses the Agent in Feishu, where each Agent has its own bot. Slack uses the bound Bot identity,
-   * which can differ from the Agent handle.
+   * Legacy capability pages retain their internal identity hint. The overview uses the
+   * connected Bot's identity in its Messaging row instead of implying this handle is an IM address.
    */
   const handle =
-    agent.messaging.kind === "ready" && agent.messaging.value?.provider === "slack" ? undefined : agent.name;
+    !showHandle || (agent.messaging.kind === "ready" && agent.messaging.value?.provider === "slack")
+      ? undefined
+      : agent.name;
   return (
     <header className="grid gap-4">
       {showBackLink ? (
@@ -92,10 +96,12 @@ export function AgentObjectHeader({
             <Text as="h1" DANGEROUS_className="wrap-anywhere line-clamp-2" size="lg" variant="heading">
               <span title={agent.displayName}>{agent.displayName}</span>
             </Text>
-            <p className="flex flex-wrap items-center gap-3 text-sm text-kumo-subtle">
-              {handle ? <span className="min-w-0 wrap-anywhere">@{handle}</span> : null}
-              {showCreator ? <span>{m.agents_created_by({ name: agent.createdBy.displayName })}</span> : null}
-            </p>
+            {showHandle || showCreator ? (
+              <p className="flex flex-wrap items-center gap-3 text-sm text-kumo-subtle">
+                {handle ? <span className="min-w-0 wrap-anywhere">@{handle}</span> : null}
+                {showCreator ? <span>{m.agents_created_by({ name: agent.createdBy.displayName })}</span> : null}
+              </p>
+            ) : null}
           </div>
         </div>
         <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-3">

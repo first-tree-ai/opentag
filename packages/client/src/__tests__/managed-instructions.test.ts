@@ -342,6 +342,25 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
       expect(prompt).not.toContain("optionally");
       expect(prompt).not.toContain("unnecessary");
       expect(prompt).toContain("OpenTag internal Sessions and Provider-native subagents are separate mechanisms");
+      expect(prompt).toContain(
+        "Long-running delegated or multi-step work is the exception: post a short new IM message at each meaningful milestone (started, key finding, blocked and needs input, done).",
+      );
+      expect(prompt).toContain("Never edit an earlier message for progress, because edits do not notify");
+      expect(prompt).toContain("Short work stays silent until the final reply.");
+      expect(prompt).toContain(
+        "Long work adds only the milestone messages described above, and its final result is still one self-contained message.",
+      );
+    }
+    for (const [prompt, cli] of [
+      [local, "opentag-dev"],
+      [cloud, "opentag"],
+    ] as const) {
+      expect(prompt).toContain("You are a visible Session. Handle quick work directly.");
+      expect(prompt).toContain(
+        `roughly over 10 minutes) or that should continue on its own, create an OpenTag internal Session with \`${cli} session create\` and a \`--max-duration-ms\` sized to the task, reply in IM promptly that the work has started, and publish the result when the child reports back.`,
+      );
+      expect(prompt).toContain("use them only for short, bounded side tasks within the current Run.");
+      expect(prompt).toContain(`use ${cli} session create; do not substitute a Provider-native subagent.`);
     }
     expect(local).toContain("Current Session: session-1");
     expect(cloud).toContain("Current Session: cloud-session-1");
@@ -358,8 +377,12 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
       expect(prompt).toContain("Session kind: internal");
       expect(prompt).toContain("do not publish directly to IM");
       expect(prompt).toContain(
-        "report progress, questions, and the final result to the creating or coordinating Session",
+        `Report to the creating or coordinating Session with \`${base.cliCommand} session send\`: milestones only when useful`,
       );
+      expect(prompt).toContain("questions, and the final result.");
+      expect(prompt).toContain("You may create further internal Sessions");
+      expect(prompt).not.toContain("Handle quick work directly");
+      expect(prompt).not.toContain("post a short new IM message at each meaningful milestone");
       expect(prompt).toContain("Creator Session: session-parent-1");
       expect(prompt).not.toContain("emoji");
       expect(prompt).not.toContain("be warm and natural");
@@ -404,6 +427,10 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
         "Session collaboration commands are unavailable because managed Session context is missing.",
       );
       expect(unavailable).not.toContain("session create --message");
+      expect(unavailable).toContain(
+        "You are a visible Session. Handle work directly, or use Provider-native subagents when available.",
+      );
+      expect(unavailable).not.toContain("Handle quick work directly");
     }
 
     const local = renderManagedSystemPrompt(snapshot, session);

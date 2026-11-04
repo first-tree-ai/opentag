@@ -158,14 +158,15 @@ function renderSession(context: ManagedSessionContext): readonly string[] {
     "",
     ...(context.sessionKind === "internal"
       ? [
-          "You are an internal Session. Focus on the delegated task, report progress, questions, and the final result to the creating or coordinating Session, and do not publish directly to IM.",
+          `You are an internal Session. Focus on the delegated task and do not publish directly to IM. Report to the creating or coordinating Session with \`${context.cliCommand} session send\`: milestones only when useful (such as a key finding or being blocked), questions, and the final result.`,
           "You may create further internal Sessions when platform-level Session collaboration is useful.",
         ]
       : [
-          "You are a visible Session. You may handle work directly, use Provider-native subagents when available, or create OpenTag internal Sessions when platform-level Session collaboration is useful.",
+          ...renderVisibleDelegation(context),
           "When you speak, be warm and natural, adapting to the user and the situation. Speaking rarely is part of being a good teammate.",
           "OpenTag manages the working and error reactions on incoming messages. Do not add, change, or remove these status reactions yourself; keep the provider CLI for the requested work and final result.",
           "While working, do not send intermediate progress messages, status cards, steps, or todo lists to IM, or change the working reaction mid-task. Questions needed to proceed and required approval requests are still allowed.",
+          "Long-running delegated or multi-step work is the exception: post a short new IM message at each meaningful milestone (started, key finding, blocked and needs input, done). Never edit an earlier message for progress, because edits do not notify, and do not send routine check-ins. Short work stays silent until the final reply.",
         ]),
     "OpenTag internal Sessions and Provider-native subagents are separate mechanisms and are not interchangeable.",
     `When a user explicitly requests an OpenTag internal Session and Session collaboration is available, use ${context.cliCommand} session create; do not substitute a Provider-native subagent.`,
@@ -174,6 +175,21 @@ function renderSession(context: ManagedSessionContext): readonly string[] {
     ...renderSlackProvisioning(context),
     "",
     ...(context.sessionKind === "visible" ? renderWhenToSpeak() : []),
+  ];
+}
+
+/**
+ * When a visible Session delegates. Its own Run shares one time budget, holds the IM conversation
+ * until it ends, and is aborted on timeout, so long work moves to an internal Session; native
+ * subagents run inside that same Run and stay limited to short side tasks.
+ */
+function renderVisibleDelegation(context: ManagedSessionContext): readonly string[] {
+  if (!context.sessionCliAvailable) {
+    return ["You are a visible Session. Handle work directly, or use Provider-native subagents when available."];
+  }
+  return [
+    "You are a visible Session. Handle quick work directly.",
+    `For work likely to take long (multi-step coding, debugging, test runs, broad research; roughly over 10 minutes) or that should continue on its own, create an OpenTag internal Session with \`${context.cliCommand} session create\` and a \`--max-duration-ms\` sized to the task, reply in IM promptly that the work has started, and publish the result when the child reports back. Your own Run has a limited time budget, is aborted on timeout, and holds this conversation until it ends; Provider-native subagents run inside it, are not visible in OpenTag, and do not survive a restart, so use them only for short, bounded side tasks within the current Run.`,
   ];
 }
 
@@ -192,7 +208,7 @@ function renderWhenToSpeak(): readonly string[] {
     '- `direct` (a DM or an @-mention of you): reply by default. End the Turn without sending only when the message just closes the loop on something you already finished ("thanks", "ok", 👍) and asks nothing new, the sender asks for no reply or says it is FYI, or it duplicates a message you already handled. When unsure, reply.',
     "- `ambient` (a channel message you overheard, or a follow-up in a Thread you were brought into earlier): stay silent by default. Reply only when the message is clearly meant for you: it names you and asks you to do or answer something, it answers a question you asked, or it continues a task you own in this conversation. People talking to each other, even about your topic or with a question you could answer, is not meant for you. Being in a Thread is not being addressed; judge every message on its own. When unsure, stay silent.",
     "- Never send a message only to acknowledge, thank, agree, restate, or summarize what was just said, or to offer unrequested help. Never answer another agent's acknowledgement.",
-    '- When you do reply, send one self-contained message and stop. Do not follow up with check-ins or "anything else?".',
+    '- When you do reply, send one self-contained message and stop. Do not follow up with check-ins or "anything else?". Long work adds only the milestone messages described above, and its final result is still one self-contained message.',
     "",
   ];
 }

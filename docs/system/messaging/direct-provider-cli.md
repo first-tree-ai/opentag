@@ -27,7 +27,9 @@ outbox manuals.
 
 Visible Sessions keep routine progress out of IM: they do not send intermediate status cards,
 steps, todo lists, or progress messages, or change the working reaction mid-task. Questions needed
-to proceed and required approval requests remain available. The final result uses the normal
+to proceed and required approval requests remain available. Long-running delegated or multi-step work is the
+exception: it posts short new milestone messages rather than edits, as described in
+[Internal Session collaboration](internal-session-collaboration.md). The final result uses the normal
 provider CLI reply path. The Server owns working/error reactions and their cleanup; the Agent must not
 change these reactions itself. [System task feedback](im-feedback.md) supplies terminal error cards and
 Account-owned recovery operations.

@@ -328,6 +328,7 @@ interface AllocationCallLog {
   ensured: { accountId: string; imBindingId: string; kind: string }[];
   allocated: { accountId: string; sandboxId: string }[];
   outcome: IngressAllocationOutcome;
+  beforeReturn?: () => Promise<void>;
   /** When set, the port rejects with this error instead of returning the outcome. */
   error?: unknown;
 }
@@ -366,7 +367,9 @@ function makeWorker(
             ensureEnvironmentAllocated: async (input) => {
               allocation?.allocated.push(input);
               if (allocation?.error) throw allocation.error;
-              return allocation?.outcome ?? "ready";
+              const outcome = allocation?.outcome ?? "ready";
+              await allocation?.beforeReturn?.();
+              return outcome;
             },
           },
         }
@@ -1010,6 +1013,126 @@ describe("ImDeliveryWorker Cloud routing", () => {
     const [row] = await unit.database.select().from(imMessageDeliveries).where(eq(imMessageDeliveries.id, deliveryId));
     expect(row?.lastErrorCode).toBe("IM_DELIVERY_CLOUD_MODEL_UNAVAILABLE");
   });
+
+  it("stops before Runner dispatch when allocation is pending", async () => {
+    const { scope } = await cloudScope();
+    const stack = makeStack();
+    const allocation: AllocationCallLog = { ensured: [], allocated: [], outcome: "pending" };
+    const dispatch = vi.spyOn(stack.owner, "dispatchDelivery");
+    const { deliveryId } = await pendingDelivery(scope.sessionId);
+    vi.stubEnv("OPENTAG_ENV", "staging");
+    vi.stubEnv("OPENTAG_CLOUD_LATENCY_DIAGNOSTICS", "true");
+    vi.stubEnv("OPENTAG_CLOUD_LATENCY_SESSION_IDS", scope.sessionId);
+    const info = vi.fn();
+    const worker = makeWorker(stack.owner, allocation, {
+      logger: { debug: vi.fn(), info, warn: vi.fn(), error: vi.fn() },
+    });
+    try {
+      await worker.runOnce();
+      const [row] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, deliveryId));
+      expect(row).toMatchObject({ state: "pending", lastErrorCode: "IM_DELIVERY_CLOUD_ENVIRONMENT_NOT_READY" });
+      expect(allocation.allocated).toHaveLength(1);
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(
+        info.mock.calls.some(
+          ([record]) => record.phase === "allocation_wait" && record.event === "failure" && record.outcome === "failed",
+        ),
+      ).toBe(true);
+    } finally {
+      await worker.stop();
+    }
+  });
+
+  it.each(["poll", "ready", "ready_before_failure"])(
+    "retains workspace-blocked input and resumes through %s without waiting for its TTL",
+    async (mode) => {
+      const fixture = await cloudScope();
+      const stack = makeStack();
+      const service = readinessService(stack.hub);
+      const { deliveryId } = await pendingDelivery(fixture.scope.sessionId);
+      let now = new Date(Date.now() + 1_000);
+      await unit.database
+        .update(sandboxes)
+        .set({
+          idleReclaimAt: now,
+          lastErrorCode: "workspace_save_failed",
+          lastErrorAt: now,
+        })
+        .where(eq(sandboxes.id, fixture.scope.sandboxId));
+      const [original] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, deliveryId));
+      let ready: Awaited<ReturnType<typeof connectReady>> | undefined;
+      const recover = async () => {
+        await unit.database
+          .update(sandboxes)
+          .set({ idleReclaimAt: null, lastErrorCode: null, lastErrorAt: null })
+          .where(eq(sandboxes.id, fixture.scope.sandboxId));
+        ready = await connectReady(fixture, stack);
+      };
+      const allocation: AllocationCallLog = { ensured: [], allocated: [], outcome: "pending" };
+      if (mode === "ready_before_failure") {
+        allocation.beforeReturn = async () => {
+          allocation.beforeReturn = undefined;
+          await recover();
+          allocation.outcome = "ready";
+        };
+      }
+      const dispatch = vi.spyOn(stack.owner, "dispatchDelivery");
+      const worker = makeWorker(stack.owner, allocation, {
+        now: () => now,
+        readyAllocation: service.readyAllocation.bind(service),
+      });
+      try {
+        await worker.runOnce();
+        if (mode !== "ready_before_failure") {
+          const [blocked] = await unit.database
+            .select()
+            .from(imMessageDeliveries)
+            .where(eq(imMessageDeliveries.id, deliveryId));
+          expect(blocked).toMatchObject({
+            state: "pending",
+            attemptCount: 1,
+            reason: null,
+            dispatchRequestId: null,
+            lastErrorCode: "IM_DELIVERY_CLOUD_ENVIRONMENT_NOT_READY",
+            reportedAt: null,
+          });
+          expect(blocked?.expiresAt).toEqual(original?.expiresAt);
+          expect(blocked?.nextAttemptAt.getTime()).toBe(now.getTime() + 10 * 60_000);
+          expect(dispatch).not.toHaveBeenCalled();
+          await worker.runOnce();
+          expect(allocation.allocated).toHaveLength(1);
+          await recover();
+          allocation.outcome = "ready";
+          if (!ready) throw new Error("missing ready fixture");
+          if (mode === "ready") {
+            await worker.notifyCloudRunnerReady({ ...ready.allocation, resourceUid: "stale-uid" });
+            expect(dispatch).not.toHaveBeenCalled();
+            await worker.notifyCloudRunnerReady(ready.allocation);
+          } else {
+            now = blocked?.nextAttemptAt as Date;
+            await worker.runOnce();
+          }
+        }
+        await vi.waitFor(() => expect(dispatch).toHaveBeenCalledOnce());
+        const [resumed] = await unit.database
+          .select()
+          .from(imMessageDeliveries)
+          .where(eq(imMessageDeliveries.id, deliveryId));
+        expect(resumed).toMatchObject({ state: "pending", attemptCount: 2, reportedAt: null });
+        expect(resumed?.dispatchRequestId).not.toBeNull();
+        expect(resumed?.expiresAt).toEqual(original?.expiresAt);
+        expect(ready?.sent.filter((frame) => frame.type === "delivery:run")).toHaveLength(1);
+      } finally {
+        await worker.stop();
+      }
+    },
+  );
 
   it("requests allocation through the injected port and never provisions anything when the model path is off", async () => {
     const { scope, cloud, accountId } = await cloudScope();

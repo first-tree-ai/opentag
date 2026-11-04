@@ -331,7 +331,7 @@ export class CloudTurnRunner {
   /** Monotonic control-channel generation; a close invalidates queued connection-scoped grants. */
   #channelGeneration = 0;
   #active?: ActiveTurn;
-  #closed = false;
+  #admission: "open" | "draining" | "drained" | "closed" = "open";
   /**
    * Set for an interrupted Turn until its immediate verified cleanup succeeds. The next start
    * also checks it, so no delivery can ever observe a dirty namespace between turns.
@@ -351,6 +351,19 @@ export class CloudTurnRunner {
       send: options.send,
       enabled: () => options.turnActivityEnabled?.() === true,
     });
+  }
+
+  get #closed(): boolean {
+    return this.#admission !== "open";
+  }
+
+  resumeAfterFailedRelease(): boolean {
+    if (this.#admission === "closed" || this.#admission === "draining" || this.#sandboxUnusable) return false;
+    if (this.#admission === "drained") {
+      this.onChannelClosed();
+      this.#admission = "open";
+    }
+    return true;
   }
 
   get activeDeliveryId(): string | undefined {
@@ -1150,7 +1163,11 @@ export class CloudTurnRunner {
   }
 
   async close(): Promise<void> {
-    this.#closed = true;
+    this.#admission = "closed";
+    await this.#quiesce();
+  }
+
+  async #quiesce(): Promise<void> {
     this.#active?.abort.abort();
     await this.#active?.settled;
     await Promise.all(this.#steerJobs.values());
@@ -1162,7 +1179,8 @@ export class CloudTurnRunner {
    * seals storage. This wait never holds the control queue that must receive those acks.
    */
   async drainForRelease(timeoutMs: number): Promise<void> {
-    await this.close();
+    if (this.#admission !== "closed") this.#admission = "draining";
+    await this.#quiesce();
     const deadline = Date.now() + timeoutMs;
     for (;;) {
       let notify: () => void = () => undefined;
@@ -1177,7 +1195,10 @@ export class CloudTurnRunner {
           for (const entry of entries) await this.#drainReleaseEntry(entry);
           return entries.length;
         });
-        if (remaining === 0) return;
+        if (remaining === 0) {
+          if (this.#admission !== "closed") this.#admission = "drained";
+          return;
+        }
         const waitMs = deadline - Date.now();
         if (waitMs <= 0) throw new CloudJournalError("store_failed", "Release reports were not acknowledged");
         await Promise.race([

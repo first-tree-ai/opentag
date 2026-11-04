@@ -37,6 +37,29 @@ and an ordinary Feishu group, and the root itself in a Feishu topic group; a pri
 request nobody replied to report `sessionKind: "channel"` with no thread key, so the Web labels
 them by the conversation they came from.
 
+### One Task per Session
+
+> **Planned — not yet implemented.** Tracking: #1271
+
+A Task becomes one chat Session instead of one topic, the way a private chat already is one Task.
+This replaces the topic split above, which turns every addressed top-level message of an active
+group into its own `channel` Task and so shows one conversation as many Tasks.
+
+- A group's channel Session is one Task. It becomes a Task once somebody addressed the Agent in
+  it; a channel Session that only overheard messages (`ambient` attention) stays out of the list,
+  as today.
+- Each thread Session is its own Task.
+- A private chat stays one Task.
+- Status, ordering, detail, reply, title, and cancellation rules apply to the Session's executions
+  rather than a topic's. Cancellation keeps its all-or-nothing semantics over the Task's queued
+  deliveries, and a new message is still steered into the Session's running Turn as described
+  under [Message handling and failure recovery](#message-handling-and-failure-recovery).
+- Internal Sessions and collaboration messages belong to the Task of the Session that created them,
+  including their descendants.
+- Existing Task links keep resolving: a former topic anchor id, any message id in the Session, and
+  the `Session <shortId>` footer links that outbound IM replies already carry all open the Task of
+  the Session they belong to.
+
 ## Reading a Task
 
 `GET /api/v1/sessions/:id` is the legacy complete detail: a Turn page bounded by `limit`, plus every

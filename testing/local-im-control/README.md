@@ -152,9 +152,13 @@ Offline validation on macOS with Node 22.22.2 and Python 3.14:
 - `pnpm check`: passed, including migration drift and Context Tree verification; existing repository warnings remain.
 - `git diff --check`: passed.
 
-Application builds, package type checks, Agent Runtime coverage and database integration tests were not run: this change
-adds only an optional acceptance harness and its repository-script test, with no product code or schema changes.
-The fake build/process path exercises the controller's writes, launches, shutdowns and ownership checks directly.
-Real Feishu acceptance and adoption of the shared instance remain pending with the coordinator; no shared process,
-configuration, credentials, database or legacy entry was changed by this task. CI's complete regression matrix remains
-separate from this local evidence.
+The focused offline scope covers only an optional acceptance harness and its repository-script test, with no product
+code or schema changes. The fake build/process path exercises the controller's writes, launches, shutdowns and ownership
+checks directly. Normal pre-push hooks subsequently passed format, lint, `pnpm check`, and `pnpm typecheck`, including the
+dependency builds selected by Turbo. Agent Runtime coverage and PostgreSQL integration tests were not run because their
+implementation and database behavior are unchanged.
+
+The coordinator subsequently adopted the reviewed controller and completed the first candidate's real Feishu DM,
+memory and file checks. See the [redacted live acceptance record](live-acceptance.md) for the exact running revision,
+results and remaining second-candidate acceptance. The implementation task did not operate the shared instance; adoption
+and live observations belong to the coordinator. CI's complete regression matrix remains separate from this evidence.

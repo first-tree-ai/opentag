@@ -118,6 +118,56 @@ publishes any user-facing result through the official provider CLI during that c
 child's text automatically. Channel callbacks target the existing chat or channel, while thread callbacks retain the
 existing thread scope. Internal targets never receive provider credentials or outbox context.
 
+## Run outcome notices
+
+`accepted` and `session list` describe delivery only. When an internal Session's Run ends without completing, the
+Server tells the Session that created it (`created_by_session_id`):
+
+- Local: a Run that reaches its maximum duration fails terminally with `turn_timeout` and is never rerun from scratch.
+  Other permanent failures and exhausted retries are also terminal. The daemon then reports the outcome with
+  `session:message:outcome`. Reports are kept in a local durable file and resent until the Server gives a final
+  answer or one day passes. The terminal inbox record and an `outcomeReport: pending` marker are written in one
+  record write; the marker becomes `published` once the report is durable in the reporter's file. On startup a
+  terminal record still marked `pending` (for example after a crash between the two writes) hands its report over
+  again, and the child is never rerun. Terminal records written before the marker existed carry no marker and are
+  not backfilled. The Server-backed Runtime durability adapter does not store the marker. A steered message follows
+  its steer receipt: `interrupted` takes this same terminal path (reason `session_message_steer_interrupted`, never
+  replayed), `processed` succeeds, and `not_started` returns to the FIFO with no report. Eligibility is unchanged, so
+  a message steered into a visible Session's IM Turn produces no notice.
+- Cloud: the Runner's `session:message:settled` frame carries the failure `reason` (for example `turn_timeout`) on a
+  collaboration-v3 channel. Every non-completed outcome (`failed`, `cancelled`, `unknown`) produces a notice. The
+  Server makes up to three delivery attempts, 30 seconds apart. The notice's source authority is the settling
+  connection, and `session:message:settled:ack` lets the Runner delete its journaled settlement, so the Server sends
+  that ack only after the notice has a final answer (or the three attempts are spent), and only on the
+  still-current connection. If the Runner detaches or the Server stops first, the settlement stays journaled; the
+  Runner replays it to the next connection, which commits it as `already_recorded` and notifies again under the same
+  notice ID. The wait runs outside the Runner's frame handling. Until that ack reaches the exact connection, the
+  settling allocation stays in the Sandbox reclaim barrier, so idle reclamation or borrow cannot delete the journal;
+  see [Cloud context](../cloud/cloud-context.md).
+
+The notice is an ordinary SessionMessage from the child to its creator. It uses the existing authorization, lock order,
+activity projection, and delivery, including the visible-Session callback rules. A visible creator's callback Run
+decides what to tell the user; openTag does not forward anything to IM. The text starts with
+`[openTag notice] Internal Session Run did not complete` (`SESSION_RUN_OUTCOME_NOTICE_HEADER`). A notice means the
+child's done milestone, its final result sent with `opentag session send`, will not arrive on its own. It names the child,
+the reported message, the outcome, and a stable reason code, never provider output. It also says that the child keeps
+its context and that `opentag session send <child-session-id>` continues it. Managed instructions describe the
+header so the creator knows the message comes from openTag, not from the child.
+
+Safety rules:
+
+- The source authority is the reporting connection: the Local Computer's current connection, or the exact Cloud Runner
+  connection that settled the Run. A stale or superseded connection gets `stale_generation`.
+- The reported message must be a stored SessionMessage addressed to an active internal Session that has a creator.
+  Completed Runs, visible targets, ended children, and unknown messages are ignored. An ended creator rejects the
+  notice through normal authorization.
+- The notice ID is UUIDv5 over the child Session and reported message IDs. Report retries, Runner settlement replays,
+  and concurrent reports converge on one `session_messages` row; an accepted notice is never delivered again.
+- Notices only go to the creator, so they move up the creation tree and never return to the child. If the creator's
+  own Run fails while handling a notice, its creator may be notified in turn, ending at the visible root.
+
+No schema change is involved: notices reuse `session_messages` and the existing closure activity projection.
+
 The Server stores authorized logical messages and their latest observed delivery outcome for idempotency and conflict
 detection. The managed Local Runtime uses its existing bounded inbox and durable-work store, including its recovery and
 retry policy; acceptance does not mean completion or exactly-once external side effects. Cloud uses the allocation and
@@ -125,7 +175,11 @@ execution boundaries described in [Cloud Context](../cloud/cloud-context.md). Ag
 provide no `end`; administrative lifecycle invalidation may still set the existing `sessions.ended_at` field, and it
 marks the matching closure rows inactive in the same transaction through `services/sessions/session-closure.ts`.
 
-The Local CLI transport requires `runtime.sessionCollaboration` capability version 2. Visible callback delivery also requires
+The Local CLI transport requires `runtime.sessionCollaboration` capability version 2. Version 3 adds scheduled
+origins. Version 4 adds the Client Run outcome report. The Client sends `session:message:outcome` only on a connection
+that negotiated 4 or later; against an older Server it keeps the report pending (bounded) and never sends the frame.
+The Server answers `unsupported_capability` to a report on a connection below version 4. An older Client never reports,
+so its timed-out child produces no notice. Version checks use `>=`. Visible callback delivery also requires
 `runtime.imCredentialGrant` version 2. A new Server reports `outbox_unavailable` before delivery when the target Client is
 older; a new Client connected to an older Server rejects the delivery before acknowledging it so the same logical message
 remains retryable. Both upgrade directions fail closed before the callback Run instead of silently removing its IM outbox.

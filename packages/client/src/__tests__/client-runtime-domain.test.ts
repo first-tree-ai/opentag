@@ -160,6 +160,22 @@ describe("ClientRuntime domain dispatch", () => {
     );
   });
 
+  it("routes Session message outcome results to the outcome reporter", async () => {
+    const result = {
+      type: "session:message:outcome:result" as const,
+      requestId: randomUUID(),
+      messageId: randomUUID(),
+      status: "notified" as const,
+    };
+    const connection = new FrameConnection([result]);
+    const handleSessionMessageOutcomeResult = vi.fn();
+    const runtime = new ClientRuntime(connection as unknown as RuntimeConnection, {
+      handleSessionMessageOutcomeResult,
+    });
+    await runtime.run();
+    expect(handleSessionMessageOutcomeResult).toHaveBeenCalledWith(result);
+  });
+
   it("dispatches optional IM steer frames and returns the typed result", async () => {
     const request: RuntimeImSteerRequest = {
       type: "im:steer",

@@ -1144,6 +1144,8 @@ export class CloudTurnRunner {
       messageId: entry.messageId,
       turnId: entry.turnId,
       outcome: entry.settlement.outcome,
+      // Stripped by the channel for a Server that negotiated collaboration below version 3.
+      ...(entry.settlement.reason ? { reason: entry.settlement.reason } : {}),
     });
   }
 
@@ -1798,6 +1800,7 @@ export class CloudTurnRunner {
       sessionSettlementOutcome(cleanup.completion),
       true,
       cleanup.completion.executionEffects,
+      cleanup.completion.errorReason,
     );
     if (cleanup.failure !== undefined) this.#reportPersistenceError(cleanup.failure);
   }
@@ -1819,6 +1822,7 @@ export class CloudTurnRunner {
     outcome: CloudJournalSettlementOutcome,
     checkpoint = false,
     executionEffects?: TurnCompletion["executionEffects"],
+    reason?: TurnCompletion["errorReason"],
   ): Promise<void> {
     let effective = outcome;
     let checkpointError: unknown;
@@ -1837,7 +1841,14 @@ export class CloudTurnRunner {
         }
       }
     }
-    const recorded = await this.#options.journal.recordSessionSettled(entry.messageId, entry.scope, effective);
+    // A checkpoint failure replaces the outcome, so the worker's reason no longer describes it.
+    const effectiveReason = effective === outcome ? reason : undefined;
+    const recorded = await this.#options.journal.recordSessionSettled(
+      entry.messageId,
+      entry.scope,
+      effective,
+      effectiveReason,
+    );
     if (!recorded.settlement) return;
     this.#notifyJournalChanged();
     this.#sendSessionSettled(recorded);

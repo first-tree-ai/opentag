@@ -5,11 +5,13 @@ import { lstat, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import type {
-  InputRejectReason,
-  SessionMessageDeliveryRequest,
-  SessionMessageDeliveryRequestV3,
-  SessionReconcileRequest,
+import {
+  type InputRejectReason,
+  RUNTIME_CAPABILITY,
+  type SessionMessageDeliveryRequest,
+  type SessionMessageDeliveryRequestV3,
+  type SessionMessageOutcomeReport,
+  type SessionReconcileRequest,
 } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { BaseAgentRuntime } from "../agent-runtime/base-agent-runtime.js";
@@ -35,7 +37,12 @@ import {
   RuntimeDurabilityMetrics,
   type RuntimeRetryScheduler,
 } from "../runtime/runtime-durability.js";
-import { buildSessionMessageInput, SessionMessageInbox } from "../runtime/session-message-inbox.js";
+import {
+  buildSessionMessageInput,
+  SessionMessageInbox,
+  type SessionMessageRunOutcomeEvent,
+} from "../runtime/session-message-inbox.js";
+import { SessionMessageOutcomeReporter } from "../runtime/session-message-outcome-reporter.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
 import { UpdateManager, type UpdaterStateSnapshot } from "../runtime/update-manager.js";
 import {
@@ -422,10 +429,12 @@ describe("SessionMessageInbox", () => {
   });
 
   it("dead-letters a non-completed prompt result", async () => {
+    const onRunOutcome = vi.fn();
     const inbox = new SessionMessageInbox({
       admission: new AdmissionController(),
       credentialEnvironment: credentialEnvironment(),
       imCredentialGrantVersion: () => 2,
+      onRunOutcome,
       sessionCollaborationVersion: () => 3,
       reconciler: inboxReconciler(),
       retryPolicy: { maxAttempts: 1, maxAgeMs: 10_000 },
@@ -445,6 +454,348 @@ describe("SessionMessageInbox", () => {
     await expect(inbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
     await inbox.settled();
     expect(inbox.getState(request.messageId)?.status).toBe("dead-letter");
+    expect(onRunOutcome).toHaveBeenCalledOnce();
+    expect(onRunOutcome).toHaveBeenCalledWith({
+      messageId: request.messageId,
+      targetSessionId: request.targetSessionId,
+      agentId: request.agentId,
+      placementGeneration: request.placementGeneration,
+      outcome: "failed",
+      reason: "provider_failed",
+    });
+    inbox.stop();
+  });
+
+  it("treats a Run timeout as terminal, never reruns the message, and reports timed_out", async () => {
+    let fireTimeout: () => void = () => undefined;
+    const timeoutScheduler: RuntimeRetryScheduler = {
+      schedule(_delay, task) {
+        fireTimeout = task;
+        return { cancel: () => undefined };
+      },
+    };
+    const retryScheduler = { schedule: vi.fn(() => ({ cancel: () => undefined })) };
+    const onRunOutcome = vi.fn();
+    const prompt = vi.fn(
+      (input: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          input.signal?.addEventListener("abort", () => reject(input.signal?.reason), { once: true });
+          queueMicrotask(() => fireTimeout());
+        }),
+    );
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      onRunOutcome,
+      persistence: new MemoryRuntimeDurabilityStore(),
+      sessionCollaborationVersion: () => 4,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+      scheduler: retryScheduler,
+      timeoutScheduler,
+    });
+    const request = delivery();
+
+    await expect(inbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
+    await inbox.settled();
+    expect(prompt).toHaveBeenCalledOnce();
+    expect(retryScheduler.schedule).not.toHaveBeenCalled();
+    expect(inbox.getState(request.messageId)).toMatchObject({
+      status: "failed",
+      lastError: { code: "turn_timeout", retryability: "never" },
+    });
+    expect(onRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: request.messageId, outcome: "timed_out", reason: "turn_timeout" }),
+    );
+    // A redelivery of the same message is answered from memory and never reruns it.
+    expect((await inbox.accept(request)).status).toBe("rejected");
+    expect(prompt).toHaveBeenCalledOnce();
+    inbox.stop();
+  });
+
+  it("never lets a failing outcome reporter change the inbox state machine", async () => {
+    const warn = vi.fn();
+    for (const onRunOutcome of [
+      vi.fn(() => {
+        throw new Error("reporter threw");
+      }),
+      vi.fn(async () => {
+        throw new Error("reporter rejected");
+      }),
+    ]) {
+      const inbox = new SessionMessageInbox({
+        admission: new AdmissionController(),
+        credentialEnvironment: credentialEnvironment(),
+        imCredentialGrantVersion: () => 2,
+        logger: { warn },
+        onRunOutcome,
+        sessionCollaborationVersion: () => 4,
+        reconciler: inboxReconciler(),
+        retryPolicy: { maxAttempts: 1, maxAgeMs: 10_000 },
+        runtimeManager: {
+          ensureRuntime: vi.fn(
+            async () =>
+              ({
+                waitForIdle: vi.fn(async () => undefined),
+                prompt: vi.fn(async () => ({ status: "failed", error: { message: "provider rejected input" } })),
+              }) as never,
+          ),
+          sessionKind: vi.fn(() => "internal" as const),
+        },
+      });
+      const request = delivery();
+      await inbox.accept(request);
+      await inbox.settled();
+      expect(inbox.getState(request.messageId)?.status).toBe("dead-letter");
+      await vi.waitFor(() =>
+        expect(warn).toHaveBeenCalledWith(
+          expect.objectContaining({ code: "SESSION_MESSAGE_OUTCOME_REPORT_FAILED", messageId: request.messageId }),
+          expect.any(String),
+        ),
+      );
+      inbox.stop();
+    }
+  });
+
+  describe("terminal → outcome-report crash boundary", () => {
+    /** Commits everything except the paused outcome-report writes, like a process killed mid-write. */
+    class PausableStore extends MemoryRuntimeDurabilityStore {
+      pauseOutcomeWrites = false;
+      pausedWrites = 0;
+      override async write<T>(record: DurableWorkRecord<T>): Promise<void> {
+        if (this.pauseOutcomeWrites && record.kind === "session-message-outcome") {
+          this.pausedWrites += 1;
+          return new Promise<void>(() => undefined);
+        }
+        await super.write(record);
+      }
+      async restore(): Promise<MemoryRuntimeDurabilityStore> {
+        const restored = new MemoryRuntimeDurabilityStore();
+        for (const kind of ["session-message", "session-message-outcome"] as const) {
+          for (const record of await this.list(kind)) await restored.write(record);
+        }
+        return restored;
+      }
+    }
+
+    function v4Connection() {
+      const sent: SessionMessageOutcomeReport[] = [];
+      const connection = {
+        state: "registered" as const,
+        capabilityVersion: (capability: string) =>
+          capability === RUNTIME_CAPABILITY.sessionCollaboration ? 4 : undefined,
+        send: vi.fn(async (frame: unknown) => {
+          sent.push(frame as SessionMessageOutcomeReport);
+        }),
+        subscribeState: () => () => undefined,
+      };
+      return { connection, sent };
+    }
+
+    const idleScheduler: RuntimeRetryScheduler = { schedule: () => ({ cancel: () => undefined }) };
+
+    function restartedPair(persistence: MemoryRuntimeDurabilityStore) {
+      const { connection, sent } = v4Connection();
+      const reporter = new SessionMessageOutcomeReporter({ connection, persistence, scheduler: idleScheduler });
+      const prompt = vi.fn();
+      const inbox = new SessionMessageInbox({
+        admission: new AdmissionController(),
+        credentialEnvironment: credentialEnvironment(),
+        imCredentialGrantVersion: () => 2,
+        onRunOutcome: reporter.report.bind(reporter),
+        persistence,
+        sessionCollaborationVersion: () => 4,
+        reconciler: inboxReconciler(),
+        runtimeManager: {
+          ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+          sessionKind: vi.fn(() => "internal" as const),
+        },
+        scheduler: idleScheduler,
+      });
+      return { inbox, prompt, reporter, sent };
+    }
+
+    it.each([
+      ["failed", "timed_out", "turn_timeout"],
+      ["dead-letter", "failed", "provider_failed"],
+    ] as const)(
+      "recovers exactly one report for a %s record committed before the outcome write",
+      async (status, outcome, reason) => {
+        const store = new PausableStore();
+        store.pauseOutcomeWrites = true;
+        let fireTimeout: () => void = () => undefined;
+        const prompt =
+          status === "failed"
+            ? vi.fn(
+                (input: { signal?: AbortSignal }) =>
+                  new Promise((_resolve, reject) => {
+                    input.signal?.addEventListener("abort", () => reject(input.signal?.reason), { once: true });
+                    queueMicrotask(() => fireTimeout());
+                  }),
+              )
+            : vi.fn(async () => ({ status: "failed", error: { message: "provider rejected input" } }));
+        const first = v4Connection();
+        const firstReporter = new SessionMessageOutcomeReporter({
+          connection: first.connection,
+          persistence: store,
+          scheduler: idleScheduler,
+        });
+        const firstInbox = new SessionMessageInbox({
+          admission: new AdmissionController(),
+          credentialEnvironment: credentialEnvironment(),
+          imCredentialGrantVersion: () => 2,
+          onRunOutcome: firstReporter.report.bind(firstReporter),
+          persistence: store,
+          retryPolicy: { maxAttempts: 1, maxAgeMs: 10_000 },
+          sessionCollaborationVersion: () => 4,
+          reconciler: inboxReconciler(),
+          runtimeManager: {
+            ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+            sessionKind: vi.fn(() => "internal" as const),
+          },
+          scheduler: idleScheduler,
+          timeoutScheduler: {
+            schedule(_delay, task) {
+              fireTimeout = task;
+              return { cancel: () => undefined };
+            },
+          },
+        });
+        const request = delivery();
+        await expect(firstInbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
+        // Crash cut: the terminal inbox record committed; the outcome write never did.
+        await vi.waitFor(() => expect(store.pausedWrites).toBe(1));
+        const key = `${request.targetSessionId}:${request.messageId}`;
+        expect(await store.list("session-message")).toEqual([
+          expect.objectContaining({ key, status, outcomeReport: "pending" }),
+        ]);
+        expect(await store.list("session-message-outcome")).toEqual([]);
+        firstInbox.stop();
+        firstReporter.stop();
+
+        const restored = await store.restore();
+        const second = restartedPair(restored);
+        await Promise.all([second.reporter.ready(), second.inbox.ready()]);
+        expect(second.prompt).not.toHaveBeenCalled();
+        expect(second.inbox.getState(request.messageId)).toMatchObject({ status, outcomeReport: "published" });
+        expect(second.reporter.pendingCount).toBe(1);
+        expect(second.sent).toEqual([
+          expect.objectContaining({ type: "session:message:outcome", messageId: request.messageId, outcome, reason }),
+        ]);
+        const frame = second.sent[0] as SessionMessageOutcomeReport;
+        second.reporter.handleResult({
+          type: "session:message:outcome:result",
+          requestId: frame.requestId,
+          messageId: request.messageId,
+          status: "notified",
+        });
+        await vi.waitFor(async () =>
+          expect(await restored.list("session-message-outcome")).toEqual([
+            expect.objectContaining({ key, status: "succeeded" }),
+          ]),
+        );
+        second.inbox.stop();
+        second.reporter.stop();
+
+        // A further restart after publication reports nothing again.
+        const third = restartedPair(restored);
+        await Promise.all([third.reporter.ready(), third.inbox.ready()]);
+        expect(third.sent).toEqual([]);
+        expect(third.reporter.pendingCount).toBe(0);
+        expect(third.prompt).not.toHaveBeenCalled();
+        third.inbox.stop();
+        third.reporter.stop();
+      },
+    );
+
+    it("re-hands an outcome whose report committed before the published marker without a duplicate", async () => {
+      const store = new MemoryRuntimeDurabilityStore();
+      const request = delivery();
+      const key = `${request.targetSessionId}:${request.messageId}`;
+      await store.write(
+        recordFor(request, "failed", {
+          lastError: { ...failureFor(request, "turn_timeout"), retryability: "never" },
+          outcomeReport: "pending",
+        }),
+      );
+      await store.write({
+        acceptedAt: 1,
+        attempts: 0,
+        key,
+        kind: "session-message-outcome",
+        payload: {
+          messageId: request.messageId,
+          targetSessionId: request.targetSessionId,
+          agentId: request.agentId,
+          placementGeneration: request.placementGeneration,
+          outcome: "timed_out",
+          reason: "turn_timeout",
+        },
+        status: "succeeded",
+        updatedAt: 1,
+      });
+      const pair = restartedPair(store);
+      await Promise.all([pair.reporter.ready(), pair.inbox.ready()]);
+      expect(pair.sent).toEqual([]);
+      expect(pair.inbox.getState(request.messageId)).toMatchObject({ status: "failed", outcomeReport: "published" });
+      pair.inbox.stop();
+      pair.reporter.stop();
+    });
+
+    it("does not backfill terminal records written before the outcome-report marker", async () => {
+      const store = new MemoryRuntimeDurabilityStore();
+      const request = delivery();
+      await store.write(recordFor(request, "dead-letter"));
+      const pair = restartedPair(store);
+      await Promise.all([pair.reporter.ready(), pair.inbox.ready()]);
+      expect(pair.sent).toEqual([]);
+      expect(pair.reporter.pendingCount).toBe(0);
+      expect(pair.inbox.getState(request.messageId)).not.toHaveProperty("outcomeReport");
+      pair.inbox.stop();
+      pair.reporter.stop();
+    });
+  });
+
+  it("accepts scheduled origins on a v4 channel", async () => {
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      sessionCollaborationVersion: () => 4,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(
+          async () =>
+            ({
+              waitForIdle: vi.fn(async () => undefined),
+              prompt: vi.fn(async (input: { runId: string }) => ({
+                runId: input.runId,
+                status: "completed",
+                output: [],
+              })),
+            }) as never,
+        ),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+    });
+    const { sourceSessionId: _source, ...base } = delivery();
+    const scheduled = {
+      ...base,
+      scheduledOrigin: {
+        scheduleId: randomUUID(),
+        scheduledFor: "2026-01-01T00:00:00.000Z",
+        timezone: "UTC",
+        name: "Daily",
+      },
+      sentAt: "2026-01-01T00:00:01.000Z",
+      scheduleDetailUrl: "https://opentag.example.com/schedules/1",
+    };
+    expect((await inbox.accept(scheduled)).status).toBe("accepted");
+    await inbox.settled();
     inbox.stop();
   });
 
@@ -1644,11 +1995,13 @@ describe("SessionMessageInbox", () => {
       }),
     };
     const failures: DurableFailure[] = [];
+    const onRunOutcome = vi.fn();
     const inbox = new SessionMessageInbox({
       admission,
       credentialEnvironment: credentialEnvironment(),
       imCredentialGrantVersion: () => 2,
       onFailure: (failure) => failures.push(failure),
+      onRunOutcome,
       persistence,
       sessionCollaborationVersion: () => 3,
       reconciler: inboxReconciler(),
@@ -1672,6 +2025,11 @@ describe("SessionMessageInbox", () => {
       // The provider never began the input, so it runs as an ordinary Session message exactly once.
       held.reservation.release();
       await vi.waitFor(() => expect(prompts).toEqual(["steered"]));
+      await inbox.settled();
+      // A requeued steer is not a terminal outcome: no creator notice and no report marker.
+      expect(onRunOutcome).not.toHaveBeenCalled();
+      expect(inbox.getState(message.messageId)?.status).toBe("succeeded");
+      expect(inbox.getState(message.messageId)?.outcomeReport).toBeUndefined();
     } else {
       held.reservation.release();
       await inbox.settled();
@@ -1681,6 +2039,18 @@ describe("SessionMessageInbox", () => {
         retryability: "never",
       });
       expect(failures).toMatchObject([{ code: "session_message_steer_interrupted" }]);
+      // A possibly-started steer is terminal like any other permanent failure: it is reported once
+      // through the durable outcome path, and the marker records the handoff in the same record.
+      expect(onRunOutcome).toHaveBeenCalledOnce();
+      expect(onRunOutcome).toHaveBeenCalledWith(
+        expect.objectContaining({
+          messageId: message.messageId,
+          targetSessionId,
+          outcome: "failed",
+          reason: "session_message_steer_interrupted",
+        }),
+      );
+      expect(inbox.getState(message.messageId)?.outcomeReport).toBe("published");
       await expect(inbox.accept({ ...message, requestId: randomUUID() })).resolves.toMatchObject({
         status: "rejected",
         reason: "provider_unavailable",
@@ -1943,12 +2313,18 @@ describe("SessionMessageInbox steer custody with Claude Code", () => {
     if (!held.accepted) throw new Error("Expected the host Turn reservation");
     held.reservation.markActive();
     const failures: DurableFailure[] = [];
+    const outcomes: SessionMessageRunOutcomeEvent[] = [];
+    const reporter = { available: true };
     const inbox = (runtime: () => AgentRuntime) =>
       new SessionMessageInbox({
         admission,
         credentialEnvironment: credentialEnvironment(),
         imCredentialGrantVersion: () => 2,
         onFailure: (failure) => failures.push(failure),
+        onRunOutcome: async (outcome) => {
+          if (!reporter.available) throw new Error("outcome reporter unavailable");
+          outcomes.push(outcome);
+        },
         persistence,
         sessionCollaborationVersion: () => 3,
         reconciler: inboxReconciler(),
@@ -1987,6 +2363,8 @@ describe("SessionMessageInbox steer custody with Claude Code", () => {
       failures,
       held,
       hostChild,
+      outcomes,
+      reporter,
       hostRun,
       inbox,
       message,
@@ -2013,6 +2391,9 @@ describe("SessionMessageInbox steer custody with Claude Code", () => {
       const restored = h.inbox(() => replacement);
       await restored.ready();
       expect(restored.getState(h.message.messageId)?.status).not.toBe("succeeded");
+      // A never-started steer is not an outcome: it is requeued without a creator notice.
+      expect(h.outcomes).toEqual([]);
+      expect((await h.committed())?.outcomeReport).toBeUndefined();
       h.held.reservation.release();
       await vi.waitFor(() => expect(h.children[1]?.written).toHaveLength(1));
       const retry = h.children[1] as ScriptedChild;
@@ -2023,6 +2404,7 @@ describe("SessionMessageInbox steer custody with Claude Code", () => {
       await vi.waitFor(() => expect(restored.getState(h.message.messageId)?.status).toBe("succeeded"));
       await restored.settled();
       expect((await h.committed())?.status).toBe("succeeded");
+      expect(h.outcomes).toEqual([]);
       // Exactly one provider ever started the message: the never-started steer plus one redelivery.
       expect(h.children).toHaveLength(2);
       expect(
@@ -2037,6 +2419,9 @@ describe("SessionMessageInbox steer custody with Claude Code", () => {
   it("fails a steer the provider started without replay when the host Run then fails", async () => {
     const h = await harness();
     try {
+      // The first daemon terminalizes the steer but cannot hand its outcome over (for example it
+      // crashes between the two writes): the terminal record keeps `outcomeReport: pending`.
+      h.reporter.available = false;
       const first = h.inbox(() => h.host);
       const uuid = await h.steerInto(first);
       send(h.hostChild, { type: "command_lifecycle", command_uuid: uuid, state: "started" });
@@ -2046,15 +2431,28 @@ describe("SessionMessageInbox steer custody with Claude Code", () => {
       await vi.waitFor(async () => expect((await h.committed())?.status).toBe("failed"));
       expect((await h.committed())?.lastError).toMatchObject({ code: "session_message_steer_interrupted" });
       expect(h.failures).toMatchObject([{ code: "session_message_steer_interrupted", retryability: "never" }]);
+      // The terminal status and the notice intent committed in one write.
+      expect((await h.committed())?.outcomeReport).toBe("pending");
+      expect(h.outcomes).toEqual([]);
       first.stop();
       await first.settled();
 
+      h.reporter.available = true;
       const replacement = await h.newRuntime();
       const restored = h.inbox(() => replacement);
       await restored.ready();
       h.held.reservation.release();
       await restored.settled();
       expect(restored.getState(h.message.messageId)?.status).toBe("failed");
+      // Hydration hands the pending report over exactly once and never reruns the message.
+      await vi.waitFor(async () => expect((await h.committed())?.outcomeReport).toBe("published"));
+      expect(h.outcomes).toEqual([
+        expect.objectContaining({
+          messageId: h.message.messageId,
+          outcome: "failed",
+          reason: "session_message_steer_interrupted",
+        }),
+      ]);
       await expect(restored.accept({ ...h.message, requestId: randomUUID() })).resolves.toMatchObject({
         status: "rejected",
         reason: "provider_unavailable",
@@ -2087,6 +2485,7 @@ describe("SessionMessageInbox steer custody with Claude Code", () => {
       await restored.ready();
       await restored.settled();
       expect(restored.getState(h.message.messageId)?.status).toBe("succeeded");
+      expect(h.outcomes).toEqual([]);
       await expect(restored.accept({ ...h.message, requestId: randomUUID() })).resolves.toMatchObject({
         status: "accepted",
       });

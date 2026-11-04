@@ -97,6 +97,7 @@ import { ServerRuntimeDurabilityStore } from "./server-runtime-durability-store.
 import { SessionBindingStore } from "./session-binding-store.js";
 import { SessionCliProofManager } from "./session-cli-proof-manager.js";
 import { SessionMessageInbox } from "./session-message-inbox.js";
+import { SessionMessageOutcomeReporter } from "./session-message-outcome-reporter.js";
 import { SessionReconciler } from "./session-reconciler.js";
 import { SessionRuntimeManager } from "./session-runtime-manager.js";
 import { TurnCustodyOwner } from "./turn-custody-owner.js";
@@ -356,6 +357,7 @@ export class ComposedClientRuntime {
   readonly credentialEnvironment: RuntimeCredentialEnvironmentManager;
   readonly reconciler: SessionReconciler;
   readonly sessionMessageInbox: SessionMessageInbox;
+  readonly sessionMessageOutcomes?: SessionMessageOutcomeReporter;
   readonly reportOwner: TurnReportOwner;
   readonly durabilityMetrics: RuntimeDurabilityMetrics;
   readonly runner: AgentTurnRunner;
@@ -388,6 +390,7 @@ export class ComposedClientRuntime {
       credentialEnvironment: RuntimeCredentialEnvironmentManager;
       reconciler: SessionReconciler;
       sessionMessageInbox: SessionMessageInbox;
+      sessionMessageOutcomes?: SessionMessageOutcomeReporter;
       reportOwner: TurnReportOwner;
       durabilityMetrics: RuntimeDurabilityMetrics;
       runner: AgentTurnRunner;
@@ -411,6 +414,7 @@ export class ComposedClientRuntime {
     this.credentialEnvironment = components.credentialEnvironment;
     this.reconciler = components.reconciler;
     this.sessionMessageInbox = components.sessionMessageInbox;
+    this.sessionMessageOutcomes = components.sessionMessageOutcomes;
     this.reportOwner = components.reportOwner;
     this.durabilityMetrics = components.durabilityMetrics;
     this.runner = components.runner;
@@ -512,6 +516,7 @@ export class ComposedClientRuntime {
       await this.runtimeManager.close();
     } finally {
       this.reportOwner.stop();
+      this.sessionMessageOutcomes?.stop();
       await this.reportOwner.settled();
       await this.credentialEnvironment.close();
       // Recovery may remove PATH sentinels, so it must run only after all Runs
@@ -850,19 +855,26 @@ export async function createClientRuntime(
     localPolicy: runtimeManager,
   });
   const admission = new AdmissionController();
+  // Always Local: the Server durable-work API does not carry outcome reports.
+  const sessionMessageOutcomes = new SessionMessageOutcomeReporter({
+    connection,
+    logger: moduleLogger("session-message-outcome"),
+    persistence: options.durabilityStore ?? new FileRuntimeDurabilityStore(options.home),
+  });
   const sessionMessageInbox = new SessionMessageInbox({
     admission,
     cliCommand: options.cliCommand ?? "opentag",
     credentialEnvironment,
     imCredentialGrantVersion: connection.capabilityVersion.bind(connection, RUNTIME_CAPABILITY.imCredentialGrant),
     metrics: durabilityMetrics,
+    onRunOutcome: sessionMessageOutcomes.report.bind(sessionMessageOutcomes),
     persistence: durabilityStore,
     reconciler,
     runtimeManager,
     sessionCollaborationVersion: connection.capabilityVersion.bind(connection, RUNTIME_CAPABILITY.sessionCollaboration),
     turnPlan: providerCliTurnPlans,
   });
-  await Promise.all([reportOwner.ready(), sessionMessageInbox.ready()]);
+  await Promise.all([reportOwner.ready(), sessionMessageOutcomes.ready(), sessionMessageInbox.ready()]);
   const mvpReportRecovery = new MvpTurnReportRecovery({
     bindingStore,
     logger: moduleLogger("report-recovery"),
@@ -934,6 +946,7 @@ export async function createClientRuntime(
     },
     ...createClientRuntimeHandlers(custody, reportOwner, mvpReportRecovery),
     handleTurnActivityResult: runner.handleActivityResult.bind(runner),
+    handleSessionMessageOutcomeResult: sessionMessageOutcomes.handleResult.bind(sessionMessageOutcomes),
   });
   return new ComposedClientRuntime(runtime, {
     connection,
@@ -943,6 +956,7 @@ export async function createClientRuntime(
     custody,
     credentialEnvironment,
     sessionMessageInbox,
+    sessionMessageOutcomes,
     reconciler,
     reportOwner,
     durabilityMetrics,

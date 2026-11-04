@@ -255,6 +255,54 @@ describe("SessionService with the unit database", () => {
     ).rejects.toMatchObject({ code: "SESSION_MESSAGE_CONFLICT" });
   });
 
+  it("resolves Run outcome notices only for an active internal child's own messages", async () => {
+    const service = new SessionService(db.database, { now: () => fixture.now });
+    const creator = await service.ensureChatSession(
+      { imBindingId: fixture.bindingId, channelId: "C1", conversationKind: "dm" },
+      "channel",
+    );
+    const taskId = randomUUID();
+    const child = await service.createInternalSessionWithMessage({
+      creatorSessionId: creator.session.id,
+      creatorInstallationId: fixture.installationId,
+      creatorConnectionInstanceId: fixture.instanceId,
+      creatorComputerId: fixture.computerId,
+      creatorPlacementGeneration: 1,
+      messageId: taskId,
+      initialMessage: "task",
+    });
+    await expect(
+      service.resolveRunOutcomeNotice({ childSessionId: child.session.id, messageId: taskId }),
+    ).resolves.toEqual({ creatorSessionId: creator.session.id, installationId: fixture.installationId });
+    // A message addressed to another Session, an unknown message, or a visible target is not eligible.
+    await expect(
+      service.resolveRunOutcomeNotice({ childSessionId: creator.session.id, messageId: taskId }),
+    ).resolves.toBeUndefined();
+    await expect(
+      service.resolveRunOutcomeNotice({ childSessionId: child.session.id, messageId: randomUUID() }),
+    ).resolves.toBeUndefined();
+
+    // The notice is an ordinary child-to-creator message under the child's live authority.
+    const noticeId = randomUUID();
+    const notice = await service.authorizeAndRecordMessage({
+      messageId: noticeId,
+      sourceSessionId: child.session.id,
+      sourceInstallationId: fixture.installationId,
+      sourceComputerId: fixture.computerId,
+      sourceConnectionInstanceId: fixture.instanceId,
+      sourcePlacementGeneration: child.placement.generation,
+      targetSessionId: creator.session.id,
+      content: "notice",
+    });
+    expect(notice.route).toMatchObject({ sourceSessionId: child.session.id, targetSessionId: creator.session.id });
+
+    // An ended child is never notified about.
+    await db.database.update(sessions).set({ endedAt: fixture.now }).where(eq(sessions.id, child.session.id));
+    await expect(
+      service.resolveRunOutcomeNotice({ childSessionId: child.session.id, messageId: taskId }),
+    ).resolves.toBeUndefined();
+  });
+
   it("authorizes messages and rejects stale, unavailable, and mismatched authorities", async () => {
     const service = new SessionService(db.database, { now: () => fixture.now });
     const source = await service.ensureChatSession(

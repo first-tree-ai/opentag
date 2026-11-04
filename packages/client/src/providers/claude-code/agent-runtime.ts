@@ -1195,7 +1195,21 @@ function deferredProcess(): ProcessReady {
   return { promise, resolve };
 }
 
-/** One OpenTag Run reports one terminal: the last result's outcome plus everything steered input added. */
+/**
+ * One OpenTag Run reports one terminal: the last result's outcome plus everything steered input added.
+ *
+ * Result fields have two scopes in Claude Code's streaming-input mode
+ * (https://code.claude.com/docs/en/agent-sdk/cost-tracking#track-costs-in-streaming-input-mode):
+ * - `usage` covers only its own turn and `num_turns` counts only that result's agent loop (coalesced
+ *   completions report `num_turns: 0`), so both are summed across the Run's results.
+ * - `total_cost_usd` is the process's running total, so the latest result supersedes earlier ones and
+ *   summing would double-count. Every OpenTag Run spawns a fresh Claude Code process (`--resume` after
+ *   the first Run) that is closed when the Run settles, so no earlier Run's spend accrues in this
+ *   process and no in-process baseline is subtracted: the Run reports the last result's value, the
+ *   same scope a single-result Run reports. Claude Code restores a resumed session's saved totals, so
+ *   that value may include spend from earlier Runs of the session, exactly as before steering existed.
+ * `duration_ms` and `duration_api_ms` are not parsed.
+ */
 function mergeTerminals(earlier: readonly ClaudeCodeTerminal[], last: ClaudeCodeTerminal): ClaudeCodeTerminal {
   if (earlier.length === 0) return last;
   const sum = (pick: (terminal: ClaudeCodeTerminal) => number | undefined): number | undefined => {
@@ -1206,7 +1220,10 @@ function mergeTerminals(earlier: readonly ClaudeCodeTerminal[], last: ClaudeCode
   const cachedInputTokens = sum((terminal) => terminal.usage?.cachedInputTokens);
   const outputTokens = sum((terminal) => terminal.usage?.outputTokens);
   const numTurns = sum((terminal) => terminal.numTurns);
-  const totalCostUsd = sum((terminal) => terminal.totalCostUsd);
+  const totalCostUsd = [...earlier, last].reduce<number | undefined>(
+    (latest, terminal) => terminal.totalCostUsd ?? latest,
+    undefined,
+  );
   const usage = {
     ...(inputTokens !== undefined ? { inputTokens } : {}),
     ...(cachedInputTokens !== undefined ? { cachedInputTokens } : {}),

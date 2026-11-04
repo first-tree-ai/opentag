@@ -444,6 +444,44 @@ describe("ClaudeCodeAgentRuntime steer", () => {
     }
   });
 
+  it("reports the latest cumulative cost while summing per-turn usage and turns across steered results", async () => {
+    const steerable = new SteerableClaudeCodeProcess();
+    const spawned: (readonly string[])[] = [];
+    const runtime = await new ClaudeCodeAgentRuntimeFactory({
+      createSessionId: () => SESSION_ID,
+      createProcess: (_cwd, args) => {
+        spawned.push(args);
+        return steerable;
+      },
+    }).create(createRequest(() => undefined));
+    try {
+      const run = runtime.prompt({ runId: "cost-run", input: input("first") });
+      await runtime.steer({ expectedRunId: "cost-run", input: input("second") });
+      // total_cost_usd is the process's running total in streaming-input mode; usage is per turn.
+      steerable.emit(result("first answer", 1, 1, 5), false);
+      steerable.emit(result("second answer", 2, 2, 7), true);
+      steerable.finish();
+      await expect(run).resolves.toMatchObject({
+        status: "completed",
+        usage: { inputTokens: 2, outputTokens: 12 },
+        providerDiagnostics: { numTurns: 3, totalCostUsd: 2 },
+      });
+      // The next Run spawns a fresh resumed process, so its cumulative cost has no in-process baseline.
+      const next = runtime.prompt({ runId: "next-run", input: input("third") });
+      await vi.waitFor(() => expect(spawned).toHaveLength(2));
+      expect(spawned[1]).toEqual(expect.arrayContaining(["--resume", SESSION_ID]));
+      steerable.emit(result("third answer", 1, 2.5, 3), true);
+      steerable.finish();
+      await expect(next).resolves.toMatchObject({
+        status: "completed",
+        usage: { inputTokens: 1, outputTokens: 3 },
+        providerDiagnostics: { numTurns: 1, totalCostUsd: 2.5 },
+      });
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it("merges continued results that carry partial usage", async () => {
     const steerable = new SteerableClaudeCodeProcess();
     const runtime = await steerableFactory(steerable).create(createRequest(() => undefined));

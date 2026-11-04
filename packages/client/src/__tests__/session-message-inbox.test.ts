@@ -12,7 +12,15 @@ import type {
   SessionReconcileRequest,
 } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
-import type { AgentRuntime, AgentSteerOutcome } from "../agent-runtime/types.js";
+import { BaseAgentRuntime } from "../agent-runtime/base-agent-runtime.js";
+import type {
+  AgentPromptRequest,
+  AgentProviderRunResult,
+  AgentProviderSteerCustody,
+  AgentRunResult,
+  AgentRuntime,
+  AgentSteerOutcome,
+} from "../agent-runtime/types.js";
 import { executeProviderCliTurnPlan } from "../index.js";
 import { ClaudeCodeAgentRuntimeFactory } from "../providers/claude-code/agent-runtime.js";
 import { ClaudeCodeProcess } from "../providers/claude-code/process-wire.js";
@@ -1750,6 +1758,53 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
   });
 
+  it.each([
+    ["completed", "succeeded"],
+    ["aborted", "failed"],
+  ] as const)(
+    "does not redeliver a Provider-owned steer when the host Run %s during steer acceptance",
+    async (hostStatus, recordStatus) => {
+      const admission = new AdmissionController();
+      const persistence = new MemoryRuntimeDurabilityStore();
+      const targetSessionId = randomUUID();
+      const agentId = randomUUID();
+      const held = admission.reserve(targetSessionId, agentId);
+      if (!held.accepted) throw new Error("Expected the test reservation");
+      held.reservation.markActive();
+      const runtime = new NoProbeSteerRuntime(hostStatus);
+      const hostRun = runtime.prompt({ runId: "im-turn", input: { items: [{ type: "text", text: "host" }] } });
+      const ensureRuntime = vi.fn(async () => runtime as never);
+      const inbox = new SessionMessageInbox({
+        admission,
+        credentialEnvironment: credentialEnvironment(),
+        imCredentialGrantVersion: () => 2,
+        persistence,
+        sessionCollaborationVersion: () => 3,
+        reconciler: inboxReconciler(),
+        runtimeManager: {
+          ensureRuntime,
+          runtime: vi.fn(() => runtime as never),
+          sessionKind: vi.fn(() => "internal" as const),
+        },
+        steerRetryMs: 5,
+      });
+      const message = delivery({ targetSessionId, agentId, text: "steered" });
+      expect((await inbox.accept(message)).status).toBe("accepted");
+      await expect(hostRun).resolves.toMatchObject({ status: hostStatus });
+      await vi.waitFor(() => expect(inbox.getState(message.messageId)?.status).toBe(recordStatus));
+      await inbox.settled();
+      held.reservation.release();
+      await inbox.settled();
+      // The Provider owned the input once its steer RPC succeeded, so the inbox never delivers it again.
+      expect(runtime.steers).toBe(1);
+      expect(runtime.prompts).toBe(1);
+      expect(ensureRuntime).not.toHaveBeenCalled();
+      expect(inbox.queuedCount).toBe(0);
+      inbox.stop();
+      await runtime.close();
+    },
+  );
+
   it("leaves a steered message recoverable when the inbox stops before its Run settles", async () => {
     const admission = new AdmissionController();
     const persistence = new MemoryRuntimeDurabilityStore();
@@ -2147,4 +2202,46 @@ function failureFor(request: SessionMessageDeliveryRequest, code: string): Durab
     requestId: request.requestId,
     retryability: "backoff",
   };
+}
+
+/** A real BaseAgentRuntime whose steer RPC succeeds without a custody probe, like Codex and Pi. */
+class NoProbeSteerRuntime extends BaseAgentRuntime {
+  readonly #release: Promise<void>;
+  #releaseRun!: () => void;
+  #run?: Promise<unknown>;
+  steers = 0;
+  prompts = 0;
+
+  constructor(readonly hostStatus: "completed" | "aborted") {
+    super({
+      manifest: { providerId: "no-probe", displayName: "No probe", contractVersion: 2, bindingSchemaVersion: 1 },
+      capabilities: { steer: "supported", interactions: "unsupported" },
+      eventSink: () => undefined,
+    });
+    this.#release = new Promise<void>((resolve) => {
+      this.#releaseRun = resolve;
+    });
+  }
+
+  override prompt(request: AgentPromptRequest): Promise<AgentRunResult> {
+    this.prompts += 1;
+    const run = super.prompt(request);
+    this.#run = run;
+    return run;
+  }
+
+  protected async executeRun(): Promise<AgentProviderRunResult> {
+    await this.#release;
+    return { status: this.hostStatus };
+  }
+
+  protected override async steerProvider(): Promise<AgentProviderSteerCustody | undefined> {
+    this.steers += 1;
+    // The host Run settles while the Provider is acknowledging the steer.
+    this.#releaseRun();
+    await this.#run;
+    return undefined;
+  }
+
+  protected async closeProvider(): Promise<void> {}
 }

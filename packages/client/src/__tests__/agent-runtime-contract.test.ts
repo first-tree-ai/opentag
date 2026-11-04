@@ -297,6 +297,33 @@ describe("BaseAgentRuntime contract", () => {
     await runtime.close();
   });
 
+  it.each([
+    ["completed", "processed"],
+    ["aborted", "interrupted"],
+    ["failed", "interrupted"],
+  ] as const)(
+    "keeps Provider-owned input (no custody probe) when the Run settles %s during steer acceptance → %s",
+    async (status, outcome) => {
+      const gate = deferred<void>();
+      const runtime = new TestRuntime({
+        eventSink: () => undefined,
+        execute: async () => {
+          await gate.promise;
+          return { status };
+        },
+      });
+      const run = runtime.prompt(prompt("run-1", "one"));
+      runtime.beforeSteerAccepted = async () => {
+        gate.resolve();
+        await run;
+      };
+      // Codex and Pi resolve without a probe once their steer RPC succeeded; refusing here would invite a replay.
+      const receipt = await runtime.steer({ expectedRunId: "run-1", input: input("change") });
+      await expect(receipt.outcome).resolves.toBe(outcome);
+      await runtime.close();
+    },
+  );
+
   it("keeps input the provider already started when the Run settles during steer acceptance", async () => {
     const gate = deferred<void>();
     const runtime = new TestRuntime({

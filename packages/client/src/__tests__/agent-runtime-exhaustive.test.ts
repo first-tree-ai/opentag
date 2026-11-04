@@ -394,7 +394,7 @@ describe("BaseAgentRuntime exhaustive behavior", () => {
     await runtime.close();
   });
 
-  it("fences a steer whose Provider acceptance loses the completion race", async () => {
+  it("keeps a Provider-owned steer whose acceptance loses the completion race", async () => {
     const gate = deferred<void>();
     const runtime = new HarnessRuntime({
       execute: async () => {
@@ -407,10 +407,10 @@ describe("BaseAgentRuntime exhaustive behavior", () => {
       },
     });
     const run = runtime.prompt(prompt("run-1"));
-    await expect(runtime.steer({ expectedRunId: "run-1", input: input("late") })).rejects.toMatchObject({
-      code: "run_mismatch",
-    });
+    // Without a custody probe the Provider owns the acknowledged input; only a never-started probe may refuse it.
+    const receipt = await runtime.steer({ expectedRunId: "run-1", input: input("late") });
     await run;
+    await expect(receipt.outcome).resolves.toBe("processed");
     await runtime.close();
   });
 

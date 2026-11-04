@@ -141,8 +141,9 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
     const active = this.#requireActive(snapshot.expectedRunId);
     const custody = await this.steerProvider(snapshot);
     if (active.state !== "active" || this.#active !== active) {
-      // Input the Provider already started belongs to the Run that just settled; refusing it would invite a replay.
-      if (!custody?.started()) {
+      // Only an explicit probe that reports the input never started may refuse it for redelivery. No probe
+      // means the Provider owns the input, and started input belongs to the Run that just settled.
+      if (custody && !custody.started()) {
         throw new AgentRuntimeError("run_mismatch", "the active run completed before steer was accepted");
       }
       return steerReceipt(active.promise, custody);

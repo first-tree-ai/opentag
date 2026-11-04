@@ -16,7 +16,8 @@ test("Agent Setup renders the destination step and contains the Codex mark", asy
   await page.goto("/agents/setup", { waitUntil: "networkidle" });
   await expect(page.getByRole("heading", { name: AGENT_SETUP_CREATE_HEADING, exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /^Local computer / })).toBeVisible();
-  const cloudComputer = page.getByRole("button", { name: /^Cloud computer Temporarily unavailable / });
+  // The unavailable Cloud card carries its badge alone, with no explanation after it.
+  const cloudComputer = page.getByRole("button", { name: "Cloud computer Temporarily unavailable", exact: true });
   await expect(cloudComputer).toBeVisible();
   await expect(cloudComputer).toBeDisabled();
   await expect(page.getByRole("button", { name: "Continue" })).toBeEnabled();
@@ -140,7 +141,8 @@ test("Agent Setup Lab exposes recoverable core states through its real controls"
   await page.getByRole("button", { name: "Finish readiness check" }).click();
   await closeLab.click();
   await expect(page.getByRole("heading", { name: "Prepare this computer" })).toBeVisible();
-  await expect(step2Navigation).toContainText("This computer is ready. Continue to connect messaging.");
+  // Every row is ready, so the footer adds no summary line; the enabled Continue is the signal.
+  await expect(step2Navigation.getByRole("status")).toHaveText("");
   await expect(step2Continue).toBeEnabled();
   await step2Continue.click();
   await expect(page.getByRole("heading", { name: "Connect your messaging app" })).toBeVisible();

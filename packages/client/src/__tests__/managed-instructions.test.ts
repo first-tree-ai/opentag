@@ -348,7 +348,10 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
       expect(prompt).toContain("Never edit an earlier message for progress, because edits do not notify");
       expect(prompt).toContain("Short work stays silent until the final reply.");
       expect(prompt).toContain(
-        "Long work adds only the milestone messages described above, and its final result is still one self-contained message.",
+        "Long work adds only the milestone messages described above, and its final result, which is the done milestone, is still one self-contained message.",
+      );
+      expect(prompt).toContain(
+        "The done milestone is the one self-contained final result, not a separate completion message, and a start notice that was already sent, such as a scheduled task's start notification, counts as started.",
       );
     }
     for (const [prompt, cli] of [
@@ -427,10 +430,14 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
         "Session collaboration commands are unavailable because managed Session context is missing.",
       );
       expect(unavailable).not.toContain("session create --message");
-      expect(unavailable).toContain(
-        "You are a visible Session. Handle work directly, or use Provider-native subagents when available.",
-      );
-      expect(unavailable).not.toContain("Handle quick work directly");
+      expect(unavailable).toContain("You are a visible Session. Handle quick work directly.");
+      expect(unavailable).toContain("OpenTag internal Sessions are unavailable in this Run");
+      expect(unavailable).toContain("this conversation stays busy until it finishes");
+      expect(unavailable).toContain("split it into parts the user can request in separate messages");
+      expect(unavailable).toContain("use them only for short, bounded side tasks within the current Run");
+      expect(unavailable).toContain("post a short new IM message at each meaningful milestone");
+      expect(unavailable).not.toContain("use Provider-native subagents when available");
+      expect(unavailable).not.toContain("create an OpenTag internal Session with");
     }
 
     const local = renderManagedSystemPrompt(snapshot, session);

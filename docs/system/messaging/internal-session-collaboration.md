@@ -88,11 +88,20 @@ holds the IM conversation until it ends. Provider-native subagents run inside th
 and do not survive a daemon restart, so they remain for short, bounded side tasks within the current Run. Internal
 Sessions may still delegate further.
 
+Session collaboration can be unavailable to a visible Session — Cloud omits it when the request carries no
+`sessionCollaboration` proof, and Local when it reconciles without the Session-collaboration capability or managed
+Session context. The visible Session then still handles quick work directly and keeps Provider-native subagents to
+short, bounded side tasks. It does long work directly in the current Run: it replies promptly that the work has started
+and that the conversation stays busy until it finishes, posts milestones, and, because the Run budget still applies,
+says so when the work may not fit and splits it into parts the user can request in separate messages.
+
 For long-running delegated or multi-step work, the visible Session posts a short new IM message at each meaningful
-milestone — started, key finding, blocked and needs input, done — rather than editing one message, because IM clients
-do not notify on edits. Routine check-ins are not milestones, short work stays silent until the final reply, and the
-final result remains one self-contained message. Internal Sessions never publish to IM; they report milestones to their
-creator through `opentag session send` only when useful, along with questions and the final result.
+milestone — started, key finding, blocked and needs input, done — rather than editing one message, because IM clients do
+not notify on edits. Routine check-ins are not milestones, and short work stays silent until the final reply. The done
+milestone is the one self-contained final result, not a separate completion message, and a start notice already sent —
+such as a scheduled task's fixed start notification — satisfies started, so the convention never adds the completion
+notices scheduled-task metadata forbids. Internal Sessions never publish to IM; they report milestones to their creator
+through `opentag session send` only when useful, along with questions and the final result.
 
 When a SessionMessage returns to a visible channel or thread Session, that callback Run retains the visible Session's IM
 authority. Credential grant v2 atomically supplies a temporary provider credential environment and a non-secret default

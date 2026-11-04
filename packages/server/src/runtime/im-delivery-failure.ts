@@ -72,11 +72,12 @@ export const EXPECTED_RECOVERY_CODES = new Set([
   "IM_DELIVERY_RECOVERY_REPORTING",
 ]);
 
-/** Steer and custody deferral codes that are expected waiting states, not operator-facing failures. */
+/** Steer, custody, and inbound-receipt deferral codes that are expected waiting states, not operator-facing failures. */
 export const EXPECTED_DEFERRED_CODES: ReadonlySet<string> = new Set([
   "IM_DELIVERY_STEER_DEFERRED",
   "IM_DELIVERY_STEER_STARTING",
   "IM_DELIVERY_CUSTODY_DEFERRED",
+  "IM_DELIVERY_INBOUND_PENDING",
 ]);
 
 export interface DeliveryFailureDeps {

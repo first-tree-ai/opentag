@@ -9,17 +9,13 @@ import { useAccount } from "../session/session-context.js";
 import { AgentTasksSection } from "../tasks-page.js";
 import { AgentAvatar } from "./agent-avatar.js";
 import type { AgentDetailView } from "./agent-model.js";
-import {
-  agentAvailabilityRecovery,
-  agentMessagingStatus,
-  agentRecoveryMessage,
-  agentStatusPresentation,
-} from "./agent-presentation.js";
+import { agentMessagingStatus, agentRecoveryMessage, agentStatusPresentation } from "./agent-presentation.js";
 import { useAgentDetailView } from "./agent-queries.js";
 import { agentDetailLink, agentSettingsLink } from "./agent-routes.js";
 import { AgentSchedulesSection } from "./agent-schedules-section.js";
 import { AgentStatusCard } from "./agent-status-card.js";
 import { CloudProgressNotice, CloudWorkspaceRecovery } from "./cloud/cloud-workspace-recovery.js";
+import { ResumeAgentButton } from "./resume-agent-button.js";
 
 export function AgentDetailPage({
   agentId,
@@ -141,7 +137,6 @@ export function AgentObjectHeader({
 export function AgentLifecycleNotice({ agent }: { agent: AgentDetailView }) {
   if (agent.availability.state !== "suspended") return null;
   const status = agentStatusPresentation(agent);
-  const recovery = agentAvailabilityRecovery(agent);
   return (
     <section
       className="flex flex-wrap items-center justify-between gap-4 rounded-lg bg-kumo-recessed p-4 ring ring-kumo-line"
@@ -152,11 +147,8 @@ export function AgentLifecycleNotice({ agent }: { agent: AgentDetailView }) {
         <StatusIndicator label={status.label} tone={status.tone} />
         <p className="text-sm text-kumo-subtle">{agentRecoveryMessage()}</p>
       </div>
-      {recovery ? (
-        <Link className={buttonClassName({ size: "compact", variant: "outline" })} state={{ agent }} {...recovery.link}>
-          {recovery.label}
-        </Link>
-      ) : null}
+      {/* The one thing to do about a paused Agent is to resume it, so the notice does that itself. */}
+      <ResumeAgentButton agentId={agent.id} />
     </section>
   );
 }

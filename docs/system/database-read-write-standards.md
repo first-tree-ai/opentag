@@ -65,6 +65,11 @@ Finding a deviation does not authorize its implementation.
   one connection and a five-second native close. Fixture statements use the
   shared 30-second statement / 35-second elapsed budgets, measured separately
   from the shorter startup migration budget.
+- The current budget for a single database query is 500 ms on representative data. It is still being calibrated and
+  may prove too high or too low; tighter or looser targets, overall or for a particular path, are set by a human
+  decision. It is a performance budget, not the statement timeout (`OPENTAG_DATABASE_STATEMENT_TIMEOUT_MS`, 30 seconds
+  by default), which only cancels runaway statements. Why: one stated budget lets changes, including Agent-authored
+  ones, be checked consistently, while deciding where faster is worth the cost stays a judgement call.
 
 HTTP authentication hooks belong in route options so application shutdown can
 retain their actual Promises through client disconnect. Ordinary callers need

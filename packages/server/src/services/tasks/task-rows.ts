@@ -11,8 +11,8 @@ import { agentAvatarPath, TASK_CANCELLED_DELIVERY_REASON } from "@opentag/shared
 import { deriveTaskTitle, messageTextFromBlocks } from "./task-title.js";
 
 /**
- * The stored shape of one Task list or detail row: the topic identity, its rollup facts and the
- * latest execution of the topic. Every column here is read from one SQL statement, so a row never
+ * The stored shape of one Task list or detail row: the Task identity, its rollup facts and the
+ * latest execution of the Task. Every column here is read from one SQL statement, so a row never
  * mixes executions of different reads.
  */
 export interface TaskSummaryRow extends Record<string, unknown> {
@@ -137,7 +137,7 @@ export function toIso(value: Date | string): string {
 }
 
 /**
- * The status is the topic's latest execution situation, read by precedence rather than by the
+ * The status is the Task's latest execution situation, read by precedence rather than by the
  * most recent delivery: a disconnected channel first, then any Turn still running, then anything
  * still queued, and only then the outcome of the last execution. An accepted delivery counts as
  * running only while its deadline has not passed, its Session is alive, and no later Turn ran in
@@ -152,7 +152,7 @@ export function taskStatus(row: TaskSummaryRow): TaskStatus {
   if (row.endedAt) return "ended";
   if (row.hasRunning) return "running";
   if (row.hasPending) return "queued";
-  // Every listed topic has a direct delivery, so a missing latest execution cannot happen.
+  // Every listed Task has a direct delivery, so a missing latest execution cannot happen.
   if (!row.deliveryState) return "idle";
   if (row.deliveryState === "expired")
     return row.deliveryReason === TASK_CANCELLED_DELIVERY_REASON ? "cancelled" : "expired";

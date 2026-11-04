@@ -30,6 +30,7 @@ import { BackgroundFailureSupervisor } from "../observability/background-failure
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import { ImDeliveryInputError, validateFreshImRequest } from "../runtime/im-delivery-content.js";
 import { fitDeliveryFrame } from "../runtime/im-delivery-custody.js";
+import { recordDeliveryFailure } from "../runtime/im-delivery-failure.js";
 import { runImDeliverySteerRecovery } from "../runtime/im-delivery-janitor.js";
 import { ImDeliveryWorker } from "../runtime/im-delivery-worker.js";
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
@@ -1865,16 +1866,53 @@ describe("ImDeliveryWorker database workflow", () => {
     expect(rejectedEvents).not.toContain("IM_DELIVERY_STEER_DEFERRED");
 
     await unit.reset();
+    const deferred = await steerFixture(unit);
+    const deferredEvents: string[] = [];
+    const deferredWarn = vi.fn();
+    await new ImDeliveryWorker({
+      database: unit.database,
+      domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), deferred, {
+        steerStatus: "rejected",
+        steerReason: "turn_finishing",
+      }) as never,
+      assembler: { assembleForSession: vi.fn() },
+      registry: deferred.registry,
+      logger: { debug: vi.fn(), info: vi.fn(), warn: deferredWarn, error: vi.fn() },
+      onDiagnostic: (code) => deferredEvents.push(code),
+    }).runOnce();
+    const [deferredRow] = await unit.database
+      .select({ lastErrorCode: imMessageDeliveries.lastErrorCode })
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, deferred.deliveryId));
+    expect(deferredRow?.lastErrorCode).toBe("IM_DELIVERY_STEER_DEFERRED");
+    expect(deferredWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "IM_DELIVERY_STEER_DEFERRED", outcome: "retry" }),
+      "IM delivery dispatch retry scheduled",
+    );
+    expect(deferredEvents).toEqual([]);
+
+    await unit.reset();
     const retry = await steerFixture(unit);
     const retryEvents: string[] = [];
+    const retryWarn = vi.fn();
     await new ImDeliveryWorker({
       database: unit.database,
       domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), retry, { steerStatus: "retry" }) as never,
       assembler: { assembleForSession: vi.fn() },
       registry: retry.registry,
+      logger: { debug: vi.fn(), info: vi.fn(), warn: retryWarn, error: vi.fn() },
       onDiagnostic: (code) => retryEvents.push(code),
     }).runOnce();
-    expect(retryEvents).toContain("IM_DELIVERY_STEER_STARTING");
+    const [retryRow] = await unit.database
+      .select({ lastErrorCode: imMessageDeliveries.lastErrorCode })
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, retry.deliveryId));
+    expect(retryRow?.lastErrorCode).toBe("IM_DELIVERY_STEER_STARTING");
+    expect(retryWarn).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "IM_DELIVERY_STEER_STARTING", outcome: "retry" }),
+      "IM delivery dispatch retry scheduled",
+    );
+    expect(retryEvents).toEqual([]);
 
     await unit.reset();
     const failed = await steerFixture(unit);
@@ -1887,6 +1925,49 @@ describe("ImDeliveryWorker database workflow", () => {
       onDiagnostic: (code) => failedEvents.push(code),
     }).runOnce();
     expect(failedEvents).toContain("IM_DELIVERY_STEER_FAILED");
+
+    for (const [code, abnormal] of [
+      ["IM_DELIVERY_CUSTODY_DEFERRED", false],
+      ["IM_DELIVERY_STEER_UNKNOWN", true],
+    ] as const) {
+      await unit.reset();
+      const recorded = await steerFixture(unit);
+      const diagnostic = vi.fn();
+      const warn = vi.fn();
+      const metric = vi.fn();
+      await recordDeliveryFailure(
+        {
+          database: unit.database,
+          now: () => Date.now(),
+          onDiagnostic: diagnostic,
+          onMetric: metric,
+          logger: { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() },
+          custody: new PostgresRuntimeCustodyStore(unit.database),
+          readyRetryClaims: new Set(),
+          recheckReady: vi.fn(),
+        },
+        {
+          phase: "steer",
+          deliveryId: recorded.deliveryId,
+          agentId: recorded.agentId,
+          computerId: recorded.computerId,
+          attemptCount: 0,
+        },
+        code,
+      );
+      const [row] = await unit.database
+        .select({ lastErrorCode: imMessageDeliveries.lastErrorCode })
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, recorded.deliveryId));
+      expect(row?.lastErrorCode).toBe(code);
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ code, outcome: "retry" }),
+        "IM delivery dispatch retry scheduled",
+      );
+      expect(metric).toHaveBeenCalledWith({ name: "retry", value: 1 });
+      if (abnormal) expect(diagnosticCodes(diagnostic)).toEqual([code]);
+      else expect(diagnostic).not.toHaveBeenCalled();
+    }
   });
 
   it("fences competing custody, retired steer correlations, and recovery authority", async () => {

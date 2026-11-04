@@ -510,7 +510,8 @@ class ReliableFeishuChannel implements FeishuChannel {
         if (!this.#closed) this.#resolveReady();
       },
       onError: (error) => {
-        this.#rejectReady(new Error("FEISHU_CONNECTION_ERROR"));
+        // The cause keeps the gateway's refusal code for connection-failure classification.
+        this.#rejectReady(new Error("FEISHU_CONNECTION_ERROR", { cause: error }));
         this.#handlers.error?.(error);
       },
       onReconnecting: () => this.#handlers.reconnecting?.(),

@@ -144,6 +144,11 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                                 />
                               </span>
                             </div>
+                            {connectionFailureMessage(binding) ? (
+                              <p className="text-sm text-kumo-default" data-ui="messaging-connection-failure">
+                                {connectionFailureMessage(binding)}
+                              </p>
+                            ) : null}
                           </>
                         ) : null}
                         <MessagingConnectionActions
@@ -360,6 +365,19 @@ function TriggerModeOption({
       {label}
     </Button>
   );
+}
+
+/** Why openTag stopped connecting this binding, and what fixes it; nothing for any other state. */
+function connectionFailureMessage(binding: ImBindingSummary): string | undefined {
+  if (binding.bindingState !== "error" || !binding.connectionFailure) return undefined;
+  const provider = messagingProviderLabel(binding.provider);
+  const message = {
+    credentials_rejected: m.im_connection_failure_credentials_rejected(),
+    app_unavailable: m.im_connection_failure_app_unavailable({ provider }),
+    connection_rejected: m.im_connection_failure_connection_rejected({ provider }),
+    bot_mismatch: m.im_connection_failure_bot_mismatch(),
+  }[binding.connectionFailure];
+  return spaceScriptBoundary(message);
 }
 
 function messagingRecoveryLabel(binding: ImBindingSummary): string | undefined {

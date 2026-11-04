@@ -16,6 +16,14 @@ skills, tools, MCP Servers, Context Trees, receive mode, credentials, permission
 settings, and its Computer once one is bound. Runtime collaboration creates
 Sessions under an existing Agent; it does not create another Agent.
 
+> **Planned — not yet implemented.** Tracking: #1215
+
+An Agent's Computer, runtime Provider, and messaging channel are fixed once set. Moving any of them is not supported;
+to change one, create a new Agent and add it to the conversation. Why: an Agent's Sessions are bound to the channel,
+the runtime, and the local storage on that Computer (Provider sessions, memory, files), so migration is costly and
+risky; what must survive across Agents belongs in shared knowledge (the Context Tree), not in per-Agent memory. Moves
+of Cloud sandbox storage are internal and never shown, so no migration concept is exposed for Cloud Agents.
+
 A Session is a stable logical identity, not a Provider process or an activity
 status. openTag has channel, thread, and internal Sessions. For Sessions that
 have not ended, an Agent has at most one channel Session per Integration and

@@ -319,7 +319,12 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     }
   }
 
-  protected override async steerProvider(request: AgentSteerRequest): Promise<void> {
+  /**
+   * `turn/steer` answers after the App Server appended the input to the expected native Turn. The
+   * protocol exposes no per-input start signal, so no custody probe is returned: the acknowledged
+   * input counts as possibly started, and a Run that does not complete reports it `interrupted`.
+   */
+  protected override async steerProvider(request: AgentSteerRequest): Promise<undefined> {
     const turnId = await this.#activeTurnId();
     const response = requireRecord(
       await this.#client.request("turn/steer", {

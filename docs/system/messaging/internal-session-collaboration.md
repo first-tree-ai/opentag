@@ -39,7 +39,15 @@ the daemon user's files.
 `session create` atomically creates an internal child Session and its first message. `session send` addresses an
 existing Session in the same Agent and conversation scope. Both accept an optional `--message-id` for an explicit retry;
 reuse the same ID and identical semantic input after an uncertain result. `accepted` means the target accepted the
-message into its bounded FIFO, not that the task completed.
+message into its bounded FIFO, not that the task completed. On a Local Computer, a message whose target Session is
+running a Turn on a steer-capable runtime is steered into that Turn instead of waiting for it to end. Runtime acceptance
+is not delivery: the durable record stays `running` until that Turn's Run settles. It becomes `succeeded` when the Run
+completed; returns to the FIFO when the provider reports that it never started the input (Claude Code `command_lifecycle`),
+so the message is delivered again as its own Run; and fails permanently without replay when the provider may have started
+it but the Run failed or was cancelled. Codex and Pi report no per-input start, so their acknowledged steer counts as
+possibly started. A restart while the record is `running` recovers it like any interrupted Session message Run. A message
+that arrives while the target runs another Session message, or whose runtime cannot steer, still waits in the FIFO. The
+Cloud Session message path is unchanged.
 
 Within each existing create/send transaction, authorization locks the source Agent, binding,
 Sessions in ID order (`FOR NO KEY UPDATE`), placements in Session ID order, then Computers in ID order.

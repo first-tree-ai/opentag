@@ -359,7 +359,7 @@ describe("Task cancel under a row lock", () => {
   }, 20_000);
 });
 
-describe("Task topic queries", () => {
+describe("Task queries", () => {
   it.each(["running", "expired", "ended", "superseded"] as const)(
     "projects %s liveness consistently into Task detail",
     async (state) => {
@@ -477,7 +477,7 @@ describe("Task topic queries", () => {
         nextCursor: null,
         tasks: [
           {
-            id: value.message.id,
+            id: value.session.id,
             title: "Please debug this Turn.",
             status: "completed",
             agent: { id: value.agent.id, displayName: "Atlas" },
@@ -621,7 +621,7 @@ describe("Task topic queries", () => {
         cursor: firstPage.nextCursor,
         limit: 1,
       });
-      expect(secondPage.tasks.map((task) => task.id)).toEqual([secondMessage.id]);
+      expect(secondPage.tasks.map((task) => task.id)).toEqual([secondSession.id]);
       expect(secondPage.nextCursor).toBeNull();
 
       const [followUpMessage] = await value.database
@@ -1100,7 +1100,7 @@ describe("Task cursor precision", () => {
           placementGeneration: 1,
           expiresAt: new Date("2026-08-28T02:00:00.000Z"),
         });
-        created.push({ at: instant.at, id: message.id });
+        created.push({ at: instant.at, id: chat.id });
       }
 
       const ids = await walk(
@@ -1113,7 +1113,7 @@ describe("Task cursor precision", () => {
         },
         (task) => task.id,
       );
-      // Newest first, with the equal-time pair ordered by the anchor id descending.
+      // Newest first, with the equal-time pair ordered by the Task id descending.
       expect(ids.slice(0, 4)).toEqual(
         [...created]
           .sort((left, right) =>
@@ -1122,7 +1122,7 @@ describe("Task cursor precision", () => {
           .map((row) => row.id),
       );
       // The fixture's own Task is older still.
-      expect(ids.at(-1)).toBe(value.message.id);
+      expect(ids.at(-1)).toBe(value.session.id);
     } finally {
       await value.sql.end();
     }

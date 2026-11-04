@@ -37,16 +37,16 @@ import {
 } from "./task-rows.js";
 import {
   type ChannelScope,
-  privateConversation,
+  messageOwnerTaskId,
   relatedSessionCtes,
-  type TopicScope,
-  topicCtes,
-  topicKeyExpression,
-  topicPageCtes,
+  type TaskScope,
+  taskCtes,
+  taskPageCtes,
+  threadRootExternalId,
 } from "./task-sql.js";
 
 export { TaskQueryError } from "./task-error.js";
-export type { TopicScope } from "./task-sql.js";
+export type { TaskScope } from "./task-sql.js";
 
 export { TASK_SECTION_DEFAULT_LIMIT, TASK_SECTION_MAX_LIMIT };
 
@@ -85,7 +85,13 @@ type QueryExecutor = DatabaseClient | DatabaseTransaction;
 interface ScopeRow extends Record<string, unknown> {
   bindingId: string;
   channelId: string;
-  topicKey: string | null;
+  taskId: string;
+}
+
+interface LocatedSessionRow extends Record<string, unknown> {
+  sessionId: string;
+  bindingId: string;
+  channelId: string;
 }
 
 function sectionLimit(limit: number | undefined): number {
@@ -94,13 +100,13 @@ function sectionLimit(limit: number | undefined): number {
 }
 
 /**
- * A Task is a read-only projection over stored IM messages and their deliveries. Inside a group,
- * channel, or multi-person direct message it is one topic: the root message plus the reply chain
- * around it. A private chat is one Task. A topic is listed only once somebody addressed the Agent
- * directly; overheard-only chatter is not a Task. Nothing here changes delivery, Session
- * materialization, or the runtime.
+ * A Task is a read-only projection over one chat Session's stored IM messages and deliveries. A
+ * group's channel Session is one Task, each thread Session is its own Task, and a private chat is
+ * one Task. A Task is listed only once somebody addressed the Agent directly in it (or, for a
+ * thread, in its root message); overheard-only chatter is not a Task. Nothing here changes
+ * delivery, Session materialization, or the runtime.
  *
- * Reads are split by cost. The list decides its page from the topic rollups and enriches only the
+ * Reads are split by cost. The list decides its page from the Task rollups and enriches only the
  * qualified rows. The legacy detail (`get`) still returns every related Internal Session and
  * collaboration message in one answer; the bounded detail (`detail` and the three section readers)
  * is the contract new callers use, and each section keeps its own keyset cursor.
@@ -137,8 +143,7 @@ export class TaskService {
    */
   async get(accountId: string, taskId: string, options: GetTaskOptions): Promise<TaskDetail> {
     const cursor = parseCursor(options.cursor);
-    const scope =
-      (await this.#scopeOfMessage(this.database, accountId, taskId)) ?? (await this.#scopeOfSession(accountId, taskId));
+    const scope = await this.#scopeOf(this.database, accountId, taskId);
     if (!scope) throw taskNotFound();
     const [[row], turns, internalSessions, collaboration] = await Promise.all([
       this.#summaryRows(this.database, accountId, { scope, limit: 1 }),
@@ -228,24 +233,20 @@ export class TaskService {
   }
 
   /**
-   * Set or clear the Account-owned manual title of a Task. The id may be the Task's own id (a
-   * message of the topic) or one of its Sessions. The title is stored on the Session the Task reads
-   * it from: the topic's thread Session, or the channel Session of a private chat. A top-level group
-   * request nobody replied to has no such Session and cannot be renamed yet.
+   * Set or clear the Account-owned manual title of a Task. The id may be anything that resolves to
+   * the Task (see `#scopeOf`). The title is stored on the Session the Task reads it from, which is
+   * the Task's own id.
    */
   async updateTitle(accountId: string, id: string, title: string | null): Promise<TaskSummary> {
     const normalizedTitle = title === null ? null : TaskTitleSchema.parse(title);
-    const scope =
-      (await this.#scopeOfSession(accountId, id)) ?? (await this.#scopeOfMessage(this.database, accountId, id));
+    const scope = await this.#scopeOf(this.database, accountId, id);
     if (!scope) throw taskNotFound();
-    const titleSessionId = await this.#titleSessionId(accountId, scope);
-    if (!titleSessionId) throw taskNotFound();
     const [updated] = await this.database
       .update(sessions)
       .set({ manualTitle: normalizedTitle })
       .where(
         and(
-          eq(sessions.id, titleSessionId),
+          eq(sessions.id, scope.taskId),
           sql`exists (
             select 1
             from im_bindings b
@@ -265,7 +266,7 @@ export class TaskService {
 
   /**
    * Withdraw a queued Task before any of it runs. The id may be the Task's own id or one of its
-   * Sessions. The withdrawal is all or nothing: every pending delivery of the topic is expired
+   * Sessions. The withdrawal is all or nothing: every pending delivery of the Task is expired
    * with the cancelled reason, which keeps it out of the delivery worker's reach for good (the
    * worker claims only `pending` rows, and recovers expired ones only while they carry a dispatch
    * correlation, which a never-dispatched row does not have), or none of them is touched.
@@ -275,7 +276,7 @@ export class TaskService {
    * no-op success, so a repeated cancel is harmless — whether it repeats after the first one or
    * races it under the lock. A delivery a worker is dispatching right now — one carrying a live
    * claim lease or a dispatch correlation — cannot be withdrawn, because the Runtime may already
-   * be running it; while the topic has one, nothing of it is withdrawn and the answer is a 409
+   * be running it; while the Task has one, nothing of it is withdrawn and the answer is a 409
    * that says which, so a success always leaves the Task `cancelled` rather than partly queued.
    * A row that a worker rejected, or that lapsed, while the cancel waited for the lock is not
    * queued any more and is left as the worker left it; the rows still pending beside it are
@@ -283,8 +284,7 @@ export class TaskService {
    * now reads — unless that status is `cancelled`, which is the documented no-op success.
    */
   async cancel(accountId: string, id: string): Promise<TaskSummary> {
-    const scope =
-      (await this.#scopeOfMessage(this.database, accountId, id)) ?? (await this.#scopeOfSession(accountId, id));
+    const scope = await this.#scopeOf(this.database, accountId, id);
     if (!scope) throw taskNotFound();
     const [before] = await this.#summaryRows(this.database, accountId, { scope, limit: 1 });
     if (!before) throw taskNotFound();
@@ -327,22 +327,18 @@ export class TaskService {
 
   /**
    * The Task's platform-confirmed outbound replies, newest first with an independent
-   * `(occurred_at, id)` keyset cursor. The anchor is an authorized stored inbound message, and its
-   * scope is resolved from stored IM data only — the binding's Account ownership, the message's
-   * channel, and its native conversation and thread/root context. No runtime Session, Sandbox,
-   * worker, or Pi state is consulted, so captured replies are readable before any execution, and
-   * no delivery is ever created by the write side of this feature. An empty page means there is no
-   * captured record, never proof that nothing was sent.
+   * `(occurred_at, id)` keyset cursor. The id resolves to its Task like every other Task read, and
+   * the replies are attributed to Sessions from stored IM data only; no runtime, Sandbox, worker,
+   * or Pi state is consulted, and no delivery is ever created by the write side of this feature.
+   * An empty page means there is no captured record, never proof that nothing was sent.
    */
   async listReplies(accountId: string, taskId: string, options: GetTaskOptions): Promise<ListTaskRepliesResponse> {
     const cursor = parseCursor(options.cursor);
     return this.database.transaction(
       async (transaction) => {
-        const scope =
-          (await this.#replyScopeOfMessage(transaction, accountId, taskId)) ??
-          (await this.#scopeOfSession(accountId, taskId, transaction));
+        const scope = await this.#scopeOf(transaction, accountId, taskId);
         if (!scope) throw taskNotFound();
-        const rows = await this.#replyRows(transaction, scope, cursor, options.limit + 1);
+        const rows = await this.#replyRows(transaction, accountId, scope, cursor, options.limit + 1);
         const page = rows.slice(0, options.limit);
         const last = page.at(-1);
         return {
@@ -362,13 +358,11 @@ export class TaskService {
   async #readSnapshot<T>(
     accountId: string,
     taskId: string,
-    read: (executor: DatabaseTransaction, scope: TopicScope) => Promise<T>,
+    read: (executor: DatabaseTransaction, scope: TaskScope) => Promise<T>,
   ): Promise<T> {
     return this.database.transaction(
       async (transaction) => {
-        const scope =
-          (await this.#scopeOfMessage(transaction, accountId, taskId)) ??
-          (await this.#scopeOfSession(accountId, taskId, transaction));
+        const scope = await this.#scopeOf(transaction, accountId, taskId);
         if (!scope) throw taskNotFound();
         return read(transaction, scope);
       },
@@ -377,131 +371,93 @@ export class TaskService {
   }
 
   /**
-   * The topic a stored message belongs to, or undefined when it is outside the Account. The
-   * channel is read by primary key first so the classification only touches that channel; the
-   * Account check happens inside the CTE chain, which is empty for a foreign binding.
+   * The Task an id names, or undefined when it is outside the Account. The id may be a chat Session
+   * (a Task's own id, or another Session of a private chat), an internal Session (its Task is the
+   * Task of the chat Session at the root of its creator chain), or a stored message (the Task of
+   * the Session that owns its execution, a thread Session before the channel Session's observer
+   * copy; a message no execution names belongs to the Session that owned its thread or channel when
+   * it was stored). Message ids are what older Task links and `Session <shortId>` footers carry, so
+   * they keep resolving. The Session or message is read by primary key first so the Task lookup
+   * only touches that channel; the Account check happens inside the CTE chain, which is empty for a
+   * foreign binding.
    */
-  async #scopeOfMessage(
-    executor: QueryExecutor,
-    accountId: string,
-    messageId: string,
-  ): Promise<TopicScope | undefined> {
-    const located = await executor.execute<ChannelScope & Record<string, unknown>>(sql`
+  async #scopeOf(executor: QueryExecutor, accountId: string, id: string): Promise<TaskScope | undefined> {
+    const located = await this.#locateSession(executor, id);
+    const now = this.#now();
+    if (located) {
+      const rows = await executor.execute<ScopeRow>(sql`
+        with ${taskCtes({ accountId, scope: { bindingId: located.bindingId, channelId: located.channelId }, now })}
+        select ts.im_binding_id as "bindingId", ts.channel_id as "channelId", ts.task_id as "taskId"
+        from task_sessions ts
+        where ts.id = ${located.sessionId}::uuid
+        limit 1
+      `);
+      return scopeFrom([...rows][0]);
+    }
+    const messages = await executor.execute<ChannelScope & Record<string, unknown>>(sql`
       select m.im_binding_id as "bindingId", m.channel_id as "channelId"
       from im_messages m
-      where m.id = ${messageId}::uuid
+      where m.id = ${id}::uuid
     `);
-    const [channel] = [...located];
+    const [channel] = [...messages];
     if (!channel) return undefined;
     const rows = await executor.execute<ScopeRow>(sql`
-      with ${topicCtes({ accountId, scope: { bindingId: channel.bindingId, channelId: channel.channelId }, now: this.#now() })}
-      select
-        cm.im_binding_id as "bindingId",
-        cm.channel_id as "channelId",
-        cm.topic_key as "topicKey"
-      from classified_messages cm
-      where cm.id = ${messageId}::uuid
+      with ${taskCtes({ accountId, scope: channel, now })}
+      select m.im_binding_id as "bindingId", m.channel_id as "channelId", ${messageOwnerTaskId("m")} as "taskId"
+      from im_messages m
+      where m.id = ${id}::uuid
+        and exists (select 1 from scoped_bindings sb where sb.binding_id = m.im_binding_id)
       limit 1
     `);
-    const [row] = [...rows];
-    return row ? { bindingId: row.bindingId, channelId: row.channelId, topicKey: row.topicKey } : undefined;
+    return scopeFrom([...rows][0]);
   }
 
   /**
-   * The Task scope of an authorized stored inbound-message anchor, from stored IM data only: the
-   * binding's Account ownership, the anchor's channel, and its native conversation and
-   * thread/root context. This is deliberately not `#scopeOfMessage`: the runtime CTE chain reads
-   * chat Sessions, and a captured reply must be readable while no Session exists — the normal case
-   * for a first confirmed send. Private context comes from the stored provider context, and any
-   * unknown or group context keeps a concrete topic key rather than widening to the channel.
+   * The chat Session an id names directly: a chat Session itself, the chat Session at the root of an
+   * internal Session's creator chain, or the Session that owns a message's execution. No
+   * authorization happens here; `#scopeOf` reads the result through the Account's bindings.
    */
-  async #replyScopeOfMessage(
-    executor: QueryExecutor,
-    accountId: string,
-    messageId: string,
-  ): Promise<TopicScope | undefined> {
-    const rows = await executor.execute<ScopeRow>(sql`
-      with anchor as (
-        select
-          m.im_binding_id,
-          m.channel_id,
-          m.thread_key,
-          m.external_message_id,
-          m.provider_context
-        from im_messages m
-        inner join im_bindings b on b.id = m.im_binding_id
-        inner join agents a on a.id = b.agent_id
-        where m.id = ${messageId}::uuid
-          and m.direction = 'inbound'
-          and a.created_by_user_id = ${accountId}::uuid
-          and a.status <> 'deleted'
-        limit 1
-      ),
-      thread_roots as (
-        select distinct on (m.im_binding_id, m.channel_id, m.thread_key)
-          m.im_binding_id,
-          m.channel_id,
-          m.thread_key,
-          m.provider_context ->> 'rootId' as root_external_id
-        from im_messages m
-        inner join anchor an on an.im_binding_id = m.im_binding_id and an.channel_id = m.channel_id
-        where m.direction = 'inbound'
-          and m.thread_key is not null
-          and m.provider_context ->> 'rootId' is not null
-          and m.provider_context ->> 'rootId' <> m.thread_key
-        order by m.im_binding_id, m.channel_id, m.thread_key, m.occurred_at asc, m.provider_revision_key asc, m.id asc
+  async #locateSession(executor: QueryExecutor, id: string): Promise<LocatedSessionRow | undefined> {
+    const rows = await executor.execute<LocatedSessionRow>(sql`
+      with recursive chain as (
+        select s.id, s.kind, s.created_by_session_id, s.im_binding_id, s.channel_id, 0 as depth
+        from sessions s
+        where s.id = ${id}::uuid
+        union all
+        select p.id, p.kind, p.created_by_session_id, p.im_binding_id, p.channel_id, c.depth + 1
+        from sessions p
+        inner join chain c on p.id = c.created_by_session_id
+        where c.kind = 'internal'
       )
-      select
-        an.im_binding_id as "bindingId",
-        an.channel_id as "channelId",
-        case
-          when ${privateConversation("an")} then null
-          else ${topicKeyExpression("an", "tr")}
-        end as "topicKey"
-      from anchor an
-      left join thread_roots tr
-        on tr.im_binding_id = an.im_binding_id
-        and tr.channel_id = an.channel_id
-        and tr.thread_key = an.thread_key
+      select located."sessionId", located."bindingId", located."channelId"
+      from (
+        (
+          select c.id as "sessionId", c.im_binding_id as "bindingId", c.channel_id as "channelId", 0 as source
+          from chain c
+          where c.kind in ('channel', 'thread')
+          order by c.depth asc
+          limit 1
+        )
+        union all
+        (
+          select s.id, s.im_binding_id, s.channel_id, 1 as source
+          from im_message_deliveries d
+          inner join sessions s on s.id = d.session_id
+          where d.message_id = ${id}::uuid
+            and s.kind in ('channel', 'thread')
+          order by (s.kind = 'thread') desc, (d.attention = 'direct') desc, s.created_at desc, d.id desc
+          limit 1
+        )
+      ) located
+      order by located.source asc
       limit 1
     `);
-    const [row] = [...rows];
-    return row ? { bindingId: row.bindingId, channelId: row.channelId, topicKey: row.topicKey } : undefined;
+    return [...rows][0];
   }
 
   /**
-   * The topic a 1:1 Session belongs to (a thread Session or a private-chat channel Session); a
-   * group's channel Session is shared across top-level topics and resolves nothing here.
-   */
-  async #scopeOfSession(
-    accountId: string,
-    sessionId: string,
-    executor: QueryExecutor = this.database,
-  ): Promise<TopicScope | undefined> {
-    const located = await executor.execute<ChannelScope & Record<string, unknown>>(sql`
-      select s.im_binding_id as "bindingId", s.channel_id as "channelId"
-      from sessions s
-      where s.id = ${sessionId}::uuid
-    `);
-    const [channel] = [...located];
-    if (!channel) return undefined;
-    const rows = await executor.execute<ScopeRow>(sql`
-      with ${topicCtes({ accountId, scope: { bindingId: channel.bindingId, channelId: channel.channelId }, now: this.#now() })}
-      select
-        ts.im_binding_id as "bindingId",
-        ts.channel_id as "channelId",
-        ts.topic_key as "topicKey"
-      from title_sessions ts
-      where ts.id = ${sessionId}::uuid
-      limit 1
-    `);
-    const [row] = [...rows];
-    return row ? { bindingId: row.bindingId, channelId: row.channelId, topicKey: row.topicKey } : undefined;
-  }
-
-  /**
-   * Expire every pending delivery of the topic, or none. The transaction first locks the
-   * topic's pending rows: the worker's claim steps around locked rows (`for update skip
+   * Expire every pending delivery of the Task, or none. The transaction first locks the
+   * Task's pending rows: the worker's claim steps around locked rows (`for update skip
    * locked`), and its acceptance of a row it already claimed waits behind the lock, so what the
    * locked read shows is what the update acts on. A lock that waited behind a worker's write
    * returns the row as the worker left it: a claim taken in the meantime, or a row the worker
@@ -511,20 +467,20 @@ export class TaskService {
    * that waited behind another cancel sees every row withdrawn with the cancelled reason, and
    * reports the Task as already cancelled rather than refusing. A claim whose lease lapsed belongs
    * to a worker that is gone, and is withdrawn like an unclaimed row — exactly as any worker may
-   * take such a row again. A topic with a running Turn is never withdrawn either, however the
+   * take such a row again. A Task with a running Turn is never withdrawn either, however the
    * summary read before the transaction looked.
    *
    * The withdrawn row expires at the cancel instant rather than at its original deadline: that
-   * is when it left the queue, and the instant the topic's status derivation orders it by, so the
+   * is when it left the queue, and the instant the Task's status derivation orders it by, so the
    * cancel outranks every Turn that finished before it. Retention counts from the same column,
    * so a withdrawn row is kept for the retention window after the cancel, as a lapsed one is kept
    * after its deadline.
    */
-  async #withdrawQueuedDeliveries(accountId: string, scope: TopicScope): Promise<WithdrawalOutcome> {
+  async #withdrawQueuedDeliveries(accountId: string, scope: TaskScope): Promise<WithdrawalOutcome> {
     const now = this.#now();
     return this.database.transaction(async (transaction) => {
       const locked = await transaction.execute<LockedDeliveryRow>(sql`
-        with ${topicCtes({ accountId, scope, now })}
+        with ${taskCtes({ accountId, scope, now })}
         select
           d.id,
           d.state,
@@ -534,7 +490,7 @@ export class TaskService {
             and d.next_attempt_at > ${now.toISOString()}::timestamptz
           ) as "claimed",
           (d.dispatch_request_id is not null) as "dispatched",
-          exists (select 1 from executions e where e.is_running) as "topicRunning"
+          exists (select 1 from executions e where e.is_running) as "taskRunning"
         from im_message_deliveries d
         where d.id in (select e.id from executions e where e.state = 'pending')
         for update of d
@@ -558,25 +514,16 @@ export class TaskService {
     });
   }
 
-  /** The Session a topic reads its manual and generated title from, if it has one. */
-  async #titleSessionId(accountId: string, scope: TopicScope): Promise<string | undefined> {
-    const rows = await this.database.execute<{ id: string } & Record<string, unknown>>(sql`
-      with ${topicCtes({ accountId, scope, now: this.#now() })}
-      select ts.id from topic_sessions ts limit 1
-    `);
-    return [...rows][0]?.id;
-  }
-
   /** Newest first with an independent `(occurred_at, delivery id)` keyset cursor. */
   async #turnRows(
     executor: QueryExecutor,
     accountId: string,
-    scope: TopicScope,
+    scope: TaskScope,
     cursor: TaskCursor | undefined,
     limit: number,
   ): Promise<TaskTurnRow[]> {
     const rows = await executor.execute<TaskTurnRow>(sql`
-      with ${topicCtes({ accountId, scope, now: this.#now() })}
+      with ${taskCtes({ accountId, scope, now: this.#now() })}
       select
         e.id as "deliveryId",
         e.attention,
@@ -612,35 +559,21 @@ export class TaskService {
   }
 
   /**
-   * Captured outbound messages of one resolved Task scope. The topic classification is the same
-   * expression the anchor resolved with — the same-binding inbound thread-root mapping first, then
-   * the record's own captured native root, then its thread key and its own id — so an outbound
-   * record lands in exactly the topic its thread belongs to, including a first reply whose thread
-   * has no inbound mapping yet, and a record that cannot be proven to belong is not shown. A
-   * private chat (null topic key) takes the whole conversation, as it does inbound.
+   * Captured outbound messages of one resolved Task, newest first. A captured reply names no
+   * Session, so it belongs to the Session that owned its thread or channel when it was stored (see
+   * `messageOwnerTaskId`): a reply in a thread whose thread Session already existed is that thread
+   * Task's, and anything else in the channel is the channel Session's. A private chat takes the
+   * whole conversation, as it does inbound.
    */
   async #replyRows(
     executor: QueryExecutor,
-    scope: TopicScope,
+    accountId: string,
+    scope: TaskScope,
     cursor: TaskCursor | undefined,
     limit: number,
   ): Promise<TaskReplyRow[]> {
     const rows = await executor.execute<TaskReplyRow>(sql`
-      with thread_roots as (
-        select distinct on (m.im_binding_id, m.channel_id, m.thread_key)
-          m.im_binding_id,
-          m.channel_id,
-          m.thread_key,
-          m.provider_context ->> 'rootId' as root_external_id
-        from im_messages m
-        where m.im_binding_id = ${scope.bindingId}::uuid
-          and m.channel_id = ${scope.channelId}
-          and m.direction = 'inbound'
-          and m.thread_key is not null
-          and m.provider_context ->> 'rootId' is not null
-          and m.provider_context ->> 'rootId' <> m.thread_key
-        order by m.im_binding_id, m.channel_id, m.thread_key, m.occurred_at asc, m.provider_revision_key asc, m.id asc
-      )
+      with ${taskCtes({ accountId, scope: { bindingId: scope.bindingId, channelId: scope.channelId }, now: this.#now() })}
       select
         m.id,
         b.provider,
@@ -653,15 +586,11 @@ export class TaskService {
         ${cursorText(sql`m.occurred_at`)} as "cursorAt"
       from im_messages m
       inner join im_bindings b on b.id = m.im_binding_id
-      left join thread_roots tr
-        on tr.im_binding_id = m.im_binding_id
-        and tr.channel_id = m.channel_id
-        and tr.thread_key = m.thread_key
       where m.im_binding_id = ${scope.bindingId}::uuid
         and m.channel_id = ${scope.channelId}
         and m.direction = 'outbound'
         and m.operation = 'created'
-        ${scope.topicKey === null ? sql`` : sql`and ${topicKeyExpression("m", "tr")} = ${scope.topicKey}`}
+        and ${messageOwnerTaskId("m")} = ${scope.taskId}::uuid
         ${cursor ? sql`and (m.occurred_at, m.id) < (${cursorTimestamp(cursor)}, ${cursor.id}::uuid)` : sql``}
       order by m.occurred_at desc, m.id desc
       limit ${limit}
@@ -670,28 +599,20 @@ export class TaskService {
   }
 
   /**
-   * Internal Sessions of a topic, earliest first with an `(created_at, id)` keyset cursor: those that
-   * inherited the topic's scope from a thread or private chat Session, plus those a group's channel
-   * Session spawned while it was running one of the topic's Turns, with their descendants. A channel
-   * Session runs one Turn at a time, so the creation instant falls inside exactly one Turn's window.
-   * The page is cut on the related identities, so a topic with a hundred thousand related Sessions
+   * Internal Sessions of a Task, earliest first with an `(created_at, id)` keyset cursor: every
+   * internal Session the Task's own Sessions created, with their descendants, ended ones included.
+   * The page is cut on the related identities, so a Task with a hundred thousand related Sessions
    * resolves only the page's rows.
-   *
-   * The spawn window is read from the delivery that owns it: each Turn's `(accepted_at, id)` window
-   * is the period between its acceptance and the next acceptance in that Session, and the candidates
-   * are found through the sessions creator index. Joining every execution to every internal Session
-   * instead — the shape this replaces — pairs the whole history with itself before a single row is
-   * discarded.
    */
   async #internalSessionRows(
     executor: QueryExecutor,
     accountId: string,
-    scope: TopicScope,
+    scope: TaskScope,
     page: { cursor?: TaskCursor; limit?: number },
   ): Promise<InternalSessionRow[]> {
     const rows = await executor.execute<InternalSessionRow>(sql`
-      with recursive ${topicCtes({ accountId, scope, now: this.#now() })},
-      ${relatedSessionCtes(scope)}
+      with recursive ${taskCtes({ accountId, scope, now: this.#now() })},
+      ${relatedSessionCtes()}
       select
         s.id,
         s.created_by_session_id as "createdBySessionId",
@@ -718,7 +639,7 @@ export class TaskService {
   }
 
   /**
-   * Collaboration messages exchanged by the topic's own Sessions and its Internal Sessions, oldest
+   * Collaboration messages exchanged by the Task's own Sessions and its Internal Sessions, oldest
    * first with an `(created_at, id)` keyset cursor. A message names its source Session, or a
    * Server-scheduled origin instead of one, so both directions are matched inside SQL. Both matches
    * are one predicate on the same row rather than two joined branches, so a message whose source and
@@ -727,12 +648,12 @@ export class TaskService {
   async #collaborationRows(
     executor: QueryExecutor,
     accountId: string,
-    scope: TopicScope,
+    scope: TaskScope,
     page: { cursor?: TaskCursor; limit?: number },
   ): Promise<CollaborationMessageRow[]> {
     const rows = await executor.execute<CollaborationMessageRow>(sql`
-      with recursive ${topicCtes({ accountId, scope, now: this.#now() })},
-      ${relatedSessionCtes(scope)}
+      with recursive ${taskCtes({ accountId, scope, now: this.#now() })},
+      ${relatedSessionCtes()}
       select
         sm.id,
         sm.source_session_id as "sourceSessionId",
@@ -765,10 +686,14 @@ export class TaskService {
   }
 
   /**
-   * The Task list page and the Task summary of one topic, in one statement each: the rollups decide
-   * which topics qualify, the keyset order cuts the page, and only then does each qualified row
-   * resolve its Agent, channel, title Session and title text. Nothing here reads more Sessions or
+   * The Task list page and the Task summary of one Task, in one statement each: the rollups decide
+   * which Tasks qualify, the keyset order cuts the page, and only then does each qualified row
+   * resolve its Agent, Session, title message and title text. Nothing here reads more Sessions or
    * messages than the page holds.
+   *
+   * A Task is titled from its root message: a thread's root message when it is stored, and
+   * otherwise the earliest message somebody addressed to the Agent in the Task. The latest stored
+   * revision of that message supplies the text.
    */
   async #summaryRows(
     executor: QueryExecutor,
@@ -778,32 +703,40 @@ export class TaskService {
       cursor?: TaskCursor;
       kind?: "channel" | "thread";
       limit: number;
-      scope?: TopicScope;
+      scope?: TaskScope;
     },
   ): Promise<TaskSummaryRow[]> {
     const rows = await executor.execute<TaskSummaryRow>(sql`
-      with ${topicCtes({ accountId, agentId: options.agentId, scope: options.scope, now: this.#now(), rollups: true })},
-      ${topicPageCtes({
+      with ${taskCtes({ accountId, agentId: options.agentId, scope: options.scope, now: this.#now(), rollups: true })},
+      ${taskPageCtes({
         ...(options.kind ? { kind: options.kind } : {}),
         ...(options.cursor ? { cursor: options.cursor } : {}),
         limit: options.limit,
       })}
       select
-        p.anchor_id as id,
+        p.task_id as id,
         sb.agent_id as "agentId",
         sb.agent_name as "agentName",
         sb.agent_display_name as "agentDisplayName",
         sb.agent_avatar_source_url as "agentAvatarSourceUrl",
         sb.runtime_provider as "runtimeProvider",
         sb.provider,
-        coalesce(ch.conversation_kind, 'channel') as "conversationKind",
-        case when p.is_thread then 'thread' else 'channel' end as "sessionKind",
-        p.channel_id as "channelId",
-        case when p.is_thread then p.topic_key else null end as "threadKey",
-        p.chat_mode as "chatMode",
-        p.group_message_type as "groupMessageType",
-        p.anchor_at as "createdAt",
-        case when ts.id is not null then ts.ended_at else cs.ended_at end as "endedAt",
+        ts.conversation_kind as "conversationKind",
+        case when ts.kind = 'thread' and ts.conversation_kind <> 'dm' then 'thread' else 'channel' end as "sessionKind",
+        ts.channel_id as "channelId",
+        case when ts.kind = 'thread' and ts.conversation_kind <> 'dm' then ts.thread_key else null end as "threadKey",
+        case
+          when title.provider_context ->> 'chatMode' in ('group', 'topic', 'p2p')
+            then title.provider_context ->> 'chatMode'
+          else null
+        end as "chatMode",
+        case
+          when title.provider_context ->> 'groupMessageType' in ('chat', 'thread')
+            then title.provider_context ->> 'groupMessageType'
+          else null
+        end as "groupMessageType",
+        coalesce(least(first_direct.occurred_at, ts.created_at), ts.created_at) as "createdAt",
+        ts.ended_at as "endedAt",
         ts.manual_title as "manualTitle",
         ts.generated_title as "generatedTitle",
         p.last_activity_at as "lastActivityAt",
@@ -819,31 +752,59 @@ export class TaskService {
         p.latest_turn_report as "turnReport",
         ${cursorText(sql`p.last_activity_at`)} as "cursorAt"
       from page p
-      inner join scoped_bindings sb on sb.binding_id = p.im_binding_id
-      left join channels ch on ch.im_binding_id = p.im_binding_id and ch.channel_id = p.channel_id
-      left join channel_sessions cs on cs.im_binding_id = p.im_binding_id and cs.channel_id = p.channel_id
+      inner join task_sessions ts on ts.id = p.task_id
+      inner join scoped_bindings sb on sb.binding_id = ts.im_binding_id
       left join lateral (
-        select ts.id, ts.manual_title, ts.generated_title, ts.ended_at
-        from topic_sessions ts
-        where ts.im_binding_id = p.im_binding_id
-          and ts.channel_id = p.channel_id
-          and (ts.topic_key = p.topic_key or (ts.topic_key is null and p.topic_key is null))
+        select m.external_message_id, m.occurred_at
+        from task_sessions member
+        inner join im_message_deliveries d on d.session_id = member.id
+        inner join im_messages m on m.id = d.message_id
+        where member.task_id = p.task_id
+          and member.im_binding_id = ts.im_binding_id
+          and member.channel_id = ts.channel_id
+          and d.attention = 'direct'
+          and not (d.state = 'expired' and d.reason = 'superseded_revision')
+        order by m.occurred_at asc, m.id asc
         limit 1
-      ) ts on true
+      ) first_direct on true
       left join lateral (
-        select m.content
+        select m.content, m.provider_context
         from im_messages m
-        where m.im_binding_id = p.im_binding_id
-          and m.channel_id = p.channel_id
-          and m.external_message_id = p.anchor_external_id
+        where m.im_binding_id = ts.im_binding_id
+          and m.channel_id = ts.channel_id
           and m.direction = 'inbound'
+          and m.external_message_id = coalesce(
+            case when ts.kind = 'thread' and ts.conversation_kind <> 'dm' then ${threadRootExternalId("ts")} end,
+            first_direct.external_message_id
+          )
         order by m.occurred_at desc, m.provider_revision_key desc, m.id desc
         limit 1
-      ) title on true
-      order by p.last_activity_at desc, p.anchor_id desc
+      ) root_title on true
+      left join lateral (
+        select m.content, m.provider_context
+        from im_messages m
+        where root_title.content is null
+          and m.im_binding_id = ts.im_binding_id
+          and m.channel_id = ts.channel_id
+          and m.direction = 'inbound'
+          and m.external_message_id = first_direct.external_message_id
+        order by m.occurred_at desc, m.provider_revision_key desc, m.id desc
+        limit 1
+      ) direct_title on true
+      cross join lateral (
+        select
+          coalesce(root_title.content, direct_title.content) as content,
+          coalesce(root_title.provider_context, direct_title.provider_context) as provider_context
+      ) title
+      order by p.last_activity_at desc, p.task_id desc
     `);
     return [...rows];
   }
+}
+
+function scopeFrom(row: ScopeRow | undefined): TaskScope | undefined {
+  if (!row?.taskId) return undefined;
+  return { bindingId: row.bindingId, channelId: row.channelId, taskId: row.taskId };
 }
 
 function requireRow(row: TaskSummaryRow | undefined): TaskSummaryRow {
@@ -894,7 +855,7 @@ function taskNotQueued(detail: string): AuthServiceError {
 }
 
 /**
- * How a withdrawal ended: the topic's remaining pending deliveries were all expired; a Turn is
+ * How a withdrawal ended: the Task's remaining pending deliveries were all expired; a Turn is
  * running; no row was still pending under the lock, either because another cancel withdrew the
  * whole queue first (`already_cancelled`) or because the rest was rejected or lapsed (`left_queue`);
  * a worker holds a live claim on a pending row (`in_flight`); a pending row was handed to a Computer
@@ -917,14 +878,14 @@ export interface LockedDeliveryRow extends Record<string, unknown> {
   claimed: boolean;
   /** A dispatch correlation: the row was handed to a Computer whose answer has not arrived. */
   dispatched: boolean;
-  topicRunning: boolean;
+  taskRunning: boolean;
 }
 
 /**
- * Why the locked rows of a topic that are still `pending` cannot be withdrawn, or undefined when
+ * Why the locked rows of a Task that are still `pending` cannot be withdrawn, or undefined when
  * they can. A running Turn refuses first — including one the locked read is the first to see: an
  * `accepted` or `steered` row is not an exit from the queue but a Turn that took the message while
- * the cancel waited, so the topic is running however the pre-transaction summary looked. Rows that
+ * the cancel waited, so the Task is running however the pre-transaction summary looked. Rows that
  * left `pending` under the lock — withdrawn by a concurrent cancel, rejected by a worker, or
  * lapsed — are set aside: they are what the queue no longer holds, and the verdict is about what
  * it still holds. Among the remaining pending rows a
@@ -936,8 +897,8 @@ export function withdrawalRefusal(
   rows: readonly LockedDeliveryRow[],
 ): Exclude<WithdrawalOutcome, "withdrawn"> | undefined {
   if (rows.length === 0) return "nothing";
-  if (rows.some((row) => row.topicRunning)) return "running";
-  // `accepted` / `steered` are not exits from the queue: a Turn took the message, so the topic is
+  if (rows.some((row) => row.taskRunning)) return "running";
+  // `accepted` / `steered` are not exits from the queue: a Turn took the message, so the Task is
   // running however the pre-transaction summary looked.
   if (rows.some((row) => row.state === "accepted" || row.state === "steered")) return "running";
   const pending = rows.filter((row) => row.state === "pending");

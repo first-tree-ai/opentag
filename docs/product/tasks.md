@@ -6,59 +6,47 @@ description: "The Account owner's read-only Task view over IM requests: what one
 # Tasks
 
 A Task is the Account owner's read-only view of one piece of work that people asked an Agent to do in
-Feishu or Slack. It is a projection over the stored inbound `ImMessage` records and their
-`im_message_deliveries`; nothing about message delivery, Session materialization, or the Agent
-Runtime changes because of it. The Task API lives at `/api/v1/sessions` for compatibility, but its
-rows are topics, not Sessions.
+Feishu or Slack. It is a projection over one chat Session's stored inbound `ImMessage` records and
+their `im_message_deliveries`; nothing about message delivery, Session materialization, or the
+Agent Runtime changes because of it. The Task API lives at `/api/v1/sessions`, and each of its rows
+is one chat Session.
 
 ## What one Task is
 
-- In a group, channel, or multi-person direct message, a Task is one **topic**: the root message
-  plus the reply chain around it. The topic key is `coalesce(thread root, thread_key,
-  external_message_id)`. Slack's `thread_ts` is the root message's own id. Feishu threads are keyed
-  by `thread_id` when the provider supplies one and by `root_id` otherwise; when a reply carries a
-  `thread_id` that differs from its `rootId`, the topic is keyed by the root message so the root and
-  its replies stay together.
-- In a private chat, the whole conversation is one Task.
-- A topic becomes a Task only once somebody addressed the Agent directly. Messages the Agent only
-  overheard (`ambient` attention) are conversation context, not Tasks, and are not counted.
-- The Task id is the id of the topic's earliest stored message. The detail and reply endpoints
-  accept the id of any message in the topic or the id of a 1:1 Session (a thread Session or a
-  private-chat channel Session) and report the canonical id; outbound IM replies sent through the
-  Server provider proxy append a clickable `Session <shortId>` footer linking to
-  `/agents/:agentId/tasks/:taskAnchorId` (anchored on the execution's own `deliveryId` message or
-  the 1:1 Session id, or rendered as plain `Session <shortId>` when a group channel execution has no
-  delivery anchor). `createdAt` is the root message's time.
+- A group's channel Session is one Task, however many top-level requests it received, so one
+  group conversation reads as one Task rather than one per request.
+- Each thread Session is its own Task. A Slack thread or a Feishu thread (keyed by `thread_id`)
+  that somebody answered in therefore reads separately from the channel it started in. The root
+  message stays in the channel Session's Task because the channel Session received it. A Session
+  that ended and was later replaced, such as a thread revived after its Session ended, is a
+  separate Task.
+- A private chat is one Task across all of its Sessions, including a thread Session inside it. Its
+  Task is read from its live Session first, preferring the channel Session to a thread.
+- A channel Session becomes a Task only once somebody addressed the Agent directly in it. Messages
+  the Agent only overheard (`ambient` attention) are conversation context, not Tasks, and are not
+  counted. A thread Session is a Task once somebody addressed the Agent in the thread or in its
+  root message, so a thread that continues a request without mentioning the Agent again is still
+  listed.
+- A message belongs to the Session whose delivery executed it. The channel Session's `ambient`
+  observer copy of a message a thread Session owns is not an execution of the channel Session.
+- The Task id is its Session's id: the channel or thread Session, or the Session a private chat is
+  read from. Every Task endpoint also accepts:
+  - any message id of the Task, including the earliest-message ids that older Task links used;
+  - another Session of a private chat;
+  - an internal Session id, which opens the Task of the chat Session at the root of its creator
+    chain.
 
-The Account's channel Session for a group is therefore never listed as a Task; a top-level request
-that nobody replied to is a topic of one message. A Task reports `sessionKind: "thread"` and its
-thread key once a message in its topic carries a thread key, which is the first reply for Slack
-and an ordinary Feishu group, and the root itself in a Feishu topic group; a private chat and a
-request nobody replied to report `sessionKind: "channel"` with no thread key, so the Web labels
-them by the conversation they came from.
+  Each endpoint reports the canonical id.
+- Outbound IM replies sent through the Server provider proxy append a clickable `Session <shortId>`
+  footer linking to `/agents/:agentId/tasks/:sessionId` for the Session that sent them. Group channel
+  executions and internal Sessions link too, because every Session id resolves to a Task. Footers
+  that older replies carry anchor on a request's message id and keep resolving. A footer is plain
+  text only when its Session cannot be found.
+- `createdAt` is the earlier of the Session's creation and its first addressed message.
 
-### One Task per Session
-
-> **Planned — not yet implemented.** Tracking: #1271
-
-A Task becomes one chat Session instead of one topic, the way a private chat already is one Task.
-This replaces the topic split above, which turns every addressed top-level message of an active
-group into its own `channel` Task and so shows one conversation as many Tasks.
-
-- A group's channel Session is one Task. It becomes a Task once somebody addressed the Agent in
-  it; a channel Session that only overheard messages (`ambient` attention) stays out of the list,
-  as today.
-- Each thread Session is its own Task.
-- A private chat stays one Task.
-- Status, ordering, detail, reply, title, and cancellation rules apply to the Session's executions
-  rather than a topic's. Cancellation keeps its all-or-nothing semantics over the Task's queued
-  deliveries, and a new message is still steered into the Session's running Turn as described
-  under [Message handling and failure recovery](#message-handling-and-failure-recovery).
-- Internal Sessions and collaboration messages belong to the Task of the Session that created them,
-  including their descendants.
-- Existing Task links keep resolving: a former topic anchor id, any message id in the Session, and
-  the `Session <shortId>` footer links that outbound IM replies already carry all open the Task of
-  the Session they belong to.
+A Task reports `sessionKind: "thread"` and the Session's thread key for a group thread Session.
+A group channel Session and a private chat report `sessionKind: "channel"` with no thread key, so
+the Web labels them by the conversation they came from.
 
 ## Reading a Task
 
@@ -73,10 +61,17 @@ also page independently at `/detail/turns`, `/detail/internal-sessions` and
 alone. Each section returns at most 100 rows and 20 by default. Naming a subset is the point of the
 contract: the Web conversation renders the summary and the Turns, asks for `sections=turns`, and
 never reads the Internal Session or collaboration history it would discard. Reading any of them
-resolves the topic and serves the requested sections from one read-only Repeatable Read transaction,
-so an authorized topic is read from a single snapshot and no wait spans external I/O. The captured-replies
-subresource also resolves its stored-message scope and reads replies in one read-only snapshot;
-it does not depend on a Runtime Session existing.
+resolves the Task and serves the requested sections from one read-only Repeatable Read transaction,
+so an authorized Task is read from a single snapshot and no wait spans external I/O. The captured-replies
+subresource also resolves its Task and reads replies in one read-only snapshot. It reads chat
+Sessions and stored IM messages only, never runtime execution state.
+
+Captured outbound replies name no Session, so each one belongs to the Session that owned its thread
+or channel when it was stored. In a private chat that is the chat's Task. In a group it is the
+newest thread Session of the reply's thread that already existed, and otherwise the channel
+Session. A reply the channel Session sent into a new thread before anybody answered there
+therefore stays on the channel Session's Task. A Feishu quote reply carries no thread Session's key
+and stays there too.
 
 Every section cursor is the exact ordering key of the last row it returned: the timestamp at the
 microsecond precision PostgreSQL compares, not the millisecond a browser `Date` would keep, plus the
@@ -86,9 +81,9 @@ strictly, and a cursor that does not match the expected shape is a `400`.
 
 ## Executions and status
 
-The Task detail flattens the topic's messages and captured Agent replies into one oldest-to-newest
-conversation, including private chats, group chats, and channel topics. In a group, the messages of every member
-that the Agent received in the topic are shown, not only the requester's, because the Agent acted on that whole
+The Task detail flattens the Session's messages and captured Agent replies into one oldest-to-newest
+conversation, including private chats, group channels, and threads. In a group, the messages of every member
+that the Agent received in the Session are shown, not only the requester's, because the Agent acted on that whole
 context. User follow-ups appear between
 replies according to their timestamps. Replies without a usable timestamp retain their captured
 position beside neighbouring replies, or at report time when none have timestamps; no send time is
@@ -130,9 +125,9 @@ Task API projects metadata from existing message resources, omitting provider re
 messages or Servers without attachment metadata still render normally. This adds no attachment
 preview or download endpoint, quoted-message expansion, or source-conversation link.
 
-The status is the topic's latest execution situation, read by precedence:
+The status is the Session's latest execution situation, read by precedence:
 
-1. `ended` when the Session the topic reads from has ended (the Integration was disabled).
+1. `ended` when the Task's Session has ended (the Integration was disabled).
 2. `running` when a delivery is accepted and unreported, its deadline has not passed, its Session is
    alive, and no later Turn was accepted in that Session. A Session runs one Turn at a time, so a
    later acceptance proves the earlier one ended without a report.
@@ -149,7 +144,7 @@ neutral **Cancelled** label rather than Completed. Why: the Account withdrew it 
 ### Message handling and failure recovery
 
 Task status remains a projection over existing message and delivery records. The precedence and
-terminal distinctions above, topic ordering, placement fences, immutable reports and delivery
+terminal distinctions above, Task ordering, placement fences, immutable reports and delivery
 idempotency remain authoritative; there is no new Task-status table or independent execution state.
 New input follows the existing Session path: a runtime that supports steer may accept it into the
 running Turn; an unsupported runtime leaves it queued until the current Turn settles. The Server
@@ -168,14 +163,15 @@ execution report is available.
 
 ## Titles
 
-A Task is titled from its root message through the same derivation the list always used: routing
-syntax is removed, the addressed Bot mention is dropped, and the text is bounded, with an ellipsis
-marking a cut. A manual or generated title stored on the topic's thread Session, or on a private
-chat's channel Session, overrides it.
+A Task is titled from its root message: a thread Session's thread root when it is stored, and
+otherwise the earliest message somebody addressed to the Agent in the Task. The latest stored
+revision of that message supplies the text. Routing syntax is removed, the addressed Bot mention is
+dropped, and the text is bounded, with an ellipsis marking a cut. A manual or generated title
+stored on the Task's Session overrides it.
 
-`PATCH /api/v1/sessions/:id` sets or clears the manual title. The id may be the Task id or one of
-its Sessions; the title is written to the Session the Task reads it from. A top-level group request
-that nobody replied to has no such Session and returns `404`.
+`PATCH /api/v1/sessions/:id` sets or clears the manual title. The id may be anything that resolves
+to the Task; the title is written to the Task's own Session, so a group channel Session can be
+renamed like any other Task.
 
 ## Web presentation
 
@@ -216,16 +212,16 @@ order, paging and scroll anchoring are unchanged.
 
 ## Cancelling a queued Task
 
-`POST /api/v1/sessions/:id/cancel` withdraws a Task that is still `queued`. The id may be the Task
-id or one of its Sessions. The withdrawal is all or nothing: every pending delivery of the topic is
-expired with reason `cancelled`, its `expiresAt` set to the instant of the cancel, or none of them
+`POST /api/v1/sessions/:id/cancel` withdraws a Task that is still `queued`. The id may be anything
+that resolves to the Task. The withdrawal is all or nothing: every pending delivery of the Task's
+Session is expired with reason `cancelled`, its `expiresAt` set to the instant of the cancel, or none of them
 is touched. The delivery worker claims only pending rows and recovers expired ones only while they
 carry a dispatch correlation, so a withdrawn delivery is never picked up later. The cancel instant
-is the withdrawn delivery's activity, and so the topic's latest activity: the response carries the
-refreshed Task summary with status `cancelled`, even when an earlier Turn of the topic finished
+is the withdrawn delivery's activity, and so the Task's latest activity: the response carries the
+refreshed Task summary with status `cancelled`, even when an earlier Turn of the Task finished
 after the withdrawn message arrived, and the status stays `cancelled` until a later Turn runs in
-the topic. A `200` therefore always means that every queued delivery of the topic was withdrawn
-and the Task reads `cancelled`; a topic with a running Turn, or with a delivery a worker is
+the Session. A `200` therefore always means that every queued delivery of the Task was withdrawn
+and the Task reads `cancelled`; a Task with a running Turn, or with a delivery a worker is
 dispatching, answers `409` and nothing of it is withdrawn.
 
 Only a queued Task cancels. A Task that is `running`, or that already finished, answers `409
@@ -250,10 +246,10 @@ lock.
 
 ## Internal Sessions and collaboration messages
 
-A Task includes the internal Sessions that inherited its scope (channel and thread key, or the
-private chat) from a thread or private-chat Session, plus the internal Sessions a group's channel
-Session created while one of the topic's Turns was running, with their descendants. Collaboration
-messages are those exchanged by the topic's own Sessions and its internal Sessions. A scheduled
+A Task includes every internal Session its own Session created, with their descendants. An internal
+Session belongs to the Task of the chat Session at the root of its creator chain, whichever Turn
+was running when it was created. Collaboration messages are those exchanged by the Task's own
+Sessions and its internal Sessions. A scheduled
 collaboration message has no source Session: it carries its scheduled origin instead, and belongs to
 the Task of the Session it targets. A message whose source and target both belong to the Task appears
 once.
@@ -278,8 +274,8 @@ message or Session is never repeated across pages.
   server rejects an unnegotiated snapshot with a nonfatal `unsupported_capability` report result.
 - A crashed Turn on a group's channel Session stays `running` until that Session accepts another
   delivery or the delivery deadline passes.
-- The list is computed per request from the Account's stored messages. Rollups decide the page
-  before any row resolves its title or Sessions or execution; very large Accounts may later need an
-  index on the topic key. The topic rollups pair messages with their executions on the topic
-  identity — a concrete topic key by equality, a private chat's NULL key in its own branch — so a
-  page costs the rollup plus its own rows, not the product of two histories.
+- The list is computed per request from the Account's chat Sessions and their deliveries. Rollups
+  per Session decide the page before any row resolves its title or source facts, so a page costs the
+  rollup plus its own rows. Executions are read through the deliveries' Session index; internal
+  Sessions through the Session creator index; and collaboration messages through their source and
+  target indexes.

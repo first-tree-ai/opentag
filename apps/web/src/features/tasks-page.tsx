@@ -392,8 +392,9 @@ export function TaskDetailPage({
   /*
    * The Task's captured outbound replies: an independent paged subresource with its own cursor,
    * refreshed on the same live policy as the detail. It reads only after the detail has resolved
-   * the canonical Task id, so a legacy Session-alias URL queries replies under the Task's real id
-   * instead of the route's alias.
+   * the canonical Task id (the Task's Session id), so a URL that names the Task by an alias — a
+   * message id from an older link or footer, or an internal Session id — queries replies under the
+   * Task's real id instead of the route's alias.
    */
   const repliesQuery = useTaskRepliesQuery(showExamples ? undefined : first?.task?.id);
   const taskError = asError(taskQuery.error);

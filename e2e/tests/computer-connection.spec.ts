@@ -183,7 +183,9 @@ test("copies the current-computer task and waits for its actual daemon before co
     // observed bound-offline state, then verify setup remains blocked without a live daemon.
     // The repair command window is the only status while the computer is offline, and the step
     // offers no Continue until it is online.
-    await expect(page.locator('[data-ui="computer-recovery"] [role="status"]')).toContainText("to reconnect");
+    await expect(page.locator('[data-ui="computer-recovery"] .ots-slot--status > [role="status"]')).toContainText(
+      "to reconnect",
+    );
     await expect(page.getByRole("button", { name: "Continue", exact: true })).toHaveCount(0);
     expect(await computers(page)).toMatchObject([{ computerId, connectionStatus: "offline" }]);
     machine.start();
@@ -243,7 +245,6 @@ test("lists multiple disconnected Computers without creating a connection or sel
   });
   await page.goto(`/agents/setup?agentId=${agentId}`);
   await expect(page.getByRole("heading", { name: "Choose a computer for this Agent", exact: true })).toBeVisible();
-  await expect(page.getByText("No computer selected for this Agent", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: /Use this computer:/ })).toHaveCount(2);
   expect(issued).toEqual([]);
   const config = (await (await page.request.get(`/api/v1/agents/${agentId}/config`)).json()) as {

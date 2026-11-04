@@ -152,6 +152,7 @@
   "agents_status_region": "Agent 状态",
   "agents_status_temporarily_unavailable": "状态暂时不可用",
   "agents_status_unknown": "状态暂时不可用",
+  "agents_status_work": "工作",
   "agents_title": "Agent",
   "agents_view_skills": "查看技能"
 }

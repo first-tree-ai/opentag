@@ -152,6 +152,7 @@
   "agents_status_region": "Agent status",
   "agents_status_temporarily_unavailable": "Status temporarily unavailable",
   "agents_status_unknown": "Status unavailable",
+  "agents_status_work": "Work",
   "agents_title": "Agents",
   "agents_view_skills": "View Skills"
 }

@@ -5,6 +5,7 @@ import { Button, Icon, Popover } from "../../ui/design-system.js";
 import type { AgentDetailView } from "./agent-model.js";
 import {
   type AgentDependencyStatus,
+  agentActivityDetail,
   agentComputerStatus,
   agentMessagingStatus,
   agentRuntimeIssue,
@@ -13,8 +14,13 @@ import {
   runtimeProviderName,
 } from "./agent-presentation.js";
 
-/** Two dependencies with two lines each, using the existing healthy layout's space in every state. */
+/**
+ * What the Agent is doing, when there is something to say, then its two dependencies with two lines
+ * each, using the existing healthy layout's space in every state.
+ */
 export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
+  // The same running-Task or Waiting line the Agent list row shows, from the same activity data.
+  const activity = agentActivityDetail(agent, agent.availability.state === "ready");
   const computer = agentRuntimeIssue(agent) ?? agentComputerStatus(agent);
   const binding = agent.messaging.kind === "ready" ? agent.messaging.value : undefined;
   const provider = runtimeProviderName(agent.runtimeProvider);
@@ -29,6 +35,19 @@ export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
       data-ui="agent-status-overview"
     >
       <ul className="grid h-full list-none divide-y divide-kumo-line">
+        {activity ? (
+          // What the Agent is doing comes first, as its own row, so it never reads as a fact about
+          // the Computer or the channel below it.
+          <li
+            className="flex min-w-0 items-center justify-between gap-4 py-5 text-sm first:pt-0 last:pb-0"
+            data-ui="agent-status-work"
+          >
+            <strong className="min-w-0 truncate font-semibold text-kumo-strong">{m.agents_status_work()}</strong>
+            <span className="whitespace-nowrap font-medium text-kumo-default" data-ui="agent-status-activity">
+              {activity}
+            </span>
+          </li>
+        ) : null}
         <AgentStatusRow
           agent={agent}
           dependency="computer"

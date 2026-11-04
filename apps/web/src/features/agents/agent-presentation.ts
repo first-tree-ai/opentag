@@ -58,7 +58,7 @@ function agentAvailabilityCardStatus(agent: AgentListItem): AgentCardStatus {
  * shows on every row; "waiting" only shows beside Ready, where it is the useful thing to know rather
  * than a contradiction of a blocked or paused status. An unknown activity says nothing.
  */
-function agentActivityDetail(agent: AgentListItem, ready: boolean): string | undefined {
+export function agentActivityDetail(agent: Pick<AgentListItem, "activity">, ready: boolean): string | undefined {
   const { activity } = agent;
   if (activity.state === "working") {
     const count = activity.runningTaskCount;

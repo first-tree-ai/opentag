@@ -201,7 +201,7 @@ unrelated process clocks or sum overlapping phase envelopes. Allocation state, s
 trigger, workspace and resource limits define separate cohorts. Missing diagnostics are unavailable
 evidence, not zero duration or a proven timeout.
 
-The [Cloud evaluation suite](https://github.com/first-tree-ai/opentag/blob/main/testing/performance/cloud-latency/README.md) provides a repeatable
+The [Cloud evaluation tooling](https://github.com/first-tree-ai/opentag/tree/main/scripts/e2e/cloud-latency) provides a repeatable
 offline synthetic fixture, report generator and comparison guard. Its subprocess/model/tool/IM
 replacements do not measure production Cloud latency. Existing spans and Pi diagnostics do not
 form a complete end-to-end dataset, especially for ingress, outbound CLI receipts and model/tool
@@ -232,8 +232,7 @@ summaries are incomplete rather than successful handoffs. Records carry existing
 IDs, a process clock identity, UTC and monotonic durations; they exclude content and credentials.
 Logging failures do not change operation outcomes, custody, retries or checkpoint policy.
 
-The [Staging report guide](https://github.com/first-tree-ai/opentag/blob/main/testing/performance/cloud-latency/LIVE.md)
-describes the exact boundaries, blind spots and manual stdin-only aggregator. It reuses existing
+The [manual stdin-only aggregator](https://github.com/first-tree-ai/opentag/blob/main/packages/server/scripts/cloud-latency-report.ts) reuses existing
 Pi phase durations, rejects incomplete/conflicting evidence for complete-trace metrics, and emits
 aggregate counts/quantiles without resource IDs or raw files. It does not infer timeout or genuine
 end-to-end latency from missing records. Deployment, live collection and actual log arrival remain
@@ -264,8 +263,8 @@ before cleanup entry; a native destroy may already have happened during that int
 Shutdown records share the bounded payload and process-local clock rules above, carry no Turn ID,
 and remain separate from Turn latency reports. They add no wait, flush or retry policy. Their
 durations cannot establish provider deletion time, SIGTERM delivery time or an ingress latency
-distribution; provider state transitions require independent evidence. See the
-[shutdown validation guide](https://github.com/first-tree-ai/opentag/blob/main/testing/performance/cloud-latency/SHUTDOWN.md).
+distribution; provider state transitions require independent evidence. Keep shutdown experiment
+plans, observations and limitations in the related GitHub PR or Issue.
 
 ## Full-stack performance logging
 

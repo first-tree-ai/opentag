@@ -753,9 +753,16 @@ for (const width of [320, 390, 768, 1440]) {
       await expect(controls.getByRole("switch")).toHaveCount(0);
       await expect(controls.getByRole("button", { name: `Authorize: ${name}`, exact: true })).toBeVisible();
       await expect(controls.getByRole("button", { name: `Remove ${name}`, exact: true })).toBeVisible();
-      const rowBox = await row.boundingBox();
-      const controlBox = await controls.boundingBox();
-      if (!rowBox || !controlBox) throw new Error("Missing connector row geometry");
+      const { rowBox, controlBox } = await row.evaluate((element) => {
+        const control = element.querySelector(".mcp-server-controls");
+        if (!control) throw new Error("Missing connector controls");
+        const row = element.getBoundingClientRect();
+        const controls = control.getBoundingClientRect();
+        return {
+          rowBox: { y: row.y, height: row.height },
+          controlBox: { y: controls.y, height: controls.height },
+        };
+      });
       if (width >= 768)
         expect(Math.abs(rowBox.y + rowBox.height / 2 - controlBox.y - controlBox.height / 2)).toBeLessThan(1);
       else expect(controlBox.y + controlBox.height).toBeLessThanOrEqual(rowBox.y + rowBox.height);

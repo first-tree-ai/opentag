@@ -93,7 +93,15 @@ The scheduled `Unit Coverage` workflow owns the recurring full coverage baseline
   changes instead of blocking on it. See `docs/NODE.md`.
 - `pnpm check` runs `context-tree verify` on `docs/`.
 
-Test plans, acceptance runs, UI screenshots, and validation evidence belong in `testing/`, never in `docs/`.
+`testing/regression/` is the single home for maintained Markdown release regression cases covering the main product
+features; `testing/README.md` only links to that catalogue. Run the catalogue before every release. When an Agent adds
+or changes a product feature, add or update its regression cases in the same change. Assign regression defects to
+`yuezengwu`.
+
+Task-specific test plans, acceptance runs, screenshots, performance reports, validation evidence and local test
+environment configuration are not committed. Keep them with the task's Agent and PR; record useful redacted findings
+and results in its GitHub Issue when retention is needed. They do not belong in `docs/` either. Existing automated unit,
+integration and E2E tests, fixtures and CI remain in their owning package, app or tooling directories.
 
 ## Database read/write design
 

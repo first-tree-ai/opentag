@@ -10,6 +10,8 @@
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { createDatabaseClient } from "../src/db/client.js";
@@ -20,10 +22,10 @@ import {
   type BenchmarkAdminPort,
   type BenchmarkSeam,
   type CancelBenchmarkDeps,
+  DEFAULT_RESULTS_PATH,
   planSql,
   preChangeOwnerClass,
   type QueryRecord,
-  TRACKED_RESULTS_PATH,
 } from "./cancel-benchmark.js";
 
 const CONTAINER_LABEL = "opentag.benchmark=cancel-deliveries";
@@ -248,7 +250,7 @@ export function defaultCancelBenchmarkDeps(env: Record<string, string | undefine
       beforeModuleFile: `${sandboxDirectory}.benchmark-before-${process.pid}.ts`,
       migrationsFolder,
       seedFile: fileURLToPath(new URL("./database-performance-seed.sql", import.meta.url)),
-      trackedResultsFile: fileURLToPath(new URL(`../../../${TRACKED_RESULTS_PATH}`, import.meta.url)),
+      defaultResultsFile: join(tmpdir(), "opentag-benchmarks", DEFAULT_RESULTS_PATH),
     },
     sessionId: SESSION_ID,
     startDatabaseContainer: () => startDatabaseContainer(docker, containerName),

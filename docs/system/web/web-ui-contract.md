@@ -169,8 +169,13 @@ The completion screen stays visible until the user navigates away. Its primary a
 (**查看 Agent** in Chinese), opens that Agent's overview. Global navigation provides the return to the Agent list;
 the completion screen does not repeat that destination as a secondary action or redirect automatically.
 
-Cloud Agent home keeps workspace recovery collapsed until explicitly opened or reached through
-`?recovery=true`. The recovery panel pages the existing Account-owned conversation inventory and
+Cloud Agent home shows save-failure guidance without a recovery entry or workspace controls.
+The notice identifies the problem, directs the reader to their administrator and warns against
+resending completed requests without promising automatic recovery. Workspace diagnostics remain
+available only through the explicit `?recovery=true` destination for guided troubleshooting, under
+the same Account authorization. Closing the panel removes its controls; the ordinary page does
+not expose a button to reopen it. This is not a new permission boundary.
+The diagnostic panel pages the existing Account-owned conversation inventory and
 offers only Server-authorized save/release or explicit discard/release. A captured environment
 generation stays fixed through confirmation and is checked again before the request. Busy actions
 cannot be repeated; failed or uncertain mutations cause status reads rather than automatic retries.
@@ -188,6 +193,7 @@ nothing to decide from. A failed read stays unavailable; it is never presented a
 
 Messaging settings are read-only while paused. Connection, replacement, reauthorization, credential updates,
 disconnection, activation checks, cancellation, and message-trigger changes are disabled with a localized reason.
+Read-only controls keep their action labels; being paused does not show an operation as busy or in progress.
 Saved Feishu attempts and Slack configuration details remain readable without starting setup or refreshing CLI
 credentials. Existing permissions for other settings are unchanged. Deleted Agents, other Accounts, and revoked
 Account sessions remain unauthorized; resuming the Agent is a separate explicit action.

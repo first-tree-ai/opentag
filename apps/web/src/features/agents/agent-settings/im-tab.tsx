@@ -149,6 +149,11 @@ export function ImTab({ agent, onAgentChanged }: { agent: AgentDetailView; onAge
                                 />
                               </span>
                             </div>
+                            {connectionFailureMessage(binding) ? (
+                              <p className="text-sm text-kumo-default" data-ui="messaging-connection-failure">
+                                {connectionFailureMessage(binding)}
+                              </p>
+                            ) : null}
                           </>
                         ) : null}
                         <MessagingConnectionActions
@@ -296,7 +301,13 @@ function MessagingConnectionActions({
       ) : null}
       {binding?.provider === "feishu" ? (
         <>
-          <MessagingAppActions binding={binding} busy={readOnly || busy} feishuBusy={feishuBusy} onFeishu={onFeishu} />
+          <MessagingAppActions
+            binding={binding}
+            busy={busy}
+            feishuBusy={feishuBusy}
+            readOnly={readOnly}
+            onFeishu={onFeishu}
+          />
           <Button
             disabled={readOnly}
             ref={disconnectRef}
@@ -325,23 +336,29 @@ function MessagingAppActions({
   binding,
   busy,
   feishuBusy,
+  readOnly,
   onFeishu,
 }: {
   binding: ImBindingSummary;
   busy: boolean;
   feishuBusy: boolean;
+  readOnly: boolean;
   onFeishu: (intent: "reauthorize" | "replace", target: HTMLButtonElement) => void;
 }) {
   return (
     <>
       {messagingRecoveryLabel(binding) ? (
-        <Button disabled={busy} loading={busy} onClick={(event) => onFeishu("reauthorize", event.currentTarget)}>
+        <Button
+          disabled={readOnly || busy}
+          loading={busy}
+          onClick={(event) => onFeishu("reauthorize", event.currentTarget)}
+        >
           {messagingRecoveryLabel(binding)}
         </Button>
       ) : null}
       <Button
         loading={feishuBusy}
-        disabled={busy || feishuBusy}
+        disabled={readOnly || busy || feishuBusy}
         variant="secondary"
         onClick={(event) => onFeishu("replace", event.currentTarget)}
       >
@@ -374,6 +391,19 @@ function TriggerModeOption({
       {label}
     </Button>
   );
+}
+
+/** Why openTag stopped connecting this binding, and what fixes it; nothing for any other state. */
+function connectionFailureMessage(binding: ImBindingSummary): string | undefined {
+  if (binding.bindingState !== "error" || !binding.connectionFailure) return undefined;
+  const provider = messagingProviderLabel(binding.provider);
+  const message = {
+    credentials_rejected: m.im_connection_failure_credentials_rejected(),
+    app_unavailable: m.im_connection_failure_app_unavailable({ provider }),
+    connection_rejected: m.im_connection_failure_connection_rejected({ provider }),
+    bot_mismatch: m.im_connection_failure_bot_mismatch(),
+  }[binding.connectionFailure];
+  return spaceScriptBoundary(message);
 }
 
 function messagingRecoveryLabel(binding: ImBindingSummary): string | undefined {

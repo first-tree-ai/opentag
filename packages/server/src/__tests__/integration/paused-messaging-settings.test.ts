@@ -1,4 +1,4 @@
-import { SLACK_REQUIRED_BOT_SCOPES } from "@opentag/shared";
+import { FEISHU_REQUIRED_TENANT_SCOPES, SLACK_REQUIRED_BOT_SCOPES } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
@@ -145,6 +145,42 @@ describe("paused messaging settings", () => {
       expect(value.credential).toHaveBeenCalledWith(value.agent.id, "slack", value.bindingId, 1, status === "active");
     },
   );
+
+  it("keeps a stopped Feishu binding and its public refusal reason readable while paused", async () => {
+    const value = await fixture();
+    await value.bindings.disable(value.userId, value.bindingId);
+    const bindingId = await value.bindings.activateFeishu({
+      agentId: value.agent.id,
+      appId: "cli_refused",
+      appSecret: "refused-secret",
+      teamId: "tenant_refused",
+      botOpenId: "ou_refused",
+      grantedScopes: [...FEISHU_REQUIRED_TENANT_SCOPES],
+    });
+    await value.database
+      .update(imBindings)
+      .set({ status: "error", lastErrorCode: "FEISHU_CREDENTIAL_INVALID" })
+      .where(eq(imBindings.id, bindingId));
+    await value.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, value.agent.id));
+    const before = await value.database.select().from(imBindings);
+    const summary = await value.bindings.getForAgent(value.userId, value.agent.id);
+    expect(summary).toMatchObject({
+      id: bindingId,
+      provider: "feishu",
+      bindingState: "error",
+      connectionFailure: "credentials_rejected",
+    });
+    expect(JSON.stringify(summary)).not.toMatch(/refused-secret|encryptedCredential|FEISHU_CREDENTIAL_INVALID/);
+    expect(await value.bindings.getHandoffForAgent(value.userId, value.agent.id)).toMatchObject({
+      bindingState: "error",
+    });
+    await expect(value.bindings.assertCanManage(value.userId, value.agent.id)).rejects.toMatchObject({
+      code: "IM_BINDING_NOT_FOUND",
+    });
+    expect(await value.database.select().from(imBindings)).toEqual(before);
+    expect(value.registrations.start).not.toHaveBeenCalled();
+    expect(value.activation.activateAtomicAttempt).not.toHaveBeenCalled();
+  });
 
   it("serves paused GETs through Account authentication and rejects revoked Accounts", async () => {
     const value = await fixture();

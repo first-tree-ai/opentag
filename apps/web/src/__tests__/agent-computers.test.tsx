@@ -177,12 +177,12 @@ describe("OpenTag Web App Shell", () => {
     render(<App />);
 
     expect(await screen.findByRole("heading", { name: "Reviewer" })).toBeTruthy();
-    const notice = screen.getByRole("region", { name: "Agent status: Suspended" });
-    expect(within(notice).getByText("Suspended")).toBeTruthy();
+    const notice = screen.getByRole("region", { name: "Agent status: Paused" });
+    expect(within(notice).getByText("Paused")).toBeTruthy();
     expect(within(notice).getByText("This Agent is paused. Resume it to start receiving messages again.")).toBeTruthy();
-    expect(within(notice).getByRole("link", { name: "Pause or delete Agent" }).getAttribute("href")).toBe(
-      `/agents/${agentId}/settings/manage`,
-    );
+    // The notice resumes the Agent itself rather than sending the reader to the pause/delete page.
+    expect(within(notice).queryByRole("link", { name: "Pause or delete Agent" })).toBeNull();
+    expect(within(notice).getByRole("button", { name: "Resume Agent" })).toBeTruthy();
   });
 
   it("keeps unreadable Computer and Messaging evidence out of the success states", async () => {

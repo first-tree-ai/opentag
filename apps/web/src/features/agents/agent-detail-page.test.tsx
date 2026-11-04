@@ -1,6 +1,6 @@
 /**
- * Cloud Agent home retains status, usage and Tasks; workspace recovery stays collapsed until
- * explicitly requested. Opening the page never releases or discards an environment.
+ * Cloud Agent home retains status, usage and Tasks; workspace tools require an explicit
+ * diagnostics destination. Opening the page never releases or discards an environment.
  */
 
 import type { AccountComputerSummary, AgentDetail, CloudAvailability, MeResponse } from "@opentag/shared/browser";
@@ -97,7 +97,7 @@ async function renderAgentHome() {
 describe("Agent home for a Cloud-bound Agent", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("keeps status, usage, and Tasks with workspace recovery initially collapsed", async () => {
+  it("keeps status, usage, and Tasks without a workspace recovery entry", async () => {
     stubCloudAgent();
     const overview = vi.spyOn(browserApi, "agentCloudOverview");
 
@@ -109,14 +109,14 @@ describe("Agent home for a Cloud-bound Agent", () => {
     expect(await screen.findByRole("region", { name: "Usage" })).toBeTruthy();
     expect(await screen.findByRole("region", { name: "Tasks" })).toBeTruthy();
 
-    expect(screen.getByRole("button", { name: "Recover workspace" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Recover workspace" })).toBeNull();
     expect(screen.queryByRole("region", { name: "Cloud environments" })).toBeNull();
     expect(screen.queryByRole("button", { name: /release/ })).toBeNull();
     expect(screen.queryByText(/Agent environments/)).toBeNull();
     await waitFor(() => expect(overview).toHaveBeenCalledWith(AGENT_ID, { limit: 100 }));
   });
 
-  it("keeps Tasks alongside a save failure warning and an explicit recovery entry", async () => {
+  it("keeps Tasks and actionable failure guidance without workspace controls", async () => {
     stubCloudAgent();
     vi.mocked(browserApi.agentCloudOverview).mockResolvedValue({
       ...progressDiagnostics,
@@ -147,7 +147,9 @@ describe("Agent home for a Cloud-bound Agent", () => {
     expect(screen.getByRole("region", { name: "Tasks" })).toBeTruthy();
     expect(screen.queryByRole("region", { name: "Cloud environments" })).toBeNull();
     expect(screen.queryByRole("button", { name: /release|discard|retry save/i })).toBeNull();
-    expect(screen.getAllByRole("button", { name: "Recover workspace" })).not.toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "Recover workspace" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Recover workspace" })).toBeNull();
+    expect(screen.getByText(/Contact your administrator for help/)).toBeTruthy();
   });
 });
 

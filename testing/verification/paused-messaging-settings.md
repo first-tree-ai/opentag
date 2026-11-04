@@ -29,7 +29,7 @@ paused Agents. The existing page routing does not hide settings on pause.
 - PostgreSQL `slack-custom-configuration.test.ts`: 15 passed. Feishu drain and Slack setup-authority regressions passed
   in the expanded run, including stale callback/generation/Account and suspended-Agent fences.
 - Web messaging/presentation tests: 50 passed; Agent query, settings layout, and detail tests: 30 passed.
-- Browser smoke passed against an isolated disposable PostgreSQL/Server/Web stack. Agent creation, pause,
+- Browser smoke passed with a local fixture database and dedicated Server/Web processes. Agent creation, pause,
   authentication, and the unbound paused GET use the real application. Channel binding/handoff/configuration
   observations are supplied as browser fixtures; no real Feishu or Slack account is contacted. PostgreSQL service
   tests above provide the actual authorization/query evidence.
@@ -61,10 +61,15 @@ from the injected unavailable read is allowed explicitly.
 | 768 | [Screenshot](../assets/paused-messaging-settings/feishu-768.png) | [Screenshot](../assets/paused-messaging-settings/slack-768.png) |
 | 1440 | [Screenshot](../assets/paused-messaging-settings/feishu-1440.png) | [Screenshot](../assets/paused-messaging-settings/slack-1440.png) |
 
-The smoke uses the existing harness with a distinct Compose project, loopback PostgreSQL port, Server port, and
-disposable database name. The initial default wildcard PostgreSQL publish could not serve host queries on this
-Docker Desktop host; explicit loopback publishing succeeded. No production environment, live authorization,
-message delivery, deployment, or post-deployment acceptance was exercised.
+The [stopped Feishu binding at 390px](../assets/paused-messaging-settings/feishu-error-390.png) retains its public
+credential-refusal explanation and a disabled **Reconnect** button with its label, without an operation spinner.
+All nine screenshots are refreshed after integration of main `41d09f72b45cdacb758f0ef8f6c0469be625bcc2`.
+
+The latest browser run reuses the existing local PostgreSQL instance with a disposable fixture database and
+dedicated Server/Web processes. The fixture database is removed after the run; the existing database and instance
+are preserved. An earlier run used a distinct Compose project: wildcard PostgreSQL publishing could not serve host
+queries on this Docker Desktop host, while explicit loopback publishing succeeded. No production environment,
+live authorization, message delivery, deployment, or post-deployment acceptance was exercised.
 
 The subsequent base `cbacb543f9289d2b2b9ba4fb7b86202d2ec20282` includes the settled paused-settings text and
 Computer connection-copy changes. The paused-settings section is consolidated as implemented, with its Planned
@@ -96,5 +101,25 @@ read-only messaging checks and this evidence. No package manifest or lockfile ch
 
 After integration, nine focused Web files pass all 289 tests covering messaging, paused presentation, setup,
 layout, computer choice, Context Tree settings, and catalogue ordering. The three affected Server Context Tree
-unit files pass all 56 tests. Shared and Web builds, Server/Web type checks, and repository checks pass. The
-screenshots and browser run above predate this base update; the complete new-head regression remains a CI gate.
+unit files pass all 56 tests. Shared and Web builds, Server/Web type checks, and repository checks pass. Browser
+evidence is refreshed again with the subsequent Feishu integration below; complete new-head regression remains
+a CI gate.
+
+## Feishu connection-refusal integration
+
+The main update through `41d09f72b45cdacb758f0ef8f6c0469be625bcc2` adds public reasons for stopped Feishu
+connections. Its summary projection remains inside the authorized read-only snapshot. The import conflict is
+resolved with the operators still used after both query extractions; the existing fenced connection-failure
+handling and active-only messaging mutations remain intact. There is no manifest, lockfile, or schema change.
+
+A combined Web regression exposed a paused recovery button displaying a busy state because read-only authority
+was folded into operation state. The button now handles these independently: pause disables it while retaining its
+**Reconnect** label, and only actual work displays progress. Active recovery stays available. The unit and browser
+cases check both the failure explanation and disabled reconnection without issuing a messaging mutation.
+
+Ten focused Web files pass all 167 tests. Binding API, Feishu adapter, and failure-classification unit tests pass all
+85 cases. The paused-settings and dead-binding PostgreSQL files pass all 18 cases, including the new paused
+connection-refusal read and unchanged rejection of management authority. The existing two-worker integration
+setting and enabled resource reaper are retained; both temporary PostgreSQL containers are removed. Shared,
+Server, and Web builds, Server/Web type checks, repository checks, and the refreshed browser smoke pass. The
+complete new-head CI matrix is still required before merge.

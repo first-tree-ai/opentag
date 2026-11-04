@@ -118,6 +118,22 @@ test("paused messaging is readable across layouts and never starts a write", asy
           page.locator('[data-ui="agent-status-message-channel"]').getByText("状态暂时不可用", { exact: true }),
         ).toHaveCount(0);
     }
+    if (provider === "feishu") {
+      await page.unroute(`**/api/v1/agents/${agent.id}/im-binding`);
+      await page.route(`**/api/v1/agents/${agent.id}/im-binding`, (route) =>
+        route.fulfill({ json: { ...binding, bindingState: "error", connectionFailure: "credentials_rejected" } }),
+      );
+      await page.route(`**/api/v1/agents/${agent.id}/im-binding/handoff`, (route) =>
+        route.fulfill({ json: { bindingState: "error", handoffReady: false } }),
+      );
+      await page.setViewportSize({ width: 390, height: 900 });
+      await page.goto(`/agents/${agent.id}/settings/messaging`, { waitUntil: "networkidle" });
+      await expect(page.getByText("应用凭据已失效。请重新连接并重新授权。", { exact: true })).toBeVisible();
+      await expect(page.getByRole("button", { name: "重新连接", exact: true })).toBeDisabled();
+      await expectNoPageOverflow(page);
+      await expectAccessible(page);
+      await page.screenshot({ path: join(screenshots, "feishu-error-390.png"), fullPage: true });
+    }
     await page.unroute(`**/api/v1/agents/${agent.id}/im-binding`);
   }
   allowExpectedDiagnostic(page, {

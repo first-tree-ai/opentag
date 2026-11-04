@@ -11,6 +11,8 @@ export interface PerformanceLoggingConfig {
   enabled: boolean;
   level: PerformanceLogLevel;
   slowThresholdMs: number;
+  dbLevel?: PerformanceLogLevel;
+  startLevel?: PerformanceLogLevel;
 }
 
 export const DEFAULT_PERFORMANCE_LOGGING_CONFIG: PerformanceLoggingConfig = {
@@ -18,6 +20,53 @@ export const DEFAULT_PERFORMANCE_LOGGING_CONFIG: PerformanceLoggingConfig = {
   level: "debug",
   slowThresholdMs: 1_000,
 };
+
+const VALID_PERFORMANCE_LOG_LEVELS = new Set<PerformanceLogLevel>(["debug", "info", "warn"]);
+
+function parsePerformanceLogLevel(
+  raw: string | undefined,
+  envName: string,
+  fallback: PerformanceLogLevel,
+): PerformanceLogLevel {
+  const trimmed = raw?.trim();
+  if (!trimmed) return fallback;
+  if (VALID_PERFORMANCE_LOG_LEVELS.has(trimmed as PerformanceLogLevel)) {
+    return trimmed as PerformanceLogLevel;
+  }
+  throw new Error(`${envName} must be one of: debug, info, warn`);
+}
+
+function parsePerformanceLogEnabled(raw: string | undefined): boolean {
+  const trimmed = raw?.trim();
+  if (!trimmed) return DEFAULT_PERFORMANCE_LOGGING_CONFIG.enabled;
+  if (trimmed === "true") return true;
+  if (trimmed === "false") return false;
+  throw new Error("OPENTAG_PERF_LOG_ENABLED must be true or false");
+}
+
+function parseSlowThresholdMs(raw: string | undefined): number {
+  const trimmed = raw?.trim();
+  if (!trimmed) return DEFAULT_PERFORMANCE_LOGGING_CONFIG.slowThresholdMs;
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed) || parsed < 1) {
+    throw new Error("OPENTAG_PERF_SLOW_THRESHOLD_MS must be a positive integer");
+  }
+  return parsed;
+}
+
+export function resolvePerformanceLoggingConfig(env: NodeJS.ProcessEnv = process.env): PerformanceLoggingConfig {
+  return {
+    enabled: parsePerformanceLogEnabled(env.OPENTAG_PERF_LOG_ENABLED),
+    level: parsePerformanceLogLevel(
+      env.OPENTAG_PERF_LOG_LEVEL,
+      "OPENTAG_PERF_LOG_LEVEL",
+      DEFAULT_PERFORMANCE_LOGGING_CONFIG.level,
+    ),
+    dbLevel: parsePerformanceLogLevel(env.OPENTAG_PERF_DB_LOG_LEVEL, "OPENTAG_PERF_DB_LOG_LEVEL", "debug"),
+    startLevel: parsePerformanceLogLevel(env.OPENTAG_PERF_START_LOG_LEVEL, "OPENTAG_PERF_START_LOG_LEVEL", "debug"),
+    slowThresholdMs: parseSlowThresholdMs(env.OPENTAG_PERF_SLOW_THRESHOLD_MS),
+  };
+}
 
 export interface PerformanceExecutionContext {
   requestId?: string;
@@ -236,10 +285,15 @@ export function createPerformanceLogger(
   getLogger: () => FastifyBaseLogger | undefined,
   configOverride?: Partial<PerformanceLoggingConfig>,
 ): PerformanceLogger {
+  const level = configOverride?.level ?? DEFAULT_PERFORMANCE_LOGGING_CONFIG.level;
+  const dbLevel = configOverride?.dbLevel ?? level;
+  const startLevel = configOverride?.startLevel ?? level;
   const config: PerformanceLoggingConfig = {
     enabled: configOverride?.enabled ?? DEFAULT_PERFORMANCE_LOGGING_CONFIG.enabled,
-    level: configOverride?.level ?? DEFAULT_PERFORMANCE_LOGGING_CONFIG.level,
+    level,
     slowThresholdMs: configOverride?.slowThresholdMs ?? DEFAULT_PERFORMANCE_LOGGING_CONFIG.slowThresholdMs,
+    ...(configOverride?.dbLevel !== undefined ? { dbLevel: configOverride.dbLevel } : {}),
+    ...(configOverride?.startLevel !== undefined ? { startLevel: configOverride.startLevel } : {}),
   };
   const ports = new Map<string, ServiceLogger>();
 
@@ -271,7 +325,7 @@ export function createPerformanceLogger(
     const startMono = performance.now();
     const port = portFor(input.module);
     const basePayload = buildBasePayload(input, childContext, parent, startedAt);
-    port[config.level]({ ...basePayload, outcome: "started" }, input.startMessage ?? START_MESSAGES[input.category]);
+    port[startLevel]({ ...basePayload, outcome: "started" }, input.startMessage ?? START_MESSAGES[input.category]);
 
     let settled = false;
     return {
@@ -284,7 +338,8 @@ export function createPerformanceLogger(
         const endedAt = new Date().toISOString();
         const durationMs = roundDurationMs(performance.now() - startMono);
         const slow = durationMs >= config.slowThresholdMs;
-        port[config.level](
+        const completeLevel = input.category === "db" ? (slow ? config.level : dbLevel) : config.level;
+        port[completeLevel](
           {
             ...basePayload,
             ...copyDefinedContextIds(childContext),

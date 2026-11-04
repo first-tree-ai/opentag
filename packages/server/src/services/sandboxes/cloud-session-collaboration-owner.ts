@@ -225,6 +225,9 @@ export function createCloudSourceConnectionVerifier(
 /** The exact allocation identity a tracked entry belongs to; reuses the durable envelope shape. */
 type TrackedAllocation = CloudWorkAllocation;
 
+/** One settlement handler's own custody hold; see `CloudSessionWorkTracker.holdSettlement`. */
+export type SettlementCustodyToken = symbol;
+
 function trackedAllocationKey(allocation: TrackedAllocation): string {
   return `${allocation.sandboxId}:${allocation.environmentGeneration}:${allocation.resourceName}`;
 }
@@ -246,24 +249,62 @@ export class CloudSessionWorkTracker {
    * settlement journal on that exact allocation is then the only replay owner, so the allocation
    * must stay unclaimable until the ack has been handed to its exact connection. Keyed like
    * `#byAllocation`, so a replacement allocation is never pinned.
+   *
+   * Custody is handler-owned: every settlement handler (the original connection's and each
+   * replay's) holds its own token on the shared `messageId:turnId` entry. A handler whose
+   * terminal commit lost releases only its own token, so a stale CAS loser can never drop the
+   * custody a concurrent replay established for its own still-pending notice and ack.
    */
-  readonly #settling = new Map<string, Map<string, string>>();
+  readonly #settling = new Map<string, Map<string, { sessionId: string; holders: Set<SettlementCustodyToken> }>>();
 
-  /** Hold one exact settlement's custody; `true` only when this call newly established it. */
-  holdSettlement(allocation: TrackedAllocation, sessionId: string, messageId: string, turnId: string): boolean {
+  /** Hold one exact settlement's custody for the calling handler; the token releases only this hold. */
+  holdSettlement(
+    allocation: TrackedAllocation,
+    sessionId: string,
+    messageId: string,
+    turnId: string,
+  ): SettlementCustodyToken {
     const key = trackedAllocationKey(allocation);
     let entries = this.#settling.get(key);
     if (!entries) {
       entries = new Map();
       this.#settling.set(key, entries);
     }
-    const entry = `${messageId}:${turnId}`;
-    if (entries.has(entry)) return false;
-    entries.set(entry, sessionId);
-    return true;
+    const entryKey = `${messageId}:${turnId}`;
+    let entry = entries.get(entryKey);
+    if (!entry) {
+      entry = { sessionId, holders: new Set() };
+      entries.set(entryKey, entry);
+    }
+    const token: SettlementCustodyToken = Symbol(entryKey);
+    entry.holders.add(token);
+    return token;
   }
 
-  /** Release one exact settlement's custody (its ack reached the exact Runner, or it never held). */
+  /**
+   * Release one handler's hold (its terminal commit lost, so it never owned an ack). Other
+   * handlers' holds on the same settlement stay in force.
+   */
+  releaseSettlementHold(
+    allocation: TrackedAllocation,
+    messageId: string,
+    turnId: string,
+    token: SettlementCustodyToken,
+  ): void {
+    const key = trackedAllocationKey(allocation);
+    const entries = this.#settling.get(key);
+    const entryKey = `${messageId}:${turnId}`;
+    const entry = entries?.get(entryKey);
+    if (!entries || !entry) return;
+    entry.holders.delete(token);
+    if (entry.holders.size === 0) entries.delete(entryKey);
+    if (entries.size === 0) this.#settling.delete(key);
+  }
+
+  /**
+   * The settlement's ack reached its exact Runner connection: the Runner deletes its journaled
+   * settlement, so no handler has a replay left to protect and every hold on it ends.
+   */
   releaseSettlement(allocation: TrackedAllocation, messageId: string, turnId: string): void {
     const key = trackedAllocationKey(allocation);
     const entries = this.#settling.get(key);
@@ -285,7 +326,7 @@ export class CloudSessionWorkTracker {
   /** Settlement custody of one Session on any allocation (the Session-wide barrier view). */
   hasSessionSettlementCustody(sessionId: string): boolean {
     for (const entries of this.#settling.values()) {
-      for (const owner of entries.values()) if (owner === sessionId) return true;
+      for (const entry of entries.values()) if (entry.sessionId === sessionId) return true;
     }
     return false;
   }
@@ -1563,9 +1604,9 @@ export class CloudSessionCollaborationOwner {
     // Settlement custody is held BEFORE the durable row turns terminal: from that commit until the
     // withheld ack reaches the exact Runner, the Runner journal on this allocation is the only
     // replay owner, and no claim may observe a gap between the two barriers.
-    const heldHere = notice
+    const hold = notice
       ? this.#work.holdSettlement(connection.scope, connection.scope.sessionId, frame.messageId, frame.turnId)
-      : false;
+      : undefined;
     const outcome = settledOutcome(frame.outcome);
     const committed = await this.#terminalizeDurable(
       {
@@ -1576,7 +1617,9 @@ export class CloudSessionCollaborationOwner {
       existing,
     );
     if (!committed) {
-      if (heldHere) this.#work.releaseSettlement(connection.scope, frame.messageId, frame.turnId);
+      // Only this handler's own hold: a concurrent replay that won the commit keeps its custody
+      // until its own exact ack is handed off.
+      if (hold) this.#work.releaseSettlementHold(connection.scope, frame.messageId, frame.turnId, hold);
       return;
     }
     this.#work.settleTurn(connection.scope, frame.messageId, frame.turnId);
@@ -1693,19 +1736,24 @@ export class CloudSessionCollaborationOwner {
     transaction?: DatabaseTransaction;
   }): Promise<boolean> {
     const executor = input.transaction ?? this.#database;
-    // Only records written under the Session's own placement Computer are authoritative: a Local
-    // runtime HTTP writer must never be able to inject work into a Cloud Session's barrier scope.
-    // A withheld settlement ack: the durable row is already terminal, but the Runner journal on
-    // this exact allocation is still the creator notice's only replay owner.
-    if (
+    /*
+     * A withheld settlement ack: the durable row is already terminal, but the Runner journal on
+     * this exact allocation is still the creator notice's only replay owner. A settlement handler
+     * acquires custody BEFORE its terminal commit, so the durable read below and this custody
+     * check together leave no gap only when custody is (re)checked AFTER the read: a row the read
+     * saw as terminal was terminalized after its custody was held, and only the exact ack (which
+     * lets the Runner delete its journal) or allocation retirement releases that custody. The
+     * early check is just a fast path; every negative answer re-checks custody after the awaits.
+     */
+    const hasCustody = () =>
       input.allocation
         ? this.#work.hasSettlementCustody(input.allocation)
-        : this.#work.hasSessionSettlementCustody(input.sessionId)
-    ) {
-      return true;
-    }
+        : this.#work.hasSessionSettlementCustody(input.sessionId);
+    if (hasCustody()) return true;
+    // Only records written under the Session's own placement Computer are authoritative: a Local
+    // runtime HTTP writer must never be able to inject work into a Cloud Session's barrier scope.
     const computerId = await this.#sessionComputerId(input.sessionId, executor);
-    if (!computerId) return false;
+    if (!computerId) return hasCustody();
     const rows = await executor
       .select({ payload: runtimeDurableWork.payload })
       .from(runtimeDurableWork)
@@ -1718,12 +1766,14 @@ export class CloudSessionCollaborationOwner {
         ),
       );
     const allocation = input.allocation;
-    if (!allocation) return rows.length > 0;
-    return rows.some(({ payload }) => {
-      const envelope = parseCloudSessionWorkEnvelope(payload);
-      if (!envelope) return true;
-      return allocationMatches(envelope.allocation, allocation);
-    });
+    const unsettled = allocation
+      ? rows.some(({ payload }) => {
+          const envelope = parseCloudSessionWorkEnvelope(payload);
+          if (!envelope) return true;
+          return allocationMatches(envelope.allocation, allocation);
+        })
+      : rows.length > 0;
+    return unsettled || hasCustody();
   }
 
   /**

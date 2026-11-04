@@ -117,7 +117,11 @@ name) stays in the Session-work reclaim barrier. The custody is held before the 
 terminal, so idle reclamation and same-account borrow see no gap. It is released only when the ack
 is handed to the exact current connection of that allocation: the original one, or the connection
 that receives the replayed settlement. A detach before the ack keeps the barrier until the replay
-is acknowledged. The custody never pins a replacement allocation, and a retired allocation's
+is acknowledged. Each settlement handler (the original and every replay) holds its own share of the
+custody: a handler whose terminal commit lost, such as a stale connection racing its replay, drops
+only its own share, and the exact ack ends every share. The barrier reads the durable rows first
+and checks the custody after those reads, so a settlement that commits while the barrier is reading
+is still seen. The custody never pins a replacement allocation, and a retired allocation's
 custody is dropped with its journal. There is no timeout, matching the durable barrier: a Runner
 that never returns is handled by allocation-loss recovery.
 

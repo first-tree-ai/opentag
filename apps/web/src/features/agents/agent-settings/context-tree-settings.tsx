@@ -1,6 +1,7 @@
 import {
   type AgentAdminConfig,
   CONTEXT_TREES_MAX,
+  ContextTreeBranchSchema,
   type ContextTreeConnection,
   ContextTreeConnectionSchema,
   type ContextTreeOperationRequest,
@@ -88,7 +89,12 @@ function ContextTreeSettingsForm({
     pendingAction,
   });
   const activeMode = mode ?? "connect";
-  const { source, valid, ownerValid, nameValid, linkedRepository } = parseForm(activeMode, draft, repositoryUrl, path);
+  const { source, valid, ownerValid, nameValid, linkedRepository, linkedPath, linkedRef } = parseForm(
+    activeMode,
+    draft,
+    repositoryUrl,
+    path,
+  );
   const fieldId = `context-tree-${config.id}`;
   const uncertainCreation =
     activeMode === "create"
@@ -243,11 +249,7 @@ function ContextTreeSettingsForm({
             ? m.agent_settings_context_tree_connect_existing()
             : m.agent_settings_context_tree_create_new()
         }
-        description={
-          activeMode === "connect"
-            ? m.agent_settings_context_tree_connect_guidance()
-            : m.agent_settings_context_tree_create_guidance()
-        }
+        description={formGuidance(activeMode, linkedRef)}
         onClose={closeForm}
         initialFocusRef={activeMode === "connect" ? repositoryInput : ownerInput}
         returnFocusRef={returnFocus}
@@ -269,6 +271,7 @@ function ContextTreeSettingsForm({
                 pending,
                 submitted,
                 linkedRepository,
+                linkedPath,
                 valid,
                 repositoryInput,
                 pathInput,
@@ -654,6 +657,7 @@ function ConnectTreeFields({
   pending,
   submitted,
   linkedRepository,
+  linkedPath,
   valid,
   repositoryInput,
   pathInput,
@@ -666,6 +670,7 @@ function ConnectTreeFields({
   pending: boolean;
   submitted: boolean;
   linkedRepository: string | undefined;
+  linkedPath?: string;
   valid: ReturnType<typeof ContextTreeConnectionSchema.safeParse>;
   repositoryInput: RefObject<HTMLInputElement | null>;
   pathInput: RefObject<HTMLInputElement | null>;
@@ -705,7 +710,8 @@ function ConnectTreeFields({
           value={path}
           disabled={pending}
           onChange={(event) => onPathChange(event.target.value)}
-          placeholder="docs"
+          // Shows the folder a pasted /tree/ link already names, so an empty field never looks filled in.
+          placeholder={linkedPath ?? ""}
           aria-invalid={Boolean(submitted && !valid.success && linkedRepository)}
           aria-describedby={`${fieldId}-path-hint${submitted && !valid.success && linkedRepository ? ` ${fieldId}-path-error` : ""}`}
         />
@@ -777,6 +783,14 @@ function RepositoryFields({
   );
 }
 
+/** The dialog's one sentence; a folder link that names a branch says that branch is the one used. */
+function formGuidance(activeMode: TreeAction, linkedRef: string | undefined): string {
+  if (activeMode !== "connect") return m.agent_settings_context_tree_create_guidance();
+  return linkedRef
+    ? m.agent_settings_context_tree_connect_guidance_branch({ branch: linkedRef })
+    : m.agent_settings_context_tree_connect_guidance();
+}
+
 function parseForm(
   activeMode: TreeAction,
   draft: { owner: string; name: string },
@@ -785,30 +799,61 @@ function parseForm(
 ) {
   const owner = draft.owner.trim();
   const name = draft.name.trim();
-  const linkedRepository = repositoryFromUrl(repositoryUrl);
+  const linked = repositoryFromUrl(repositoryUrl);
+  const linkedRepository = linked?.repository;
   const repository = activeMode === "connect" ? (linkedRepository ?? "") : `${owner}/${name}`;
   const ownerValid = ContextTreeRepositorySchema.safeParse(`${owner}/memory`).success;
   const nameValid = ContextTreeRepositorySchema.safeParse(`acme/${name}`).success;
   const source = {
     kind: "git" as const,
     repository,
-    path: activeMode === "create" ? "." : path.trim() || ".",
-    ref: "HEAD",
+    // The directory field overrides the folder a pasted /tree/ link names; empty means the link's folder or root.
+    path: activeMode === "create" ? "." : path.trim() || linked?.path || ".",
+    // A folder link names its branch; connecting follows that branch rather than silently using another.
+    ref: activeMode === "connect" && linked?.ref ? linked.ref : "HEAD",
   };
   const valid = ContextTreeConnectionSchema.safeParse(source);
-  return { source, valid, ownerValid, nameValid, linkedRepository };
+  return { source, valid, ownerValid, nameValid, linkedRepository, linkedPath: linked?.path, linkedRef: linked?.ref };
 }
 
-function repositoryFromUrl(value: string): string | undefined {
+/**
+ * A GitHub repository link, or a folder link copied from GitHub's address bar
+ * (`https://github.com/owner/repository/tree/<branch>/<folder>`). A tree link names its branch and
+ * folder; the branch is read as the first segment, so a branch whose name contains `/` must be
+ * connected from the repository link with the folder typed in.
+ */
+export function repositoryFromUrl(value: string): { repository: string; path?: string; ref?: string } | undefined {
+  const segments = githubPathSegments(value);
+  if (!segments) return undefined;
+  const [owner, name, kind, ref, ...folder] = segments;
+  if (!owner || !name) return undefined;
+  if (kind !== undefined && kind !== "tree") return undefined;
+  // A tree link always names its branch; `…/tree/` alone is not a folder link.
+  if (kind === "tree" && !ref) return undefined;
+  const parsed = ContextTreeRepositorySchema.safeParse(`${owner}/${name.replace(/\.git$/u, "")}`);
+  if (!parsed.success) return undefined;
+  const branch = ref === undefined ? undefined : ContextTreeBranchSchema.safeParse(ref);
+  if (branch && !branch.success) return undefined;
+  const path = folder.join("/");
+  return {
+    repository: parsed.data,
+    ...(path ? { path } : {}),
+    ...(branch?.success ? { ref: branch.data } : {}),
+  };
+}
+
+/**
+ * The decoded path segments of an https://github.com link, or `undefined` when it is not one. The link
+ * is typed live, so a malformed URL or a stray `%` must read as "not a link yet", never throw in render.
+ */
+function githubPathSegments(value: string): string[] | undefined {
   try {
     const url = new URL(value.trim());
     if (url.protocol !== "https:" || url.hostname !== "github.com" || url.port || url.username || url.password) return;
-    const repository = url.pathname
-      .replace(/^\//u, "")
-      .replace(/\/$/u, "")
-      .replace(/\.git$/u, "");
-    const parsed = ContextTreeRepositorySchema.safeParse(repository);
-    return parsed.success ? parsed.data : undefined;
+    return url.pathname
+      .split("/")
+      .filter(Boolean)
+      .map((part) => decodeURIComponent(part));
   } catch {
     return undefined;
   }

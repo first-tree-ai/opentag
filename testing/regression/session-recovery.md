@@ -1,13 +1,14 @@
 # Session interruption recovery release regression
 
-Checklist for the Local Computer's one automatic retry of interrupted Session work. Run it against a test Agent on a
+Checklist for the Local Computer's automatic retries of interrupted Session work (at most 2 in a row, shared by process
+interruptions and model 429). Run it against a test Agent on a
 dedicated regression computer with an IM test conversation (Feishu or Slack) the Agent may reply in. Do not record
 message contents, IDs or logs in the repository; keep results with the release PR or Issue.
 
 Each case starts a Run long enough to interrupt (for example ask the Agent to run `sleep 60` and then reply "done"),
 waits until the Agent is working, and then interrupts it as described. "Continues" means a new Provider Run starts in
 the same Session after the daemon is back, its input begins with
-`[OpenTag] Your previous turn was interrupted at … because … (automatic retry 1/1)`, and the original request follows.
+`[OpenTag] Your previous turn was interrupted at … because … (automatic retry)`, and the original request follows.
 
 ## Prerequisites
 
@@ -19,7 +20,7 @@ the same Session after the daemon is back, its input begins with
 
 1. Start a long Run in a DM or thread, then kill the daemon process group (`kill -9` of the daemon and its children).
 2. Start the daemon again.
-3. Expected: within about a minute the Session continues with reason "the OpenTag daemon stopped unexpectedly";
+3. Expected: within about a minute the Session continues with reason "the OpenTag daemon stopped (crash, power loss, restart, or upgrade)";
    no red "result cannot be confirmed" card appears; the working reaction stays until the retried Turn ends; the reply
    arrives once the retry completes, followed by any messages that queued meanwhile.
 
@@ -29,29 +30,40 @@ the same Session after the daemon is back, its input begins with
 2. Expected: no "cancelled" outcome is reported and no error card appears; after the restart the Session continues
    with reason "the OpenTag daemon was restarted or upgraded".
 
-## Second interruption is reported
+## Retries run out
 
-1. Repeat the crash case, and kill the daemon again while the retried Run is still working; start it again.
-2. Expected: no third Run starts. The IM conversation shows the existing error card for the Turn (result cannot be
-   confirmed / cancelled), exactly once.
+1. Repeat the crash case, and kill the daemon again within a minute or so of each resume; start it again each time. Wait
+   as long as you like between a kill and the next start: downtime does not count as running.
+2. Expected: the first two interruptions each continue the Session. After the third, no further Run starts. The IM
+   conversation shows the existing error card for the Turn (result cannot be confirmed), exactly once.
+3. Let a resumed Run work for more than 5 minutes (for example `sleep 400`), then kill the daemon. Expected: the count has
+   reset, so the Session continues again.
 
 ## Run timeout and model rate limit
 
 1. Give the Agent a run budget shorter than the task (Agent settings), then send the long task.
-2. Expected: when the budget expires the Session continues once in the same daemon with reason "the turn reached its
-   maximum run duration"; when the retry times out as well, the timeout error card appears once.
-3. Where a model 429 can be provoked safely (an authorized low-limit test key), confirm the Turn retries once after
-   about 30 seconds with reason "rate-limited the request (HTTP 429)". Do not provoke rate limits on shared accounts.
+2. Expected: when the budget expires there is no retry. The timeout error card appears once.
+3. Give the Agent a budget of a few minutes, send a task that needs longer, kill the daemon about halfway through and
+   start it after a while. Expected: the Session continues, and the timeout comes when the two parts of the run add up to
+   the budget. The time the daemon was down does not count.
+4. Where a model 429 can be provoked safely (an authorized low-limit test key), confirm the Turn retries after about 30
+   seconds with reason "rate-limited the request (HTTP 429)", at most twice. Do not provoke rate limits on shared accounts.
 
 ## Internal Session
 
 1. Ask the visible Session to delegate a long task to an internal Session, wait until the child Run is working, then
    kill and restart the daemon.
 2. Expected: the child continues with the crash reason and later reports its result to the parent; the parent receives
-   no "[openTag notice] Internal Session Run did not complete" notice. A second crash during the child's retry produces
-   exactly one such notice naming the failure.
-3. A child whose budget expires continues once; when the retry also times out the parent receives one notice with
-   outcome `timed_out`.
+   no "[openTag notice] Internal Session Run did not complete" notice. A third crash, each within a minute or so of the
+   previous resume, produces exactly one such notice naming the failure.
+3. A child whose budget expires does not retry: the parent receives one notice with outcome `timed_out`.
+
+## Steered Session messages
+
+1. While a visible Session's IM Turn is working, send it a Session message, then kill and restart the daemon.
+2. Expected: the Turn continues, and the message is steered into it again with the notice that it may already have been
+   handled. If that Turn fails, the message fails with it and does not run again; no creator notice follows, because the
+   target is a visible Session.
 
 ## Not retried
 

@@ -20,7 +20,9 @@ import {
   nextRetry,
   RATE_LIMIT_RETRY_DELAY_MS,
   RETRY_RESET_AFTER_MS,
+  RUN_TIME_RECORD_INTERVAL_MS,
   TurnRetryStore,
+  trackRunTime,
   turnRetryRecord,
 } from "../runtime/interruption-retry.js";
 import { FileRuntimeDurabilityStore } from "../runtime/runtime-durability.js";
@@ -43,7 +45,10 @@ beforeEach(() => {
   rateLimitDelayMs = 1;
   vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: () => void, ms?: number, ...rest: unknown[]) => {
     if (ms === RATE_LIMIT_RETRY_DELAY_MS) return realSetTimeout(handler, rateLimitDelayMs);
-    if (ms !== BUDGET_MS) return realSetTimeout(handler, ms, ...(rest as []));
+    // The Turn's budget timer: what is left of its budget.
+    if (ms === undefined || ms > BUDGET_MS || ms < BUDGET_MS - RETRY_RESET_AFTER_MS) {
+      return realSetTimeout(handler, ms, ...(rest as []));
+    }
     expireBudget = handler;
     return realSetTimeout(() => undefined, 2_147_483_647).unref();
   }) as typeof setTimeout);
@@ -327,18 +332,31 @@ describe("a Session message steered into an IM Turn that retries in place", () =
 describe("the retry count shared by process interruptions and model 429", () => {
   const MINUTE = 60_000;
 
-  it("allows two retries, resets after a long retry, and stays exhausted", () => {
-    expect(nextRetry({ count: 0 }, 0)).toEqual({ count: 1, startedAt: 0, exhausted: false });
-    expect(nextRetry({ count: 1, startedAt: 0 }, MINUTE)).toEqual({ count: 2, startedAt: MINUTE, exhausted: false });
-    const out = nextRetry({ count: 2, startedAt: 0 }, MINUTE);
-    expect(out).toMatchObject({ count: 3, exhausted: true });
-    expect(nextRetry({ count: 2, startedAt: 0 }, RETRY_RESET_AFTER_MS)).toEqual({
-      count: 1,
-      startedAt: RETRY_RESET_AFTER_MS,
-      exhausted: false,
-    });
-    // Once exhausted, even a long wait does not revive it.
-    expect(nextRetry({ count: 3, startedAt: 0 }, 100 * RETRY_RESET_AFTER_MS).exhausted).toBe(true);
+  it("allows two retries, resets after a retry that actually ran long, and stays exhausted", () => {
+    expect(nextRetry({ count: 0, ranMs: 0 })).toEqual({ count: 1, exhausted: false });
+    expect(nextRetry({ count: 1, ranMs: MINUTE })).toEqual({ count: 2, exhausted: false });
+    expect(nextRetry({ count: 2, ranMs: RETRY_RESET_AFTER_MS - 1 })).toEqual({ count: 3, exhausted: true });
+    expect(nextRetry({ count: 2, ranMs: RETRY_RESET_AFTER_MS })).toEqual({ count: 1, exhausted: false });
+    // Once exhausted, nothing revives it.
+    expect(nextRetry({ count: 3, ranMs: 100 * RETRY_RESET_AFTER_MS }).exhausted).toBe(true);
+  });
+
+  it("records run time periodically, keeps what could not be written, and reports the rest", async () => {
+    vi.useFakeTimers();
+    let now = 0;
+    const record = vi.fn(async (_ranMs: number) => undefined);
+    const clock = trackRunTime(() => now, record);
+    now = RUN_TIME_RECORD_INTERVAL_MS;
+    await vi.advanceTimersByTimeAsync(RUN_TIME_RECORD_INTERVAL_MS);
+    expect(record).toHaveBeenCalledExactlyOnceWith(RUN_TIME_RECORD_INTERVAL_MS);
+    record.mockRejectedValueOnce(new Error("disk full"));
+    now = 2 * RUN_TIME_RECORD_INTERVAL_MS;
+    await vi.advanceTimersByTimeAsync(RUN_TIME_RECORD_INTERVAL_MS);
+    now = 2 * RUN_TIME_RECORD_INTERVAL_MS + 5;
+    await expect(clock.finish()).resolves.toBe(RUN_TIME_RECORD_INTERVAL_MS + 5);
+    now += RUN_TIME_RECORD_INTERVAL_MS;
+    await vi.advanceTimersByTimeAsync(RUN_TIME_RECORD_INTERVAL_MS);
+    expect(record).toHaveBeenCalledTimes(2);
   });
 
   it("resumes after a crash during an in-place retry, with the message delivered again", async () => {
@@ -365,6 +383,7 @@ describe("the retry count shared by process interruptions and model 429", () => 
     expect(second.steerText(0)).toContain("Your previous turn was interrupted");
     expect(second.steerText(1)).toContain("joined the retry");
     expect((await second.retries.read(second.request.sessionId))?.retries).toBe(2);
+    expect((await second.retries.read(second.request.sessionId))?.retryRanMs).toBe(0);
     second.endAttempt();
     await second.runner.settled();
     await vi.waitFor(() => expect(second.inbox.getState(fresh.messageId)?.status).toBe("succeeded"));
@@ -455,6 +474,8 @@ describe("the retry count shared by process interruptions and model 429", () => 
     expect(second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
     await vi.waitFor(() => expect(second.runtime.steer).toHaveBeenCalledOnce());
     expect(second.promptText(0)).toContain("HTTP 429");
+    // The 429 was counted when it failed; the restart starts that retry without counting it again.
+    expect((await second.retries.read(second.request.sessionId))?.retries).toBe(1);
     second.endAttempt();
     await second.runner.settled();
     await second.stop();
@@ -480,15 +501,13 @@ describe("the retry count shared by process interruptions and model 429", () => 
     await first.inbox.accept(queued);
 
     const daemons = [first];
-    for (const [at, expected] of [
-      [0, true],
-      [MINUTE, true],
-    ] as const) {
+    // Long outages between the restarts: none of it is run time, so the count does not reset.
+    for (const at of [0, 60 * MINUTE]) {
       const { next, pending } = await restartTurn(first, at);
       daemons.push(next);
-      expect(pending).toBe(expected);
+      expect(pending).toBe(true);
     }
-    const { next: last, pending } = await restartTurn(first, 2 * MINUTE);
+    const { next: last, pending } = await restartTurn(first, 120 * MINUTE);
     daemons.push(last);
     expect(pending).toBe(false);
     expect(last.inbox.getState(steered.messageId)?.status).toBe("failed");
@@ -503,16 +522,42 @@ describe("the retry count shared by process interruptions and model 429", () => 
     for (const daemon of daemons) await daemon.stop();
   });
 
-  it("keeps resuming a Turn whose retries run at least five minutes", async () => {
+  it("keeps resuming a Turn whose retries actually run at least five minutes", async () => {
     const first = await system();
     await first.retries.write(turnRetryRecord(first.request, TURN_ID));
     const daemons = [first];
-    for (const at of [0, 5 * MINUTE, 10 * MINUTE, 15 * MINUTE, 20 * MINUTE]) {
+    for (const at of [0, 1, 2, 3, 4]) {
       const { next, pending } = await restartTurn(first, at);
       daemons.push(next);
       expect(pending).toBe(true);
+      await first.retries.update(first.request.sessionId, TURN_ID, (record) => ({
+        ...record,
+        retryRanMs: RETRY_RESET_AFTER_MS,
+      }));
     }
     for (const daemon of daemons) await daemon.stop();
+  });
+
+  it("leaves a resumed Turn only what is left of its Run budget", async () => {
+    const first = await system();
+    first.request.runtime.budget = { maxDurationMs: BUDGET_MS };
+    const spent = RETRY_RESET_AFTER_MS - 1_000;
+    await first.retries.write({ ...turnRetryRecord(first.request, TURN_ID), ranMs: spent });
+    const second = await system({ home: first.home, request: first.request, prepared: false });
+    second.prompt.mockImplementationOnce(attempt(second, "completed"));
+    await second.inbox.ready();
+    await second.recovery.start();
+    second.prepare();
+    const timer = vi.mocked(globalThis.setTimeout);
+    timer.mockClear();
+    expect(second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
+    await vi.waitFor(() => expect(second.prompt).toHaveBeenCalledOnce());
+    expect(timer.mock.calls.map((call) => call[1])).toContain(BUDGET_MS - spent);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    second.endAttempt();
+    await second.runner.settled();
+    await second.stop();
+    await first.stop();
   });
 
   /** A daemon whose message's own Run is running when it is abandoned: a process interruption. */
@@ -554,11 +599,13 @@ describe("the retry count shared by process interruptions and model 429", () => 
     await first.inbox.accept(message);
     await vi.waitFor(() => expect(first.prompt).toHaveBeenCalled());
     const daemons = [first];
-    for (const at of [0, 10 * MINUTE, 20 * MINUTE, 30 * MINUTE]) {
+    for (const at of [0, 1, 2, 3]) {
       const next = await restartMessage(first, at);
       daemons.push(next);
       await vi.waitFor(() => expect(next.prompt).toHaveBeenCalled());
       expect((await next.stored(message))?.attempts).toBe(1);
+      // This retry ran long enough before the next interruption.
+      await first.overwriteRecord(message, { retryRanMs: RETRY_RESET_AFTER_MS });
     }
     for (const daemon of daemons) await daemon.stop();
   });
@@ -580,6 +627,60 @@ describe("the retry count shared by process interruptions and model 429", () => 
     expect(second.promptText(0)).toContain("Your previous turn was interrupted");
     expect(second.inbox.getState(message.messageId)?.attempts).toBe(0);
     await second.stop();
+    await first.stop();
+  });
+});
+
+describe("failing the messages of a Turn that ran out of retries", () => {
+  async function exhausted(failWrites: number) {
+    const first = await system();
+    first.prompt.mockImplementationOnce(hangs(first));
+    await first.startTurn();
+    const message = first.message("steered");
+    await first.steer(message);
+    await first.retries.update(first.request.sessionId, TURN_ID, (record) => ({
+      ...record,
+      retries: MAX_AUTOMATIC_RETRIES,
+    }));
+    const second = await system({ home: first.home, request: first.request, prepared: false });
+    second.prompt.mockImplementation(second.finishes);
+    await second.inbox.ready();
+    second.failWrites(failWrites);
+    return { first, second, message };
+  }
+
+  it("does not hold up startup, run the message, or report it until its failure is written", async () => {
+    const { first, second, message } = await exhausted(1 + 2);
+    // The retry record write takes one failure's place only if it comes first: it does not fail here.
+    await second.recovery.start();
+    await vi.waitFor(() => expect(second.writeFailures()).toBeGreaterThanOrEqual(1));
+    await vi.waitFor(() => expect(second.inbox.getState(message.messageId)?.status).toBe("failed"), { timeout: 8_000 });
+    expect(second.prompt).not.toHaveBeenCalled();
+    expect(second.onRunOutcome).toHaveBeenCalledOnce();
+    expect(second.inbox.queuedCount).toBe(0);
+    await second.stop();
+    await first.stop();
+  }, 12_000);
+
+  it("reports nothing while the write fails, so a later daemon can run it without a false failure", async () => {
+    const { first, second, message } = await exhausted(1_000);
+    await second.recovery.start();
+    await vi.waitFor(() => expect(second.writeFailures()).toBeGreaterThanOrEqual(1));
+    expect(second.onRunOutcome).not.toHaveBeenCalled();
+    expect(second.prompt).not.toHaveBeenCalled();
+    expect(second.inbox.getState(message.messageId)?.status).toBe("retryable");
+    expect(second.inbox.queuedCount).toBe(1);
+    await second.stop();
+
+    // The root Turn settled meanwhile. The next daemon finds no retry record, so the Turn ended first.
+    await second.retries.remove(second.request.sessionId);
+    const third = await system({ home: first.home, request: first.request });
+    third.prompt.mockImplementation(third.finishes);
+    await third.inbox.ready();
+    await vi.waitFor(() => expect(third.inbox.getState(message.messageId)?.status).toBe("succeeded"));
+    expect(third.prompt).toHaveBeenCalledOnce();
+    expect(third.onRunOutcome).not.toHaveBeenCalled();
+    await third.stop();
     await first.stop();
   });
 });
@@ -1087,6 +1188,12 @@ async function system(
     steer: async (message: SessionMessageDeliveryRequestV3) => {
       expect((await inbox.accept(message)).status).toBe("accepted");
       await vi.waitFor(() => expect(inbox.getState(message.messageId)?.status).toBe("running"));
+    },
+    overwriteRecord: async (message: SessionMessageDeliveryRequestV3, fields: Record<string, unknown>) => {
+      const stored = (await durable.list("session-message")).find(
+        (record) => record.key === `${message.targetSessionId}:${message.messageId}`,
+      );
+      if (stored) await durable.write({ ...stored, ...fields });
     },
     releaseTurn: () => reservation?.release(),
     stop: async () => {

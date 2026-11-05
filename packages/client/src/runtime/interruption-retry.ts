@@ -33,8 +33,10 @@ const REASONS = new Set<InterruptionReason>(["daemon_crash", "client_shutdown", 
 
 /** At most this many automatic retries in a row. */
 export const MAX_AUTOMATIC_RETRIES = 2;
-/** A retry that ran at least this long resets the count. */
+/** A retry that actually ran at least this long resets the count. */
 export const RETRY_RESET_AFTER_MS = 5 * 60_000;
+/** How often a running attempt records its run time; a crash loses at most this much. */
+export const RUN_TIME_RECORD_INTERVAL_MS = 60_000;
 /** A rate-limited Run waits this long before its automatic retry. */
 export const RATE_LIMIT_RETRY_DELAY_MS = 30_000;
 
@@ -47,20 +49,44 @@ export interface Interruption {
 /** The durable retry count of a Turn or of a Session message running on its own. */
 export interface RetryCount {
   count: number;
-  /** When the latest retry started, in epoch milliseconds. */
-  startedAt?: number;
+  /** How long the latest retry actually ran. Downtime, waiting and backoff do not count. */
+  ranMs: number;
 }
 
 /**
- * The count after an interruption at `now`. `exhausted` means no retry is left. It is recorded as one
- * past the limit, so a later restart cannot revive work whose failure is already being reported.
+ * The count after a failure or an interruption. `exhausted` means no retry is left. It is recorded as
+ * one past the limit, so a later restart cannot revive work whose failure is already being reported.
  */
-export function nextRetry(previous: RetryCount, now: number): RetryCount & { exhausted: boolean } {
-  if (previous.count > MAX_AUTOMATIC_RETRIES) return { ...previous, exhausted: true };
-  const ranLong = previous.startedAt !== undefined && now - previous.startedAt >= RETRY_RESET_AFTER_MS;
-  const count = ranLong ? 0 : previous.count;
-  if (count >= MAX_AUTOMATIC_RETRIES) return { ...previous, count: MAX_AUTOMATIC_RETRIES + 1, exhausted: true };
-  return { count: count + 1, startedAt: now, exhausted: false };
+export function nextRetry(previous: RetryCount): { count: number; exhausted: boolean } {
+  if (previous.count > MAX_AUTOMATIC_RETRIES) return { count: previous.count, exhausted: true };
+  const count = previous.ranMs >= RETRY_RESET_AFTER_MS ? 0 : previous.count;
+  if (count >= MAX_AUTOMATIC_RETRIES) return { count: MAX_AUTOMATIC_RETRIES + 1, exhausted: true };
+  return { count: count + 1, exhausted: false };
+}
+
+/** Actual run time of one attempt, recorded periodically so that a crash loses little of it. */
+export function trackRunTime(
+  now: () => number,
+  record: (ranMs: number) => Promise<unknown>,
+): { finish(): Promise<number> } {
+  let since = now();
+  let writing: Promise<unknown> = Promise.resolve();
+  const timer = setInterval(() => {
+    const previous = since;
+    since = now();
+    writing = record(since - previous).catch(() => {
+      since = previous;
+    });
+  }, RUN_TIME_RECORD_INTERVAL_MS);
+  timer.unref();
+  return {
+    // Resolves with the run time not yet recorded, once no recording is in flight.
+    finish: async () => {
+      clearInterval(timer);
+      await writing;
+      return Math.max(0, now() - since);
+    },
+  };
 }
 
 /** Maps a Run failure reason to a recoverable class, or undefined when it must not be retried. */
@@ -110,8 +136,10 @@ export interface TurnRetryRecord {
   steers: RuntimeImSteerRequest[];
   /** Automatic retries in a row, for process interruptions and model 429 alike. */
   retries: number;
-  /** When the latest retry started, in epoch milliseconds; a long enough retry resets the count. */
-  retryStartedAt?: number;
+  /** Actual run time of every attempt so far, against the Run's duration limit. */
+  ranMs?: number;
+  /** Actual run time of the latest retry; long enough, and the count resets. */
+  retryRanMs?: number;
   /** What ended the Turn's latest attempt; cleared when an attempt starts, so it never names an older one. */
   interruption?: Interruption;
 }
@@ -261,9 +289,8 @@ export function parseTurnRetryRecord(value: unknown): TurnRetryRecord {
   ) {
     throw new RuntimeStorageError("invalid", "Turn retry record is invalid");
   }
-  const retryStartedAt = Number.isSafeInteger(candidate.retryStartedAt)
-    ? (candidate.retryStartedAt as number)
-    : undefined;
+  const ranMs = Number.isSafeInteger(candidate.ranMs) ? (candidate.ranMs as number) : undefined;
+  const retryRanMs = Number.isSafeInteger(candidate.retryRanMs) ? (candidate.retryRanMs as number) : undefined;
   return {
     schemaVersion: 1,
     agentId: request.agentId,
@@ -273,7 +300,8 @@ export function parseTurnRetryRecord(value: unknown): TurnRetryRecord {
     request,
     steers,
     retries: candidate.retries as number,
-    ...(retryStartedAt !== undefined ? { retryStartedAt } : {}),
+    ...(ranMs !== undefined ? { ranMs } : {}),
+    ...(retryRanMs !== undefined ? { retryRanMs } : {}),
     ...(interruption
       ? { interruption: { reason: interruption.reason as InterruptionReason, at: interruption.at as string } }
       : {}),

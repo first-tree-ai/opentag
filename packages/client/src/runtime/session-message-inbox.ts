@@ -1,7 +1,6 @@
 import {
   hashTuple,
   type InputRejectReason,
-  RUNTIME_DEFAULT_MAX_DURATION_MS,
   RUNTIME_SESSION_COLLABORATION_SCHEDULED_VERSION,
   type RuntimeImOutboxContext,
   type SessionMessageDeliveryRequestV3,
@@ -22,6 +21,7 @@ import {
   type RetryCount,
   recoverableFailure,
   sessionMessageKey,
+  trackRunTime,
 } from "./interruption-retry.js";
 import type { ProviderCliTurnPlanPrepareInput } from "./provider-cli/turn-plan-manager.js";
 import { providerLaunchConfiguration } from "./provider-launch-configuration.js";
@@ -47,6 +47,7 @@ import {
 } from "./scheduled-message-input.js";
 import type { SessionReconciler } from "./session-reconciler.js";
 import type { SessionRuntimeManager } from "./session-runtime-manager.js";
+import { remainingBudgetMs } from "./turn-timeout.js";
 
 interface QueuedMessage {
   request: SessionMessageDeliveryRequestV3;
@@ -155,6 +156,8 @@ export class SessionMessageInbox {
   readonly #runtimeManager: SessionMessageInboxOptions["runtimeManager"];
   readonly #steerRetryMs: number;
   readonly #joinableRuns: JoinableRuns | undefined;
+  /** Joined messages whose Turn ran out of retries; each keeps its queue place until its failure commits. */
+  readonly #failingJoined = new Set<string>();
   /** Messages in a joinable Run: how to settle each one when that Run ends. */
   readonly #joined = new Map<string, (outcome: AgentSteerOutcome) => Promise<void>>();
   readonly #queues = new Map<string, QueuedMessage[]>();
@@ -402,6 +405,7 @@ export class SessionMessageInbox {
         this.#queues.delete(sessionId);
         return;
       }
+      if (await this.#holdFailingJoined(next)) continue;
       // Waiting for the Server to prepare the Session is not a failure: after a restart nothing has
       // prepared it yet. The message runs once a ready reconcile arrives.
       if (this.#runtimeManager.isPrepared && !this.#runtimeManager.isPrepared(sessionId)) {
@@ -473,6 +477,13 @@ export class SessionMessageInbox {
     return true;
   }
 
+  #trackMessageRunTime(key: string): { finish(): Promise<number> } {
+    return trackRunTime(this.#now, async (ranMs) => {
+      const record = this.#records.get(key);
+      if (record) await this.#persist(withRunTime(record, ranMs));
+    });
+  }
+
   /** The Session's running Run, when its runtime can take input now and its target is known. */
   #steerTarget(
     sessionId: string,
@@ -502,7 +513,7 @@ export class SessionMessageInbox {
         attempts: 0,
         interruption: undefined,
         joinedRunId: runId,
-        retryStartedAt: undefined,
+        retryRanMs: undefined,
       });
     } catch {
       // The record stays `accepted` on disk, so a restart redelivers it; this process still settles it.
@@ -530,25 +541,59 @@ export class SessionMessageInbox {
 
   /**
    * A Turn's retries ran out at startup: the messages steered into it share its count, so they fail with
-   * it instead of running again.
+   * it instead of running again. One whose failure cannot be written yet stays queued and is not run: the
+   * drain keeps trying before anything else. Never waits for that, so a full disk cannot hold up startup.
    */
   async failJoinedRun(runId: string): Promise<void> {
     for (const record of [...this.#records.values()]) {
       if (record.joinedRunId !== runId || record.status !== "retryable") continue;
-      const sessionId = record.payload.targetSessionId;
-      const queue = this.#queues.get(sessionId) ?? [];
-      const position = queue.findIndex((next) => next.request.messageId === record.payload.messageId);
-      if (position < 0) continue;
-      const [next] = queue.splice(position, 1);
-      this.#queuedTotal -= 1;
-      if (queue.length === 0) this.#queues.delete(sessionId);
-      await this.#failTerminally(
-        record,
-        (next as QueuedMessage).hash,
-        "runtime",
-        interruptedFailure(record.payload.requestId, "daemon_crash"),
-      );
+      if (await this.#settleJoinedFailure(record.key)) continue;
+      this.#failingJoined.add(record.key);
+      // Not waiting for the Session to be prepared: nothing about failing it needs the Session.
+      this.#awaitingPreparation.delete(record.payload.targetSessionId);
+      this.#startDrain(record.payload.targetSessionId);
     }
+  }
+
+  /** A joined message whose Turn ran out of retries never runs: it waits here for its failure to commit. */
+  async #holdFailingJoined(next: QueuedMessage): Promise<boolean> {
+    const key = sessionMessageKey(next.request);
+    if (!this.#failingJoined.has(key)) return false;
+    if (!(await this.#settleJoinedFailure(key))) await this.#waitForReleaseOrSteerRetry();
+    return true;
+  }
+
+  /** True once the message's failure is durable and reported, and only then is it out of the queue. */
+  async #settleJoinedFailure(key: string): Promise<boolean> {
+    const record = this.#records.get(key);
+    if (!record) return true;
+    const messageId = record.payload.messageId;
+    const failure = interruptedFailure(record.payload.requestId, "daemon_crash");
+    const terminal = await this.#transition(
+      { ...record, attempts: record.attempts + 1, lastError: failure, updatedAt: this.#now() },
+      "failed",
+      { nextAttemptAt: undefined, ...this.#pendingOutcomeReport() },
+    ).catch(() => undefined);
+    if (!terminal) {
+      this.#logger.warn(
+        { code: "SESSION_MESSAGE_PERSISTENCE_FAILED", messageId, status: "failed" },
+        "Session message failure could not be recorded; it stays queued and is not run",
+      );
+      return false;
+    }
+    this.#failingJoined.delete(key);
+    const sessionId = record.payload.targetSessionId;
+    const queue = (this.#queues.get(sessionId) ?? []).filter((queued) => queued.request.messageId !== messageId);
+    this.#queuedTotal -= (this.#queues.get(sessionId)?.length ?? 0) - queue.length;
+    if (queue.length > 0) this.#queues.set(sessionId, queue);
+    else this.#queues.delete(sessionId);
+    this.#remember(key, {
+      hash: sessionMessageSemanticHash(record.payload),
+      status: "failed",
+      reason: "provider_unavailable",
+    });
+    await this.#publishRunOutcome(terminal, "failed", failure.code);
+    return true;
   }
 
   /** The Run this message joined ended; resolves once the message's outcome is durable. */
@@ -633,12 +678,21 @@ export class SessionMessageInbox {
     let timer: { cancel(): void } | undefined;
     let runSignal: AbortSignal | undefined;
     let executionSignal: AbortSignal | undefined;
+    let runTime: { finish(): Promise<number> } | undefined;
+    const settleRunTime = async () => {
+      const ranMs = (await runTime?.finish()) ?? 0;
+      runTime = undefined;
+      // Recorded by the write that follows; the record may hold newer run time than `current`.
+      const latest = this.#records.get(key) ?? current;
+      if (latest) current = withRunTime(latest, ranMs);
+    };
     const ensureRunSignal = (): AbortSignal => {
       if (runSignal) return runSignal;
       timer = this.#timeoutScheduler.schedule(
-        next.request.runtime.budget?.maxDurationMs ?? RUNTIME_DEFAULT_MAX_DURATION_MS,
+        remainingBudgetMs(next.request.runtime.budget?.maxDurationMs, current?.ranMs ?? 0),
         () => timeout.abort(new Error("Session message Run timed out")),
       );
+      if (current) runTime = this.#trackMessageRunTime(key);
       // Revocation or control/owner replacement aborts the Run and its provider children.
       runSignal = executionSignal
         ? AbortSignal.any([this.#abort.signal, timeout.signal, executionSignal])
@@ -702,6 +756,7 @@ export class SessionMessageInbox {
         signal: ensureRunSignal(),
         ...sessionMessageLaunchConfiguration(prepared, runtime),
       });
+      await settleRunTime();
       if (result.status !== "completed") throw runFailure(result);
       if (current && !this.#abort.signal.aborted) {
         await this.#transition(current, "succeeded");
@@ -711,6 +766,7 @@ export class SessionMessageInbox {
       // Only the Run budget timer counts as a timeout; daemon stop and revocation keep their
       // existing recovery semantics.
       const timedOut = timeout.signal.aborted && !this.#abort.signal.aborted && executionSignal?.aborted !== true;
+      await settleRunTime();
       if (current) await this.#handleFailure(current, next.hash, phase, error, timedOut);
     } finally {
       timer?.cancel();
@@ -864,7 +920,7 @@ export class SessionMessageInbox {
         at: record.interruption?.at ?? new Date(this.#now()).toISOString(),
       };
       // A message steered into a Turn shares that Turn's count, so it is not counted here.
-      const retry = record.joinedRunId ? undefined : nextRetry(messageRetryCount(record), this.#now());
+      const retry = record.joinedRunId ? undefined : nextRetry(messageRetryCount(record));
       if (retry?.exhausted) {
         const failure = interruptedFailure(record.payload.requestId, interruption.reason);
         record = await this.#transition({ ...record, attempts: retry.count, lastError: failure }, "failed", {
@@ -941,7 +997,7 @@ export class SessionMessageInbox {
       return;
     }
     const reason = timedOut ? undefined : recoverableFailure(failure.code);
-    const retry = reason && nextRetry(messageRetryCount(record), now);
+    const retry = reason && nextRetry(messageRetryCount(record));
     if (reason && retry && !retry.exhausted) {
       const interruption: Interruption = { reason, at: new Date(now).toISOString() };
       const delay = reason === "provider_rate_limited" ? this.#rateLimitRetryDelayMs : 0;
@@ -1085,14 +1141,18 @@ function terminalRunOutcome(record: DurableWorkRecord<SessionMessageDeliveryRequ
 }
 
 function messageRetryCount(record: DurableWorkRecord<SessionMessageDeliveryRequestV3>): RetryCount {
-  return {
-    count: record.attempts,
-    ...(record.retryStartedAt !== undefined ? { startedAt: record.retryStartedAt } : {}),
-  };
+  return { count: record.attempts, ranMs: record.retryRanMs ?? 0 };
 }
 
-function messageRetryFields(retry: RetryCount): { attempts: number; retryStartedAt?: number } {
-  return { attempts: retry.count, ...(retry.startedAt !== undefined ? { retryStartedAt: retry.startedAt } : {}) };
+function messageRetryFields(retry: { count: number }): { attempts: number; retryRanMs: number } {
+  return { attempts: retry.count, retryRanMs: 0 };
+}
+
+function withRunTime(
+  record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
+  ranMs: number,
+): DurableWorkRecord<SessionMessageDeliveryRequestV3> {
+  return { ...record, ranMs: (record.ranMs ?? 0) + ranMs, retryRanMs: (record.retryRanMs ?? 0) + ranMs };
 }
 
 function interruptedFailure(requestId: string, reason: InterruptionReason): DurableFailure {

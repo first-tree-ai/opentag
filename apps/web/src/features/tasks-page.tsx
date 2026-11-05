@@ -392,10 +392,13 @@ export function TaskDetailPage({
   /*
    * The Task's captured outbound replies: an independent paged subresource with its own cursor,
    * refreshed on the same live policy as the detail. It reads only after the detail has resolved
-   * the canonical Task id, so a legacy Session-alias URL queries replies under the Task's real id
-   * instead of the route's alias.
+   * the canonical Task id (the Task's Session id), so a URL that names the Task by an alias — a
+   * message id from an older link or footer, or an internal Session id — queries replies under the
+   * Task's real id instead of the route's alias.
    */
   const repliesQuery = useTaskRepliesQuery(showExamples ? undefined : first?.task?.id);
+  // The Task's internal Sessions page on their own cursor, under the canonical id like the replies.
+  const internalSessionsQuery = useTaskInternalSessionsQuery(showExamples ? undefined : first?.task?.id);
   const taskError = asError(taskQuery.error);
   const persistedError = usePersistedSettledError(detailKey, {
     error: taskQuery.error ? taskError : null,
@@ -453,7 +456,8 @@ export function TaskDetailPage({
 
       <TaskActivity
         task={task}
-        internalSessions={first.internalSessions}
+        internalSessions={internalSessionsQuery.supplied ? internalSessionsQuery.sessions : first.internalSessions}
+        internalSessionsFooter={<TaskInternalSessionsPagination query={internalSessionsQuery} />}
         replies={repliesQuery.supplied ? repliesQuery.replies : undefined}
         repliesStatus={repliesStatus}
         turns={turns}
@@ -486,6 +490,51 @@ function useTaskRepliesQuery(taskId: string | undefined) {
 }
 
 type TaskRepliesQuery = ReturnType<typeof useTaskRepliesQuery>;
+
+/**
+ * The Task's internal Sessions, earliest first, ended ones included, one API page at a time. Like
+ * the replies, it reads only after the detail resolved the canonical Task id.
+ */
+function useTaskInternalSessionsQuery(taskId: string | undefined) {
+  const query = useInfiniteQuery({
+    queryKey: queryKeys.tasks.internalSessions(taskId ?? ""),
+    queryFn: ({ pageParam }) => browserApi.taskInternalSessions(taskId as string, pageParam),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (page) => page.nextCursor ?? undefined,
+    enabled: taskId !== undefined,
+    ...liveResourceQueryOptions,
+  });
+  const sessions = useMemo(() => query.data?.pages.flatMap((page) => page.items) ?? [], [query.data]);
+  return { ...query, supplied: taskId !== undefined, sessions };
+}
+
+type TaskInternalSessionsQuery = ReturnType<typeof useTaskInternalSessionsQuery>;
+
+/** Loads the next page of internal Sessions, and says so when a page could not be read. */
+function TaskInternalSessionsPagination({ query }: { query: TaskInternalSessionsQuery }) {
+  if (!query.supplied) return null;
+  return (
+    <>
+      {query.hasNextPage ? (
+        <Button
+          loading={query.isFetchingNextPage}
+          type="button"
+          variant="secondary"
+          disabled={query.isFetching}
+          data-ui="task-internal-sessions-more"
+          onClick={() => void query.fetchNextPage({ cancelRefetch: false })}
+        >
+          {m.tasks_load_more_internal_sessions()}
+        </Button>
+      ) : null}
+      {query.isError ? (
+        <p className="text-sm text-kumo-danger" data-ui="task-internal-sessions-error" role="alert">
+          {m.tasks_internal_sessions_failed()}
+        </p>
+      ) : null}
+    </>
+  );
+}
 
 /*
  * Keep loading and retryable failures visible, with cached replies retained. A successful empty
@@ -1006,8 +1055,8 @@ async function readTaskDetail(
     const turns = await browserApi.taskTurns(taskId, cursor);
     return { turns: turns.items, nextCursor: turns.nextCursor };
   }
-  // The conversation renders the summary and the Turns; the other two sections are not asked for,
-  // and the Server does not read them.
+  // The conversation renders the summary and the Turns. Internal Sessions page on their own query,
+  // and collaboration messages are not shown, so the Server reads neither here.
   const page = await browserApi.taskDetail(taskId, ["turns"]);
   return {
     task: page.task,

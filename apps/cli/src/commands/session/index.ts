@@ -27,7 +27,11 @@ export function registerSessionCommand(program: Command): void {
     .option("--message-id <uuid>", "idempotency key for an explicit retry")
     .option("--model <model>", "override the internal Session model")
     .option("--reasoning-effort <effort>", "override the internal Session reasoning effort")
-    .option("--max-duration-ms <milliseconds>", "override the maximum Run duration", parsePositiveInteger)
+    .option(
+      "--max-duration-ms <milliseconds>",
+      "maximum Run duration (default: the larger of 2 hours and the Agent budget)",
+      parsePositiveInteger,
+    )
     .option("--json", "print JSON")
     .action(async (options) => runCommand(() => runSessionCreate(options), options));
 

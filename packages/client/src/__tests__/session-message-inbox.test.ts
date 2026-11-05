@@ -1,16 +1,31 @@
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import { lstat, mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type {
-  InputRejectReason,
-  SessionMessageDeliveryRequest,
-  SessionMessageDeliveryRequestV3,
-  SessionReconcileRequest,
+import { PassThrough } from "node:stream";
+import {
+  type InputRejectReason,
+  RUNTIME_CAPABILITY,
+  type SessionMessageDeliveryRequest,
+  type SessionMessageDeliveryRequestV3,
+  type SessionMessageOutcomeReport,
+  type SessionReconcileRequest,
 } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
+import { BaseAgentRuntime } from "../agent-runtime/base-agent-runtime.js";
+import type {
+  AgentPromptRequest,
+  AgentProviderRunResult,
+  AgentProviderSteerCustody,
+  AgentRunResult,
+  AgentRuntime,
+  AgentSteerOutcome,
+} from "../agent-runtime/types.js";
 import { executeProviderCliTurnPlan } from "../index.js";
 import { ClaudeCodeAgentRuntimeFactory } from "../providers/claude-code/agent-runtime.js";
+import { ClaudeCodeProcess } from "../providers/claude-code/process-wire.js";
 import { AdmissionController } from "../runtime/admission-controller.js";
 import { ImCredentialEnvironmentError } from "../runtime/im-credential-environment-manager.js";
 import { collectOutgoingReplyReceipts } from "../runtime/provider-cli/outgoing-reply-store.js";
@@ -22,7 +37,12 @@ import {
   RuntimeDurabilityMetrics,
   type RuntimeRetryScheduler,
 } from "../runtime/runtime-durability.js";
-import { buildSessionMessageInput, SessionMessageInbox } from "../runtime/session-message-inbox.js";
+import {
+  buildSessionMessageInput,
+  SessionMessageInbox,
+  type SessionMessageRunOutcomeEvent,
+} from "../runtime/session-message-inbox.js";
+import { SessionMessageOutcomeReporter } from "../runtime/session-message-outcome-reporter.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
 import { UpdateManager, type UpdaterStateSnapshot } from "../runtime/update-manager.js";
 import {
@@ -409,10 +429,12 @@ describe("SessionMessageInbox", () => {
   });
 
   it("dead-letters a non-completed prompt result", async () => {
+    const onRunOutcome = vi.fn();
     const inbox = new SessionMessageInbox({
       admission: new AdmissionController(),
       credentialEnvironment: credentialEnvironment(),
       imCredentialGrantVersion: () => 2,
+      onRunOutcome,
       sessionCollaborationVersion: () => 3,
       reconciler: inboxReconciler(),
       retryPolicy: { maxAttempts: 1, maxAgeMs: 10_000 },
@@ -432,6 +454,348 @@ describe("SessionMessageInbox", () => {
     await expect(inbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
     await inbox.settled();
     expect(inbox.getState(request.messageId)?.status).toBe("dead-letter");
+    expect(onRunOutcome).toHaveBeenCalledOnce();
+    expect(onRunOutcome).toHaveBeenCalledWith({
+      messageId: request.messageId,
+      targetSessionId: request.targetSessionId,
+      agentId: request.agentId,
+      placementGeneration: request.placementGeneration,
+      outcome: "failed",
+      reason: "provider_failed",
+    });
+    inbox.stop();
+  });
+
+  it("treats a Run timeout as terminal, never reruns the message, and reports timed_out", async () => {
+    let fireTimeout: () => void = () => undefined;
+    const timeoutScheduler: RuntimeRetryScheduler = {
+      schedule(_delay, task) {
+        fireTimeout = task;
+        return { cancel: () => undefined };
+      },
+    };
+    const retryScheduler = { schedule: vi.fn(() => ({ cancel: () => undefined })) };
+    const onRunOutcome = vi.fn();
+    const prompt = vi.fn(
+      (input: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          input.signal?.addEventListener("abort", () => reject(input.signal?.reason), { once: true });
+          queueMicrotask(() => fireTimeout());
+        }),
+    );
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      onRunOutcome,
+      persistence: new MemoryRuntimeDurabilityStore(),
+      sessionCollaborationVersion: () => 4,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+      scheduler: retryScheduler,
+      timeoutScheduler,
+    });
+    const request = delivery();
+
+    await expect(inbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
+    await inbox.settled();
+    expect(prompt).toHaveBeenCalledOnce();
+    expect(retryScheduler.schedule).not.toHaveBeenCalled();
+    expect(inbox.getState(request.messageId)).toMatchObject({
+      status: "failed",
+      lastError: { code: "turn_timeout", retryability: "never" },
+    });
+    expect(onRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: request.messageId, outcome: "timed_out", reason: "turn_timeout" }),
+    );
+    // A redelivery of the same message is answered from memory and never reruns it.
+    expect((await inbox.accept(request)).status).toBe("rejected");
+    expect(prompt).toHaveBeenCalledOnce();
+    inbox.stop();
+  });
+
+  it("never lets a failing outcome reporter change the inbox state machine", async () => {
+    const warn = vi.fn();
+    for (const onRunOutcome of [
+      vi.fn(() => {
+        throw new Error("reporter threw");
+      }),
+      vi.fn(async () => {
+        throw new Error("reporter rejected");
+      }),
+    ]) {
+      const inbox = new SessionMessageInbox({
+        admission: new AdmissionController(),
+        credentialEnvironment: credentialEnvironment(),
+        imCredentialGrantVersion: () => 2,
+        logger: { warn },
+        onRunOutcome,
+        sessionCollaborationVersion: () => 4,
+        reconciler: inboxReconciler(),
+        retryPolicy: { maxAttempts: 1, maxAgeMs: 10_000 },
+        runtimeManager: {
+          ensureRuntime: vi.fn(
+            async () =>
+              ({
+                waitForIdle: vi.fn(async () => undefined),
+                prompt: vi.fn(async () => ({ status: "failed", error: { message: "provider rejected input" } })),
+              }) as never,
+          ),
+          sessionKind: vi.fn(() => "internal" as const),
+        },
+      });
+      const request = delivery();
+      await inbox.accept(request);
+      await inbox.settled();
+      expect(inbox.getState(request.messageId)?.status).toBe("dead-letter");
+      await vi.waitFor(() =>
+        expect(warn).toHaveBeenCalledWith(
+          expect.objectContaining({ code: "SESSION_MESSAGE_OUTCOME_REPORT_FAILED", messageId: request.messageId }),
+          expect.any(String),
+        ),
+      );
+      inbox.stop();
+    }
+  });
+
+  describe("terminal → outcome-report crash boundary", () => {
+    /** Commits everything except the paused outcome-report writes, like a process killed mid-write. */
+    class PausableStore extends MemoryRuntimeDurabilityStore {
+      pauseOutcomeWrites = false;
+      pausedWrites = 0;
+      override async write<T>(record: DurableWorkRecord<T>): Promise<void> {
+        if (this.pauseOutcomeWrites && record.kind === "session-message-outcome") {
+          this.pausedWrites += 1;
+          return new Promise<void>(() => undefined);
+        }
+        await super.write(record);
+      }
+      async restore(): Promise<MemoryRuntimeDurabilityStore> {
+        const restored = new MemoryRuntimeDurabilityStore();
+        for (const kind of ["session-message", "session-message-outcome"] as const) {
+          for (const record of await this.list(kind)) await restored.write(record);
+        }
+        return restored;
+      }
+    }
+
+    function v4Connection() {
+      const sent: SessionMessageOutcomeReport[] = [];
+      const connection = {
+        state: "registered" as const,
+        capabilityVersion: (capability: string) =>
+          capability === RUNTIME_CAPABILITY.sessionCollaboration ? 4 : undefined,
+        send: vi.fn(async (frame: unknown) => {
+          sent.push(frame as SessionMessageOutcomeReport);
+        }),
+        subscribeState: () => () => undefined,
+      };
+      return { connection, sent };
+    }
+
+    const idleScheduler: RuntimeRetryScheduler = { schedule: () => ({ cancel: () => undefined }) };
+
+    function restartedPair(persistence: MemoryRuntimeDurabilityStore) {
+      const { connection, sent } = v4Connection();
+      const reporter = new SessionMessageOutcomeReporter({ connection, persistence, scheduler: idleScheduler });
+      const prompt = vi.fn();
+      const inbox = new SessionMessageInbox({
+        admission: new AdmissionController(),
+        credentialEnvironment: credentialEnvironment(),
+        imCredentialGrantVersion: () => 2,
+        onRunOutcome: reporter.report.bind(reporter),
+        persistence,
+        sessionCollaborationVersion: () => 4,
+        reconciler: inboxReconciler(),
+        runtimeManager: {
+          ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+          sessionKind: vi.fn(() => "internal" as const),
+        },
+        scheduler: idleScheduler,
+      });
+      return { inbox, prompt, reporter, sent };
+    }
+
+    it.each([
+      ["failed", "timed_out", "turn_timeout"],
+      ["dead-letter", "failed", "provider_failed"],
+    ] as const)(
+      "recovers exactly one report for a %s record committed before the outcome write",
+      async (status, outcome, reason) => {
+        const store = new PausableStore();
+        store.pauseOutcomeWrites = true;
+        let fireTimeout: () => void = () => undefined;
+        const prompt =
+          status === "failed"
+            ? vi.fn(
+                (input: { signal?: AbortSignal }) =>
+                  new Promise((_resolve, reject) => {
+                    input.signal?.addEventListener("abort", () => reject(input.signal?.reason), { once: true });
+                    queueMicrotask(() => fireTimeout());
+                  }),
+              )
+            : vi.fn(async () => ({ status: "failed", error: { message: "provider rejected input" } }));
+        const first = v4Connection();
+        const firstReporter = new SessionMessageOutcomeReporter({
+          connection: first.connection,
+          persistence: store,
+          scheduler: idleScheduler,
+        });
+        const firstInbox = new SessionMessageInbox({
+          admission: new AdmissionController(),
+          credentialEnvironment: credentialEnvironment(),
+          imCredentialGrantVersion: () => 2,
+          onRunOutcome: firstReporter.report.bind(firstReporter),
+          persistence: store,
+          retryPolicy: { maxAttempts: 1, maxAgeMs: 10_000 },
+          sessionCollaborationVersion: () => 4,
+          reconciler: inboxReconciler(),
+          runtimeManager: {
+            ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+            sessionKind: vi.fn(() => "internal" as const),
+          },
+          scheduler: idleScheduler,
+          timeoutScheduler: {
+            schedule(_delay, task) {
+              fireTimeout = task;
+              return { cancel: () => undefined };
+            },
+          },
+        });
+        const request = delivery();
+        await expect(firstInbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
+        // Crash cut: the terminal inbox record committed; the outcome write never did.
+        await vi.waitFor(() => expect(store.pausedWrites).toBe(1));
+        const key = `${request.targetSessionId}:${request.messageId}`;
+        expect(await store.list("session-message")).toEqual([
+          expect.objectContaining({ key, status, outcomeReport: "pending" }),
+        ]);
+        expect(await store.list("session-message-outcome")).toEqual([]);
+        firstInbox.stop();
+        firstReporter.stop();
+
+        const restored = await store.restore();
+        const second = restartedPair(restored);
+        await Promise.all([second.reporter.ready(), second.inbox.ready()]);
+        expect(second.prompt).not.toHaveBeenCalled();
+        expect(second.inbox.getState(request.messageId)).toMatchObject({ status, outcomeReport: "published" });
+        expect(second.reporter.pendingCount).toBe(1);
+        expect(second.sent).toEqual([
+          expect.objectContaining({ type: "session:message:outcome", messageId: request.messageId, outcome, reason }),
+        ]);
+        const frame = second.sent[0] as SessionMessageOutcomeReport;
+        second.reporter.handleResult({
+          type: "session:message:outcome:result",
+          requestId: frame.requestId,
+          messageId: request.messageId,
+          status: "notified",
+        });
+        await vi.waitFor(async () =>
+          expect(await restored.list("session-message-outcome")).toEqual([
+            expect.objectContaining({ key, status: "succeeded" }),
+          ]),
+        );
+        second.inbox.stop();
+        second.reporter.stop();
+
+        // A further restart after publication reports nothing again.
+        const third = restartedPair(restored);
+        await Promise.all([third.reporter.ready(), third.inbox.ready()]);
+        expect(third.sent).toEqual([]);
+        expect(third.reporter.pendingCount).toBe(0);
+        expect(third.prompt).not.toHaveBeenCalled();
+        third.inbox.stop();
+        third.reporter.stop();
+      },
+    );
+
+    it("re-hands an outcome whose report committed before the published marker without a duplicate", async () => {
+      const store = new MemoryRuntimeDurabilityStore();
+      const request = delivery();
+      const key = `${request.targetSessionId}:${request.messageId}`;
+      await store.write(
+        recordFor(request, "failed", {
+          lastError: { ...failureFor(request, "turn_timeout"), retryability: "never" },
+          outcomeReport: "pending",
+        }),
+      );
+      await store.write({
+        acceptedAt: 1,
+        attempts: 0,
+        key,
+        kind: "session-message-outcome",
+        payload: {
+          messageId: request.messageId,
+          targetSessionId: request.targetSessionId,
+          agentId: request.agentId,
+          placementGeneration: request.placementGeneration,
+          outcome: "timed_out",
+          reason: "turn_timeout",
+        },
+        status: "succeeded",
+        updatedAt: 1,
+      });
+      const pair = restartedPair(store);
+      await Promise.all([pair.reporter.ready(), pair.inbox.ready()]);
+      expect(pair.sent).toEqual([]);
+      expect(pair.inbox.getState(request.messageId)).toMatchObject({ status: "failed", outcomeReport: "published" });
+      pair.inbox.stop();
+      pair.reporter.stop();
+    });
+
+    it("does not backfill terminal records written before the outcome-report marker", async () => {
+      const store = new MemoryRuntimeDurabilityStore();
+      const request = delivery();
+      await store.write(recordFor(request, "dead-letter"));
+      const pair = restartedPair(store);
+      await Promise.all([pair.reporter.ready(), pair.inbox.ready()]);
+      expect(pair.sent).toEqual([]);
+      expect(pair.reporter.pendingCount).toBe(0);
+      expect(pair.inbox.getState(request.messageId)).not.toHaveProperty("outcomeReport");
+      pair.inbox.stop();
+      pair.reporter.stop();
+    });
+  });
+
+  it("accepts scheduled origins on a v4 channel", async () => {
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      sessionCollaborationVersion: () => 4,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(
+          async () =>
+            ({
+              waitForIdle: vi.fn(async () => undefined),
+              prompt: vi.fn(async (input: { runId: string }) => ({
+                runId: input.runId,
+                status: "completed",
+                output: [],
+              })),
+            }) as never,
+        ),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+    });
+    const { sourceSessionId: _source, ...base } = delivery();
+    const scheduled = {
+      ...base,
+      scheduledOrigin: {
+        scheduleId: randomUUID(),
+        scheduledFor: "2026-01-01T00:00:00.000Z",
+        timezone: "UTC",
+        name: "Daily",
+      },
+      sentAt: "2026-01-01T00:00:01.000Z",
+      scheduleDetailUrl: "https://opentag.example.com/schedules/1",
+    };
+    expect((await inbox.accept(scheduled)).status).toBe("accepted");
+    await inbox.settled();
     inbox.stop();
   });
 
@@ -775,6 +1139,125 @@ describe("SessionMessageInbox", () => {
     await inbox.settled();
     inbox.stop();
   });
+
+  it("steers a message into the Session's running Turn instead of waiting for it to end", async () => {
+    const admission = new AdmissionController();
+    const persistence = new MemoryRuntimeDurabilityStore();
+    const targetSessionId = randomUUID();
+    const agentId = randomUUID();
+    const held = admission.reserve(targetSessionId, agentId);
+    if (!held.accepted) throw new Error("Expected the test reservation");
+    held.reservation.markActive();
+    const state = { phase: "running", activeRunId: "im-turn" as string | undefined };
+    let settleHost!: (outcome: AgentSteerOutcome) => void;
+    const hostOutcome = new Promise<AgentSteerOutcome>((resolve) => {
+      settleHost = resolve;
+    });
+    const steer = vi.fn(async (_request: { expectedRunId: string; input: { items: readonly { text: string }[] } }) => {
+      if (steer.mock.calls.length === 1) throw new Error("starting");
+      return { outcome: hostOutcome };
+    });
+    const prompt = vi.fn();
+    const runtime = { capabilities: { steer: "supported" }, state, steer, prompt, waitForIdle: async () => undefined };
+    const credentials = {
+      ...credentialEnvironment(),
+      outboxContextForSession: vi.fn(() => ({
+        provider: "slack" as const,
+        sessionKind: "thread" as const,
+        channelId: "C-visible",
+        threadTs: "1710000000.000001",
+      })),
+    };
+    const inbox = new SessionMessageInbox({
+      admission,
+      credentialEnvironment: credentials,
+      imCredentialGrantVersion: () => 2,
+      persistence,
+      sessionCollaborationVersion: () => 3,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(),
+        runtime: vi.fn(() => runtime as never),
+        sessionKind: vi.fn(() => "visible" as const),
+      },
+      steerRetryMs: 5,
+    });
+    const message = delivery({ targetSessionId, agentId, text: "child result" });
+    expect((await inbox.accept(message)).status).toBe("accepted");
+    // The first attempt is refused (the Turn is still starting); the retry lands in the running Turn.
+    await vi.waitFor(() => expect(steer).toHaveBeenCalledTimes(2));
+    // Accepted by the runtime is not delivered: the record stays recoverable until the joined Run settles.
+    await vi.waitFor(async () =>
+      expect((await persistence.list("session-message")).map((record) => record.status)).toEqual(["running"]),
+    );
+    expect(inbox.pendingCount).toBe(1);
+    settleHost("processed");
+    await inbox.settled();
+    expect(steer.mock.calls[1]?.[0]).toMatchObject({ expectedRunId: "im-turn" });
+    const items = steer.mock.calls[1]?.[0].input.items ?? [];
+    expect(items.at(-1)?.text).toBe("child result");
+    expect(items[0]?.text).toContain('"threadTs":"1710000000.000001"');
+    expect(prompt).not.toHaveBeenCalled();
+    expect(credentials.prepare).not.toHaveBeenCalled();
+    expect(inbox.getState(message.messageId)?.status).toBe("succeeded");
+    expect(inbox.queuedCount).toBe(0);
+    // A duplicate delivery of the steered message is acknowledged without a second steer.
+    await expect(inbox.accept({ ...message, requestId: randomUUID() })).resolves.toMatchObject({ status: "accepted" });
+    expect(steer).toHaveBeenCalledTimes(2);
+    held.reservation.release();
+    inbox.stop();
+  });
+
+  it.each(["unsupported", "not-ready", "no-outbox"] as const)(
+    "keeps a message queued when the running Turn cannot take steered input (%s)",
+    async (scenario) => {
+      const admission = new AdmissionController();
+      const targetSessionId = randomUUID();
+      const agentId = randomUUID();
+      const held = admission.reserve(targetSessionId, agentId);
+      if (!held.accepted) throw new Error("Expected the test reservation");
+      held.reservation.markActive();
+      const prompts: string[] = [];
+      let released = false;
+      const steer = vi.fn();
+      const runtime = {
+        capabilities: { steer: scenario === "unsupported" ? "unsupported" : "supported" },
+        state: { phase: "running", activeRunId: "im-turn" },
+        steer,
+        waitForIdle: async () => undefined,
+        prompt: vi.fn(async (request: { input: { items: readonly { text: string }[] } }) => {
+          prompts.push(request.input.items.at(-1)?.text ?? "");
+          return { runId: "run", status: "completed", output: [] };
+        }),
+      };
+      const inbox = new SessionMessageInbox({
+        admission,
+        credentialEnvironment: { ...credentialEnvironment(), outboxContextForSession: () => undefined },
+        imCredentialGrantVersion: () => 2,
+        sessionCollaborationVersion: () => 3,
+        reconciler: inboxReconciler(),
+        runtimeManager: {
+          ensureRuntime: vi.fn(async () => runtime as never),
+          runtime: vi.fn(() => {
+            if (scenario === "not-ready") throw new Error("The Session Agent Runtime is not ready");
+            return runtime as never;
+          }),
+          // Released visible work prepares credentials; only the steer path is under test here.
+          sessionKind: vi.fn(() => (scenario === "no-outbox" && !released ? "visible" : "internal")),
+        },
+        steerRetryMs: 5,
+      });
+      expect((await inbox.accept(delivery({ targetSessionId, agentId, text: "queued" }))).status).toBe("accepted");
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(steer).not.toHaveBeenCalled();
+      expect(prompts).toEqual([]);
+      released = true;
+      held.reservation.release();
+      await vi.waitFor(() => expect(prompts).toEqual(["queued"]));
+      await inbox.settled();
+      inbox.stop();
+    },
+  );
 
   it("deduplicates the same logical payload and rejects a conflicting retry", async () => {
     const inbox = new SessionMessageInbox({
@@ -1481,6 +1964,539 @@ describe("SessionMessageInbox", () => {
     await inbox.settled();
     expect(runtimeManager.ensureRuntime).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["not_started", "accepted"],
+    ["interrupted", "failed"],
+  ] as const)("resolves a steered message whose joined Run ended as %s", async (outcome, status) => {
+    const admission = new AdmissionController();
+    const persistence = new MemoryRuntimeDurabilityStore();
+    const targetSessionId = randomUUID();
+    const agentId = randomUUID();
+    const held = admission.reserve(targetSessionId, agentId);
+    if (!held.accepted) throw new Error("Expected the test reservation");
+    held.reservation.markActive();
+    const state = { phase: "running", activeRunId: "im-turn" as string | undefined };
+    let settleHost!: (outcome: AgentSteerOutcome) => void;
+    const steer = vi.fn(async () => ({
+      outcome: new Promise<AgentSteerOutcome>((resolve) => {
+        settleHost = resolve;
+      }),
+    }));
+    const prompts: string[] = [];
+    const runtime = {
+      capabilities: { steer: "supported" },
+      state,
+      steer,
+      waitForIdle: async () => undefined,
+      prompt: vi.fn(async (request: { input: { items: readonly { text: string }[] } }) => {
+        prompts.push(request.input.items.at(-1)?.text ?? "");
+        return { runId: "run", status: "completed", output: [] };
+      }),
+    };
+    const failures: DurableFailure[] = [];
+    const onRunOutcome = vi.fn();
+    const inbox = new SessionMessageInbox({
+      admission,
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      onFailure: (failure) => failures.push(failure),
+      onRunOutcome,
+      persistence,
+      sessionCollaborationVersion: () => 3,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => runtime as never),
+        runtime: vi.fn(() => runtime as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+      steerRetryMs: 5,
+    });
+    const message = delivery({ targetSessionId, agentId, text: "steered" });
+    expect((await inbox.accept(message)).status).toBe("accepted");
+    await vi.waitFor(() => expect(inbox.getState(message.messageId)?.status).toBe("running"));
+    // The host Run ends; the Session is idle again before the outcome is applied.
+    state.phase = "idle";
+    state.activeRunId = undefined;
+    settleHost(outcome);
+    await vi.waitFor(() => expect(inbox.getState(message.messageId)?.status).toBe(status));
+    expect(steer).toHaveBeenCalledOnce();
+    if (outcome === "not_started") {
+      // The provider never began the input, so it runs as an ordinary Session message exactly once.
+      held.reservation.release();
+      await vi.waitFor(() => expect(prompts).toEqual(["steered"]));
+      await inbox.settled();
+      // A requeued steer is not a terminal outcome: no creator notice and no report marker.
+      expect(onRunOutcome).not.toHaveBeenCalled();
+      expect(inbox.getState(message.messageId)?.status).toBe("succeeded");
+      expect(inbox.getState(message.messageId)?.outcomeReport).toBeUndefined();
+    } else {
+      held.reservation.release();
+      await inbox.settled();
+      expect(prompts).toEqual([]);
+      expect(inbox.getState(message.messageId)?.lastError).toMatchObject({
+        code: "session_message_steer_interrupted",
+        retryability: "never",
+      });
+      expect(failures).toMatchObject([{ code: "session_message_steer_interrupted" }]);
+      // A possibly-started steer is terminal like any other permanent failure: it is reported once
+      // through the durable outcome path, and the marker records the handoff in the same record.
+      expect(onRunOutcome).toHaveBeenCalledOnce();
+      expect(onRunOutcome).toHaveBeenCalledWith(
+        expect.objectContaining({
+          messageId: message.messageId,
+          targetSessionId,
+          outcome: "failed",
+          reason: "session_message_steer_interrupted",
+        }),
+      );
+      expect(inbox.getState(message.messageId)?.outcomeReport).toBe("published");
+      await expect(inbox.accept({ ...message, requestId: randomUUID() })).resolves.toMatchObject({
+        status: "rejected",
+        reason: "provider_unavailable",
+      });
+    }
+    await inbox.settled();
+    inbox.stop();
+  });
+
+  it("settles a steered message even when its custody or outcome cannot be persisted", async () => {
+    const admission = new AdmissionController();
+    const targetSessionId = randomUUID();
+    const agentId = randomUUID();
+    const held = admission.reserve(targetSessionId, agentId);
+    if (!held.accepted) throw new Error("Expected the test reservation");
+    held.reservation.markActive();
+    const store = new MemoryRuntimeDurabilityStore();
+    let failWrites = false;
+    const persistence = {
+      list: store.list.bind(store),
+      write: async (record: DurableWorkRecord) => {
+        if (failWrites) throw new Error("disk full");
+        await store.write(record);
+      },
+    };
+    let settleHost!: (outcome: AgentSteerOutcome) => void;
+    const runtime = {
+      capabilities: { steer: "supported" },
+      state: { phase: "running", activeRunId: "im-turn" },
+      steer: vi.fn(async () => {
+        failWrites = true;
+        return {
+          outcome: new Promise<AgentSteerOutcome>((resolve) => {
+            settleHost = resolve;
+          }),
+        };
+      }),
+    };
+    const logger = { warn: vi.fn() };
+    const inbox = new SessionMessageInbox({
+      admission,
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      logger,
+      persistence,
+      sessionCollaborationVersion: () => 3,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(),
+        runtime: vi.fn(() => runtime as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+      steerRetryMs: 5,
+    });
+    const message = delivery({ targetSessionId, agentId, text: "steered" });
+    expect((await inbox.accept(message)).status).toBe("accepted");
+    await vi.waitFor(() => expect(runtime.steer).toHaveBeenCalledOnce());
+    await vi.waitFor(() =>
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ code: "SESSION_MESSAGE_STEER_PERSISTENCE_FAILED" }),
+        "Steered Session message custody could not be recorded",
+      ),
+    );
+    // The committed record stays `accepted`, so a restart would deliver it again.
+    expect((await store.list("session-message")).map((record) => record.status)).toEqual(["accepted"]);
+    settleHost("processed");
+    await inbox.settled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "SESSION_MESSAGE_STEER_PERSISTENCE_FAILED", outcome: "processed" }),
+      "Steered Session message outcome could not be recorded",
+    );
+    await expect(inbox.accept({ ...message, requestId: randomUUID() })).resolves.toMatchObject({ status: "accepted" });
+    expect(runtime.steer).toHaveBeenCalledOnce();
+    held.reservation.release();
+    inbox.stop();
+  });
+
+  it.each([
+    ["completed", "succeeded"],
+    ["aborted", "failed"],
+  ] as const)(
+    "does not redeliver a Provider-owned steer when the host Run %s during steer acceptance",
+    async (hostStatus, recordStatus) => {
+      const admission = new AdmissionController();
+      const persistence = new MemoryRuntimeDurabilityStore();
+      const targetSessionId = randomUUID();
+      const agentId = randomUUID();
+      const held = admission.reserve(targetSessionId, agentId);
+      if (!held.accepted) throw new Error("Expected the test reservation");
+      held.reservation.markActive();
+      const runtime = new NoProbeSteerRuntime(hostStatus);
+      const hostRun = runtime.prompt({ runId: "im-turn", input: { items: [{ type: "text", text: "host" }] } });
+      const ensureRuntime = vi.fn(async () => runtime as never);
+      const inbox = new SessionMessageInbox({
+        admission,
+        credentialEnvironment: credentialEnvironment(),
+        imCredentialGrantVersion: () => 2,
+        persistence,
+        sessionCollaborationVersion: () => 3,
+        reconciler: inboxReconciler(),
+        runtimeManager: {
+          ensureRuntime,
+          runtime: vi.fn(() => runtime as never),
+          sessionKind: vi.fn(() => "internal" as const),
+        },
+        steerRetryMs: 5,
+      });
+      const message = delivery({ targetSessionId, agentId, text: "steered" });
+      expect((await inbox.accept(message)).status).toBe("accepted");
+      await expect(hostRun).resolves.toMatchObject({ status: hostStatus });
+      await vi.waitFor(() => expect(inbox.getState(message.messageId)?.status).toBe(recordStatus));
+      await inbox.settled();
+      held.reservation.release();
+      await inbox.settled();
+      // The Provider owned the input once its steer RPC succeeded, so the inbox never delivers it again.
+      expect(runtime.steers).toBe(1);
+      expect(runtime.prompts).toBe(1);
+      expect(ensureRuntime).not.toHaveBeenCalled();
+      expect(inbox.queuedCount).toBe(0);
+      inbox.stop();
+      await runtime.close();
+    },
+  );
+
+  it("leaves a steered message recoverable when the inbox stops before its Run settles", async () => {
+    const admission = new AdmissionController();
+    const persistence = new MemoryRuntimeDurabilityStore();
+    const targetSessionId = randomUUID();
+    const agentId = randomUUID();
+    const held = admission.reserve(targetSessionId, agentId);
+    if (!held.accepted) throw new Error("Expected the test reservation");
+    held.reservation.markActive();
+    const runtime = {
+      capabilities: { steer: "supported" },
+      state: { phase: "running", activeRunId: "im-turn" },
+      steer: vi.fn(async () => ({ outcome: new Promise<AgentSteerOutcome>(() => undefined) })),
+    };
+    const options = {
+      admission,
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      persistence,
+      sessionCollaborationVersion: () => 3,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(),
+        runtime: vi.fn(() => runtime as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+      steerRetryMs: 5,
+    };
+    const inbox = new SessionMessageInbox(options);
+    const message = delivery({ targetSessionId, agentId, text: "steered" });
+    expect((await inbox.accept(message)).status).toBe("accepted");
+    await vi.waitFor(() => expect(inbox.getState(message.messageId)?.status).toBe("running"));
+    inbox.stop();
+    // Shutdown does not wait for a host Run it does not own.
+    await inbox.settled();
+    const restored = new SessionMessageInbox({
+      ...options,
+      runtimeManager: { ...options.runtimeManager, runtime: undefined },
+    });
+    await restored.ready();
+    // A `running` record whose Run is gone is recovered like any interrupted Run.
+    expect(restored.getState(message.messageId)?.status).toBe("retryable");
+    restored.stop();
+    held.reservation.release();
+  });
+});
+
+/*
+ * End-to-end custody across the runtime/inbox boundary: the real ClaudeCodeAgentRuntime and
+ * ClaudeCodeProcess speak stream-json to a scripted child, and a second inbox restores from the
+ * committed records exactly as a restarted daemon would.
+ */
+describe("SessionMessageInbox steer custody with Claude Code", () => {
+  const CLAUDE_SESSION_ID = "11111111-1111-4111-8111-111111111111";
+
+  type ScriptedChild = ChildProcessWithoutNullStreams & {
+    readonly stdin: PassThrough;
+    readonly stdout: PassThrough;
+    readonly stderr: PassThrough;
+    readonly written: Record<string, unknown>[];
+  };
+
+  function scriptedChild(): ScriptedChild {
+    const child = new EventEmitter() as ScriptedChild;
+    const written: Record<string, unknown>[] = [];
+    Object.assign(child, {
+      stdin: new PassThrough(),
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+      pid: undefined,
+      kill: () => true,
+      written,
+    });
+    let buffered = "";
+    child.stdin.on("data", (chunk: Buffer) => {
+      buffered += chunk.toString("utf8");
+      const lines = buffered.split("\n");
+      buffered = lines.pop() ?? "";
+      for (const line of lines) if (line) written.push(JSON.parse(line));
+    });
+    return child;
+  }
+
+  function send(child: ScriptedChild, message: Record<string, unknown>): void {
+    child.stdout.write(`${JSON.stringify(message)}\n`);
+  }
+
+  function finalResult(text: string): Record<string, unknown> {
+    return {
+      type: "result",
+      subtype: "success",
+      session_id: CLAUDE_SESSION_ID,
+      is_error: false,
+      result: text,
+      num_turns: 1,
+      permission_denials: [],
+      usage: { input_tokens: 1, output_tokens: 1 },
+    };
+  }
+
+  function mentions(line: Record<string, unknown>, text: string): boolean {
+    return JSON.stringify(line).includes(text);
+  }
+
+  async function harness() {
+    const children: ScriptedChild[] = [];
+    const factory = new ClaudeCodeAgentRuntimeFactory({
+      createSessionId: () => CLAUDE_SESSION_ID,
+      createProcess: (cwd, args) => {
+        const child = scriptedChild();
+        children.push(child);
+        return new ClaudeCodeProcess({ args, cwd, env: {}, spawnProcess: () => child });
+      },
+    });
+    const runtimes: AgentRuntime[] = [];
+    const newRuntime = async () => {
+      const runtime = await factory.create({
+        eventSink: () => undefined,
+        systemPrompt: "OpenTag managed system prompt",
+        workspace: { cwd: "/workspace" },
+        policy: {
+          fileSystem: "unrestricted",
+          network: "enabled",
+          approvals: "never",
+          tools: { mode: "provider-default" },
+        },
+      });
+      runtimes.push(runtime);
+      return runtime;
+    };
+    const host = await newRuntime();
+    const admission = new AdmissionController();
+    const persistence = new MemoryRuntimeDurabilityStore();
+    const targetSessionId = randomUUID();
+    const agentId = randomUUID();
+    const held = admission.reserve(targetSessionId, agentId);
+    if (!held.accepted) throw new Error("Expected the host Turn reservation");
+    held.reservation.markActive();
+    const failures: DurableFailure[] = [];
+    const outcomes: SessionMessageRunOutcomeEvent[] = [];
+    const reporter = { available: true };
+    const inbox = (runtime: () => AgentRuntime) =>
+      new SessionMessageInbox({
+        admission,
+        credentialEnvironment: credentialEnvironment(),
+        imCredentialGrantVersion: () => 2,
+        onFailure: (failure) => failures.push(failure),
+        onRunOutcome: async (outcome) => {
+          if (!reporter.available) throw new Error("outcome reporter unavailable");
+          outcomes.push(outcome);
+        },
+        persistence,
+        sessionCollaborationVersion: () => 3,
+        reconciler: inboxReconciler(),
+        runtimeManager: {
+          ensureRuntime: async () => runtime(),
+          runtime: () => runtime(),
+          sessionKind: () => "internal" as const,
+        },
+        steerRetryMs: 5,
+      });
+    // The host Turn: an IM-triggered Run that owns the Session reservation.
+    const hostRun = host.prompt({ runId: "im-turn", input: { items: [{ type: "text", text: "host work" }] } });
+    await vi.waitFor(() => expect(children[0]?.written).toHaveLength(1));
+    const hostChild = children[0] as ScriptedChild;
+    send(hostChild, { type: "system", subtype: "init", session_id: CLAUDE_SESSION_ID });
+    const message = delivery({ targetSessionId, agentId, text: "child session result" });
+    const committed = async () =>
+      (await persistence.list<SessionMessageDeliveryRequest>("session-message")).find(
+        (record) => record.payload.messageId === message.messageId,
+      );
+    const steerInto = async (first: SessionMessageInbox) => {
+      expect((await first.accept(message)).status).toBe("accepted");
+      await vi.waitFor(() => expect(hostChild.written).toHaveLength(2));
+      const steered = hostChild.written[1] as Record<string, unknown> & { uuid: string };
+      expect(mentions(steered, "child session result")).toBe(true);
+      await vi.waitFor(async () => expect((await committed())?.status).toBe("running"));
+      return steered.uuid;
+    };
+    const close = async () => {
+      for (const runtime of runtimes) await runtime.close();
+    };
+    return {
+      children,
+      close,
+      committed,
+      failures,
+      held,
+      hostChild,
+      outcomes,
+      reporter,
+      hostRun,
+      inbox,
+      message,
+      newRuntime,
+      host,
+      steerInto,
+    };
+  }
+
+  it("redelivers a steer the provider never started once after a pre-start provider failure and restore", async () => {
+    const h = await harness();
+    try {
+      const first = h.inbox(() => h.host);
+      await h.steerInto(first);
+      // Claude Code accepted the stdin write but exits before reporting command_lifecycle started.
+      h.hostChild.emit("exit", 1, null);
+      await expect(h.hostRun).resolves.toMatchObject({ status: "failed" });
+      await vi.waitFor(async () => expect((await h.committed())?.status).toBe("accepted"));
+      first.stop();
+      await first.settled();
+
+      // Restart: a new inbox restores from committed records and delivers the message as its own Run.
+      const replacement = await h.newRuntime();
+      const restored = h.inbox(() => replacement);
+      await restored.ready();
+      expect(restored.getState(h.message.messageId)?.status).not.toBe("succeeded");
+      // A never-started steer is not an outcome: it is requeued without a creator notice.
+      expect(h.outcomes).toEqual([]);
+      expect((await h.committed())?.outcomeReport).toBeUndefined();
+      h.held.reservation.release();
+      await vi.waitFor(() => expect(h.children[1]?.written).toHaveLength(1));
+      const retry = h.children[1] as ScriptedChild;
+      expect(mentions(retry.written[0] ?? {}, "child session result")).toBe(true);
+      send(retry, { type: "system", subtype: "init", session_id: CLAUDE_SESSION_ID });
+      send(retry, finalResult("handled"));
+      retry.emit("exit", 0, null);
+      await vi.waitFor(() => expect(restored.getState(h.message.messageId)?.status).toBe("succeeded"));
+      await restored.settled();
+      expect((await h.committed())?.status).toBe("succeeded");
+      expect(h.outcomes).toEqual([]);
+      // Exactly one provider ever started the message: the never-started steer plus one redelivery.
+      expect(h.children).toHaveLength(2);
+      expect(
+        h.children.flatMap((child) => child.written).filter((line) => mentions(line, "child session result")),
+      ).toHaveLength(2);
+      restored.stop();
+    } finally {
+      await h.close();
+    }
+  });
+
+  it("fails a steer the provider started without replay when the host Run then fails", async () => {
+    const h = await harness();
+    try {
+      // The first daemon terminalizes the steer but cannot hand its outcome over (for example it
+      // crashes between the two writes): the terminal record keeps `outcomeReport: pending`.
+      h.reporter.available = false;
+      const first = h.inbox(() => h.host);
+      const uuid = await h.steerInto(first);
+      send(h.hostChild, { type: "command_lifecycle", command_uuid: uuid, state: "started" });
+      await vi.waitFor(() => expect(first.getState(h.message.messageId)?.status).toBe("running"));
+      h.hostChild.emit("exit", 1, null);
+      await expect(h.hostRun).resolves.toMatchObject({ status: "failed" });
+      await vi.waitFor(async () => expect((await h.committed())?.status).toBe("failed"));
+      expect((await h.committed())?.lastError).toMatchObject({ code: "session_message_steer_interrupted" });
+      expect(h.failures).toMatchObject([{ code: "session_message_steer_interrupted", retryability: "never" }]);
+      // The terminal status and the notice intent committed in one write.
+      expect((await h.committed())?.outcomeReport).toBe("pending");
+      expect(h.outcomes).toEqual([]);
+      first.stop();
+      await first.settled();
+
+      h.reporter.available = true;
+      const replacement = await h.newRuntime();
+      const restored = h.inbox(() => replacement);
+      await restored.ready();
+      h.held.reservation.release();
+      await restored.settled();
+      expect(restored.getState(h.message.messageId)?.status).toBe("failed");
+      // Hydration hands the pending report over exactly once and never reruns the message.
+      await vi.waitFor(async () => expect((await h.committed())?.outcomeReport).toBe("published"));
+      expect(h.outcomes).toEqual([
+        expect.objectContaining({
+          messageId: h.message.messageId,
+          outcome: "failed",
+          reason: "session_message_steer_interrupted",
+        }),
+      ]);
+      await expect(restored.accept({ ...h.message, requestId: randomUUID() })).resolves.toMatchObject({
+        status: "rejected",
+        reason: "provider_unavailable",
+      });
+      await restored.settled();
+      expect(h.children).toHaveLength(1);
+      restored.stop();
+    } finally {
+      await h.close();
+    }
+  });
+
+  it("marks a started steer delivered exactly once when the host Run completes", async () => {
+    const h = await harness();
+    try {
+      const first = h.inbox(() => h.host);
+      const uuid = await h.steerInto(first);
+      send(h.hostChild, finalResult("host answer before the steer"));
+      send(h.hostChild, { type: "command_lifecycle", command_uuid: uuid, state: "started" });
+      send(h.hostChild, finalResult("answer including the steer"));
+      h.hostChild.emit("exit", 0, null);
+      await expect(h.hostRun).resolves.toMatchObject({ status: "completed" });
+      await vi.waitFor(async () => expect((await h.committed())?.status).toBe("succeeded"));
+      h.held.reservation.release();
+      await first.settled();
+      first.stop();
+
+      const replacement = await h.newRuntime();
+      const restored = h.inbox(() => replacement);
+      await restored.ready();
+      await restored.settled();
+      expect(restored.getState(h.message.messageId)?.status).toBe("succeeded");
+      expect(h.outcomes).toEqual([]);
+      await expect(restored.accept({ ...h.message, requestId: randomUUID() })).resolves.toMatchObject({
+        status: "accepted",
+      });
+      await restored.settled();
+      expect(h.children).toHaveLength(1);
+      expect(h.hostChild.written.filter((line) => mentions(line, "child session result"))).toHaveLength(1);
+      restored.stop();
+    } finally {
+      await h.close();
+    }
+  });
 });
 
 function delivery(
@@ -1585,4 +2601,46 @@ function failureFor(request: SessionMessageDeliveryRequest, code: string): Durab
     requestId: request.requestId,
     retryability: "backoff",
   };
+}
+
+/** A real BaseAgentRuntime whose steer RPC succeeds without a custody probe, like Codex and Pi. */
+class NoProbeSteerRuntime extends BaseAgentRuntime {
+  readonly #release: Promise<void>;
+  #releaseRun!: () => void;
+  #run?: Promise<unknown>;
+  steers = 0;
+  prompts = 0;
+
+  constructor(readonly hostStatus: "completed" | "aborted") {
+    super({
+      manifest: { providerId: "no-probe", displayName: "No probe", contractVersion: 2, bindingSchemaVersion: 1 },
+      capabilities: { steer: "supported", interactions: "unsupported" },
+      eventSink: () => undefined,
+    });
+    this.#release = new Promise<void>((resolve) => {
+      this.#releaseRun = resolve;
+    });
+  }
+
+  override prompt(request: AgentPromptRequest): Promise<AgentRunResult> {
+    this.prompts += 1;
+    const run = super.prompt(request);
+    this.#run = run;
+    return run;
+  }
+
+  protected async executeRun(): Promise<AgentProviderRunResult> {
+    await this.#release;
+    return { status: this.hostStatus };
+  }
+
+  protected override async steerProvider(): Promise<AgentProviderSteerCustody | undefined> {
+    this.steers += 1;
+    // The host Run settles while the Provider is acknowledging the steer.
+    this.#releaseRun();
+    await this.#run;
+    return undefined;
+  }
+
+  protected async closeProvider(): Promise<void> {}
 }

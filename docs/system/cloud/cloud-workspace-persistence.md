@@ -21,16 +21,10 @@ The Server's existing durable delivery custody remains authoritative for executi
 Platform credential exclusion relies on the directory boundary. It is not secret detection for
 files an Agent or user independently creates in the workspace. Other Session directories are not
 mounted or synchronized. Agent-wide Context Tree integration remains E8. Under
-`.opentag/context-tree/home/.context-tree`, `cleanup` logs are always omitted, and reconstructable
-read-only Git caches (`repositories` and `snapshots`) are omitted when no active `sessions` or
-`worktrees` entries exist and every snapshot worktree is verified clean in-process against a
-detached commit reachable from published upstream refs in its bare repository (without spawning
-`git` over workspace config). Whenever loose or packed local branch refs, unpublished commits,
-rewritten/force-pushed upstream history, staged changes, unstaged edits, or untracked files
-exist—or when Git cleanliness cannot be verified—those directories are preserved in the archive.
-Sparse snapshots are conservatively preserved: the in-process verifier does not treat
-intentionally unmaterialized tracked files as proof that a snapshot is clean. Their
-full Git index, cache, and any isolated write sessions remain available after restore.
+`.opentag/context-tree/home/.context-tree`, `cleanup` logs are always omitted. Repository caches,
+snapshots, and isolated write sessions are always kept in the archive and count toward its limits,
+so a restored workspace keeps unpublished work and an Agent's first sync after restore fetches only
+new commits.
 
 Gateway write routing hints (`{id, source}` only) live in
 `.opentag/context-tree/command-sessions` inside the workspace. Fresh Runner hosts and rebinding

@@ -9,6 +9,7 @@ import {
   type RuntimeImSteerResult,
   type SessionMessageDeliveryRequest,
   type SessionMessageDeliveryResult,
+  type SessionMessageOutcomeReport,
   type SessionReconcileRequest,
   type SessionReconcileResult,
   type TurnActivityRequest,
@@ -88,6 +89,45 @@ describe("RuntimeDomainOwner", () => {
       expect(onTurnActivity).toHaveBeenCalledTimes(version === 1 ? 1 : 0);
       await h.owner.handle(frame, { ...context, instanceId: randomUUID() });
       expect(onTurnActivity).toHaveBeenCalledTimes(version === 1 ? 1 : 0);
+    } finally {
+      h.owner.close();
+    }
+  });
+
+  it.each([undefined, 3, 4])("gates Session Run outcome reports on collaboration version %s", async (version) => {
+    const onSessionMessageOutcome = vi.fn(async () => "notified" as const);
+    const h = await ownerFixture(1_000, { onSessionMessageOutcome });
+    const frame: SessionMessageOutcomeReport = {
+      type: "session:message:outcome",
+      requestId: randomUUID(),
+      messageId: randomUUID(),
+      targetSessionId: randomUUID(),
+      agentId: randomUUID(),
+      placementGeneration: 1,
+      outcome: "timed_out",
+      reason: "turn_timeout",
+    };
+    try {
+      const context: RuntimeBusinessContext = {
+        ...h.context,
+        negotiatedCapabilities: version ? { [RUNTIME_CAPABILITY.sessionCollaboration]: version } : {},
+      };
+      const supported = version === 4;
+      expect(await h.owner.handle(frame, context)).toEqual({
+        type: "session:message:outcome:result",
+        requestId: frame.requestId,
+        messageId: frame.messageId,
+        status: supported ? "notified" : "unsupported_capability",
+      });
+      expect(onSessionMessageOutcome).toHaveBeenCalledTimes(supported ? 1 : 0);
+      if (supported) expect(onSessionMessageOutcome).toHaveBeenCalledWith(frame, context);
+      // A superseded connection can never notify on the child's behalf.
+      expect(await h.owner.handle(frame, { ...context, instanceId: randomUUID() })).toMatchObject({
+        status: "stale_generation",
+      });
+      expect(onSessionMessageOutcome).toHaveBeenCalledTimes(supported ? 1 : 0);
+      // A processing failure answers retry so the Client keeps the report.
+      expect(h.owner.businessOptions().failureResult(frame as never)).toMatchObject({ status: "retry" });
     } finally {
       h.owner.close();
     }

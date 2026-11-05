@@ -83,12 +83,7 @@ function rangesCoveredByMarkers(content, ranges) {
   return ranges.every(({ start, end }) => marked.some((section) => start >= section.start && end <= section.end));
 }
 
-/**
- * Only Markdown paths can affect the mirror policy, so the Git diff is limited to them with a
- * pathspec after `--`. Without the pathspec a large non-document change can exceed the child
- * process buffer and abort the check with `spawnSync git ENOBUFS` before any policy runs.
- */
-const MARKDOWN_PATHSPEC = "*.md";
+const ROOT_MARKDOWN_PATHSPEC = ":(top,glob)*.md";
 
 function gitDiff(repositoryRoot, base, head) {
   try {
@@ -103,7 +98,7 @@ function gitDiff(repositoryRoot, base, head) {
         "--find-renames",
         `${base}...${head}`,
         "--",
-        MARKDOWN_PATHSPEC,
+        ROOT_MARKDOWN_PATHSPEC,
       ],
       { encoding: "utf8" },
     );

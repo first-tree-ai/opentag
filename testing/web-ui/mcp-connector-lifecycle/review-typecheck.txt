@@ -1,3 +1,0 @@
-
-> @opentag/web@0.0.0 typecheck /Users/gandy/.codex/worktrees/bc0b/opentag/apps/web
-> tsc --noEmit

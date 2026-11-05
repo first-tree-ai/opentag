@@ -14,6 +14,8 @@ import {
   RuntimeImSteerResultSchema,
   type SessionMessageDeliveryRequestV3,
   SessionMessageDeliveryRequestV3Schema,
+  type TurnFailureReason,
+  TurnFailureReasonSchema,
   type TurnReportRequest,
   TurnReportRequestSchema,
 } from "@opentag/shared";
@@ -61,8 +63,13 @@ export type CloudJournalScope = z.infer<typeof CloudJournalScopeSchema>;
 export const CloudJournalSettlementOutcomeSchema = z.enum(["completed", "failed", "cancelled", "unknown"]);
 export type CloudJournalSettlementOutcome = z.infer<typeof CloudJournalSettlementOutcomeSchema>;
 
-/** Terminal Session settlement; immutable once journaled and replayed until the Server acks it. */
-const CloudJournalSettlementSchema = z.object({ outcome: CloudJournalSettlementOutcomeSchema }).strict();
+/**
+ * Terminal Session settlement; immutable once journaled and replayed until the Server acks it.
+ * `reason` is the non-completed Run's failure reason when the worker reported one.
+ */
+const CloudJournalSettlementSchema = z
+  .object({ outcome: CloudJournalSettlementOutcomeSchema, reason: TurnFailureReasonSchema.optional() })
+  .strict();
 
 const CloudJournalDeliveryEntrySchema = z
   .object({
@@ -169,7 +176,7 @@ export interface CloudJournalSessionEntry {
   readonly turnId: string;
   readonly phase: CloudJournalPhase;
   /** Present exactly in phase `reported`; never rewritten with a different outcome. */
-  readonly settlement?: { readonly outcome: CloudJournalSettlementOutcome };
+  readonly settlement?: { readonly outcome: CloudJournalSettlementOutcome; readonly reason?: TurnFailureReason };
 }
 
 export type CloudJournalEntry = CloudJournalDeliveryEntry | CloudJournalSessionEntry;
@@ -695,6 +702,7 @@ export class CloudJournal {
     messageId: string,
     scope: CloudJournalScope,
     outcome: CloudJournalSettlementOutcome,
+    reason?: TurnFailureReason,
   ): Promise<CloudJournalSessionEntry> {
     return this.#mutate(async () => {
       const entry = await this.#requireScopedSessionEntry(messageId, scope);
@@ -713,7 +721,10 @@ export class CloudJournal {
           `Session message ${messageId} cannot report completion from phase received`,
         );
       }
-      return this.#transitionSession(entry, "reported", outcome);
+      return this.#transitionSession(entry, "reported", {
+        outcome,
+        ...(reason && outcome !== "completed" ? { reason } : {}),
+      });
     });
   }
 
@@ -956,12 +967,12 @@ export class CloudJournal {
   async #transitionSession(
     entry: CloudJournalSessionEntry,
     phase: "started" | "reported",
-    settlement?: CloudJournalSettlementOutcome,
+    settlement?: { outcome: CloudJournalSettlementOutcome; reason?: TurnFailureReason },
   ): Promise<CloudJournalSessionEntry> {
     const next: CloudJournalSessionEntry = {
       ...entry,
       phase,
-      ...(settlement ? { settlement: { outcome: settlement } } : {}),
+      ...(settlement ? { settlement } : {}),
     };
     await this.#write(entry.messageId, next);
     return next;

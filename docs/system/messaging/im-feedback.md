@@ -41,8 +41,8 @@ owns automatic save retries; this feedback layer adds no automatic save or task 
 New failure targets can use plain messages with a cause, effects warning and authenticated details
 link. The rollout flag defaults to off and each target retains its original format; see Message
 format compatibility below. New Task Retry admissions are disabled, including old card callbacks.
-A new message follows ordinary admission and can be steered when the runtime supports it, or stays
-queued otherwise. Existing admitted retries and workspace save/discard keep their original recovery
+A new message follows ordinary admission and is steered into the running Turn; every Local
+runtime (Codex, Pi, Claude Code) accepts steered input, and a runtime that cannot stays queued. Existing admitted retries and workspace save/discard keep their original recovery
 and confirmation semantics.
 
 ## Account operations
@@ -66,7 +66,9 @@ resubmitted automatically. The original card shows the operation result, actor, 
 New Task Retry admissions are disabled, including callbacks from old cards. Existing admitted
 retry deliveries, immutable terminal reports, attempt identity and message order remain intact.
 Workspace save/discard stays available through the authenticated details page and its existing
-confirmation flow. Unsupported steer remains queued until the current Turn settles; feedback
+confirmation flow. Unsupported steer remains queued until the current Turn settles. The team
+decision on #1160 is that new messages always steer in and a runtime that cannot inject is
+interrupted and redelivered; that interrupt fallback is not implemented yet, so today feedback
 never forces interruption or replays a Turn.
 
 ## Message format compatibility

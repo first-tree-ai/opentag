@@ -247,6 +247,14 @@ it("does not add a new owner's confirmed reply to an old Account's authorized sn
     })
     .returning();
   assert(binding);
+  // The private chat's Task is its channel Session, created before anything was sent.
+  await writer.database.insert(sessions).values({
+    imBindingId: binding.id,
+    channelId: "C0CHAT",
+    conversationKind: "dm",
+    kind: "channel",
+    createdAt: new Date(Date.now() - 60_000),
+  });
   const [message] = await writer.database
     .insert(imMessages)
     .values({

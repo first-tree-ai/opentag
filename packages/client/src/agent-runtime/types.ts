@@ -66,6 +66,28 @@ export interface AgentSteerRequest {
   readonly input: AgentInput;
 }
 
+/**
+ * What became of accepted steer input, known once the Run it joined settles:
+ * - `processed`: the Run completed after the Provider began processing the input.
+ * - `not_started`: the Provider reports it never began processing the input, so delivering it
+ *   again cannot repeat its effects.
+ * - `interrupted`: the Provider may have begun processing the input, but the Run did not complete.
+ */
+export type AgentSteerOutcome = "processed" | "not_started" | "interrupted";
+
+export interface AgentSteerReceipt {
+  /** Settles with the joined Run; never rejects. */
+  readonly outcome: Promise<AgentSteerOutcome>;
+}
+
+/**
+ * Provider custody of one steer input. A Provider whose steer acknowledgement already means it owns
+ * the input returns none; one that can still drop acknowledged input reports whether it started.
+ */
+export interface AgentProviderSteerCustody {
+  started(): boolean;
+}
+
 export interface AgentAbortRequest {
   readonly expectedRunId: AgentRunId;
   readonly reason?: string;
@@ -313,7 +335,7 @@ export interface AgentRuntime {
   readonly binding: AgentRuntimeBinding | undefined;
 
   prompt(request: AgentPromptRequest): Promise<AgentRunResult>;
-  steer(request: AgentSteerRequest): Promise<void>;
+  steer(request: AgentSteerRequest): Promise<AgentSteerReceipt>;
   followUp(request: AgentPromptRequest): Promise<AgentRunResult>;
   respond(response: AgentInteractionResponse): Promise<void>;
   abort(request: AgentAbortRequest): Promise<void>;

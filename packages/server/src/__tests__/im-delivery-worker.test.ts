@@ -28,6 +28,7 @@ import {
   users,
 } from "../db/schema/index.js";
 import { BackgroundFailureSupervisor } from "../observability/background-failure-supervisor.js";
+import { createServerDiagnosticReporter } from "../observability/diagnostics.js";
 import { createPerformanceLogger, type PerformanceLogger } from "../observability/performance-logger.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import { ImDeliveryInputError, validateFreshImRequest } from "../runtime/im-delivery-content.js";
@@ -35,6 +36,7 @@ import { fitDeliveryFrame } from "../runtime/im-delivery-custody.js";
 import { recordDeliveryFailure } from "../runtime/im-delivery-failure.js";
 import { runImDeliverySteerRecovery } from "../runtime/im-delivery-janitor.js";
 import { ImDeliveryWorker } from "../runtime/im-delivery-worker.js";
+import { KeyedTaskScheduler } from "../runtime/keyed-task-scheduler.js";
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
 import { EffectiveRuntimeSnapshotAssemblerError } from "../services/runtime-config/errors.js";
 import { deferred } from "./support/deferred.js";
@@ -1959,6 +1961,169 @@ describe("ImDeliveryWorker database workflow", () => {
     expect(historyById.get(botHistoryId)?.providerRef).not.toHaveProperty("authorUserId");
     expect(historyById.get(systemHistoryId)?.providerRef).not.toHaveProperty("authorUserId");
     expect(historyById.get(botAsHumanHistoryId)?.providerRef).not.toHaveProperty("authorUserId");
+  });
+
+  it.each([
+    "completed",
+    "owner_mismatch",
+    "turn_mismatch",
+    "session_mismatch",
+    "frozen_dispatch",
+    "missing_target",
+    "failed_report",
+  ] as const)("classifies a %s steer target change after claiming without changing fallback", async (change) => {
+    const fixture = await steerFixture(unit);
+    let clock = Date.now();
+    const custody = new PostgresRuntimeCustodyStore(unit.database);
+    const domain = fakeDomain(custody, fixture);
+    const error = vi.fn();
+    const diagnostic = vi.fn(createServerDiagnosticReporter(() => ({ error }) as never));
+    const warn = vi.fn();
+    const metric = vi.fn();
+    const claimed = deferred();
+    const resume = deferred();
+    const enqueue = KeyedTaskScheduler.prototype.enqueue;
+    const queued = vi.spyOn(KeyedTaskScheduler.prototype, "enqueue").mockImplementation(function (
+      this: KeyedTaskScheduler,
+      key,
+      task,
+      onDrop,
+    ) {
+      return enqueue.call(
+        this,
+        key,
+        async () => {
+          claimed.resolve();
+          await resume.promise;
+          await task();
+        },
+        onDrop,
+      );
+    });
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: domain as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+      registry: fixture.registry,
+      now: () => new Date(clock),
+      logger: { debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() },
+      onDiagnostic: diagnostic,
+      onMetric: metric,
+    });
+    const running = worker.runOnce();
+    try {
+      await claimed.promise;
+      expect(
+        await custody.recordTurn(
+          completedReport(fixture.rootDeliveryId, "turn-root", fixture.sessionId, fixture.agentId),
+          { computerId: fixture.computerId, instanceId: fixture.instanceId } as never,
+        ),
+      ).toBe("recorded");
+      if (change === "owner_mismatch") {
+        await unit.database
+          .update(imMessageDeliveries)
+          .set({ reportOwnerInstanceId: randomUUID() })
+          .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+      } else if (change === "turn_mismatch") {
+        await unit.database
+          .update(imMessageDeliveries)
+          .set({ turnId: "other-turn" })
+          .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+      } else if (change === "session_mismatch") {
+        const other = await workerFixture(unit);
+        await unit.database
+          .update(imMessageDeliveries)
+          .set({ sessionId: other.sessionId })
+          .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+      } else if (change === "frozen_dispatch") {
+        await unit.database
+          .update(imMessageDeliveries)
+          .set({ dispatchRequestId: randomUUID(), dispatchInputHash: "frozen-hash", dispatchPayload: fixture.request })
+          .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      } else if (change === "missing_target") {
+        await unit.database.delete(imMessageDeliveries).where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+      } else if (change === "failed_report") {
+        await unit.database
+          .update(imMessageDeliveries)
+          .set({
+            turnReport: {
+              ...completedReport(fixture.rootDeliveryId, "turn-root", fixture.sessionId, fixture.agentId),
+              outcome: "failed",
+            },
+          })
+          .where(eq(imMessageDeliveries.id, fixture.rootDeliveryId));
+      }
+    } finally {
+      queued.mockRestore();
+      resume.resolve();
+      await running;
+    }
+    const [row] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    expect(row).toMatchObject({
+      state: "pending",
+      attemptCount: 1,
+      lastErrorCode: "IM_DELIVERY_STEER_TARGET_ENDED",
+      nextAttemptAt: new Date(clock + 2_000),
+      turnId: null,
+      reportedAt: null,
+      resultHash: null,
+    });
+    expect(row?.dispatchRequestId === null).toBe(change !== "frozen_dispatch");
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deliveryId: fixture.deliveryId,
+        code: "IM_DELIVERY_STEER_TARGET_ENDED",
+        outcome: "retry",
+        retryDelayMs: 2_000,
+      }),
+      "IM delivery dispatch retry scheduled",
+    );
+    expect(metric).toHaveBeenCalledWith({ name: "retry", value: 1 });
+    expect(domain.requestSteer).not.toHaveBeenCalled();
+    expect(domain.requestDelivery).not.toHaveBeenCalled();
+    if (change !== "completed") {
+      expect(diagnostic).toHaveBeenCalledExactlyOnceWith("IM_DELIVERY_STEER_TARGET_ENDED", {
+        phase: "steer",
+        deliveryId: fixture.deliveryId,
+        agentId: fixture.agentId,
+        computerId: fixture.computerId,
+        attemptCount: 1,
+      });
+      expect(error).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          code: "IM_DELIVERY_STEER_TARGET_ENDED",
+          errorCode: "IM_DELIVERY_STEER_TARGET_ENDED",
+          deliveryId: fixture.deliveryId,
+          phase: "steer",
+          attemptCount: 1,
+        }),
+        "Server diagnostic",
+      );
+      return;
+    }
+    expect(diagnostic).not.toHaveBeenCalled();
+    await worker.runOnce();
+    expect(domain.requestDelivery).not.toHaveBeenCalled();
+    clock += 2_001;
+    await worker.runOnce();
+    expect(domain.requestDelivery).toHaveBeenCalledTimes(1);
+    expect(domain.requestSteer).not.toHaveBeenCalled();
+    const [accepted] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    expect(accepted).toMatchObject({ state: "accepted", turnId: "turn-1", attemptCount: 2, reportedAt: null });
+    expect(
+      await custody.recordTurn(completedReport(fixture.deliveryId, "turn-1", fixture.sessionId, fixture.agentId), {
+        computerId: fixture.computerId,
+        instanceId: fixture.instanceId,
+      } as never),
+    ).toBe("recorded");
+    expect(diagnostic).not.toHaveBeenCalled();
+    expect(error).not.toHaveBeenCalled();
   });
 
   it("rejects or retries steering when its authority changes", async () => {

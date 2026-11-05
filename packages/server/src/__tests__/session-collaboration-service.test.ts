@@ -4,8 +4,94 @@ import { describe, expect, it, vi } from "vitest";
 import { RuntimeDomainRequestError } from "../runtime/runtime-domain-owner.js";
 import type { SessionCliSourceContext } from "../services/sessions/session-cli-proof-service.js";
 import { SessionCollaborationService } from "../services/sessions/session-collaboration-service.js";
+import { runOutcomeNoticeMessageId } from "../services/sessions/session-run-outcome-notice.js";
 
 describe("SessionCollaborationService", () => {
+  describe("internal Session Run outcome notices", () => {
+    function noticeInput(fixture: ReturnType<typeof serviceFixture>) {
+      return {
+        childSessionId: fixture.source.sessionId,
+        messageId: randomUUID(),
+        outcome: "timed_out" as const,
+        reason: "turn_timeout",
+        source: {
+          computerId: fixture.source.computerId,
+          connectionInstanceId: fixture.source.connectionInstanceId,
+          placementGeneration: 3,
+        },
+      };
+    }
+
+    it("sends a deterministic child-to-creator notice under the reporting connection's authority", async () => {
+      const fixture = serviceFixture();
+      const input = noticeInput(fixture);
+
+      await expect(fixture.service.notifyRunOutcome(input)).resolves.toBe("notified");
+      expect(fixture.sessions.resolveRunOutcomeNotice).toHaveBeenCalledWith({
+        childSessionId: input.childSessionId,
+        messageId: input.messageId,
+      });
+      const recorded = fixture.sessions.authorizeAndRecordMessage.mock.calls[0]?.[0];
+      expect(recorded).toMatchObject({
+        messageId: runOutcomeNoticeMessageId(input.childSessionId, input.messageId),
+        sourceSessionId: input.childSessionId,
+        sourceComputerId: input.source.computerId,
+        sourceConnectionInstanceId: input.source.connectionInstanceId,
+        sourcePlacementGeneration: 3,
+        targetSessionId: fixture.targetSessionId,
+      });
+      expect(recorded.content).toContain(`Session: ${input.childSessionId}`);
+      expect(recorded.content).toContain("Outcome: timed_out (reason: turn_timeout)");
+      expect(recorded.content).toContain(`opentag session send ${input.childSessionId} --message`);
+      expect(fixture.domain.requestSessionMessageDelivery).toHaveBeenCalledOnce();
+
+      // A replay produces the identical id and content, so the row is reused, never duplicated.
+      await fixture.service.notifyRunOutcome(input);
+      const replayed = fixture.sessions.authorizeAndRecordMessage.mock.calls[1]?.[0];
+      expect(replayed).toEqual(recorded);
+    });
+
+    it("ignores a report the Server cannot attribute to an active internal child", async () => {
+      const fixture = serviceFixture();
+      fixture.sessions.resolveRunOutcomeNotice.mockResolvedValue(undefined);
+
+      await expect(fixture.service.notifyRunOutcome(noticeInput(fixture))).resolves.toBe("ignored");
+      expect(fixture.sessions.authorizeAndRecordMessage).not.toHaveBeenCalled();
+      expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
+    });
+
+    it("ignores a child whose authority is gone and asks for a retry when the creator is busy", async () => {
+      const ended = serviceFixture();
+      ended.sessions.authorizeAndRecordMessage.mockRejectedValue(
+        Object.assign(new Error("source ended"), { code: "SESSION_SOURCE_UNAVAILABLE" }),
+      );
+      await expect(ended.service.notifyRunOutcome(noticeInput(ended))).resolves.toBe("ignored");
+
+      const busy = serviceFixture();
+      busy.domain.requestSessionMessageDelivery.mockResolvedValue({
+        type: "session:message:deliver:result",
+        requestId: randomUUID(),
+        messageId: busy.messageId,
+        targetSessionId: busy.targetSessionId,
+        placementGeneration: 1,
+        status: "rejected",
+        reason: "session_busy",
+      });
+      await expect(busy.service.notifyRunOutcome(noticeInput(busy))).resolves.toBe("retry");
+
+      const transient = serviceFixture();
+      transient.sessions.resolveRunOutcomeNotice.mockRejectedValue(new Error("database unavailable"));
+      await expect(transient.service.notifyRunOutcome(noticeInput(transient))).resolves.toBe("retry");
+    });
+
+    it("treats an already accepted notice as notified without delivering again", async () => {
+      const fixture = serviceFixture({ attemptCount: null, lastOutcome: "accepted" });
+
+      await expect(fixture.service.notifyRunOutcome(noticeInput(fixture))).resolves.toBe("notified");
+      expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
+    });
+  });
+
   it("returns an already accepted durable message without reconciling or delivering again", async () => {
     const fixture = serviceFixture({ attemptCount: null, lastOutcome: "accepted" });
 
@@ -233,6 +319,9 @@ function serviceFixture(
         message: { ...attempt.message, id: input.messageId, content: input.initialMessage },
       })),
     recordMessageOutcome: vi.fn().mockResolvedValue(true),
+    resolveRunOutcomeNotice: vi
+      .fn()
+      .mockResolvedValue({ creatorSessionId: targetSessionId, installationId: targetInstallationId }),
     withCollaborationDispatchAdmission: vi.fn(),
   };
   const domain = {

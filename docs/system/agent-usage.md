@@ -1,6 +1,6 @@
 ---
 title: "Agent usage accounting"
-description: "Where Agent task and token counts come from, the Provider token rules, the safe-integer bounds, and the bounded UTC-day read shape."
+description: "Where Agent task and token counts come from, the Provider token rules, the safe-integer bounds, and the bounded daily read shape."
 soft_links:
   - /system/agent-session-computer-model.md
   - /product/cloud-computer.md
@@ -28,9 +28,12 @@ query rewrite is easy and the arithmetic is not.
 ## The window
 
 `windowDays` is one of 1, 7, 30 or 90. The window is `[now - windowDays × 24h, now]`, both bounds inclusive, and it
-is cut into **UTC** day buckets. Every date from the first to the last day of the window is present in the response,
-so a day without tasks reads as zero rather than disappearing; one 30-day window therefore has 31 buckets, because
-both ends are inclusive. The Agent list pins the 30-day window and reports only its totals.
+is cut into calendar-day buckets in the caller's IANA `timezone` (`UTC` when omitted; the Web App passes
+`Intl.DateTimeFormat().resolvedOptions().timeZone`). Every date from the first to the last calendar day of the window
+in that timezone is present in the response, so a day without tasks reads as zero rather than disappearing; one
+`windowDays`-day window spans `windowDays + 1` buckets (or `windowDays + 2` when a spring-forward DST transition
+shortens a local day inside the `24h × windowDays` span). Both local turn reports and the Cloud ledger bucket by the
+same timezone before merging. The Agent list pins the 30-day window and reports only its totals.
 
 ## Token arithmetic
 
@@ -57,8 +60,9 @@ aggregated paths use it.
 
 ## Read shape
 
-The window is aggregated **in PostgreSQL into at most one row per UTC day**, so the number of rows the Server maps
-never depends on how much history the Agent has. Two details keep the aggregation exact instead of approximate:
+The window is aggregated **in PostgreSQL into at most one row per calendar day in the requested timezone**, so the
+number of rows the Server maps never depends on how much history the Agent has. Two details keep the aggregation exact
+instead of approximate:
 
 - The aggregate covers only values stored in the canonical decimal form of a safe integer, which is what a JSON number
   in a turn report always is. Rows whose stored text is anything else — a numeric string such as `"1e3"`, or a JSON

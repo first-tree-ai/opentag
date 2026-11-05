@@ -95,7 +95,7 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | ST-08 | Connector recovery | Cancel OAuth, block its window, fail a tool probe, reauthorize | Only this attempt is undone or retried; a working credential survives an interrupted reauthorization | Edge | smoke: `mcp-recovery-smoke.spec.ts`, `mcp-discover-continuation-smoke.spec.ts`, `mcp-auth-rejection.spec.ts` |
 | ST-09 | Connector list with any Agent name | Connectors page and MCP Server detail when an Agent has an uppercase or Chinese name | Both load without errors (the server detail does not list Agents) | Edge | manual |
 | ST-10 | Skills | Add a Skill from a preset or source; open its files | Skill installs; file selection and links stay accessible | Core | smoke: `site-design-smoke.spec.ts`; sweep |
-| ST-11 | Usage | Open Agent and Account usage | Charts and totals render for empty, partial, and full data | Core | smoke: `usage-visual.spec.ts`; unit: `__tests__/agent-usage.test.tsx` |
+| ST-11 | Usage | Open Agent and Account usage | Charts and totals render for empty, partial, and full data bucketed by the viewer's timezone | Core | smoke: `usage-visual.spec.ts`; unit: `__tests__/agent-usage.test.tsx`, `features/agent-usage.test.tsx`, `features/account/cloud-usage-page.test.tsx` |
 | ST-12 | Pause and resume | Pause an idle and a working Agent, then Resume | Idle pauses at once; working asks to confirm; state and message update | Core | unit: `features/agents/agent-settings/agent-manage-settings.test.tsx` |
 | ST-13 | Delete a running Agent | Delete a running Agent and type its name | One confirmation pauses then deletes; lands on the Agent list | Core | unit: `features/agents/agent-settings/agent-manage-settings.test.tsx`, `__tests__/agent-home.test.tsx` |
 | ST-14 | Delete failures | Pause fails; delete fails after the pause; no permission | Says nothing was deleted; says the Agent is paused and retries only the delete; names the missing permission | Edge | unit: `features/agents/agent-settings/agent-manage-settings.test.tsx` |
@@ -112,7 +112,7 @@ request. Keep one row per behaviour, not one per screenshot or width.
 
 | ID | Scenario | Steps | Expected result | Run | Verified today |
 | --- | --- | --- | --- | --- | --- |
-| CM-01 | Computer list | Open Computers with online, offline, and Cloud Computers | Each card shows its state; offline offers recovery; delete asks for confirmation | Core | unit: `__tests__/computer-management.test.tsx`, `__tests__/computers-delete.test.tsx` |
+| CM-01 | Computer list | Open Computers with online, offline, disconnected, and Cloud Computers | Each card shows its state; offline and disconnected Local cards show “Last online …” or “No last-online record”; offline offers recovery; delete asks for confirmation | Core | unit: `__tests__/computer-management.test.tsx`, `__tests__/computers-delete.test.tsx`, `features/agents/computer-status.test.tsx` |
 | CM-02 | Connect a new computer from the web | Computers or Agent settings: connect a new computer and copy the command | The copied text matches what the window shows; the page waits for that computer and shows it once connected | Core | smoke: `computer-connection.spec.ts`; unit: `features/computer-connect/computer-connect.test.tsx` |
 | CM-03 | Repair a disconnected computer | Sole computer disconnected | Recovery repairs it in place without creating another | Core | smoke: `computer-connection.spec.ts`; connect C03r, C04r |
 | C00 | Command exactly as the web shows it | Run the command the web emits on a fresh machine | Finishes without hanging; any failure is plain | Edge | connect C00 |
@@ -120,11 +120,11 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | C02 | Rerun on a healthy machine | Connected machine; new code; run again | Same Computer, no duplicate, the running service is kept, online | Core | connect C02 |
 | C03 | Service stopped | Stop the local service; run a new connect command | Same Computer, no duplicate, back online | Core | connect C03, C03r |
 | C04 | Disconnected on the Server side | Setup (no Web action exists for this): disconnect the Computer through the authorized `POST /api/v1/computers/:id/disconnect` API. Then run a new command (create or recovery code) | Same Computer, no duplicate, back online | Core | connect C04, C04r |
-| C05 | Local identity lost | Delete the local identity file; rerun | Connects; a new Computer is acceptable if the old one shows offline | Edge | connect C05 |
+| C05 | Local identity lost | Delete the local identity file; rerun | Connects as one new Computer; the old one is not repaired and shows offline once its service stops | Edge | connect C05 |
 | C06 | Old version installed | Previous release installed and connected; rerun | Upgrades, same Computer, online | Core | connect C06 |
 | C07 | Expired code | Run a command whose code is past its 15-minute lifetime | Plain failure with the next step; no Computer created | Core | connect C07 |
 | C08 | Already-used code | Run a command whose code another machine redeemed | Plain failure; no Computer created | Edge | connect C08 |
-| C09 | Machine bound to another Account | Machine connected as another Account; this user runs their command | Plain failure; nothing created; the other Account untouched; the code is not used up | Edge | connect C09 |
+| C09 | Retained identity bound to another Account | Keep the local identity connected as another Account; this user runs their command | Plain account-conflict failure; nothing created; the other Account untouched; the code is not used up | Edge | connect C09 |
 | C10 | Server unreachable | Releases download but the Server refuses connections | Plain failure; no Computer created; the code is not used up | Edge | connect C10 |
 | C11 | Home directory not writable | Run on a machine whose home is read-only | Plain failure; no Computer created; the code is not used up | Edge | connect C11 |
 | C12 | No curl, no system Node.js | Run without curl; run without node | Without curl: plain failure, code not used up. Without node: the bundled runtime connects | Edge | connect C12a, C12b |
@@ -137,6 +137,7 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | C19 | Same image, other machine | Another machine from the same image while the original is offline | One new Computer; the original untouched | Edge | connect C19 |
 | C20 | Second OS user | A second OS user on the same machine connects | Connects as its own Computer, online | Edge | connect C20 |
 | C21 | Command from Agent setup | Run the command issued by Agent setup | Connects and runs the Agent's local readiness checks; prints only the outcome and one next step | Core | connect C21 |
+| C22 | Lost identity connects to another Account | Remove the local openTag home from a Computer owned by another Account; connect with this Account's code | One new Computer for this Account; the other Account's Computer is untouched; no conflict or cross-Account disclosure | Edge | unit: `__tests__/computer-connect-idempotent.test.ts` |
 
 ## Tasks
 
@@ -148,6 +149,9 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | TK-04 | Each reply once | Task with Agent replies | Each reply appears once in the timeline, without per-message status labels | Core | unit: `features/task-conversation.test.tsx`, `features/task-outgoing-replies.test.tsx` |
 | TK-05 | Cancel a Task | Cancel a queued Task (only queued Tasks offer Cancel) | Asks to confirm; the status reads "已取消" / "Cancelled" (not Completed) and the Task still appears under the Completed filter | Edge | unit: `features/task-cancel.test.tsx`, `features/tasks-page.test.tsx` |
 | TK-06 | Narrow Agent workspace | Agent home, Tasks, and Skills in a narrow Agent workspace | Stay usable without overflow | Edge | smoke: `app.spec.ts` |
+| TK-07 | Long internal Session title | Task with an internal Session whose title fills 120 characters, at 390, 1440, and 2000px; reopen it from the list | The title stops at two lines at 390px and one line at 1440 and 2000px; Status and the row's status stay in view; the content never scrolls sideways | Edge | smoke: `task-detail-layout-smoke.spec.ts` |
+| TK-08 | Internal Session rows | Task with internal Sessions; hover a title, then reach it by keyboard | Heading is no larger than the Task title; rows sit between rules with no card; the id appears only in the tooltip, which hover and keyboard focus both open; a row named by its id is plain text with no focus stop | Core | smoke: `task-detail-layout-smoke.spec.ts`; unit: `features/tasks-page.test.tsx` |
+| TK-09 | Request message fill | Task with a one-line request and a long request | Each grey fill follows its message and has no border or shadow; the long one spreads across the frame; the sender's avatar is round like the Agent's | Edge | smoke: `task-detail-layout-smoke.spec.ts` |
 
 ## Account
 

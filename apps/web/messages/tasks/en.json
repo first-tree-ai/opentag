@@ -63,6 +63,7 @@
   "tasks_included_in_active_work": "This message was included in the Agent's active work.",
   "tasks_internal_session_active": "Active",
   "tasks_internal_session_ended": "Ended",
+  "tasks_internal_session_id": "Session ID: {id}",
   "tasks_internal_sessions_failed": "Internal Sessions could not be loaded.",
   "tasks_internal_sessions_heading": "Internal Sessions",
   "tasks_jump_to_latest": "Jump to latest",

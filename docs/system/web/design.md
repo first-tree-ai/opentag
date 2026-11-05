@@ -43,6 +43,10 @@ height; authors use 14px medium and timestamps use 12px regular text. Message he
 and code retain their content formatting. Operational notices remain at 14px. The Activity
 section heading remains accessible without adding a visible label above the conversation.
 List task titles and supporting values use 14px regular text, with 14px medium column headings.
+On the Task detail, sections below the title use the same 16px medium heading, never larger than the
+`h1`, and read as a heading over rows between rules, like the Task facts, rather than as a white card.
+Internal Session titles use 14px regular text, one line on wide containers and at most two on narrow ones. A request's body has a flat grey fill sized to its message,
+with no border or shadow on the rounded corners. People and Agents share one 32px round letter avatar.
 
 Usage keeps the period selector beside the title and lets the concise description use the
 available width, wrapping naturally on smaller screens. Daily UTC token totals use bars from

@@ -405,6 +405,11 @@ export class UpdateManager {
         await this.#waitForProtectedWork(target);
         if (this.#stopped) return "finished";
         if (this.#latestTarget !== target) return "superseded";
+        if (this.#canInterruptWork()) {
+          // Recovery became available: new work no longer has to wait through the install.
+          resumeAdmission();
+          resumeAdmission = undefined;
+        }
       }
       const started = await this.#recordStartedAttempt(target, state);
       // Without a wait there is nothing to drain: Sessions keep running and new work keeps arriving

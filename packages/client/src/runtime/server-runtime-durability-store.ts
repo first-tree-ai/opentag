@@ -37,7 +37,8 @@ export class ServerRuntimeDurabilityStore implements RuntimeDurabilityStore {
     // still resumes, reported as a crash, its count never resets, and it counts as running on its own.
     const {
       outcomeReport: _localOnly,
-      retryStartedAt: _localStart,
+      ranMs: _localRan,
+      retryRanMs: _localRetryRan,
       joinedRunId: _localRun,
       interruption: _localReason,
       ...portable

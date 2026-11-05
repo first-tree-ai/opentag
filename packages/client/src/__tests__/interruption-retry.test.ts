@@ -19,6 +19,7 @@ import {
   MAX_RECORDED_STEERS,
   parseTurnRetryRecord,
   RATE_LIMIT_RETRY_DELAY_MS,
+  RETRY_RESET_AFTER_MS,
   recoverableFailure,
   type TurnRetryRecord,
   TurnRetryStore,
@@ -423,7 +424,87 @@ describe("AgentTurnRunner automatic retry", () => {
     );
   });
 
-  it("gives a retry a fresh Run budget even after the ingress deadline passed", async () => {
+  it("does not let the 429 backoff count as run time toward resetting the count", async () => {
+    vi.useFakeTimers();
+    const h = runnerHarness();
+    h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
+    // Every attempt runs just short of five minutes, then hits a 429: backoff must not fill the gap.
+    const runsFor = 4 * 60_000 + 50_000;
+    h.prompt.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, runsFor));
+      return rateLimited();
+    });
+    h.runner.start(owner(h.request));
+    await vi.advanceTimersByTimeAsync(10 * (runsFor + RATE_LIMIT_RETRY_DELAY_MS));
+    await h.runner.settled();
+    expect(h.prompt).toHaveBeenCalledTimes(1 + MAX_AUTOMATIC_RETRIES);
+    expect(h.create).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ outcome: "failed", errorReason: "provider_rate_limited" }),
+      3,
+    );
+  });
+
+  it("resets the count after a retry that actually ran for five minutes", async () => {
+    vi.useFakeTimers();
+    const h = runnerHarness();
+    h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
+    const runs = [0, RETRY_RESET_AFTER_MS, 0, 0];
+    h.prompt.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, runs.shift() ?? 0));
+      return rateLimited();
+    });
+    h.runner.start(owner(h.request));
+    await vi.advanceTimersByTimeAsync(RETRY_RESET_AFTER_MS + 10 * RATE_LIMIT_RETRY_DELAY_MS);
+    await h.runner.settled();
+    // Retry 1 ran five minutes, so the next failure is retry 1 again, then retry 2, then it is over.
+    expect(h.prompt).toHaveBeenCalledTimes(4);
+  });
+
+  it("counts run time across attempts against the Run's budget", async () => {
+    vi.useFakeTimers();
+    const h = runnerHarness();
+    h.request.runtime.budget = { maxDurationMs: 100_000 };
+    h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
+    h.prompt
+      .mockImplementationOnce(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 60_000));
+        return rateLimited();
+      })
+      .mockImplementationOnce(abortedOnSignal);
+    h.runner.start(owner(h.request));
+    await vi.advanceTimersByTimeAsync(60_000 + RATE_LIMIT_RETRY_DELAY_MS);
+    expect(h.prompt).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(39_999);
+    expect(h.create).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await h.runner.settled();
+    expect(h.create).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ outcome: "failed", errorReason: "turn_timeout" }),
+      3,
+    );
+  });
+
+  it("does not let an unreadable record stop a retry's budget", async () => {
+    const h = runnerHarness();
+    h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
+    const update = h.retries.update;
+    let reads = 0;
+    h.retries.update = async (...args: Parameters<typeof update>) => {
+      reads += 1;
+      if (reads === 3) throw new Error("disk");
+      return update(...args);
+    };
+    h.prompt.mockImplementationOnce(rateLimited).mockImplementationOnce(async () => ({
+      runId: "turn-1",
+      status: "completed",
+      output: [],
+    }));
+    h.runner.start(owner(h.request));
+    await h.runner.settled();
+    expect(h.prompt).toHaveBeenCalledTimes(2);
+  });
+
+  it("gives a retry its budget even after the ingress deadline passed", async () => {
     rateLimitDelayMs = 30;
     const h = runnerHarness();
     h.request.runtime.budget = { maxDurationMs: 2_000 };
@@ -461,7 +542,8 @@ describe("AgentTurnRunner automatic retry", () => {
       expect(h.prompt).toHaveBeenCalledOnce();
       expect(h.create).not.toHaveBeenCalled();
       expect(h.records.get(h.request.sessionId)).toMatchObject({
-        retries: 0,
+        // A 429 is counted when it fails; a process interruption is counted by the restarted daemon.
+        retries: stopBeforeWait ? 0 : 1,
         interruption: { reason: stopBeforeWait ? "client_shutdown" : "provider_rate_limited" },
       });
     }

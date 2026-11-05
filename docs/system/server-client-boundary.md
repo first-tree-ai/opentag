@@ -81,11 +81,16 @@ The rule ([#1301](https://github.com/first-tree-ai/opentag/issues/1301#issuecomm
 
 - A process interruption (a daemon crash or power loss, an orderly restart or
   upgrade) and a model HTTP 429 (`provider_rate_limited`) share one count of at
-  most 2 automatic retries. A retry that ran for at least 5 minutes resets the
-  count (`MAX_AUTOMATIC_RETRIES`, `RETRY_RESET_AFTER_MS`). This does not stop
-  work that crashes the daemon only after running longer than that.
-- Reaching the Run's duration limit (`turn_timeout`) is not retried, and neither
-  is any other failure.
+  most 2 automatic retries. A retry that actually ran for at least 5 minutes
+  resets the count (`MAX_AUTOMATIC_RETRIES`, `RETRY_RESET_AFTER_MS`); downtime,
+  waiting and backoff do not count. This does not stop work that crashes the
+  daemon only after running longer than that.
+- The Run's duration limit counts actual running time across retries and resumes.
+  A resume keeps what is left of the budget. Reaching the limit (`turn_timeout`)
+  is not retried, and neither is any other failure.
+
+Run time is recorded durably about once a minute while a Run works, so a crash
+loses at most that much of it.
 
 A failure that is not retried, and running out of retries, are reported as
 before: an IM Turn gets its terminal report and error card, an internal Session's
@@ -100,15 +105,15 @@ the original input and, for an IM Turn, the messages steered into it, in their
 original order. Duplicates
 are acceptable: the Provider may or may not have persisted the interrupted turn.
 
-- A 429 retries in place, in the same daemon, after about 30 seconds. Every
-  retry gets a fresh Run budget; the ingress deadline bounds only the first
-  attempt. An IM Turn keeps its delivery and Turn identity, so
+- A 429 retries in place, in the same daemon, after about 30 seconds. Its count
+  is settled when it fails. The ingress deadline bounds only the first attempt. An IM Turn keeps its delivery and Turn identity, so
   the retry's report settles the original delivery.
 - An orderly stop (`opentag daemon restart`, upgrade) does not report
   `cancelled / client_shutdown`; it records the interruption durably and leaves
   the Turn unresolved for the restarted daemon to count. A crash leaves no
   record of its own: an unresolved Turn found on restart is a crash.
-- On startup the daemon counts the retry durably before anything runs. When the
+- On startup the daemon counts the retry durably before anything runs, unless a
+  429 already counted it and only the wait was interrupted. When the
   retries have run out, the Turn gets its recovery report and the Session
   messages steered into it fail with it. The IM Turn's original
   input lives in a per-Session file under `data/runtime/turn-retries/`, written
@@ -128,10 +133,10 @@ are acceptable: the Provider may or may not have persisted the interrupted turn.
   waits briefly for steers still in flight, so one acknowledged as the Run ends
   is not lost; if one does not settle in time, the failure is reported the same
   way. A Session message's
-  interruption and retry start time are kept on its durable inbox record, updated
-  in place so the inbox order survives a restart; the Server-backed durability
-  adapter does not store them, so a recovered Run there resumes as a crash and
-  its count never resets.
+  interruption and run time are kept on its durable inbox record, updated in
+  place so the inbox order survives a restart; the Server-backed durability
+  adapter does not store them, so a recovered Run there resumes as a crash, gets
+  its whole budget again, and its count never resets.
 - Only the Server can prepare a Session for the new connection (current
   snapshot and a fresh Session CLI proof), so after connecting the daemon sends
   `session:recover` for each Session with interrupted or waiting work (see
@@ -264,6 +269,13 @@ After a Client accepts custody, it starts or resumes only the Provider pinned by
 the effective runtime snapshot; missing credentials and other start failures
 settle the Turn as typed, recoverable `not_started` failures. The Client never
 falls back to a different Provider.
+
+Execution admission can race the Server's acceptance commit. If the first custody
+read finds no acceptance, the fallback reads the delivery state and complete
+accepted identity in one SQL snapshot. Pending or expired dispatches remain
+retryable; a newly accepted delivery authorizes only its matching Turn, Session,
+Agent, Computer, connection instance, and placement generation. Terminal or
+mismatched custody remains invalid.
 
 ### Status state outside the Server process
 

@@ -413,7 +413,9 @@ describe("UpdateManager", () => {
     h.flushSleep();
     await h.settle();
     expect(h.installs).toEqual(["0.0.3-staging.1.1"]);
+    expect(h.quiescedDuringInstall).toEqual([false]);
     expect(h.handoffs).toBe(1);
+    expect(h.isQuiesced()).toBe(true);
   });
 
   it("waits with no force timeout while interrupted work could not be recovered", async () => {

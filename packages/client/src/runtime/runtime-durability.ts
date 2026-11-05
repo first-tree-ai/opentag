@@ -159,8 +159,10 @@ export interface DurableWorkRecord<T = unknown> {
    * Session-message only: the recoverable interruption that the record's one automatic retry
    * continues from. Its presence makes the next Run start with the continuation notice.
    */
-  /** Session-message only: when its latest retry started; a long enough retry resets `attempts`. */
-  readonly retryStartedAt?: number;
+  /** Session-message only: actual run time of its own Runs, against the Run's duration limit. */
+  readonly ranMs?: number;
+  /** Session-message only: actual run time of its latest retry; long enough, and `attempts` resets. */
+  readonly retryRanMs?: number;
   /** Session-message only: the Run this message was steered into, whose retry count it shares. */
   readonly joinedRunId?: string;
   readonly interruption?: { readonly reason: string; readonly at: string };

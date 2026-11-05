@@ -337,7 +337,9 @@ function internalToolsFixtureResponse(input: {
   path: string;
   resetSetup: () => void;
 }): Response | undefined {
-  if (input.path === "/api/v1/cloud/billing/usage") return json({ enabled: false });
+  if (input.path === "/api/v1/cloud/billing/usage" || input.path.startsWith("/api/v1/cloud/billing/usage?")) {
+    return json({ enabled: false });
+  }
   if (input.path === "/api/v1/cloud/billing") return json({ enabled: false });
   // The Account GitHub overview: unavailable unless a test installs a real one.
   if (input.path === "/api/v2/integrations/github") {

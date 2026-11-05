@@ -13,7 +13,6 @@ import {
   AGENT_SETUP_TEMPLATE,
   AGENT_SUSPEND_TEMPLATE,
   AGENT_USAGE_TEMPLATE,
-  AGENT_USAGE_WINDOW_DAYS,
   AgentAdminConfigSchema,
   AgentCloudOverviewQuerySchema,
   AgentCloudOverviewSchema,
@@ -24,7 +23,7 @@ import {
   AgentRuntimeTestResponseSchema,
   AgentSetupSnapshotSchema,
   AgentUsageDetailSchema,
-  AgentUsageWindowDaysSchema,
+  AgentUsageQuerySchema,
   ContextTreeAvailabilityResponseSchema,
   ContextTreeOperationRequestSchema,
   ContextTreeOperationResponseSchema,
@@ -47,9 +46,6 @@ import { projectAgentSetupSnapshotForHttp, requestIncludesProviderCliReasonV2 } 
 import { parseRequest } from "./request-validation.js";
 
 const AgentParamsSchema = z.object({ agentId: z.string().uuid() }).strict();
-const AgentUsageQuerySchema = z
-  .object({ days: z.coerce.number().pipe(AgentUsageWindowDaysSchema).default(AGENT_USAGE_WINDOW_DAYS) })
-  .strict();
 
 function authenticatedUserId(request: FastifyRequest): string {
   const userId = request.authContext?.me.user.id;
@@ -130,9 +126,9 @@ export function registerAgentRoutes(
 
   app.get(AGENT_USAGE_TEMPLATE, { preHandler }, async (request, reply) => {
     const { agentId } = parseRequest(AgentParamsSchema, request.params);
-    const { days } = parseRequest(AgentUsageQuerySchema, request.query);
+    const { days, timezone } = parseRequest(AgentUsageQuerySchema, request.query);
     const response = AgentUsageDetailSchema.parse(
-      await agentService.getUsageById(authenticatedUserId(request), agentId, days),
+      await agentService.getUsageById(authenticatedUserId(request), agentId, days, timezone),
     );
     return reply.code(200).send(response);
   });

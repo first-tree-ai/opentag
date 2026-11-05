@@ -1,6 +1,8 @@
+import { agentUsagePath } from "@opentag/shared/browser";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
+import { viewerTimezone } from "../query/keys.js";
 import { agentId, installApi, resetWebAppState } from "./support/app-fixtures.js";
 
 describe("OpenTag Web App Shell", () => {
@@ -36,7 +38,7 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(sevenDayOption);
     await waitFor(() =>
       expect(
-        vi.mocked(fetch).mock.calls.some(([input]) => String(input) === `/api/v1/agents/${agentId}/usage?days=7`),
+        vi.mocked(fetch).mock.calls.some(([input]) => String(input) === agentUsagePath(agentId, 7, viewerTimezone())),
       ).toBe(true),
     );
     expect(await screen.findByRole("img", { name: /428K Tokens used · Last 7 days/ })).toBeTruthy();

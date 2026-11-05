@@ -487,7 +487,7 @@ describe("task and usage live revalidation", () => {
     const usageRead = vi.spyOn(browserApi, "agentUsage").mockResolvedValue(usage);
     await renderInRouter(<AgentUsageTab agentId={agentId} />);
     expect(await screen.findByText("428K")).toBeTruthy();
-    expect(usageRead).toHaveBeenCalledWith(agentId, 30);
+    expect(usageRead).toHaveBeenCalledWith(agentId, 30, expect.any(String));
   });
 
   it("keeps a terminal usage refusal across a later 503 until recovery", async () => {

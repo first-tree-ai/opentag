@@ -280,6 +280,10 @@ export class ConnectionRegistry {
     entry.selfCheckMonotonicAt = receivedMonotonicAt;
     entry.selfCheckCheckedAt = report.checkedAt;
     entry.selfCheckProblems = [...report.problems];
+    if (preparationIsSealed(entry)) {
+      refreshPreparationTtl(entry, receivedAt);
+      return true;
+    }
     entry.providerReadiness = report.providerReadiness.map((observation) => ({ ...observation }));
     entry.providerReadinessObservedAt = receivedAt;
     entry.imCliReadiness = report.imCliReadiness.map((observation) => ({ ...observation }));
@@ -498,6 +502,10 @@ export class ConnectionRegistry {
       current.providerReadiness = upsertRuntimeReadiness(current.providerReadiness, result.runtime);
     }
     current.providerReadinessObservedAt = now;
+    if (selfChecking(current) && !options.quarantine) {
+      current.selfCheckReceivedAt = now;
+      current.selfCheckMonotonicAt = this.#monotonicNow();
+    }
     if (result.providers !== undefined) {
       current.imCliReadiness = result.providers.map((observation) => ({ ...observation }));
       current.imCliReadinessObservedAt = now;

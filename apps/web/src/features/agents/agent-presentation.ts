@@ -26,7 +26,7 @@ type AgentCardStatus = {
 
 export function agentCardStatus(agent: AgentListItem): AgentCardStatus {
   const status = serverStatusPresentation(agent) ?? agentAvailabilityCardStatus(agent);
-  const detail = agentActivityDetail(agent, status.tone === "success");
+  const detail = agentActivityDetail(agent);
   return detail ? { ...status, detail } : status;
 }
 
@@ -54,23 +54,38 @@ function agentAvailabilityCardStatus(agent: AgentListItem): AgentCardStatus {
 }
 
 /**
- * How many Tasks the Agent is running. Work in progress is a fact whatever the Agent's status, so it
- * shows on every row; "waiting" only shows beside Ready, where it is the useful thing to know rather
- * than a contradiction of a blocked or paused status. An unknown activity says nothing.
+ * How many Tasks the Agent is running and how many are queued for it. Work in progress and queued
+ * work are facts whatever the Agent's status, so they show on every row; queued Tasks beside an
+ * offline Computer are how an admin sees work piling up. An idle Agent with nothing queued says
+ * nothing beside its status: "Waiting" beside Ready only repeated what Ready already says, and read
+ * as the Agent being stuck. An unknown activity says nothing about running work.
  */
-export function agentActivityDetail(agent: Pick<AgentListItem, "activity">, ready: boolean): string | undefined {
+export function agentActivityDetail(agent: Pick<AgentListItem, "activity">): string | undefined {
   const { activity } = agent;
+  const queued = queuedTasksDetail(activity.queuedTaskCount);
   if (activity.state === "working") {
-    const count = activity.runningTaskCount;
-    if (count === undefined) {
-      // A Server without the count still reports when the work started.
-      return m.agents_card_activity_working({ elapsed: formatElapsedCompact(activity.startedAt) });
-    }
-    return count === 1
-      ? m.agents_card_activity_running_tasks_single({ count })
-      : m.agents_card_activity_running_tasks_plural({ count });
+    const running = runningTasksDetail(activity);
+    return queued ? `${running} · ${queued}` : running;
   }
-  return activity.state === "idle" && ready ? m.agents_card_activity_waiting() : undefined;
+  return queued;
+}
+
+function runningTasksDetail(activity: Extract<AgentListItem["activity"], { state: "working" }>): string {
+  const count = activity.runningTaskCount;
+  if (count === undefined) {
+    // A Server without the count still reports when the work started.
+    return m.agents_card_activity_working({ elapsed: formatElapsedCompact(activity.startedAt) });
+  }
+  return count === 1
+    ? m.agents_card_activity_running_tasks_single({ count })
+    : m.agents_card_activity_running_tasks_plural({ count });
+}
+
+function queuedTasksDetail(count: number | undefined): string | undefined {
+  if (!count) return undefined;
+  return count === 1
+    ? m.agents_card_activity_queued_tasks_single({ count })
+    : m.agents_card_activity_queued_tasks_plural({ count });
 }
 
 function blockedAgentCardStatus(agent: AgentListItem): AgentCardStatus {

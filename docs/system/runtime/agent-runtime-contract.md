@@ -81,6 +81,14 @@ Run, and Provider-protocol identities.
   probe runner ignores the signal.
 - Probe cancellation is not reported as artifact absence.
 
+Codex App Server stdio defaults to an 8 MiB UTF-8 budget per JSONL record so that
+aggregated tool output can exceed 1 MiB. Incoming records exclude the terminating
+newline from this budget; outgoing requests include it. The limit applies to each
+record, independently of stream chunks and batches. An oversized incoming record
+fails the wire, rejects pending requests, and terminates the owned Provider process
+group. This transport budget does not relax individual Runtime field validation.
+Thread resume still uses `excludeTurns: true` to avoid returning unnecessary history.
+
 On POSIX hosts, the Provider watchdog owns the process group through shutdown. It keeps its
 signal handlers installed and the existing 500 ms escalation timer alive until the group receives
 `SIGKILL`, including when the Provider exits before a tool with closed stdio. Interrupt, close,

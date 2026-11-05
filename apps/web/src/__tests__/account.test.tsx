@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../app.js";
+import { viewerTimezone } from "../query/keys.js";
 import { agentId, installApi, json, openAccountMenu, resetWebAppState, userId } from "./support/app-fixtures.js";
 
 async function expectPreparationGate(): Promise<HTMLButtonElement> {
@@ -29,7 +30,7 @@ describe("OpenTag Web App Shell", () => {
           minimumTopUpCents: 1000,
           maximumTopUpCents: 100_000,
         });
-      if (path === "/api/v1/cloud/billing/usage?windowDays=30")
+      if (path === `/api/v1/cloud/billing/usage?windowDays=30&timezone=${encodeURIComponent(viewerTimezone())}`)
         return json({
           enabled: true,
           windowDays: 30,

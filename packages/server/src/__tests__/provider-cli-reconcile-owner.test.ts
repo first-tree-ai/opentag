@@ -965,6 +965,86 @@ describe("ProviderCliReconcileOwner", () => {
     owner.close();
   });
 
+  it("runs ensure prewarm on a self-checking Computer and fences overlapping self-check reports until settled", async () => {
+    const registry = new ConnectionRegistry();
+    const shouldPrewarmOfficialProviderClis = vi.fn(async () => true);
+    const owner = new ProviderCliReconcileOwner(registry, {
+      listActiveProviderCliRequirements: vi.fn(async () => []),
+      issueIntegrationCliValidationGrant: vi.fn(),
+      shouldPrewarmOfficialProviderClis,
+    });
+    const connection = await registered(registry, { selfCheck: true });
+    const context = {
+      ...contextOf(connection),
+      negotiatedCapabilities: { [RUNTIME_CAPABILITY.selfCheckHeartbeat]: 1 },
+    };
+
+    await owner.onAgentPlacementChanged({
+      agentId: randomUUID(),
+      computerId: connection.computerId,
+      runtimeProvider: "codex",
+    });
+
+    const frames = () =>
+      connection.socket.send.mock.calls.map(([raw]) => JSON.parse(raw as string) as Record<string, unknown>);
+    const initialSelfCheck = frames().find((frame) => frame.type === "runtime:self-check");
+    const prewarmFrame = frames().find((frame) => frame.type === "provider-cli:prewarm");
+    expect(initialSelfCheck).toBeDefined();
+    expect(prewarmFrame).toMatchObject({
+      type: "provider-cli:prewarm",
+      mode: "ensure",
+      runtimeProvider: "codex",
+      providers: ["feishu", "slack"],
+    });
+    expect(registry.providerReadiness(connection.computerId)[0]?.observation.status).toBe("checking");
+    expect(registry.imCliReadiness(connection.computerId).map(({ observation }) => observation.status)).toEqual([
+      "checking",
+      "checking",
+    ]);
+
+    await owner.businessOptions().handle(
+      {
+        type: "runtime:self-check:report",
+        requestId: randomUUID(),
+        selfCheckId: initialSelfCheck?.requestId as string,
+        sequence: 1,
+        checkedAt: new Date().toISOString(),
+        problems: [],
+        providerReadiness: [{ provider: "codex", status: "ready" }],
+        imCliReadiness: [
+          { provider: "feishu", status: "install" },
+          { provider: "slack", status: "install" },
+        ],
+      },
+      context,
+    );
+    expect(registry.providerReadiness(connection.computerId)[0]?.observation.status).toBe("checking");
+    expect(registry.imCliReadiness(connection.computerId).map(({ observation }) => observation.status)).toEqual([
+      "checking",
+      "checking",
+    ]);
+
+    await owner.businessOptions().handle(
+      {
+        type: "provider-cli:prewarm:result",
+        requestId: prewarmFrame?.requestId as string,
+        runtime: { provider: "codex", status: "ready" },
+        providers: [
+          { provider: "feishu", status: "ready" },
+          { provider: "slack", status: "ready" },
+        ],
+      },
+      context,
+    );
+    expect(registry.providerReadiness(connection.computerId)[0]?.observation.status).toBe("ready");
+    expect(registry.imCliReadiness(connection.computerId).map(({ observation }) => observation.status)).toEqual([
+      "ready",
+      "ready",
+    ]);
+    expect(frames().filter((frame) => frame.type === "runtime:self-check")).toHaveLength(2);
+    await owner.close();
+  });
+
   it("fences Server-owned preparation so old heartbeats and results cannot restore stale ready", async () => {
     const registry = new ConnectionRegistry();
     const owner = new ProviderCliReconcileOwner(registry, {

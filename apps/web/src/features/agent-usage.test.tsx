@@ -4,7 +4,7 @@ import { cleanup, fireEvent, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../__tests__/support/router.js";
 import { ApiError, browserApi } from "../api.js";
-import { queryKeys } from "../query/keys.js";
+import { queryKeys, viewerTimezone } from "../query/keys.js";
 import {
   AgentUsageOverview,
   AgentUsageTab,
@@ -118,6 +118,13 @@ describe("AgentUsageOverview", () => {
     expect(usageXAxisTickLabel(Date.parse("2026-08-31T12:00:00.000Z"), "2026-09-01T14:00:00.000Z", 1)).toBe("Aug 31");
     expect(usageXAxisTickLabel(Date.parse("2026-09-01T00:00:00.000Z"), "2026-09-01T14:00:00.000Z", 1)).toBe("");
     expect(usageXAxisTickLabel(Date.parse("2026-09-01T12:00:00.000Z"), "2026-09-01T14:00:00.000Z", 1)).toBe("Sep 1");
+    // 2026-09-01T20:00:00.000Z is already 2026-09-02 in Asia/Shanghai, so Sep 2 is the final day bucket there.
+    expect(
+      usageXAxisTickLabel(Date.parse("2026-09-02T00:00:00.000Z"), "2026-09-01T20:00:00.000Z", 30, "Asia/Shanghai"),
+    ).toBe("");
+    expect(
+      usageXAxisTickLabel(Date.parse("2026-09-02T12:00:00.000Z"), "2026-09-01T20:00:00.000Z", 30, "Asia/Shanghai"),
+    ).toBe("Sep 2");
   });
 
   it("reads one window once for the overview and the tab that show it together", async () => {
@@ -158,7 +165,7 @@ describe("AgentUsageOverview", () => {
     expect(screen.queryByText(/Tasks without reported usage/)).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
     expect(loadUsage).toHaveBeenCalledTimes(2);
-    expect(loadUsage).toHaveBeenNthCalledWith(2, "agent-1", 30);
+    expect(loadUsage).toHaveBeenNthCalledWith(2, "agent-1", 30, viewerTimezone());
   });
 
   it("normalizes non-error failures and explains unavailable token coverage", async () => {

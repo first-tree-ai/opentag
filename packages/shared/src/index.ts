@@ -16,6 +16,8 @@ export {
   ListAccountComputersResponseSchema,
 } from "./account.js";
 export {
+  AGENT_ACTIVITY_QUEUED_COUNT_HEADER,
+  AGENT_ACTIVITY_QUEUED_COUNT_VERSION,
   AGENT_ACTIVITY_TASK_COUNT_HEADER,
   AGENT_ACTIVITY_TASK_COUNT_VERSION,
   AGENT_NAME_PATTERN,
@@ -55,6 +57,8 @@ export {
   AgentSummarySchema,
   type AgentUsageDetail,
   AgentUsageDetailSchema,
+  type AgentUsageQuery,
+  AgentUsageQuerySchema,
   type AgentUsageSummary,
   AgentUsageSummarySchema,
   type AgentUsageWindowDays,
@@ -70,11 +74,13 @@ export {
   RebindAgentComputerRequestSchema,
   type ReceiveMode,
   ReceiveModeSchema,
+  requestsAgentActivityQueuedCount,
   requestsAgentActivityTaskCount,
   type UpdateAgentRequest,
   UpdateAgentRequestSchema,
   type UpdateAgentRuntimeConfig,
   UpdateAgentRuntimeConfigSchema,
+  UsageTimezoneSchema,
 } from "./agent.js";
 export * from "./agent-permissions.js";
 export * from "./agent-self.js";

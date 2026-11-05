@@ -1,4 +1,5 @@
 import {
+  AGENT_ACTIVITY_QUEUED_COUNT_HEADER,
   AGENT_ACTIVITY_TASK_COUNT_HEADER,
   accountAgentCreationIntentPath,
   agentByIdPath,
@@ -260,16 +261,36 @@ describe("Agent HTTP API", () => {
     });
   });
 
-  it("gets Agent usage through a strict supported period", async () => {
+  it("gets Agent usage through a strict supported period and optional IANA timezone", async () => {
     const { app, service } = appWith();
     const response = await app.inject({ method: "GET", url: agentUsagePath(agentId, 30), headers: authorization });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual(agentUsage);
-    expect(service.getUsageById).toHaveBeenCalledWith(userId, agentId, 30);
+    expect(service.getUsageById).toHaveBeenCalledWith(userId, agentId, 30, "UTC");
+
+    const localized = await app.inject({
+      method: "GET",
+      url: agentUsagePath(agentId, 30, "Asia/Shanghai"),
+      headers: authorization,
+    });
+    expect(localized.statusCode).toBe(200);
+    expect(service.getUsageById).toHaveBeenCalledWith(userId, agentId, 30, "Asia/Shanghai");
 
     const invalid = await app.inject({ method: "GET", url: agentUsagePath(agentId, 14), headers: authorization });
     expect(invalid.statusCode).toBe(400);
-    expect(service.getUsageById).toHaveBeenCalledTimes(1);
+    const invalidOffset = await app.inject({
+      method: "GET",
+      url: `${agentUsagePath(agentId, 30)}&timezone=%2B08%3A00`,
+      headers: authorization,
+    });
+    expect(invalidOffset.statusCode).toBe(400);
+    const invalidZone = await app.inject({
+      method: "GET",
+      url: `${agentUsagePath(agentId, 30)}&timezone=Mars%2FPhobos`,
+      headers: authorization,
+    });
+    expect(invalidZone.statusCode).toBe(400);
+    expect(service.getUsageById).toHaveBeenCalledTimes(2);
   });
 
   it("rejects missing credentials, invalid params, and immutable authority fields", async () => {
@@ -386,6 +407,40 @@ describe("Agent HTTP API", () => {
       headers: { ...authorization, [AGENT_ACTIVITY_TASK_COUNT_HEADER]: "1" },
     });
     expect(current.json().activity).toEqual(working);
+  });
+
+  it("returns each activity count only to clients that declared it", async () => {
+    const service = agentService();
+    const queued = {
+      state: "working" as const,
+      startedAt: agentDetail.updatedAt,
+      runningTaskCount: 1,
+      queuedTaskCount: 2,
+    };
+    service.getById.mockResolvedValue({ ...agentDetail, activity: queued });
+    const { app } = appWith(service);
+    const read = (headers: Record<string, string>) =>
+      app.inject({ method: "GET", url: agentByIdPath(agentId), headers: { ...authorization, ...headers } });
+    const running = { [AGENT_ACTIVITY_TASK_COUNT_HEADER]: "1" };
+    const waiting = { [AGENT_ACTIVITY_QUEUED_COUNT_HEADER]: "1" };
+
+    expect((await read({})).json().activity).toEqual({ state: "working", startedAt: agentDetail.updatedAt });
+    expect((await read(running)).json().activity).toEqual({
+      state: "working",
+      startedAt: agentDetail.updatedAt,
+      runningTaskCount: 1,
+    });
+    expect((await read(waiting)).json().activity).toEqual({
+      state: "working",
+      startedAt: agentDetail.updatedAt,
+      queuedTaskCount: 2,
+    });
+    expect((await read({ ...running, ...waiting })).json().activity).toEqual(queued);
+    // An unknown version is not a declaration.
+    expect((await read({ [AGENT_ACTIVITY_TASK_COUNT_HEADER]: "2" })).json().activity).toEqual({
+      state: "working",
+      startedAt: agentDetail.updatedAt,
+    });
   });
 
   it("preserves malformed JSON as a typed client error", async () => {

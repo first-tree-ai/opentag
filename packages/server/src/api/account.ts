@@ -18,6 +18,7 @@ import {
   AccountSandboxRunnerStopRequestSchema,
   AccountSetupCompletionSchema,
   AccountSetupResetRequestSchema,
+  AGENT_ACTIVITY_QUEUED_COUNT_HEADER,
   AGENT_ACTIVITY_TASK_COUNT_HEADER,
   AGENT_STATUS_HEADER,
   AGENT_STATUS_PATH,
@@ -46,6 +47,7 @@ import {
   negotiateProviderReadinessFromHeaders,
   projectAgentActivityForClient,
   type RuntimeProviderReadinessNegotiation,
+  requestsAgentActivityQueuedCount,
   requestsAgentActivityTaskCount,
   requestsCloudIdentityV1,
   TASK_BY_ID_TEMPLATE,
@@ -247,6 +249,7 @@ export function registerAccountRoutes(
       const account = accountId(request);
       const response = await agentService.listForAccount(account);
       const includeTaskCount = requestsAgentActivityTaskCount(request.headers[AGENT_ACTIVITY_TASK_COUNT_HEADER]);
+      const includeQueuedCount = requestsAgentActivityQueuedCount(request.headers[AGENT_ACTIVITY_QUEUED_COUNT_HEADER]);
       return reply.code(200).send(
         ListAgentsResponseSchema.parse({
           ...(options.agentStatusService && request.headers[AGENT_STATUS_HEADER] === AGENT_STATUS_VERSION
@@ -254,7 +257,7 @@ export function registerAccountRoutes(
             : {}),
           agents: response.agents.map((agent) => ({
             ...agent,
-            activity: projectAgentActivityForClient(agent.activity, includeTaskCount),
+            activity: projectAgentActivityForClient(agent.activity, includeTaskCount, includeQueuedCount),
             ...(options.slackOAuthAvailable === undefined ? {} : { slackOAuthAvailable: options.slackOAuthAvailable }),
           })),
         }),

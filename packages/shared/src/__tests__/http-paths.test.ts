@@ -201,9 +201,12 @@ describe("http paths", () => {
       expect(agentContextTreePath(agentId)).toBe(`${base}/context-tree`);
     });
 
-    it("carries the usage window as a query parameter", () => {
+    it("carries the usage window and optional timezone as query parameters", () => {
       expect(agentUsagePath(AGENT_ID, 30)).toBe(`/api/v1/agents/${AGENT_ID}/usage?days=30`);
       expect(agentUsagePath(AGENT_ID, 0)).toBe(`/api/v1/agents/${AGENT_ID}/usage?days=0`);
+      expect(agentUsagePath(AGENT_ID, 30, "Asia/Shanghai")).toBe(
+        `/api/v1/agents/${AGENT_ID}/usage?days=30&timezone=Asia%2FShanghai`,
+      );
     });
 
     it("encodes an agent id that would otherwise change the path shape", () => {

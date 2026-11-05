@@ -8,6 +8,8 @@ import {
   type AccountSetupCompletion,
   AccountSetupCompletionSchema,
   type AccountSetupResetMode,
+  AGENT_ACTIVITY_QUEUED_COUNT_HEADER,
+  AGENT_ACTIVITY_QUEUED_COUNT_VERSION,
   AGENT_ACTIVITY_TASK_COUNT_HEADER,
   AGENT_ACTIVITY_TASK_COUNT_VERSION,
   AGENT_STATUS_HEADER,
@@ -253,6 +255,7 @@ import {
   normalizeError,
   routeTemplate,
 } from "./observability/diagnostics.js";
+import { viewerTimezone } from "./query/keys.js";
 
 interface RuntimeSchema<T> {
   safeParse(
@@ -408,8 +411,9 @@ export class BrowserApi {
     readonly diagnosticReporter: DiagnosticReporter = new ConsoleDiagnosticReporter(),
   ) {}
 
-  cloudUsage(windowDays: CloudUsageWindowDays) {
-    return this.request(`${CLOUD_USAGE_PATH}?windowDays=${windowDays}`, CloudUsageSummarySchema);
+  cloudUsage(windowDays: CloudUsageWindowDays, timezone = viewerTimezone()) {
+    const query = new URLSearchParams({ windowDays: String(windowDays), timezone });
+    return this.request(`${CLOUD_USAGE_PATH}?${query.toString()}`, CloudUsageSummarySchema);
   }
 
   cloudBilling() {
@@ -460,6 +464,7 @@ export class BrowserApi {
     return this.request(HTTP_PATHS.accountAgents, ListAgentsResponseSchema, {
       headers: {
         [AGENT_ACTIVITY_TASK_COUNT_HEADER]: AGENT_ACTIVITY_TASK_COUNT_VERSION,
+        [AGENT_ACTIVITY_QUEUED_COUNT_HEADER]: AGENT_ACTIVITY_QUEUED_COUNT_VERSION,
         [AGENT_STATUS_HEADER]: AGENT_STATUS_VERSION,
       },
     });
@@ -535,7 +540,10 @@ export class BrowserApi {
 
   agent(agentId: string): Promise<AgentDetail> {
     return this.request(agentByIdPath(agentId), AgentDetailSchema, {
-      headers: { [AGENT_ACTIVITY_TASK_COUNT_HEADER]: AGENT_ACTIVITY_TASK_COUNT_VERSION },
+      headers: {
+        [AGENT_ACTIVITY_TASK_COUNT_HEADER]: AGENT_ACTIVITY_TASK_COUNT_VERSION,
+        [AGENT_ACTIVITY_QUEUED_COUNT_HEADER]: AGENT_ACTIVITY_QUEUED_COUNT_VERSION,
+      },
     });
   }
 
@@ -575,8 +583,12 @@ export class BrowserApi {
     });
   }
 
-  agentUsage(agentId: string, windowDays: AgentUsageWindowDays): Promise<AgentUsageDetail> {
-    return this.request(agentUsagePath(agentId, windowDays), AgentUsageDetailSchema);
+  agentUsage(
+    agentId: string,
+    windowDays: AgentUsageWindowDays,
+    timezone = viewerTimezone(),
+  ): Promise<AgentUsageDetail> {
+    return this.request(agentUsagePath(agentId, windowDays, timezone), AgentUsageDetailSchema);
   }
 
   agentConfig(agentId: string): Promise<AgentAdminConfig> {

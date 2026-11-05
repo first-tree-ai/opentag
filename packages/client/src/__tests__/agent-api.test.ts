@@ -660,7 +660,7 @@ describe("OpenTagApi against a newer Server", () => {
     agents: [
       {
         ...agentListItem,
-        activity: { state: "working", startedAt: agent.updatedAt, queuedTaskCount: 2 },
+        activity: { state: "working", startedAt: agent.updatedAt, futureActivityHint: 2 },
         computer: { ...agentListItem.computer, region: "value-must-not-be-logged" },
         brandNewField: { nested: [1, 2] },
       },
@@ -688,7 +688,7 @@ describe("OpenTagApi against a newer Server", () => {
     expect(debug).toHaveBeenCalledWith(
       expect.objectContaining({
         path: "/api/v1/agents",
-        ignoredKeys: expect.arrayContaining(["serverOnlyFlag", "agents.0.activity.queuedTaskCount"]),
+        ignoredKeys: expect.arrayContaining(["serverOnlyFlag", "agents.0.activity.futureActivityHint"]),
       }),
       expect.any(String),
     );

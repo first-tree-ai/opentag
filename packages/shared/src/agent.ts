@@ -148,39 +148,92 @@ export const AgentUsageWindowDaysSchema = z.union([
   z.literal(AGENT_USAGE_WINDOW_OPTIONS[3]),
 ]);
 
+const IANA_TIMEZONE_PATTERN = /^[A-Za-z][A-Za-z0-9_+-]*(?:\/[A-Za-z0-9_+-]+)*$/;
+
+function isValidIanaTimezone(value: string): boolean {
+  if (!IANA_TIMEZONE_PATTERN.test(value)) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const UsageTimezoneSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(100)
+  .refine(isValidIanaTimezone, { message: "Expected a valid IANA timezone identifier" })
+  .default("UTC");
+
+export const AgentUsageQuerySchema = z
+  .object({
+    days: z.coerce.number().pipe(AgentUsageWindowDaysSchema).default(AGENT_USAGE_WINDOW_DAYS),
+    timezone: UsageTimezoneSchema,
+  })
+  .strict();
+
+/**
+ * Tasks with a message still waiting to be delivered to the Computer, counted as the Task list's
+ * "Queued" status counts them. Present only when positive; older Servers omit it.
+ */
+const queuedTaskCount = z.number().int().safe().positive().optional();
+
 export const AgentListActivitySchema = z.discriminatedUnion("state", [
-  z.object({ state: z.literal("idle") }).strict(),
-  z.object({ state: z.literal("unknown") }).strict(),
+  z.object({ state: z.literal("idle"), queuedTaskCount }).strict(),
+  z.object({ state: z.literal("unknown"), queuedTaskCount }).strict(),
   z
     .object({
       state: z.literal("working"),
       startedAt: z.string().datetime(),
       /** Tasks with a Turn the Computer accepted and has not reported yet. Older Servers omit it. */
       runningTaskCount: z.number().int().safe().positive().optional(),
+      queuedTaskCount,
     })
     .strict(),
 ]);
 
 /**
- * Clients that render running Task counts send this header with the version below. `runningTaskCount`
- * is additive to a strict object, so a client that does not ask for it never receives it: older
- * clients validate the working activity strictly and would reject the field.
+ * Clients that render the running Task count send this header. The count is additive to a strict object, so only a
+ * client that declared it receives it: older clients validate the activity strictly and would reject a field they do
+ * not know. Released Servers recognize exactly this value, so it must not change.
  */
 export const AGENT_ACTIVITY_TASK_COUNT_HEADER = "x-opentag-agent-activity-task-count";
 export const AGENT_ACTIVITY_TASK_COUNT_VERSION = "1";
+
+/**
+ * Clients that render the queued Task count send this header as well. It is separate so a newer Web still receives the
+ * running count from a Server that does not know the queued count.
+ */
+export const AGENT_ACTIVITY_QUEUED_COUNT_HEADER = "x-opentag-agent-activity-queued-count";
+export const AGENT_ACTIVITY_QUEUED_COUNT_VERSION = "1";
 
 export function requestsAgentActivityTaskCount(value: string | string[] | undefined): boolean {
   return (Array.isArray(value) ? value[0] : value) === AGENT_ACTIVITY_TASK_COUNT_VERSION;
 }
 
-/** The activity a client receives: the count only for a client that declared it can read it. */
+export function requestsAgentActivityQueuedCount(value: string | string[] | undefined): boolean {
+  return (Array.isArray(value) ? value[0] : value) === AGENT_ACTIVITY_QUEUED_COUNT_VERSION;
+}
+
+/** The activity a client receives: only the counts that client declared it can read. */
 export function projectAgentActivityForClient(
   activity: z.infer<typeof AgentListActivitySchema>,
   includeTaskCount: boolean,
+  includeQueuedCount = false,
 ): z.infer<typeof AgentListActivitySchema> {
-  if (includeTaskCount || activity.state !== "working" || activity.runningTaskCount === undefined) return activity;
-  const { runningTaskCount: _count, ...legacy } = activity;
-  return legacy;
+  let projected = activity;
+  if (!includeQueuedCount && projected.queuedTaskCount !== undefined) {
+    const { queuedTaskCount: _queued, ...rest } = projected;
+    projected = rest;
+  }
+  if (!includeTaskCount && projected.state === "working" && projected.runningTaskCount !== undefined) {
+    const { runningTaskCount: _count, ...legacy } = projected;
+    projected = legacy;
+  }
+  return projected;
 }
 
 export const AgentDetailSchema = AgentSummarySchema.extend({
@@ -374,6 +427,7 @@ export type AgentDetail = z.infer<typeof AgentDetailSchema>;
 export type AgentListActivity = z.infer<typeof AgentListActivitySchema>;
 export type AgentUsageSummary = z.infer<typeof AgentUsageSummarySchema>;
 export type AgentUsageWindowDays = z.infer<typeof AgentUsageWindowDaysSchema>;
+export type AgentUsageQuery = z.infer<typeof AgentUsageQuerySchema>;
 export type AgentUsageDetail = z.infer<typeof AgentUsageDetailSchema>;
 export type AgentListItem = z.infer<typeof AgentListItemSchema>;
 export type AgentAdminConfig = z.infer<typeof AgentAdminConfigSchema>;

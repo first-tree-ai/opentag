@@ -134,6 +134,16 @@ publishes any user-facing result through the official provider CLI during that c
 child's text automatically. Channel callbacks target the existing chat or channel, while thread callbacks retain the
 existing thread scope. Internal targets never receive provider credentials or outbox context.
 
+Default Local (`legacy`) Turns retain the non-secret context from their existing credential grant after credential
+materialization succeeds. Session messages steered into that live Turn use the same Server-authorized channel or thread
+target without requesting another grant. Cleanup, shutdown, or cancellation withdraws that context; a failed or superseded
+preparation cannot restore it. The Client never derives an outbox target from the Session message's sender or content.
+Each legacy preparation returns an execution cleanup token, also recorded in its environment manifest. Materialization
+and cleanup share one serial lifecycle per Session: a replacement waits for older writes and teardown, and cleanup carrying
+an older token cannot remove the replacement's context or files. A Run that never prepared credentials does not perform
+Session-wide cleanup. Other Sessions prepare independently.
+An older grant without outbox context still leaves visible Session messages queued until the Turn ends.
+
 ## Run outcome notices
 
 `accepted` and `session list` describe delivery only. When an internal Session's Run ends without completing, the

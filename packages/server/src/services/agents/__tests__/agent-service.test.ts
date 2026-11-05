@@ -227,8 +227,8 @@ async function createDelivery(
  * One inbound message in a Session's own channel and its delivery.
  */
 async function createSessionDelivery(
-  session: { id: string; imBindingId: string; channelId: string },
-  options: { state: "pending" | "accepted"; attention?: "direct" | "ambient"; threadKey?: string },
+  session: { id: string; imBindingId: string; channelId: string; threadKey: string | null },
+  options: { state: "pending" | "accepted"; attention?: "direct" | "ambient" },
 ) {
   const externalMessageId = `message-${crypto.randomUUID()}`;
   const [message] = await unitDatabase.database
@@ -245,7 +245,7 @@ async function createSessionDelivery(
       authorExternalId: "human-fixture",
       content: { version: 1, fallbackText: "Request", blocks: [{ type: "text", text: "Request" }], truncated: false },
       providerContext: { provider: "feishu", chatType: "group" },
-      threadKey: options.threadKey ?? null,
+      threadKey: session.threadKey,
       occurredAt: NOW,
     })
     .returning();

@@ -141,26 +141,29 @@ describe("SessionCollaborationService", () => {
     );
   });
 
-  it("records a busy target as unreachable capacity", async () => {
-    const fixture = serviceFixture();
-    fixture.domain.requestSessionMessageDelivery.mockResolvedValue({
-      type: "session:message:deliver:result",
-      requestId: randomUUID(),
-      messageId: fixture.messageId,
-      targetSessionId: fixture.targetSessionId,
-      placementGeneration: 1,
-      status: "rejected",
-      reason: "session_busy",
-    });
+  it.each(["session_busy", "agent_busy", "client_busy"] as const)(
+    "records a %s refusal as unreachable with that cause",
+    async (reason) => {
+      const fixture = serviceFixture();
+      fixture.domain.requestSessionMessageDelivery.mockResolvedValue({
+        type: "session:message:deliver:result",
+        requestId: randomUUID(),
+        messageId: fixture.messageId,
+        targetSessionId: fixture.targetSessionId,
+        placementGeneration: 1,
+        status: "rejected",
+        reason,
+      });
 
-    await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
-      status: "unreachable",
-      code: "capacity",
-    });
-    expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledWith(
-      expect.objectContaining({ outcome: "unreachable", errorCode: "capacity" }),
-    );
-  });
+      await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+        status: "unreachable",
+        code: reason,
+      });
+      expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: "unreachable", errorCode: reason }),
+      );
+    },
+  );
 
   it("records reconcile failure as unreachable without attempting delivery", async () => {
     const fixture = serviceFixture();

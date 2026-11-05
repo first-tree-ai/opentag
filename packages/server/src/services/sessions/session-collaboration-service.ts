@@ -533,7 +533,7 @@ export class SessionCollaborationService {
     // The owner can lose the allocation or fail its post-receipt permission step after the
     // business frame left. Except for an explicit Runner capacity refusal, that result no
     // longer proves the scheduled message was never received.
-    if (sent && outcome.status === "unreachable" && outcome.code !== "capacity") {
+    if (sent && outcome.status === "unreachable" && outcome.code !== "client_busy") {
       return record("unknown", "delivery_uncertain");
     }
     return record(outcome.status, "code" in outcome ? outcome.code : undefined);
@@ -989,7 +989,7 @@ export class SessionCollaborationService {
 function mapDelivery(delivery: SessionMessageDeliveryResult, sessionId: string): SessionCliCommandResponse {
   if (delivery.status === "accepted") return response(delivery.messageId, "accepted", sessionId);
   if (delivery.reason === "session_busy" || delivery.reason === "agent_busy" || delivery.reason === "client_busy") {
-    return response(delivery.messageId, "unreachable", sessionId, "capacity");
+    return response(delivery.messageId, "unreachable", sessionId, delivery.reason);
   }
   if (
     delivery.reason === "stale_generation" ||
@@ -1009,7 +1009,7 @@ function mapScheduledDelivery(delivery: SessionMessageDeliveryResult): {
 } {
   if (delivery.status === "accepted") return { outcome: "accepted", code: undefined };
   if (delivery.reason === "session_busy" || delivery.reason === "agent_busy" || delivery.reason === "client_busy") {
-    return { outcome: "unreachable", code: "capacity" };
+    return { outcome: "unreachable", code: delivery.reason };
   }
   if (
     delivery.reason === "stale_generation" ||

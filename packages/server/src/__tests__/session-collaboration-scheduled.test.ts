@@ -464,12 +464,12 @@ describe("SessionCollaborationService.dispatchScheduledMessage", () => {
           onDispatched();
           return {};
         }) as never);
-        return { status: "unreachable", code: "capacity" };
+        return { status: "unreachable", code: "client_busy" };
       },
     );
     await expect(capacity.service.dispatchScheduledMessage(second.snapshot)).resolves.toEqual({
       outcome: "unreachable",
-      code: "capacity",
+      code: "client_busy",
     });
   });
 

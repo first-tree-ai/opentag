@@ -815,7 +815,7 @@ describe("dispatch outcomes and the conditional summary (D09, D10, D16)", () => 
     if (second.kind !== "claimed") throw new Error("expected a claim");
     await expect(stack.collaboration.dispatchScheduledMessage(second.snapshot)).resolves.toEqual({
       outcome: "unreachable",
-      code: "capacity",
+      code: "session_busy",
     });
     expect((await scheduleRow(row.id))?.enabled).toBe(true);
     expect((await scheduleRow(row.id))?.nextTriggerAt?.toISOString()).toBe(

@@ -110,7 +110,7 @@ request. Keep one row per behaviour, not one per screenshot or width.
 
 | ID | Scenario | Steps | Expected result | Run | Verified today |
 | --- | --- | --- | --- | --- | --- |
-| CM-01 | Computer list | Open Computers with online, offline, and Cloud Computers | Each card shows its state; offline offers recovery; delete asks for confirmation | Core | unit: `__tests__/computer-management.test.tsx`, `__tests__/computers-delete.test.tsx` |
+| CM-01 | Computer list | Open Computers with online, offline, disconnected, and Cloud Computers | Each card shows its state; offline and disconnected Local cards show “Last online …” or “No last-online record”; offline offers recovery; delete asks for confirmation | Core | unit: `__tests__/computer-management.test.tsx`, `__tests__/computers-delete.test.tsx`, `features/agents/computer-status.test.tsx` |
 | CM-02 | Connect a new computer from the web | Computers or Agent settings: connect a new computer and copy the command | The copied text matches what the window shows; the page waits for that computer and shows it once connected | Core | smoke: `computer-connection.spec.ts`; unit: `features/computer-connect/computer-connect.test.tsx` |
 | CM-03 | Repair a disconnected computer | Sole computer disconnected | Recovery repairs it in place without creating another | Core | smoke: `computer-connection.spec.ts`; connect C03r, C04r |
 | C00 | Command exactly as the web shows it | Run the command the web emits on a fresh machine | Finishes without hanging; any failure is plain | Edge | connect C00 |
@@ -118,11 +118,11 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | C02 | Rerun on a healthy machine | Connected machine; new code; run again | Same Computer, no duplicate, the running service is kept, online | Core | connect C02 |
 | C03 | Service stopped | Stop the local service; run a new connect command | Same Computer, no duplicate, back online | Core | connect C03, C03r |
 | C04 | Disconnected on the Server side | Setup (no Web action exists for this): disconnect the Computer through the authorized `POST /api/v1/computers/:id/disconnect` API. Then run a new command (create or recovery code) | Same Computer, no duplicate, back online | Core | connect C04, C04r |
-| C05 | Local identity lost | Delete the local identity file; rerun | Connects; a new Computer is acceptable if the old one shows offline | Edge | connect C05 |
+| C05 | Local identity lost while online | Delete the local identity file while the original Computer remains online; rerun | One new Computer; the online original is untouched | Edge | connect C05 |
 | C06 | Old version installed | Previous release installed and connected; rerun | Upgrades, same Computer, online | Core | connect C06 |
 | C07 | Expired code | Run a command whose code is past its 15-minute lifetime | Plain failure with the next step; no Computer created | Core | connect C07 |
 | C08 | Already-used code | Run a command whose code another machine redeemed | Plain failure; no Computer created | Edge | connect C08 |
-| C09 | Machine bound to another Account | Machine connected as another Account; this user runs their command | Plain failure; nothing created; the other Account untouched; the code is not used up | Edge | connect C09 |
+| C09 | Retained identity bound to another Account | Keep the local identity connected as another Account; this user runs their command | Plain account-conflict failure; nothing created; the other Account is untouched; the code is not used up | Edge | connect C09 |
 | C10 | Server unreachable | Releases download but the Server refuses connections | Plain failure; no Computer created; the code is not used up | Edge | connect C10 |
 | C11 | Home directory not writable | Run on a machine whose home is read-only | Plain failure; no Computer created; the code is not used up | Edge | connect C11 |
 | C12 | No curl, no system Node.js | Run without curl; run without node | Without curl: plain failure, code not used up. Without node: the bundled runtime connects | Edge | connect C12a, C12b |
@@ -130,11 +130,12 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | C14 | Computer removed in the web | On Computers, More → Remove and confirm; rerun on the same machine | One new Computer, online | Edge | connect C14 |
 | C15 | Same command twice | Run the identical, now-used command again | No duplicate, same Computer, online, plain message | Edge | connect C15 |
 | C16 | Machine handed over | Another Account deletes the machine's Computer; this user connects | One new Computer for this user; the other Account's deleted Computer untouched | Edge | connect C16 |
-| C17 | Home lost while offline | Local openTag home removed while the computer is off; rerun | Connects; one new Computer; the original untouched | Edge | connect C17 |
+| C17 | Home lost while offline | Remove the local openTag home while the Computer is offline; rerun as the same OS user with the same home path, hostname, platform, and architecture | Repairs the original Computer in place; same Computer ID, no duplicate, back online | Edge | connect C17 |
 | C18 | Clone of an online machine | A cloned machine connects while the original is online | One new Computer; the original untouched | Edge | connect C18 |
-| C19 | Same image, other machine | Another machine from the same image while the original is offline | One new Computer; the original untouched | Edge | connect C19 |
+| C19 | Same image, different hostname | A machine from the same image connects with a different hostname while the original is offline | One new Computer; the original is untouched | Edge | connect C19 |
 | C20 | Second OS user | A second OS user on the same machine connects | Connects as its own Computer, online | Edge | connect C20 |
 | C21 | Command from Agent setup | Run the command issued by Agent setup | Connects and runs the Agent's local readiness checks; prints only the outcome and one next step | Core | connect C21 |
+| C22 | Lost identity connects to another Account | Remove the local openTag home from a Computer owned by another Account; connect with this Account's code | One new Computer for this Account; the other Account's Computer is untouched; no conflict or cross-Account disclosure | Edge | connect C22 |
 
 ## Tasks
 

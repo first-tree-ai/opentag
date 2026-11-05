@@ -112,6 +112,7 @@ export interface OutboundWriteCapture {
 }
 
 export interface ImProviderProxyAdapterOptions {
+  onCredentialFailure?: (authorization: RuntimeProxyAuthorization) => void;
   provider: RuntimeCredentialProvider;
   registry: ProviderOperationRegistry;
   urlHandles: RuntimeUrlHandleStore;
@@ -207,6 +208,7 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     }
     try {
       const response = await this.#fetchUpstream(operation, annotated.bytes, headers, request, material);
+      this.#hintHttpCredentialFailure(response.status, authorization);
       return operation.response === "stream"
         ? this.#streamResponse(match, response)
         : await this.#jsonResponse(
@@ -377,6 +379,19 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     };
   }
 
+  #hintHttpCredentialFailure(status: number, authorization: RuntimeProxyAuthorization): void {
+    if (status === 401) this.#hintCredentialFailure(authorization);
+  }
+
+  #hintCredentialFailure(authorization: RuntimeProxyAuthorization): void {
+    if (authorization.purpose === "validation") return;
+    try {
+      this.#options.onCredentialFailure?.(authorization);
+    } catch {
+      this.#options.logger?.warn({ code: "CREDENTIAL_FAILURE_HINT_FAILED" }, "Credential failure hint failed");
+    }
+  }
+
   async #jsonResponse(
     match: ProviderOperationMatch,
     request: ProviderProxyRequest,
@@ -388,6 +403,8 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
   ): Promise<ProviderProxyResponse> {
     const operation = match.operation;
     const payload = await parseJsonResponse(response, operation.maxResponseBytes ?? 2 * 1024 * 1024);
+    if (response.status !== 401 && request.provider === "slack" && isSlackCredentialFailure(payload))
+      this.#hintCredentialFailure(authorization);
     if (operation.kind === "write") {
       const outcome = classifyWriteOutcome({ payload, provider: request.provider, status: response.status });
       // An unconfirmed or ambiguous outcome must never reach the caller as a successful write.
@@ -562,6 +579,16 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
     }
     throw new RuntimeProxyError("handle_invalid");
   }
+}
+
+function isSlackCredentialFailure(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const value = payload as { ok?: unknown; error?: unknown };
+  return (
+    value.ok === false &&
+    typeof value.error === "string" &&
+    ["invalid_auth", "token_revoked", "account_inactive", "not_authed"].includes(value.error)
+  );
 }
 
 const SLACK_TEXT_MAX_CHARS = 4_000;

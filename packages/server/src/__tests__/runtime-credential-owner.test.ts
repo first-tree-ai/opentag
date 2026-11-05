@@ -14,6 +14,7 @@ import { RuntimeExecutionRegistry } from "../runtime-credentials/execution-regis
 import type { RuntimeGitHubAdmission } from "../runtime-credentials/github-admission.js";
 import { UnavailableRuntimeGitHubAdmission } from "../runtime-credentials/github-admission.js";
 import { RuntimeMcpGatewayTokenStore } from "../runtime-credentials/mcp-gateway-token-store.js";
+import type { RuntimeMcpServicePolicy } from "../runtime-credentials/mcp-policy.js";
 import {
   RuntimeCredentialOwner,
   type RuntimeCredentialOwnerOptions,
@@ -137,6 +138,7 @@ async function fixture(
     >;
     authority?: FakeAuthority;
     scopeResolver?: FakeScopeResolver;
+    mcpPolicy?: RuntimeMcpServicePolicy;
     gitHubAdmission?: RuntimeGitHubAdmission;
     taskPolicy?: RuntimeTaskPolicy;
     control?: RuntimeControlIdentity;
@@ -207,6 +209,7 @@ async function fixture(
     broker,
     policy,
     gitHubAdmission,
+    ...(overrides.mcpPolicy ? { mcpPolicy: overrides.mcpPolicy } : {}),
     ...(overrides.cloudControlActive ? { cloudControlActive: overrides.cloudControlActive } : {}),
     ...gatewayStores,
     sweepIntervalMs: 60_000,
@@ -246,6 +249,53 @@ afterEach(async () => {
 });
 
 describe("RuntimeCredentialOwner execution open", () => {
+  it("opens a negotiated Local internal message with only its Agent's MCP service", async () => {
+    const scopeResolver = new FakeScopeResolver();
+    scopeResolver.session = { ...sessionSnapshot(), sessionKind: "internal" };
+    const authorizeMcp = vi.fn(async () => ["mcp:tools"] as const);
+    const state = await fixture({ scopeResolver, mcpPolicy: { authorizeMcp } });
+    cleanup.push(() => state.owner.close());
+    const context = {
+      ...state.context,
+      negotiatedCapabilities: {
+        ...state.context.negotiatedCapabilities,
+        [RUNTIME_CAPABILITY.sessionCollaboration]: 3,
+        [RUNTIME_CAPABILITY.mcpGateway]: 1,
+      },
+    };
+    const frame = openFrame({ source: { kind: "session-message", messageId: randomUUID() }, services: ["mcp"] });
+    const opened = await state.owner.handle(frame, context);
+    expect(opened).toMatchObject({
+      status: "succeeded",
+      providers: [],
+      services: [{ service: "mcp", scopes: ["mcp:tools"] }],
+    });
+    if (opened?.type !== "runtime:execution:result" || opened.status !== "succeeded")
+      throw new Error("Expected an execution");
+    const record = state.executions.get(opened.executionId);
+    expect(record?.providers.size).toBe(0);
+    expect(authorizeMcp).toHaveBeenCalledWith({ accountId: sessionSnapshot().computer.ownerAccountId, agentId: AGENT });
+    expect(record).toMatchObject({ internalAuthority: "local-session-collaboration", computerKind: "local" });
+    expect(state.authority.authorize).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: "session-message" }),
+      expect.objectContaining({ sessionId: "session-1", agentId: AGENT }),
+    );
+
+    await expect(state.owner.handle(frame, state.context)).resolves.toMatchObject({
+      status: "rejected",
+      code: "execution_authority_denied",
+    });
+    await expect(state.owner.handle(openFrame({ services: ["mcp"] }), context)).resolves.toMatchObject({
+      status: "rejected",
+      code: "execution_authority_denied",
+    });
+    state.authority.decision = { status: "invalid" };
+    await expect(state.owner.handle(frame, context)).resolves.toMatchObject({
+      status: "rejected",
+      code: "execution_source_invalid",
+    });
+  });
+
   it("opens a delivery execution with the IM provider and outbox metadata", async () => {
     const fixtureState = await fixture();
     cleanup.push(() => fixtureState.owner.close());

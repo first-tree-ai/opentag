@@ -33,7 +33,9 @@ export class ServerRuntimeDurabilityStore implements RuntimeDurabilityStore {
   }
 
   async write<T>(record: DurableWorkRecord<T>): Promise<void> {
-    const parsed = RuntimeDurableWorkRecordSchema.parse(record);
+    // The Server row has no outcome-report marker; outcome reports are Local-only (file store).
+    const { outcomeReport: _localOnly, ...portable } = record;
+    const parsed = RuntimeDurableWorkRecordSchema.parse(portable);
     // Keep the seam's clock injectable for deterministic adapters and future lease metadata.
     this.#now();
     await this.#api.writeRuntimeDurableWork(this.#machineToken, parsed as RuntimeDurableWorkRecord);

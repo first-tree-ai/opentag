@@ -14,7 +14,7 @@ import {
   type SessionReconcileRequest,
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { WebSocketServer } from "ws";
+import { type WebSocket, WebSocketServer } from "ws";
 import type { AgentRuntime, AgentRuntimeFactory } from "../agent-runtime/types.js";
 import { createLogger } from "../observability/logger.js";
 import { claudeCodeRuntimePolicy, validateClaudeCodeRuntimePolicy } from "../providers/claude-code/runtime-policy.js";
@@ -1214,6 +1214,139 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     await expect(preflight(request)).resolves.toBe("configuration_unsupported");
   });
 
+  it("takes a fresh sample after an existing shared probe instead of relabeling it for a manual epoch", async () => {
+    const home = await temporaryDirectory("opentag-fresh-epoch-");
+    const server = await runtimeServer();
+    cleanup.push(server.close);
+    const connection = runtimeConnection(server.url);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const probe = vi.fn(async () => {
+      if (probe.mock.calls.length === 1)
+        return { ready: false as const, issues: [{ code: "temporarily_unavailable" as const, message: "cold" }] };
+      if (probe.mock.calls.length === 2) await gate;
+      return { ready: true as const, issues: [] };
+    });
+    let requestFresh!: () => void;
+    const reports: Array<Record<string, unknown>> = [];
+    const handleFrame = (socket: WebSocket, data: { toString(): string }) => {
+      const frame = JSON.parse(data.toString()) as Record<string, unknown>;
+      if (frame.type === "auth") completeAuth(socket, frame, ["codex"]);
+      if (frame.type === "computer:register") {
+        const result = registrationResult(frame);
+        socket.send(JSON.stringify(result));
+        requestFresh = () =>
+          socket.send(
+            JSON.stringify({
+              type: "runtime:self-check",
+              requestId: randomUUID(),
+              connectionId: result.connectionId,
+            }),
+          );
+      }
+      if (frame.type === "heartbeat") socket.send(JSON.stringify(heartbeatResult(frame)));
+      if (frame.type === "runtime:self-check:report") reports.push(frame);
+    };
+    server.wss.on("connection", (socket) => socket.on("message", (data) => handleFrame(socket, data)));
+    const runtime = await createClientRuntime(connection, {
+      home,
+      clientVersion: "0.0.1",
+      factory: readyFactory("codex", probe),
+      environment: { HOME: home, PATH: process.env.PATH },
+      capabilityRefreshIntervalMs: 60_000,
+      providerProbeDeadlineMs: SHARED_OWNERSHIP_PROBE_DEADLINE_MS,
+    });
+    await runtime.reconciler.reconcile(reconcileRequest(connection.installationId, snapshot()));
+    const running = runtime.run();
+    const preparing = runtime.runtimeManager
+      .ensureRuntime("session-1", new AbortController().signal)
+      .catch(() => undefined);
+    try {
+      await connection.whenRegistered();
+      await vi.waitFor(() => expect(probe).toHaveBeenCalledTimes(2));
+      requestFresh();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(probe).toHaveBeenCalledTimes(2);
+      release();
+      await preparing;
+      await vi.waitFor(() => expect(reports).toHaveLength(1));
+      expect(probe).toHaveBeenCalledTimes(3);
+      expect(reports[0]).toMatchObject({ sequence: 1, providerReadiness: [{ provider: "codex", status: "ready" }] });
+    } finally {
+      release();
+      runtime.stop();
+      await running;
+    }
+  });
+
+  it("reports the self-check deadline without releasing actual probe ownership, and drains it on stop", async () => {
+    let receive!: (frame: unknown) => void;
+    let finishProbe!: () => void;
+    let finishRuntime!: () => void;
+    const probe = new Promise<void>((resolve) => {
+      finishProbe = resolve;
+    });
+    const runtimeGate = new Promise<void>((resolve) => {
+      finishRuntime = resolve;
+    });
+    const refreshCapability = vi.fn(() => probe);
+    const publishSelfCheck = vi.fn(async () => {
+      throw new Error("send failed");
+    });
+    const close = vi.fn(async () => undefined);
+    const runtime = new ComposedClientRuntime(
+      { run: () => runtimeGate, stop: vi.fn() } as never,
+      {
+        bindingStore: {},
+        custody: {},
+        collaboration: { close: vi.fn() },
+        reconciler: {},
+        workspace: {},
+        credentialEnvironment: { close: vi.fn(async () => undefined) },
+        sessionMessageInbox: { stop: vi.fn(), settled: vi.fn(async () => undefined) },
+        runner: { stop: vi.fn(), settled: vi.fn(async () => undefined) },
+        reportOwner: { stop: vi.fn(), settled: vi.fn(async () => undefined) },
+        runtimeManager: { close },
+        capabilityAbort: new AbortController(),
+        refreshCapability,
+        capabilityRefreshIntervalMs: 30_000,
+        connection: {
+          supportsCapability: () => true,
+          publishSelfCheck,
+          subscribeBusinessFrames: (listener: (frame: unknown) => void) => {
+            receive = listener;
+            return () => undefined;
+          },
+        },
+      } as never,
+    );
+    const running = runtime.run();
+    const requestId = randomUUID();
+    receive({ type: "runtime:self-check", requestId });
+    try {
+      await vi.waitFor(
+        () =>
+          expect(publishSelfCheck).toHaveBeenCalledWith(requestId, 1, expect.any(String), [
+            { part: "runtime", reason: "check_timed_out" },
+          ]),
+        { timeout: 12_000, interval: 25 },
+      );
+      receive({ type: "runtime:self-check", requestId: randomUUID() });
+      expect(refreshCapability).toHaveBeenCalledOnce();
+      runtime.stop();
+      finishRuntime();
+      await Promise.resolve();
+      expect(close).not.toHaveBeenCalled();
+    } finally {
+      finishProbe();
+      finishRuntime();
+      await running;
+    }
+    expect(close).toHaveBeenCalledOnce();
+  }, 20_000);
+
   it("covers ComposedClientRuntime monitor guards with deterministic component doubles", async () => {
     const runtime = { run: vi.fn(async () => undefined), stop: vi.fn() };
     const components = {
@@ -1459,7 +1592,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       binding,
       prompt: async (request) => ({ runId: request.runId, status: "completed", output: [] }),
       followUp: async (request) => ({ runId: request.runId, status: "completed", output: [] }),
-      steer: async () => undefined,
+      steer: async () => ({ outcome: Promise.resolve("processed" as const) }),
       respond: async () => undefined,
       abort: async () => undefined,
       waitForIdle: async () => undefined,
@@ -1660,7 +1793,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       binding: { providerId: "codex", schemaVersion: 1, payload: { threadId: "thread-1" } },
       prompt: async (request) => ({ runId: request.runId, status: "completed", output: [] }),
       followUp: async (request) => ({ runId: request.runId, status: "completed", output: [] }),
-      steer: async () => undefined,
+      steer: async () => ({ outcome: Promise.resolve("processed" as const) }),
       respond: async () => undefined,
       abort: async () => undefined,
       waitForIdle: async () => undefined,

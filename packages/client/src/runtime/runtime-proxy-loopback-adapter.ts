@@ -96,6 +96,11 @@ export interface RuntimeProxyAdapterStreamRequest {
   readonly path: string;
   readonly provider: RuntimeProxyProvider;
   readonly signal: AbortSignal;
+  /**
+   * The execution-local handle this request was verified with, when it carried one. Owners that
+   * serve several concurrent child executions route by it; it is never forwarded upstream.
+   */
+  readonly localHandle?: string;
 }
 
 export interface RuntimeProxyLoopbackAdapterOptions {
@@ -443,7 +448,7 @@ export class RuntimeProxyLoopbackAdapter {
       replyText(response, 503, "adapter_closed");
       return;
     }
-    await this.#forward(provider, request, response, path, originHost, authorization.override);
+    await this.#forward(provider, request, response, path, originHost, authorization.override, authorization.handle);
   }
 
   /**
@@ -549,6 +554,7 @@ export class RuntimeProxyLoopbackAdapter {
     path: string,
     originHost: string,
     override?: { readonly body: AsyncIterable<Uint8Array>; readonly headers: http.IncomingHttpHeaders },
+    localHandle?: string,
   ): Promise<void> {
     const abort = new AbortController();
     request.on("aborted", () => abort.abort(new Error("request aborted")));
@@ -564,6 +570,7 @@ export class RuntimeProxyLoopbackAdapter {
         headers: forwardedRequestHeaders(provider, override?.headers ?? request.headers, originHost),
         body: override?.body ?? (request as AsyncIterable<Uint8Array>),
         signal: abort.signal,
+        ...(localHandle ? { localHandle } : {}),
       });
     } catch (error) {
       this.#logger.debug(
@@ -715,7 +722,7 @@ interface ProviderAuthorizationOverride {
 }
 
 type ProviderAuthorization =
-  | { readonly ok: true; readonly override?: ProviderAuthorizationOverride }
+  | { readonly ok: true; readonly handle?: string; readonly override?: ProviderAuthorizationOverride }
   | { readonly ok: false; readonly challenge?: boolean; readonly code: string; readonly status: number };
 
 type SlackFormInspection =
@@ -753,10 +760,11 @@ async function authorizeProviderRequest(input: {
       : { ok: false, status: 401, code: "authentication_required", challenge: true };
   }
   if (!verifyHandle(provider, handle)) return { ok: false, status: 403, code: "invalid_handle" };
-  if (form.kind !== "body") return { ok: true };
+  if (form.kind !== "body") return { ok: true, handle };
   // The bounded body was consumed for inspection; forward the scrubbed copy with its exact length.
   return {
     ok: true,
+    handle,
     override: {
       body: singleChunkBody(form.body),
       headers: headersWithContentLength(request.headers, form.body.byteLength),

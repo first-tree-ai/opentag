@@ -1074,7 +1074,7 @@ describe("CloudDeliveryOwner", () => {
     const { hub, fence, owner } = makeOwner();
     const sent: RunnerServerFrame[] = [];
     const { socket, connection } = attachReady(hub, fence, scope, sent, cloud.computerId);
-    const { deliveryId } = await dispatchAndAccept({
+    const { deliveryId, request } = await dispatchAndAccept({
       owner,
       fence,
       scope,
@@ -1089,10 +1089,62 @@ describe("CloudDeliveryOwner", () => {
       }
     };
     const outcome = await owner.recoverAccepted(deliveryId);
-    expect(outcome).toBe("pending");
+    expect(outcome).toBe("running");
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({
+        dispatchPayload: {
+          ...request,
+          deadlineAt: new Date(Date.now() - 2 * 60 * 60_000).toISOString(),
+        },
+      })
+      .where(eq(imMessageDeliveries.id, deliveryId));
+    expect(await owner.recoverAccepted(deliveryId)).toBe("pending");
     const stored = await deliveryRow(deliveryId);
     expect(stored.reportedAt).toBeNull();
   });
+
+  it.each(["timeout", "disconnect"])(
+    "cleans the recovery query timer after %s and retains uncertain custody",
+    async (failure) => {
+      const { scope, agent, cloud } = await cloudScope();
+      const { hub, fence, owner, grants } = makeOwner();
+      const sent: RunnerServerFrame[] = [];
+      const { socket, connection } = attachReady(hub, fence, scope, sent, cloud.computerId);
+      const { deliveryId } = await dispatchAndAccept({
+        owner,
+        fence,
+        scope,
+        agentId: agent.id,
+        computerId: cloud.computerId,
+      });
+      let entered!: () => void;
+      const querySent = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const send = socket.send.bind(socket);
+      socket.send = (frame) => {
+        send(frame);
+        if (frame.type === "delivery:query") entered();
+      };
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const recovering = owner.recoverAccepted(deliveryId);
+        await querySent;
+        expect(vi.getTimerCount()).toBe(1);
+        if (failure === "timeout") await vi.advanceTimersByTimeAsync(10_000);
+        else owner.detachConnection(connection.connectionId);
+        expect(await recovering).toBe("pending");
+        expect(vi.getTimerCount()).toBe(0);
+        expect(await deliveryRow(deliveryId)).toMatchObject({ state: "accepted", reportedAt: null, turnReport: null });
+      } finally {
+        vi.useRealTimers();
+        owner.detachConnection(connection.connectionId);
+        hub.detach(scope.sandboxId, socket);
+        grants.close();
+      }
+    },
+  );
 
   it("re-verifies a journaled received entry with a grant scoped to the frozen window", async () => {
     const { scope, agent, cloud } = await cloudScope();
@@ -1321,7 +1373,7 @@ describe("CloudDeliveryOwner", () => {
     };
     const clock = vi.spyOn(Date, "now").mockReturnValue(now);
     try {
-      await expect(owner.recoverAccepted(deliveryId)).resolves.toBe("pending");
+      await expect(owner.recoverAccepted(deliveryId)).resolves.toBe("reporting");
       expect(logger.warn).not.toHaveBeenCalled();
       await unit.database
         .update(imMessageDeliveries)
@@ -1598,7 +1650,7 @@ describe("CloudDeliveryOwner", () => {
 
     // Releasing is not proof the allocation is destroyed: recovery waits for the journaled report
     // instead of settling a turn the Runner can still describe.
-    expect(await owner.recoverAccepted(deliveryId)).toBe("pending");
+    expect(await owner.recoverAccepted(deliveryId)).toBe("reporting");
     expect((await deliveryRow(deliveryId)).reportedAt).toBeNull();
 
     // The real report is still accepted while the allocation drains and is recorded exactly.

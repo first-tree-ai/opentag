@@ -314,11 +314,17 @@ describe("RuntimeConfigurationForm", () => {
       .mockResolvedValue({ modelSuggestions: ["native/only"], reasoningEffortAllowedValues: null });
     const save = vi.fn();
     render(<RuntimeConfigurationForm initialConfig={{ ...config, runtimeProvider: provider }} save={save} />);
-    await screen.findByText("Couldn’t load the model list. You can type a model name.");
+    await screen.findByText(
+      "Couldn’t confirm which models this computer has. Choose one, or choose “Custom model ID…” to enter one.",
+    );
     expect(await optionLabels("Model")).toContain(preset);
     await returnToPage();
     await waitFor(() =>
-      expect(screen.queryByText("Couldn’t load the model list. You can type a model name.")).toBeNull(),
+      expect(
+        screen.queryByText(
+          "Couldn’t confirm which models this computer has. Choose one, or choose “Custom model ID…” to enter one.",
+        ),
+      ).toBeNull(),
     );
     expect(await optionLabels("Model")).toEqual(["Inherit local configuration", "native/only", "Custom model ID…"]);
     expect(screen.queryByText("The reasoning effort options for this model have not been confirmed.")).toBeNull();
@@ -1302,7 +1308,9 @@ describe("RuntimeConfigurationForm", () => {
     fireEvent.click(screen.getByRole("switch", { name: "Self-configuration" }));
     await chooseOption("Reasoning effort", "High");
     const submit = container.querySelector<HTMLButtonElement>('button[type="submit"]');
-    expect(submit?.disabled).toBe(true);
+    // Busy, but still focusable: disabling the focused button would drop keyboard focus.
+    expect(submit?.disabled).toBe(false);
+    expect(submit?.getAttribute("aria-busy")).toBe("true");
     // Both writes carry the same revision, so a second one now would only conflict.
     fireEvent.submit(submit?.form as HTMLFormElement);
     expect(save).toHaveBeenCalledOnce();

@@ -161,6 +161,19 @@ For UI translations, see [Web i18n](./docs/system/web/i18n.md).
 For database and read/write changes, start with the [Database read/write standards](./docs/system/database-read-write-standards.md).
 Identify the applicable rule IDs, any exceptions, and the verification scope in the change proposal and review.
 
+### Release regression and task records
+
+Run the [Markdown release regression catalogue](./testing/regression/README.md) before every release on the dedicated
+regression computer. When adding or changing a product feature, add or update its matching cases in the same change.
+Assign regression defects to `yuezengwu`. `testing/regression/` is the only test-content directory under `testing/`;
+the parent README is its entry point. Automated unit, integration and E2E tests and their CI remain with their owners.
+
+Do not commit ordinary task test plans, acceptance results, screenshots, performance reports, raw validation evidence
+or local test environment configuration. Keep task artifacts outside the source repository and record useful redacted
+findings in the task's GitHub PR/Issue, including revision, commands, scope, outcomes and limitations. These execution
+records do not belong in the knowledge base. Benchmark tools default to the system temporary directory under
+`opentag-benchmarks/`; use their output overrides for task-owned storage and retention.
+
 ### Local validation
 
 Choose checks from the changed behavior and its consumers. Use the same scope during development and before opening
@@ -253,9 +266,13 @@ Patch Coverage checks changed paths before installing dependencies. Changes outs
 receive an explicit pass; source deletions and renames still require measurement. For source changes, five parallel jobs
 measure one workspace each and enforce its existing floors. The final job requires every report, concatenates disjoint
 file maps, and enforces the unchanged 80% changed-line threshold. Missing reports, failed suites, and overlapping source
-ownership fail the check. The Unit Coverage workflow measures the complete baseline on `main` after every merge that
-touches source, scripts, or dependencies, and weekly, and fails when `main` falls below a floor, so a breach is
-attributed to the merge that caused it.
+ownership fail the check. Inside a measured workspace the gate judges exactly the files the coverage run instruments,
+read from the same scope (`scripts/coverage-scope.mjs`), so test helpers, smoke harnesses and tooling config are never
+judged. A judged file with no coverage entry was not measured and fails the check on its own, whatever the percentage
+and even when its change has no executable line,
+as for a pure rename. The Unit Coverage workflow measures the complete baseline on `main` after every merge that touches source, scripts, or
+dependencies, and weekly, and fails when `main` falls below a floor, so a breach is attributed to the merge that
+caused it.
 
 On pull requests, Quality Scoreboard runs inside CI and reuses the three Node 24 unit shard timings instead of rerunning
 tests. Its duration metric is explicitly the slowest workspace shard, excluding repository script tests and runner queue

@@ -57,15 +57,18 @@ preserve its working credential and generation.
 | Account / Agent | Authorization to manage a binding; Computer and Runtime prerequisites |
 | `im_bindings` status and active identity | Current message route; pending credentials do not overwrite it |
 | Active encrypted credential / generation | Existing credential delivery and message connection fencing |
-| Setup attempt ID / intent | One current `create`, `reauthorize`, or `replace` attempt on a binding |
+| Setup attempt ID / intent | One current `create` or same-App `reauthorize` attempt on a binding |
 | Encrypted setup context | Legacy QR payload or versioned candidate credential and latest observation |
 | Setup expiry | QR deadline before issuance; fixed candidate retention deadline after saving |
 | Setup owner / heartbeat | QR instance ownership or a fresh, per-check candidate claim token |
 | Feishu registration and platform APIs | Issue credentials and observe effective scopes / bot identity |
 
 No approval record, administrator role, connection-flow table, retry table, candidate route,
-or extra credential generation is introduced. `replace` uses the existing replacement
-transaction and history.
+or extra credential generation is introduced. Configured Provider, App and Bot identities cannot
+be replaced. Creation requires empty configuration; an edited empty Agent can still finish it.
+Same-App reauthorization preserves identity. Disconnecting an activated binding retains its
+identity history and requires a new Agent to connect a different identity. A never-activated slot
+can still be cleared and creation resumed.
 
 ## State and data contract
 
@@ -135,6 +138,19 @@ last trustworthy snapshot. At exhaustion, Check again starts a fresh read window
 a Computer, checking an upstream candidate, creating another authorization, or disconnecting.
 Actual authorizing, waiting-handoff and offline observations retain their existing waiting behavior.
 
+### Paused settings reads
+
+The current Account owner can read binding summaries, configuration, handoff observations, diagnostics, and
+saved setup attempts for active or paused Agents. Deleted Agents and other Accounts are rejected. Authorization
+and stored details share a read-only Repeatable Read snapshot; attempt confirmation reads repeat that check,
+and public attempt reads recheck current ownership before returning. Read DTOs keep secrets, encrypted setup
+context, and ownership tokens private.
+
+Paused handoff and diagnostic reads inspect existing runtime observations without scheduling Provider CLI
+preparation or credential validation. Reads do not activate or cancel a candidate, extend its retention, resume an
+Agent, or call Feishu. Setup creation, explicit activation checks, cancellation, and asynchronous completion keep
+their active-only admission, final mutation guards, and attempt/generation fences.
+
 ### Minimal database migration for `pending_activation`
 
 - Append `pending_activation` to `feishu_setup_state`.
@@ -167,7 +183,11 @@ next-check time, uses bounded concurrency and jitter, and respects provider `Ret
 Manual POST checks use the same admission. GET requests remain read-only.
 Settings reads the current open attempt with GET on the existing Agent setup-attempt collection.
 This uses the existing attempt DTO and Account ownership checks, independently of the active
-binding: a working old connection must not hide a saved replacement. No open attempt returns 204.
+binding: a working connection must not hide its saved same-App reauthorization. No open attempt
+returns 204.
+The setup binding read captures Account authority, current Agent status and either its current
+binding or retained configured identity in one read-only Repeatable Read snapshot. A disconnected
+identity does not require a second authorization transaction or a discarded activity read.
 
 An instance that cannot authenticate a saved context preserves its ciphertext and fixed deadline,
 reports a bounded diagnostic, and continues scanning other rows. A later instance with the correct
@@ -219,8 +239,9 @@ so nothing probes the binding again. The binding summary carries the reason as
 `connectionFailure` (`credentials_rejected`, `app_unavailable`, `connection_rejected`, or
 `bot_mismatch`). The Agent list and Agent page show the connection failure with one action,
 **Reconnect channel**, which opens messaging settings. There one line says why the connection stopped
-and what fixes it, and **Reconnect** runs the same-App reauthorization. Activation, or **Change bot**, makes the binding `active` again, clears
-`last_error_code`, and the scan resumes.
+and what fixes it, and **Reconnect** runs the same-App reauthorization. Successful activation with
+the original identity makes the binding `active` again, clears `last_error_code`, and resumes the
+scan. A bot mismatch requires restoring the original Bot or creating a new Agent for another Bot.
 
 A transient failure breaks a run of refusals, and an attempt the open circuit kept from Feishu leaves
 the run as it was. Transient failures alone never stop a binding; they keep retrying at the capped

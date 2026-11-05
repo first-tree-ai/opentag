@@ -90,7 +90,7 @@ describe("Feishu adapter", () => {
     }
   });
 
-  it("persists actual profiles, refreshes reauthorization, and clears metadata on replacement", async () => {
+  it("preserves profiles through reauthorization and rejected replacement", async () => {
     const value = await connectionFixture();
     const input = {
       agentId: value.agent.id,
@@ -116,8 +116,10 @@ describe("Feishu adapter", () => {
     expect((await read())?.bot).toEqual(newer);
     await value.imBindings.activateFeishu(input);
     expect((await read())?.bot).toEqual(newer);
-    await value.imBindings.activateFeishu({ ...input, appId: "cli_replacement", botOpenId: "ou_other" });
-    expect((await read())?.bot).toEqual({ displayName: null, avatarUrl: null });
+    await expect(
+      value.imBindings.activateFeishu({ ...input, appId: "cli_replacement", botOpenId: "ou_other" }),
+    ).rejects.toMatchObject({ code: "IM_BINDING_CONFIGURATION_CONFLICT" });
+    expect((await read())?.bot).toEqual(newer);
   });
 
   it("maps Channel SDK message, thread, mention, and resource fields", () => {
@@ -197,6 +199,54 @@ describe("Feishu adapter", () => {
       message: { threadKey: "omt_1" },
     });
     expect(event?.providerContext).not.toHaveProperty("rootId");
+  });
+
+  it("keeps a quote reply without thread_id out of Thread Sessions", () => {
+    const message: NormalizedMessage = {
+      messageId: "om_quote",
+      chatId: "oc_1",
+      chatType: "group",
+      senderId: "ou_human",
+      content: "quoted reply",
+      rawContentType: "text",
+      resources: [],
+      mentions: [],
+      mentionAll: false,
+      mentionedBot: false,
+      rootId: "om_root",
+      replyToMessageId: "om_parent",
+      createTime: 1_724_025_600_000,
+      raw: { header: { event_id: "ev_quote", tenant_key: "workspace_1" } },
+    };
+    const [event] = normalizeFeishuMessage({ appId: "cli_1", teamId: "workspace_1", message });
+    expect(event).toMatchObject({
+      providerContext: { provider: "feishu", chatType: "group", rootId: "om_root", parentId: "om_parent" },
+      conversation: { externalId: "oc_1", kind: "channel" },
+      message: { threadKey: null, replyToExternalId: "om_parent" },
+    });
+  });
+
+  it("keys a Feishu topic-group topic by its thread_id, including the topic root", () => {
+    const message: NormalizedMessage = {
+      messageId: "om_topic_root",
+      chatId: "oc_topic",
+      chatType: "group",
+      senderId: "ou_human",
+      content: "new topic",
+      rawContentType: "text",
+      resources: [],
+      mentions: [],
+      mentionAll: false,
+      mentionedBot: false,
+      threadId: "omt_topic",
+      createTime: 1_724_025_600_000,
+      raw: { header: { event_id: "ev_topic", tenant_key: "workspace_1" }, opentagChatMode: "topic" },
+    };
+    const [event] = normalizeFeishuMessage({ appId: "cli_1", teamId: "workspace_1", message });
+    expect(event).toMatchObject({
+      providerContext: { provider: "feishu", chatMode: "topic", threadId: "omt_topic" },
+      message: { threadKey: "omt_topic", replyToExternalId: null },
+    });
   });
 
   it("parses raw text, media, post, malformed, and unsupported events", async () => {

@@ -54,7 +54,8 @@ export function ComputerIdentity({
             {computer.displayName}
           </Text>
           <p className="text-sm text-kumo-subtle">
-            {cloud ? m.computer_cloud() : m.computer_local()} · {platformLabel(computer.platform)}
+            {/* The Cloud's platform is openTag's to choose and nothing a reader acts on. */}
+            {cloud ? m.computer_cloud() : `${m.computer_local()} · ${platformLabel(computer.platform)}`}
             {lastOnline ? <> · {lastOnline}</> : null}
           </p>
         </div>
@@ -81,7 +82,7 @@ export function ComputerIdentity({
             </Text>
           </div>
           <p className="text-sm text-kumo-subtle">
-            {cloud ? m.computer_cloud() : m.computer_local()} · {platformLabel(computer.platform)}
+            {cloud ? m.computer_cloud() : `${m.computer_local()} · ${platformLabel(computer.platform)}`}
           </p>
         </div>
         <div

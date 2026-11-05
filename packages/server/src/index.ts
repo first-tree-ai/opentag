@@ -1,10 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import type {
-  InternalNavigationVisibility,
-  ProviderReadinessStatus,
-  RuntimeCredentialServerFrame,
-} from "@opentag/shared";
+import type { ProviderReadinessStatus, RuntimeCredentialServerFrame } from "@opentag/shared";
 import { MCP_OAUTH_CALLBACK_PATH, RUNTIME_CAPABILITY, redactForLog } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { createApp } from "./app.js";
@@ -67,6 +63,7 @@ import { PostgresRuntimeDurableWorkStore } from "./runtime/runtime-durable-work-
 import { SlackAutoSetupOwner } from "./runtime/slack-auto-setup-owner.js";
 import { AgentRuntimeOptionsService } from "./services/agents/agent-runtime-options-service.js";
 import { AgentSlackProvisionService } from "./services/agents/agent-slack-provision-service.js";
+import { AgentStatusService } from "./services/agents/agent-status-service.js";
 import { ContextTreeOperationService } from "./services/agents/context-tree-operation-service.js";
 import { GitHubContextTreeOperations } from "./services/agents/github-context-tree-operations.js";
 import {
@@ -143,7 +140,12 @@ import { SandboxIdleReclaimer } from "./services/sandboxes/idle-reclaimer.js";
 import { SandboxService } from "./services/sandboxes/index.js";
 import type { SandboxAllocationReconciliation } from "./services/sandboxes/sandbox-runner-service.js";
 import { ScheduleScheduler, ScheduleService } from "./services/schedules/index.js";
-import { SessionCliProofService, SessionCollaborationService, SessionService } from "./services/sessions/index.js";
+import {
+  type RunOutcomeNotifier,
+  SessionCliProofService,
+  SessionCollaborationService,
+  SessionService,
+} from "./services/sessions/index.js";
 import { AccountSetupService } from "./services/setup/index.js";
 import { S3SkillObjectStore, SkillObjectGc, SkillPresetService, SkillService } from "./services/skills/index.js";
 import { RemoteSkillService } from "./services/skills/source/remote-skill-service.js";
@@ -216,19 +218,6 @@ export {
   SessionService,
 } from "./services/sessions/index.js";
 export { createPlatformRuntime };
-
-class InternalNavigationVisibilityService {
-  #value: InternalNavigationVisibility = { integrations: false };
-
-  read(): InternalNavigationVisibility {
-    return this.#value;
-  }
-
-  update(value: InternalNavigationVisibility): InternalNavigationVisibility {
-    this.#value = { ...value };
-    return this.#value;
-  }
-}
 
 /** The live Cloud fence exists exactly when the Cloud Runner runtime is enabled. */
 function cloudRuntimeFenceFor(runtime: SandboxRunnerRuntime | undefined): CloudRuntimeFence | undefined {
@@ -377,6 +366,9 @@ function createContextTreeServices(
     githubContextTreeOperations,
     contextTreeOperationService: new ContextTreeOperationService(agents, registry, {
       computerKind,
+      availability: (accountId, agentId) =>
+        githubContextTreeOperations?.availability(accountId, agentId) ??
+        Promise.resolve({ status: "failed", code: "github_not_configured" }),
       run: (input) =>
         githubContextTreeOperations?.run(input) ??
         Promise.resolve({ result: { status: "failed", code: "github_not_configured" } }),
@@ -845,7 +837,9 @@ export async function startServer(): Promise<void> {
           };
         })()
       : undefined;
+    let providerCliReconcileOwner: ProviderCliReconcileOwner | undefined;
     const platformRuntime = await createPlatformRuntime({
+      onCredentialFailure: (input) => providerCliReconcileOwner?.onCredentialFailure(input),
       slackWorkingStatus: false,
       config,
       database,
@@ -896,7 +890,6 @@ export async function startServer(): Promise<void> {
     };
     const runtimeReadyForAgent = async (agentId: string): Promise<boolean> =>
       (await agentRuntimeReadinessForAgent(agentId)) === "ready";
-    let providerCliReconcileOwner: ProviderCliReconcileOwner | undefined;
     const refreshProviderCliReadiness = (agentId: string, computerId: string): void => {
       void providerCliReconcileOwner?.ensureActiveReadiness({ agentId, computerId }).catch(() => {
         reportDiagnostic("PROVIDER_CLI_READINESS_REFRESH_FAILED");
@@ -904,10 +897,10 @@ export async function startServer(): Promise<void> {
     };
     const imBindingService = new ImBindingService(database, applicationCipher, {
       agentRuntimeReadiness: agentRuntimeReadinessForAgent,
-      imCliReadiness: async (agentId, provider, integrationId, credentialGeneration) => {
+      imCliReadiness: async (agentId, provider, integrationId, credentialGeneration, refresh = true) => {
         const computerId = await imBindingService.getAgentComputerId(agentId);
         if (!computerId) return "unavailable";
-        refreshProviderCliReadiness(agentId, computerId);
+        if (refresh) refreshProviderCliReadiness(agentId, computerId);
         const observations = registry.providerCliArtifactReadiness(computerId);
         const observation = observations.find(
           ({ observation }) =>
@@ -922,10 +915,10 @@ export async function startServer(): Promise<void> {
           ...(observation.reason ? { reason: observation.reason } : {}),
         };
       },
-      credentialExecutionReadiness: async (agentId, provider, integrationId, credentialGeneration) => {
+      credentialExecutionReadiness: async (agentId, provider, integrationId, credentialGeneration, refresh = true) => {
         const computerId = await imBindingService.getAgentComputerId(agentId);
         if (!computerId) return { status: "unconfirmed" };
-        refreshProviderCliReadiness(agentId, computerId);
+        if (refresh) refreshProviderCliReadiness(agentId, computerId);
         const observations = registry.providerCliCredentialReadiness(computerId);
         const observation = observations.find(
           ({ observation }) =>
@@ -974,8 +967,22 @@ export async function startServer(): Promise<void> {
       perfLogger,
     );
     const slackWorkingStore = new SlackWorkingStore(database);
+    // Bound after the collaboration service exists; the service itself depends on this owner.
+    let runOutcomeNotifier: RunOutcomeNotifier | undefined;
     const domainOwner = new RuntimeDomainOwner(registry, custody, {
       onTurnActivity: (frame, context) => acknowledgeFeedbackActivity(database, frame, context),
+      onSessionMessageOutcome: async (frame, context) =>
+        (await runOutcomeNotifier?.notifyRunOutcome({
+          childSessionId: frame.targetSessionId,
+          messageId: frame.messageId,
+          outcome: frame.outcome,
+          reason: frame.reason,
+          source: {
+            computerId: context.computerId,
+            connectionInstanceId: context.instanceId,
+            placementGeneration: frame.placementGeneration,
+          },
+        })) ?? "retry",
       logger: serviceLogger("runtime-domain"),
       onImCredentialGrant: (request, context) => imBindingService.issueRuntimeCredentialGrant(request, context),
       prepareReconcile: (computerId, connectionInstanceId, request) =>
@@ -1205,6 +1212,8 @@ export async function startServer(): Promise<void> {
       cloud: cloudSessionOwner,
       logger: serviceLogger("session-collaboration"),
     });
+    runOutcomeNotifier = sessionCollaborationService;
+    cloudSessionOwner?.setRunOutcomeNotifier(sessionCollaborationService);
     const imDeliveryLogger = serviceLogger("im-delivery");
     /*
      * The MCP management plane. Every outbound request goes through one fetcher that enforces the
@@ -1249,7 +1258,6 @@ export async function startServer(): Promise<void> {
           registry,
         })
       : undefined;
-    const internalNavigationService = new InternalNavigationVisibilityService();
     const scheduleService = new ScheduleService({
       database,
       logger: serviceLogger("schedules"),
@@ -1350,6 +1358,14 @@ export async function startServer(): Promise<void> {
       computerService,
       sandboxService,
       cloudAvailability: () => cloudAvailability(config),
+      agentStatusService: new AgentStatusService(database, registry, applicationCipher, {
+        cloudAvailability: (now) => cloudAvailability(config, now),
+        refreshLegacy: (computerId) => {
+          void providerCliReconcileOwner?.ensureLegacyReadinessForComputer(computerId).catch(() => {
+            app?.log.warn({ computerId, code: "LEGACY_STATUS_REFRESH_FAILED" }, "Legacy runtime status refresh failed");
+          });
+        },
+      }),
       ...cloudAppOptions({
         runnerRuntime: cloudRunnerRuntime,
         composition: cloudDelivery,
@@ -1485,7 +1501,7 @@ export async function startServer(): Promise<void> {
             botId: binding.botId,
           }),
       },
-      ...(setupResetService ? { internalNavigationService, setupResetService } : {}),
+      ...(setupResetService ? { setupResetService } : {}),
       accountSetupService,
     });
     instrumentServerWorkers(

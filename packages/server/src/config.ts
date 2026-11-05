@@ -330,6 +330,7 @@ const ServerEnvironmentSchema = z
     OPENTAG_DEV_AUTH_BYPASS_ENABLED: booleanString("false"),
     OPENTAG_DEV_AUTH_EMAIL: z.string().trim().toLowerCase().email().optional(),
     OPENTAG_DEV_INTERNAL_TOOLS_ENABLED: booleanString("false"),
+    OPENTAG_IM_FEEDBACK_TEXT_ENABLED: booleanString("false"),
     /*
      * Defaults to off because turning it on opens Account creation to anyone who can reach the server. Every other
      * sign-in method the server offers requires something a deployment already granted — a Google client, a loopback
@@ -935,6 +936,7 @@ export function parseServerConfig(environment: NodeJS.ProcessEnv): ServerConfig 
     OPENTAG_DEV_AUTH_BYPASS_ENABLED: environment.OPENTAG_DEV_AUTH_BYPASS_ENABLED,
     OPENTAG_DEV_AUTH_EMAIL: environment.OPENTAG_DEV_AUTH_EMAIL,
     OPENTAG_DEV_INTERNAL_TOOLS_ENABLED: environment.OPENTAG_DEV_INTERNAL_TOOLS_ENABLED,
+    OPENTAG_IM_FEEDBACK_TEXT_ENABLED: environment.OPENTAG_IM_FEEDBACK_TEXT_ENABLED,
     OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED: environment.OPENTAG_EMAIL_PASSWORD_AUTH_ENABLED,
     OPENTAG_MCP_ALLOW_LOOPBACK: environment.OPENTAG_MCP_ALLOW_LOOPBACK,
     OPENTAG_MCP_OAUTH_REUSE: environment.OPENTAG_MCP_OAUTH_REUSE,

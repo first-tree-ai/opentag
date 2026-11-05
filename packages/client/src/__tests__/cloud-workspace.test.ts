@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { link, mkdir, mkdtemp, open, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, open, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as retryDelay } from "node:timers/promises";
@@ -371,10 +371,11 @@ describe("Cloud workspace transfer", () => {
     expect(await readFile(join(runner.workspace, "work"), "utf8")).toBe("unsaved work");
   });
 
-  it("skips oversized read-only Context Tree caches on save and enforces the ceiling when a write session is active", async () => {
+  it("archives Context Tree caches without a write session, so an oversized cache hits the ceiling", async () => {
     const store = storageFixture();
     const runner = await client(store);
     await runner.client.initialize();
+    const baseline = store.object();
     const cache = join(runner.workspace, ".opentag/context-tree/home/.context-tree/repositories");
     await mkdir(cache, { recursive: true });
     const path = join(cache, "oversized.pack");
@@ -384,16 +385,6 @@ describe("Cloud workspace transfer", () => {
     } finally {
       await file.close();
     }
-    // Without an active write session, the read-only cache is skipped and save succeeds.
-    await runner.client.save();
-    expect(runner.client.pendingSave).toBe(false);
-    expect(runner.client.terminalFailure).toBe(false);
-
-    // With an active write session under sessions/, the cache is included and hits the ceiling.
-    const baseline = store.object();
-    const sessions = join(runner.workspace, ".opentag/context-tree/home/.context-tree/sessions");
-    await mkdir(sessions, { recursive: true });
-    await writeFile(join(sessions, "active.json"), '{"id":"active"}\n');
     await expect(runner.client.save()).rejects.toMatchObject({
       retryable: false,
       archiveErrorCode: "workspace-too-large",
@@ -431,6 +422,7 @@ describe("Cloud workspace transfer", () => {
     const runner = await client(store);
     await runner.client.initialize();
     await writeFile(join(runner.workspace, "baseline.txt"), "committed baseline");
+    await utimes(join(runner.workspace, "baseline.txt"), new Date(0), new Date(0));
     await runner.client.save();
     const savedBaseline = store.object();
 
@@ -454,7 +446,7 @@ describe("Cloud workspace transfer", () => {
     expect(runner.client.pendingSave).toBe(false);
     expect(await readdir(runner.workspace)).toEqual(["baseline.txt"]);
     expect(await readFile(join(runner.workspace, "baseline.txt"), "utf8")).toBe("committed baseline");
-    expect(store.object().bytes).toBe(savedBaseline.bytes);
+    expect(BigInt(store.object().generation)).toBeGreaterThan(BigInt(savedBaseline.generation));
 
     const replacement = await client(store, 2);
     await replacement.client.initialize();

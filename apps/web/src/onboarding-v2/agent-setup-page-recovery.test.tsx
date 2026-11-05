@@ -11,6 +11,7 @@ import {
   type ProviderCliHandoffProgress,
 } from "@opentag/shared/browser";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createMemoryHistory, createRootRoute, createRouter, RouterProvider } from "@tanstack/react-router";
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../api.js";
@@ -44,11 +45,16 @@ function renderSetup(
   props: Omit<AgentSetupPageProps, "adapter" | "agentId"> & { agentId?: string } = {},
 ) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const subject = (
     <QueryClientProvider client={queryClient}>
       <AgentSetupPage adapter={adapter} {...props} agentId={props.agentId ?? SETUP_AGENT_ID} />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   );
+  const router = createRouter({
+    history: createMemoryHistory({ initialEntries: ["/"] }),
+    routeTree: createRootRoute({ component: () => subject }),
+  });
+  return render(<RouterProvider router={router as never} />);
 }
 
 /** The in-memory model with one write replaced, so a refusal can be scripted where it happens. */
@@ -372,7 +378,8 @@ describe("AgentSetupPage messaging recovery", () => {
 
     expect(unbind).toHaveBeenCalledTimes(1);
     expect(screen.queryByRole("alertdialog")).toBeNull();
-    expect(document.querySelector('[data-ui="agent-setup-messaging-choices"]')).toBeTruthy();
+    expect(screen.getByRole("link", { name: "New Agent" })).toBeTruthy();
+    expect(document.querySelector('[data-ui="agent-setup-messaging-choices"]')).toBeNull();
   });
 
   it("explains a Provider-reported problem with a plain Reconnect", async () => {

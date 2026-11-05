@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 test("local IM acceptance control refuses unsafe switches using isolated processes", { timeout: 60_000 }, () => {
   const result = spawnSync(
     "python3",
-    [fileURLToPath(new URL("../../testing/local-im-control/test_control.py", import.meta.url)), "-v"],
+    [fileURLToPath(new URL("../local-im-control/test_control.py", import.meta.url)), "-v"],
     {
       encoding: "utf8",
       timeout: 55_000,

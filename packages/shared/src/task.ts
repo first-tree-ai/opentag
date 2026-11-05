@@ -47,6 +47,7 @@ export const TaskTitleUpdateRequestSchema = z.object({ title: TaskTitleSchema.nu
 
 export const TaskSummarySchema = z
   .object({
+    /** The id of the chat Session the Task is; any other id that resolves to it is an alias. */
     id: z.string().uuid(),
     agent: z
       .object({
@@ -83,8 +84,8 @@ export const ListTasksResponseSchema = z
 export const TaskTitleUpdateResponseSchema = z.object({ task: TaskSummarySchema }).strict();
 
 /**
- * The Task after its queued deliveries were withdrawn. The withdrawal is the topic's latest
- * activity, so the status reads `cancelled` until a later Turn runs in the topic.
+ * The Task after its queued deliveries were withdrawn. The withdrawal is the Task's latest
+ * activity, so the status reads `cancelled` until a later Turn runs in its Session.
  */
 export const TaskCancelResponseSchema = z.object({ task: TaskSummarySchema }).strict();
 
@@ -198,6 +199,13 @@ export const TaskInternalSessionSchema = z
     endedAt: z.string().datetime().nullable(),
     runtimeModel: z.string().nullable(),
     runtimeReasoningEffort: z.string().nullable(),
+    /**
+     * Its stored title, or the start of the first collaboration message it received: what it was
+     * created to do. Optional so a reader still accepts an older Server's rows.
+     */
+    title: z.string().min(1).nullable().optional(),
+    /** Its creation, its end, or its newest collaboration message, whichever is latest. */
+    lastActivityAt: z.string().datetime().optional(),
   })
   .strict();
 

@@ -1,4 +1,5 @@
 import { configDefaults, coverageConfigDefaults, defineConfig, defineProject } from "vitest/config";
+import { MEASURED_SOURCE_EXCLUDES } from "./scripts/coverage-scope.mjs";
 
 export default defineConfig({
   test: {
@@ -54,7 +55,8 @@ export default defineConfig({
     ],
     coverage: {
       enabled: true,
-      exclude: [...coverageConfigDefaults.exclude, "**/src/__tests__/**", "**/src/smoke/**", "**/src/paraglide/**"],
+      // The same excludes the patch gate reads, from `scripts/coverage-scope.mjs`.
+      exclude: [...coverageConfigDefaults.exclude, ...MEASURED_SOURCE_EXCLUDES],
       // Resolved against each project's own `root`, not against this file's directory, so each pattern
       // is workspace-relative and covers every project at once. A repository-relative pattern such
       // as `packages/shared/src/**` would be looked up under `packages/shared/packages/shared/src/**`

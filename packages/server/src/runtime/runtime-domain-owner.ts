@@ -11,6 +11,7 @@ import {
   hashTuple,
   type ImMessageDeliveryResult,
   RUNTIME_CAPABILITY,
+  RUNTIME_SESSION_COLLABORATION_RUN_OUTCOME_VERSION,
   type RuntimeImCredentialGrantRequest,
   type RuntimeImCredentialGrantResult,
   type RuntimeImSteerRequest,
@@ -19,6 +20,8 @@ import {
   type SessionMessageDeliveryRequest,
   type SessionMessageDeliveryRequestV3,
   type SessionMessageDeliveryResult,
+  type SessionMessageOutcomeReport,
+  type SessionMessageOutcomeResult,
   type SessionReconcileRequest,
   type SessionReconcileResult,
   type TurnReportRequest,
@@ -33,7 +36,10 @@ import type { RuntimeBusinessContext, RuntimeBusinessOptions } from "./runtime-s
 
 export type { AcceptedDeliveryRecord, RecordedTurnRecord } from "./runtime-custody-store.js";
 
-type DomainBusinessFrame = Exclude<ClientRuntimeBusinessFrame, { type: "approval:request" | "approval:result" }>;
+type DomainBusinessFrame = Exclude<
+  ClientRuntimeBusinessFrame,
+  { type: "approval:request" | "approval:result" | "runtime:self-check:report" | "runtime:credential-failure" }
+>;
 
 /**
  * The Session-message delivery request on the wire: the frozen v2 ordinary shape or the v3 shape
@@ -104,6 +110,14 @@ export interface RuntimeDomainOwnerOptions {
   maxPendingRequests?: number;
   onTurnActivity?(frame: TurnActivityRequest, context: RuntimeBusinessContext): Promise<TurnActivityResult>;
   onTrace?(batch: AgentTraceBatch, context: RuntimeBusinessContext): Promise<void> | void;
+  /**
+   * Session-collaboration v4 Run outcome report from the exact current connection. Called only
+   * after the instance and capability checks; it answers `notified`, `ignored`, or `retry`.
+   */
+  onSessionMessageOutcome?(
+    frame: SessionMessageOutcomeReport,
+    context: RuntimeBusinessContext,
+  ): Promise<SessionMessageOutcomeResult["status"]>;
   onImCredentialGrant?(
     request: RuntimeImCredentialGrantRequest,
     context: RuntimeBusinessContext & { imCredentialGrantVersion: 1 | 2 },
@@ -130,7 +144,7 @@ interface PendingBase<TRequest, TResult> {
 interface PendingReconcile extends PendingBase<SessionReconcileRequest, SessionReconcileResult> {
   kind: "reconcile";
   onResult?: PreparedSessionReconcile["onResult"];
-  completing?: boolean;
+  completing?: Promise<void>;
 }
 
 interface PendingDelivery extends PendingBase<DirectImMessageDeliveryRequest, ImMessageDeliveryResult> {
@@ -233,7 +247,10 @@ export class RuntimeDomainOwner {
   readonly #custody: RuntimeCustodyStore;
   readonly #logger?: ServiceLogger;
   readonly #options: Required<Pick<RuntimeDomainOwnerOptions, "maxPendingRequests" | "requestTimeoutMs">> &
-    Pick<RuntimeDomainOwnerOptions, "onImCredentialGrant" | "onTrace" | "onTurnActivity" | "prepareReconcile">;
+    Pick<
+      RuntimeDomainOwnerOptions,
+      "onImCredentialGrant" | "onSessionMessageOutcome" | "onTrace" | "onTurnActivity" | "prepareReconcile"
+    >;
   readonly #pending = new Map<string, PendingRequest>();
   readonly #startingDeliveries = new Map<string, StartingDelivery>();
   readonly #expiredDeliveries = new Map<string, ExpiredDelivery>();
@@ -251,6 +268,7 @@ export class RuntimeDomainOwner {
     this.#options = {
       maxPendingRequests: options.maxPendingRequests ?? 1024,
       onTrace: options.onTrace,
+      onSessionMessageOutcome: options.onSessionMessageOutcome,
       onTurnActivity: options.onTurnActivity,
       onImCredentialGrant: options.onImCredentialGrant,
       prepareReconcile: options.prepareReconcile,
@@ -305,6 +323,7 @@ export class RuntimeDomainOwner {
     onDispatched?: () => void,
     admission?: RuntimeDispatchAdmission<SessionReconcileResult>,
     signal?: AbortSignal,
+    options: { joinSettlement?: boolean } = {},
   ): Promise<SessionReconcileResult> {
     if (this.#closed)
       return Promise.reject(new RuntimeDomainRequestError("stopped", "The runtime domain owner stopped"));
@@ -336,6 +355,8 @@ export class RuntimeDomainOwner {
               undefined,
               admissionDispatched,
               signal,
+              undefined,
+              options.joinSettlement,
             ) as Promise<SessionReconcileResult>,
           onDispatched,
         );
@@ -366,6 +387,7 @@ export class RuntimeDomainOwner {
                   admissionDispatched,
                   signal,
                   prepared.onResult,
+                  options.joinSettlement,
                 ) as Promise<SessionReconcileResult>,
               onDispatched,
             ),
@@ -695,7 +717,11 @@ export class RuntimeDomainOwner {
     return {
       parse: (input) => {
         const parsed = ClientRuntimeBusinessFrameSchema.safeParse(input);
-        return parsed.success && parsed.data.type !== "approval:request" && parsed.data.type !== "approval:result"
+        return parsed.success &&
+          parsed.data.type !== "approval:request" &&
+          parsed.data.type !== "approval:result" &&
+          parsed.data.type !== "runtime:self-check:report" &&
+          parsed.data.type !== "runtime:credential-failure"
           ? parsed.data
           : undefined;
       },
@@ -709,10 +735,7 @@ export class RuntimeDomainOwner {
     };
   }
 
-  async handle(
-    frame: DomainBusinessFrame,
-    context: RuntimeBusinessContext,
-  ): Promise<TurnReportResult | TurnActivityResult | RuntimeImCredentialGrantResult | undefined> {
+  async handle(frame: DomainBusinessFrame, context: RuntimeBusinessContext): Promise<DomainBusinessResult | undefined> {
     if (this.#closed) return undefined;
     return this.#track(this.#handleFrame(frame, context));
   }
@@ -720,7 +743,8 @@ export class RuntimeDomainOwner {
   async #handleFrame(
     frame: DomainBusinessFrame,
     context: RuntimeBusinessContext,
-  ): Promise<TurnReportResult | TurnActivityResult | RuntimeImCredentialGrantResult | undefined> {
+  ): Promise<DomainBusinessResult | undefined> {
+    if (frame.type === "session:message:outcome") return this.#handleSessionMessageOutcome(frame, context);
     if (this.#registry.currentInstanceId(context.computerId) !== context.instanceId) {
       if (frame.type === "turn:report") {
         return {
@@ -779,6 +803,20 @@ export class RuntimeDomainOwner {
       await this.#options.onTrace?.(frame, context);
     }
     return undefined;
+  }
+
+  async #handleSessionMessageOutcome(
+    frame: SessionMessageOutcomeReport,
+    context: RuntimeBusinessContext,
+  ): Promise<SessionMessageOutcomeResult> {
+    if (this.#registry.currentInstanceId(context.computerId) !== context.instanceId) {
+      return sessionOutcomeResult(frame, "stale_generation");
+    }
+    const version = context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.sessionCollaboration] ?? 0;
+    if (version < RUNTIME_SESSION_COLLABORATION_RUN_OUTCOME_VERSION || !this.#options.onSessionMessageOutcome) {
+      return sessionOutcomeResult(frame, "unsupported_capability");
+    }
+    return sessionOutcomeResult(frame, await this.#options.onSessionMessageOutcome(frame, context));
   }
 
   #handleActivity(
@@ -882,6 +920,7 @@ export class RuntimeDomainOwner {
     onDispatched?: () => void,
     signal?: AbortSignal,
     onReconcileResult?: PreparedSessionReconcile["onResult"],
+    joinReconcileSettlement = false,
   ): Promise<SessionReconcileResult | ImMessageDeliveryResult | RuntimeImSteerResult | SessionMessageDeliveryResult> {
     this.#assertRunning();
     const existing = this.#pending.get(request.requestId);
@@ -972,6 +1011,24 @@ export class RuntimeDomainOwner {
     const pending = createPendingRequest(kind, base, inputHash, semanticHash, onReconcileResult);
     this.#pending.set(request.requestId, pending);
     const dispatch = this.#registry.send(computerId, instanceId, request);
+    if (pending.kind === "reconcile" && signal && joinReconcileSettlement) {
+      const abort = () => {
+        if (this.#pending.get(request.requestId) !== pending || pending.completing) return;
+        this.#pending.delete(request.requestId);
+        clearTimeout(timer);
+        // A cancelled waiter still owns an admitted send until its actual callback settles.
+        void dispatch.then(
+          () => pending.reject(signal.reason),
+          () => pending.reject(signal.reason),
+        );
+      };
+      signal.addEventListener("abort", abort, { once: true });
+      void promise.then(
+        () => signal.removeEventListener("abort", abort),
+        () => signal.removeEventListener("abort", abort),
+      );
+      if (signal.aborted) abort();
+    }
     void this.#track(
       dispatch
         .then(() => onDispatched?.())
@@ -1011,6 +1068,12 @@ export class RuntimeDomainOwner {
           );
         }),
     );
+    if (pending.kind === "reconcile" && signal && joinReconcileSettlement) {
+      return promise.finally(async () => {
+        await dispatch.catch(() => undefined);
+        await pending.completing;
+      });
+    }
     return promise;
   }
 
@@ -1029,7 +1092,16 @@ export class RuntimeDomainOwner {
     ) {
       return;
     }
-    pending.completing = true;
+    pending.completing = Promise.resolve().then(() => this.#processReconcileResult(pending, result, context));
+    await pending.completing;
+  }
+
+  async #processReconcileResult(
+    pending: PendingReconcile,
+    result: SessionReconcileResult,
+    context: RuntimeBusinessContext,
+  ): Promise<void> {
+    const requestId = pending.request.requestId;
     try {
       if (result.status !== "rejected") {
         await this.#custody.claimRetainedReports(pending.request, result.retainedReports ?? [], context);
@@ -1289,9 +1361,26 @@ function runtimeDomainFailureAttrs(error: unknown): Record<string, unknown> {
   return outcomeAttrs("failed", code);
 }
 
-function businessFailureResult(frame: unknown): RuntimeImCredentialGrantResult | undefined {
+type DomainBusinessResult =
+  | TurnReportResult
+  | TurnActivityResult
+  | RuntimeImCredentialGrantResult
+  | SessionMessageOutcomeResult;
+
+function sessionOutcomeResult(
+  frame: SessionMessageOutcomeReport,
+  status: SessionMessageOutcomeResult["status"],
+): SessionMessageOutcomeResult {
+  return { type: "session:message:outcome:result", requestId: frame.requestId, messageId: frame.messageId, status };
+}
+
+function businessFailureResult(
+  frame: unknown,
+): RuntimeImCredentialGrantResult | SessionMessageOutcomeResult | undefined {
   const parsed = ClientRuntimeBusinessFrameSchema.safeParse(frame);
   if (!parsed.success) return undefined;
+  // A processing failure proves nothing about the notice: the Client keeps the report and resends.
+  if (parsed.data.type === "session:message:outcome") return sessionOutcomeResult(parsed.data, "retry");
   if (parsed.data.type === "im:credential") {
     return {
       type: "im:credential:result",
@@ -1304,6 +1393,9 @@ function businessFailureResult(frame: unknown): RuntimeImCredentialGrantResult |
 }
 
 function domainLaneKey(frame: ClientRuntimeBusinessFrame): string {
+  if (frame.type === "runtime:self-check:report") return `self-check:${frame.selfCheckId}`;
+  if (frame.type === "runtime:credential-failure")
+    return `provider-cli:${frame.integrationId}:${frame.credentialGeneration}`;
   if (frame.type === "session:reconcile:result") return `request:${frame.requestId}`;
   if (frame.type === "im:deliver:result" || frame.type === "turn:report" || frame.type === "turn:activity")
     return `delivery:${frame.deliveryId}`;
@@ -1311,6 +1403,9 @@ function domainLaneKey(frame: ClientRuntimeBusinessFrame): string {
   if (frame.type === "im:credential") return `session:${frame.sessionId}`;
   if (frame.type === "session:message:deliver:result") {
     return `session-message:${frame.targetSessionId}:${frame.messageId}`;
+  }
+  if (frame.type === "session:message:outcome") {
+    return `session-message-outcome:${frame.targetSessionId}:${frame.messageId}`;
   }
   if (frame.type === "provider-cli:artifact:status" || frame.type === "provider-cli:validation:result") {
     return `provider-cli:${frame.integrationId}:${frame.credentialGeneration}`;

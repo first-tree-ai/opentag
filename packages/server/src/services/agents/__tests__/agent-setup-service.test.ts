@@ -469,7 +469,7 @@ describe("Agent setup projection Computer states", () => {
       computer: { kind: "requires-rebind", computerId, displayName: "workstation", platform: "linux" },
       runtime: { kind: "unavailable", provider: "codex", reason: "computer-rebind-required" },
       blockers: [{ code: "computer-rebind-required" }],
-      actions: [{ kind: "bind-computer" }],
+      actions: [],
     });
   });
 
@@ -683,7 +683,7 @@ describe("Agent setup projection Messaging states", () => {
       const result = deferred<{ appId: string; appSecret: string; teamBrand: "feishu" }>();
       const probeEntered = deferred<void>();
       const probeResult = deferred<FeishuCandidateCheckOutcome>();
-      const pause = pausedBindingRead(unitDatabase.database);
+      const pause = pausedBindingRead(unitDatabase.database, { afterTransaction: true });
       const feishuSetup = new FeishuSetupService({
         database: pause.database,
         cipher: new ApplicationCipher(Buffer.alloc(32, 7)),
@@ -863,7 +863,7 @@ describe("Agent setup projection Messaging states", () => {
       const bootstrap = await account();
       const other = await otherAccount();
       const { agentId } = await messagingReadyAgent(bootstrap.userId);
-      const pause = pausedBindingRead(unitDatabase.database);
+      const pause = pausedBindingRead(unitDatabase.database, { afterTransaction: true });
       const { imBindingService, feishuSetup } = harness({
         database: pause.database,
         registrations: registrationGateway(new Date(Date.now() + 60_000)),
@@ -875,8 +875,8 @@ describe("Agent setup projection Messaging states", () => {
             .update(imBindings)
             .set({ setupOwnerHeartbeatAt: new Date(0) })
             .where(eq(imBindings.agentId, agentId));
-        const check = imBindingService.assertCanManage.bind(imBindingService);
-        vi.spyOn(imBindingService, "assertCanManage").mockImplementationOnce(async (...args) => {
+        const check = imBindingService.assertCanRead.bind(imBindingService);
+        vi.spyOn(imBindingService, "assertCanRead").mockImplementationOnce(async (...args) => {
           await check(...args);
           pause.arm();
         });
@@ -902,6 +902,32 @@ describe("Agent setup projection Messaging states", () => {
     const { agentId, computerId } = await boundAgent(userId, { online: true });
     return { agentId, computerId };
   }
+
+  it.each(["feishu", "slack"] as const)(
+    "keeps a disconnected %s identity blocked without advertising another connection",
+    async (provider) => {
+      const bootstrap = await account();
+      const { imBindingService, service } = harness({ runtimeReadiness: runtimeReadiness("ready") });
+      const { agentId } = await messagingReadyAgent(bootstrap.userId);
+      const { imBindingId } =
+        provider === "feishu"
+          ? await activateFeishuBinding(imBindingService, agentId)
+          : await activateSlackBinding(imBindingService, agentId);
+      await imBindingService.unbindForAgent(bootstrap.userId, agentId, { provider, bindingId: imBindingId });
+      const snapshot = await service.getSetupById(bootstrap.userId, agentId);
+      expectContractValid(snapshot);
+      expect(snapshot.messaging).toMatchObject({
+        kind: "blocked",
+        provider,
+        bindingId: imBindingId,
+        errorCode: "IM_BINDING_IDENTITY_DISCONNECTED",
+      });
+      expect(snapshot.actions).toEqual([]);
+      expect(await imBindingService.getForAgent(bootstrap.userId, agentId)).toBeUndefined();
+      const outsider = await otherAccount();
+      await expect(service.getSetupById(outsider.userId, agentId)).rejects.toMatchObject({ statusCode: 404 });
+    },
+  );
 
   it("turns a persistent Messaging observation failure into a structured retry blocker", async () => {
     const bootstrap = await account();
@@ -1287,7 +1313,7 @@ describe("Agent setup projection Messaging states", () => {
     });
   });
 
-  it("reports a ready Feishu binding with same-Provider replacement allowed", async () => {
+  it("reports a ready Feishu binding with same-identity reauthorization", async () => {
     const bootstrap = await account();
     const { imBindingService, service } = harness({
       runtimeReadiness: runtimeReadiness("ready"),
@@ -1306,7 +1332,6 @@ describe("Agent setup projection Messaging states", () => {
       blockers: [],
       actions: [
         { kind: "reauthorize-messaging", provider: "feishu", bindingId: imBindingId },
-        { kind: "replace-messaging", provider: "feishu", bindingId: imBindingId },
         { kind: "unbind-messaging", provider: "feishu", bindingId: imBindingId },
       ],
     });
@@ -1361,7 +1386,6 @@ describe("Agent setup projection Messaging states", () => {
       },
       actions: [
         { kind: "reauthorize-messaging", provider: "feishu", bindingId: imBindingId },
-        { kind: "replace-messaging", provider: "feishu", bindingId: imBindingId },
         { kind: "unbind-messaging", provider: "feishu", bindingId: imBindingId },
       ],
     });

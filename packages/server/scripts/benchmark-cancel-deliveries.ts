@@ -4,10 +4,8 @@
  * Run from the repository root:
  *   pnpm exec tsx packages/server/scripts/benchmark-cancel-deliveries.ts
  *
- * The run replaces the tracked evidence file `testing/performance/cancel-deliveries/results.json` and
- * must be followed by `pnpm format`, which restores the repository's JSON formatting for it. To write
- * the result somewhere else instead - for example a verification run that must not touch the tracked
- * tree - set the output path:
+ * Results default to the system temporary directory under `opentag-benchmarks/cancel-deliveries/`.
+ * To retain results in task-owned storage, set the output path:
  *   OPENTAG_BENCHMARK_OUTPUT=/tmp/cancel-benchmark/results.json \
  *     pnpm exec tsx packages/server/scripts/benchmark-cancel-deliveries.ts
  *

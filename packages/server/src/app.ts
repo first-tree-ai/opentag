@@ -19,11 +19,7 @@ import Fastify, {
   type FastifyServerOptions,
   LogController,
 } from "fastify";
-import {
-  type AccountRoutesOptions,
-  type InternalNavigationVisibilityService,
-  registerAccountRoutes,
-} from "./api/account.js";
+import { type AccountRoutesOptions, registerAccountRoutes } from "./api/account.js";
 import {
   type AccountAgentScheduleRoutesOptions,
   type RuntimeAgentScheduleRoutesOptions,
@@ -145,6 +141,7 @@ export interface CreateAppOptions {
   betterAuth?: { instance: OpenTagBetterAuth; publicUrl: string };
   webAppRoot?: string;
   agentService?: AgentService;
+  agentStatusService?: AccountRoutesOptions["agentStatusService"];
   /** Whether this deployment can start the first-party Slack OAuth flow. */
   slackOAuthAvailable?: boolean;
   agentSetupService?: AgentSetupService;
@@ -278,7 +275,6 @@ export interface CreateAppOptions {
    * deployment outside staging stays indistinguishable from one that never had the capability.
    */
   setupResetService?: OnboardingResetService;
-  internalNavigationService?: InternalNavigationVisibilityService;
   taskService?: TaskService;
   accountSetupService?: AccountSetupService;
 }
@@ -1162,6 +1158,7 @@ function registerAvailableAccountRoutes(
     ...(options.cloudAvailability ? { cloudAvailability: options.cloudAvailability } : {}),
     ...(cloudModelCatalog ? { cloudModelOptions: () => cloudModelCatalog.list() } : {}),
     ...(options.agentService ? { agentService: options.agentService } : {}),
+    agentStatusService: options.agentStatusService,
     slackOAuthAvailable: options.slackOAuthAvailable,
     ...(options.computerConnectCode ? { computerConnectCode: options.computerConnectCode } : {}),
     ...(options.computerService ? { computerService: options.computerService } : {}),
@@ -1171,7 +1168,6 @@ function registerAvailableAccountRoutes(
     ...(options.accountSetupService ? { accountSetupService: options.accountSetupService } : {}),
     ...(options.taskService ? { taskService: options.taskService } : {}),
     ...(options.setupResetService ? { setupResetService: options.setupResetService } : {}),
-    internalNavigationService: options.internalNavigationService,
     authOptions,
   });
 }

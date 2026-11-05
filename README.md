@@ -1,8 +1,8 @@
 <div align="center">
 
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/.assets/opentag-logo-on-dark.png">
-  <img src="docs/.assets/opentag-logo.png" alt="openTag" width="72">
+  <source media="(prefers-color-scheme: dark)" srcset=".github/assets/opentag-logo-on-dark.png">
+  <img src=".github/assets/opentag-logo.png" alt="openTag" width="72">
 </picture>
 
 # openTag
@@ -31,7 +31,7 @@ that run on your own machine and use your model provider of choice.
 
 <p align="center">
   <a href="https://opentag.build/#how-it-works">
-    <img src="docs/.assets/opentag-walkthrough.gif" alt="How openTag works: create an agent and connect your computer and messaging app, delegate work in chat, share team knowledge, and connect your tools." width="100%">
+    <img src=".github/assets/opentag-walkthrough.gif" alt="How openTag works: create an agent and connect your computer and messaging app, delegate work in chat, share team knowledge, and connect your tools." width="100%">
   </a>
 </p>
 

@@ -10,6 +10,8 @@ import {
   type AccountSetupResetMode,
   AGENT_ACTIVITY_TASK_COUNT_HEADER,
   AGENT_ACTIVITY_TASK_COUNT_VERSION,
+  AGENT_STATUS_HEADER,
+  AGENT_STATUS_VERSION,
   type AgentAdminConfig,
   AgentAdminConfigSchema,
   type AgentCloudOverview,
@@ -27,6 +29,8 @@ import {
   AgentScheduleSchema,
   type AgentSetupSnapshot,
   AgentSetupSnapshotSchema,
+  type AgentStatusResponse,
+  AgentStatusResponseSchema,
   type AgentUsageDetail,
   AgentUsageDetailSchema,
   type AgentUsageWindowDays,
@@ -74,6 +78,7 @@ import {
   agentSlackAutoSetupPath,
   agentSlackConfigurationPath,
   agentSlackOAuthStartPath,
+  agentStatusesPath,
   agentSuspendPath,
   agentUsagePath,
   CLOUD_BILLING_CHECKOUT_PATH,
@@ -95,6 +100,8 @@ import {
   type ComputerConnectCodeStatus,
   ComputerConnectCodeStatusSchema,
   ConnectMCPOAuthResponseSchema,
+  type ContextTreeAvailabilityResponse,
+  ContextTreeAvailabilityResponseSchema,
   type ContextTreeOperationRequest,
   type ContextTreeOperationResponse,
   ContextTreeOperationResponseSchema,
@@ -138,8 +145,6 @@ import {
   InstallRemoteSkillsResponseSchema,
   type InstallSkillPresetResponse,
   InstallSkillPresetResponseSchema,
-  type InternalNavigationVisibility,
-  InternalNavigationVisibilitySchema,
   imBindingDiagnosticsPath,
   imBindingDisablePath,
   imFeedbackActionsPath,
@@ -453,8 +458,15 @@ export class BrowserApi {
 
   agents(): Promise<ListAgentsResponse> {
     return this.request(HTTP_PATHS.accountAgents, ListAgentsResponseSchema, {
-      headers: { [AGENT_ACTIVITY_TASK_COUNT_HEADER]: AGENT_ACTIVITY_TASK_COUNT_VERSION },
+      headers: {
+        [AGENT_ACTIVITY_TASK_COUNT_HEADER]: AGENT_ACTIVITY_TASK_COUNT_VERSION,
+        [AGENT_STATUS_HEADER]: AGENT_STATUS_VERSION,
+      },
     });
+  }
+
+  agentStatuses(ids: readonly string[]): Promise<AgentStatusResponse> {
+    return this.request(agentStatusesPath(ids), AgentStatusResponseSchema);
   }
 
   tasks(input: { cursor?: string; agentId?: string; kind?: "channel" | "thread" } = {}): Promise<ListTasksResponse> {
@@ -607,6 +619,10 @@ export class BrowserApi {
       body: JSON.stringify(input),
       headers: { "content-type": "application/json", ...this.csrfHeaders() },
     });
+  }
+
+  contextTreeAvailability(agentId: string): Promise<ContextTreeAvailabilityResponse> {
+    return this.request(agentContextTreePath(agentId), ContextTreeAvailabilityResponseSchema);
   }
 
   contextTreeOperation(agentId: string, input: ContextTreeOperationRequest): Promise<ContextTreeOperationResponse> {
@@ -880,27 +896,6 @@ export class BrowserApi {
     if (response.status === 204) return true;
     if (response.status === 404) return false;
     throw this.apiError(response, await response.json().catch(() => undefined));
-  }
-
-  /**
-   * Reads the Server-wide navigation preview. A deployment without Internal Tools has no endpoint,
-   * which is the same product answer as both previews being hidden.
-   */
-  async internalNavigationVisibility(): Promise<InternalNavigationVisibility> {
-    try {
-      return await this.request(HTTP_PATHS.internalNavigationVisibility, InternalNavigationVisibilitySchema);
-    } catch (cause) {
-      if (cause instanceof ApiError && cause.status === 404) return { integrations: false };
-      throw cause;
-    }
-  }
-
-  updateInternalNavigationVisibility(input: InternalNavigationVisibility): Promise<InternalNavigationVisibility> {
-    return this.request(HTTP_PATHS.internalNavigationVisibility, InternalNavigationVisibilitySchema, {
-      method: "PUT",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
   }
 
   /*

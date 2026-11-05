@@ -16,6 +16,7 @@ import { ApplicationCipher } from "../../services/crypto.js";
 import { FeishuSetupService } from "../../services/im-bindings/feishu/index.js";
 import { ImBindingService } from "../../services/im-bindings/im-binding-service.js";
 import { SlackConfigurationService } from "../../services/im-bindings/slack/configuration-service.js";
+import { moveLegacyAgentFixture, transferLegacyAgentFixture } from "../support/legacy-agent-fixture.js";
 import { startMigratedTestDatabase } from "./migrated-test-database.js";
 
 let pg: Awaited<ReturnType<typeof startMigratedTestDatabase>>;
@@ -174,7 +175,7 @@ async function fixture() {
 }
 
 it.each(["before inspection", "during inspection"])(
-  "rejects auto setup after a real rebind %s without storing credentials",
+  "rejects auto setup after a historical placement change %s without storing credentials",
   async (stage) => {
     const f = await fixture(),
       writer = actor();
@@ -184,13 +185,11 @@ it.each(["before inspection", "during inspection"])(
     );
     try {
       await f.sent.promise;
-      if (stage === "before inspection")
-        await new AgentService(writer.database).rebindById(f.account.id, f.agent.id, f.next.id);
+      if (stage === "before inspection") await moveLegacyAgentFixture(writer.database, f.agent.id, f.next.id);
       await f.finish({ status: "installed", credentials });
       await f.entered.promise;
       await expect(f.client.sql`select 1 as healthy`).resolves.toHaveLength(1);
-      if (stage === "during inspection")
-        await new AgentService(writer.database).rebindById(f.account.id, f.agent.id, f.next.id);
+      if (stage === "during inspection") await moveLegacyAgentFixture(writer.database, f.agent.id, f.next.id);
     } finally {
       f.release.resolve();
     }
@@ -224,26 +223,13 @@ async function boundFixture() {
   );
   return f;
 }
-const changes = ["unbind", "replacement", "generation", "transfer", "computer", "suspended"] as const;
+const changes = ["unbind", "generation", "transfer", "computer", "suspended"] as const;
 type Change = (typeof changes)[number];
 async function changeTarget(f: Awaited<ReturnType<typeof boundFixture>>, change: Change) {
   const view = await f.slack.view(f.account.id, f.agent.id, "https://example.test");
   assert(view.binding);
-  if (change === "unbind" || change === "replacement") {
+  if (change === "unbind") {
     await f.bindings.unbindForAgent(f.account.id, f.agent.id, { provider: "slack", bindingId: view.binding.id });
-    if (change === "replacement")
-      await f.slack.configureToken(
-        f.account.id,
-        f.agent.id,
-        {
-          intent: "create",
-          expectedMessaging: { kind: "unbound" },
-          botAccessToken: credentials.botAccessToken,
-          signingSecret: credentials.signingSecret,
-        },
-        credentials,
-        f.computer.id,
-      );
   } else if (change === "generation") {
     await f.slack.configureToken(f.account.id, f.agent.id, {
       intent: "reauthorize",
@@ -255,7 +241,7 @@ async function changeTarget(f: Awaited<ReturnType<typeof boundFixture>>, change:
       },
       signingSecret: "replacement-secret",
     });
-  } else if (change === "computer") await f.agents.rebindById(f.account.id, f.agent.id, f.next.id);
+  } else if (change === "computer") await moveLegacyAgentFixture(f.client.database, f.agent.id, f.next.id);
   else if (change === "suspended") await f.agents.suspendById(f.account.id, f.agent.id);
   else {
     const [other] = await f.client.database
@@ -264,7 +250,11 @@ async function changeTarget(f: Awaited<ReturnType<typeof boundFixture>>, change:
       .returning();
     assert(other);
     await f.agents.suspendById(f.account.id, f.agent.id);
-    await f.agents.transferToAccount({ agentId: f.agent.id, slack: "keep", targetAccountId: other.id });
+    await transferLegacyAgentFixture(f.client.database, {
+      agentId: f.agent.id,
+      slack: "keep",
+      targetAccountId: other.id,
+    });
     await f.agents.reactivateById(other.id, f.agent.id);
   }
 }

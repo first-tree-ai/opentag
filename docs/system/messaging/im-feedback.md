@@ -1,11 +1,11 @@
 ---
 title: "IM task feedback and safe recovery"
-description: "Durable working reactions, terminal error cards, Account confirmations, and conservative recovery of unknown provider outcomes."
+description: "Durable working reactions, terminal feedback messages, Account confirmations, and conservative recovery of unknown provider outcomes."
 ---
 
 # IM task feedback and safe recovery
 
-The Server owns task reactions and system error cards. The Agent still sends its final reply through the
+The Server owns task reactions and system error messages. The Agent still sends its final reply through the
 [provider CLI](direct-provider-cli.md). This is a narrow system feedback surface, not a general hosted message API.
 
 ## Normal tasks
@@ -38,13 +38,12 @@ owns automatic save retries; this feedback layer adds no automatic save or task 
 
 ### Plain failure messages
 
-> **Planned — not yet implemented.** Tracking: #1215
-
-Every failure is posted as a plain message, not an interactive card. There is no split into retryable and
-non-retryable failures and no Retry button; the person retries by sending a new message, which takes the same path as
-any other message and is steered into the Agent's running Session. This replaces the error cards above and the task
-Retry described below. Why: one way to start work is simpler and safer than a second retry path with its own
-eligibility rules.
+New failure targets can use plain messages with a cause, effects warning and authenticated details
+link. The rollout flag defaults to off and each target retains its original format; see Message
+format compatibility below. New Task Retry admissions are disabled, including old card callbacks.
+A new message follows ordinary admission and is steered into the running Turn; every Local
+runtime (Codex, Pi, Claude Code) accepts steered input, and a runtime that cannot stays queued. Existing admitted retries and workspace save/discard keep their original recovery
+and confirmation semantics.
 
 ## Account operations
 
@@ -64,16 +63,28 @@ execution resumed in place. Save success requires the exact generation's sealed 
 environment alone yields an unverified release message. Unknown or restarted operations are queried, never
 resubmitted automatically. The original card shows the operation result, actor, and timestamp.
 
-A task Retry needs an immutable `not_started` terminal report or definitive never-dispatched rejection. It creates a
-new delivery ID and an attempt ordinal from one through three, preserving the original report and input deadline.
-Agent custody admission prevents simultaneous active attempts and rechecks queue capacity and placement. A native
-Retry callback additionally authenticates the installed App and exact original sender, channel, card, and generation.
-Native identity never authorizes workspace destruction. Unknown or potentially completed task effects remain
-ineligible. A frozen initial batch is also ineligible: replaying only its root would omit member inputs. Its card and Account page explain this limitation and link to the original Task for review. Successful admission says "Retry queued", not "Task completed".
+New Task Retry admissions are disabled, including callbacks from old cards. Existing admitted
+retry deliveries, immutable terminal reports, attempt identity and message order remain intact.
+Workspace save/discard stays available through the authenticated details page and its existing
+confirmation flow. Unsupported steer remains queued until the current Turn settles. The team
+decision on #1160 is that new messages always steer in and a runtime that cannot inject is
+interrupted and redelivered; that interrupt fallback is not implemented yet, so today feedback
+never forces interruption or replays a Turn.
+
+## Message format compatibility
+
+Each `im_feedback_targets.message_format` is frozen at creation. The default `interactive_v1`
+keeps existing targets and old writers on their card format. With
+`OPENTAG_IM_FEEDBACK_TEXT_ENABLED=true`, new writers explicitly choose `text_v1`: sanitized cause,
+error code, effects warning, recovery guidance and the stable authenticated details link in plain
+text. The flag defaults to false and is enabled only after all workers understand both formats.
+No existing target is converted or resent. Known-message updates and unknown-send reconciliation
+use the stored format and the same native identity; text lookup matches the installed Bot and
+exact details URL. Save/discard and historical admitted operation results remain accessible.
 
 ## Projection, unknown outcomes, and retention
 
-`im_feedback_targets` stores source scope, desired reaction, card identity, revisions, and bounded worker claims.
+`im_feedback_targets` stores source scope, desired reaction, message identity, message format, revisions, and bounded worker claims.
 `im_feedback_actions` independently stores confirmation, idempotency, and operation outcome. Existing custody remains
 the only execution authority. Terminal report and feedback transitions commit together; feedback cannot make an
 invalid report acceptable. Reads use a short owner-authorized snapshot. Mutation admission locks Agent custody,
@@ -91,7 +102,7 @@ another creation. Readback stops at the twenty-four-hour action deadline; unreso
 does not promise unconditional eventual delivery or exactly-once external sending. Known-message updates use that
 same native ID. If completion arrives while creation is in flight, a definitely-not-applied result suppresses the new card, while a confirmed or ambiguous send retains its binding/reconciliation path. Slack rate-limit responses are classified within the call-policy boundary so they do not count toward the shared outage circuit; the existing installation timestamp also gates subsequent feedback calls across targets, Server processes and restarts. Old buttons cannot authorize a stale operation.
 
-New actions expire after twenty-four hours and task retries also respect the original input deadline. Confirmed,
+New workspace actions expire after twenty-four hours. Previously admitted task retries retain the original input deadline. Confirmed,
 settled projections and actions retain ninety days of diagnostics; cleanup is bounded to one hundred records per
 retention tick. Unknown sends and operations survive expiry. Referenced source deliveries/messages remain available
 until their feedback is safely removed. No historical error-card backfill runs.

@@ -360,6 +360,7 @@ export class FeishuSetupService {
     await this.#imBindings.assertCanManage(callerUserId, agentId);
     const current = await this.#currentForAgent(agentId);
     this.#assertMessagingStartAllowed(current, intent, expectedMessaging);
+    await this.#assertNoDisconnectedIdentity(agentId, current);
     const reusedEarly = this.#openAttemptReuse(current);
     if (reusedEarly) return reusedEarly;
 
@@ -453,6 +454,7 @@ export class FeishuSetupService {
         // authoritative, so a durable candidate is reused instead of being overwritten by this QR.
         const fenced = await this.#currentForAgent(agentId, transaction, true);
         this.#assertMessagingStartAllowed(fenced, intent, expectedMessaging);
+        await this.#assertNoDisconnectedIdentity(agentId, fenced, transaction);
         const reused = await this.#reuseOpenAttemptUnderLock(transaction, fenced, now);
         if (reused) return { kind: "reused", row: reused } satisfies SlotAdmission;
         // Either nothing was reusable, or the reuse check just terminated the attempt and released its
@@ -656,23 +658,31 @@ export class FeishuSetupService {
   }
 
   async get(callerUserId: string, attemptId: string): Promise<FeishuSetupAttempt> {
-    const row = await this.#load(attemptId);
-    if (!row) throw new Error("FEISHU_SETUP_NOT_FOUND");
-    await this.#imBindings.assertCanManage(callerUserId, row.agentId);
-    const current = await this.#observeRead({ row }, async () => {
-      const current = await this.#load(attemptId);
-      if (current) await this.#imBindings.assertCanManage(callerUserId, current.agentId);
-      return current ? { row: current } : undefined;
-    });
+    const read = () =>
+      this.#database.transaction(
+        async (transaction) => {
+          const row = await this.#load(attemptId, transaction);
+          if (!row) return undefined;
+          await this.#imBindings.assertCanRead(callerUserId, row.agentId, transaction);
+          return { row };
+        },
+        { isolationLevel: "repeatable read", accessMode: "read only" },
+      );
+    const current = await this.#observeRead(await read(), read);
     if (!current?.attempt) throw new Error("FEISHU_SETUP_NOT_FOUND");
+    await this.#imBindings.assertCanRead(callerUserId, current.row.agentId);
     return current.attempt;
   }
 
   /** Settings observes the open attempt independently of the currently active connection. */
   async getForAgent(callerUserId: string, agentId: string): Promise<FeishuSetupAttempt | undefined> {
-    await this.#imBindings.assertCanManage(callerUserId, agentId);
-    const attempt = await this.observeForAgent(agentId);
-    await this.#imBindings.assertCanManage(callerUserId, agentId);
+    const read = () =>
+      this.#imBindings.readForAgent(callerUserId, agentId, async (transaction) => {
+        const row = await this.#currentForAgent(agentId, transaction);
+        return row ? { row } : undefined;
+      });
+    const attempt = (await this.#observeRead(await read(), read))?.attempt;
+    await this.#imBindings.assertCanRead(callerUserId, agentId);
     return attempt && isOpenSetupState(attempt.state) ? attempt : undefined;
   }
 
@@ -695,7 +705,12 @@ export class FeishuSetupService {
   ): Promise<AgentSetupMessagingObservation | undefined> {
     const read = () => this.#imBindings.readSetupForAgent(callerUserId, agentId);
     const observed = await this.#observeRead(await read(), read);
-    return observed ? { binding: observed.binding, attempt: observed.attempt } : undefined;
+    return observed
+      ? {
+          binding: observed.binding,
+          attempt: observed.binding.handoff.bindingState === "disabled" ? undefined : observed.attempt,
+        }
+      : undefined;
   }
 
   async #observeRead<T extends { row: SetupRow; binding?: AgentSetupBindingState }>(
@@ -1430,8 +1445,27 @@ export class FeishuSetupService {
    * One guard for every Feishu setup command. A current binding owned by another Provider fails closed
    * with the structured unbind-required identity; there is no direct Provider switch. A declared
    * expectation must match the exact current binding and credential generation. Same-Provider
-   * reauthorization and replacement stay legal; create never replaces a configured binding.
+   * reauthorization stays legal; neither create nor replace can replace a configured binding.
    */
+  async #assertNoDisconnectedIdentity(
+    agentId: string,
+    current: SetupRow | undefined,
+    database: Pick<DatabaseClient, "select"> = this.#database,
+  ): Promise<void> {
+    if (current && current.credentialGeneration > 0) return;
+    const [previous] = await database
+      .select({ id: imBindings.id })
+      .from(imBindings)
+      .where(and(eq(imBindings.agentId, agentId), gt(imBindings.credentialGeneration, 0)))
+      .limit(1);
+    if (previous)
+      throw new ImBindingServiceError(
+        "IM_BINDING_CONFIGURATION_CONFLICT",
+        409,
+        "The Agent already has a messaging identity. Create a new Agent instead.",
+      );
+  }
+
   #assertMessagingStartAllowed(
     current: SetupRow | undefined,
     intent: FeishuSetupIntent,
@@ -1474,11 +1508,18 @@ export class FeishuSetupService {
   }
 
   #assertIntentAllowed(configured: SetupRow | undefined, intent: FeishuSetupIntent): void {
+    if (intent === "replace") {
+      throw new ImBindingServiceError(
+        "IM_BINDING_CONFIGURATION_CONFLICT",
+        409,
+        "An Agent's messaging App cannot be replaced. Create a new Agent instead.",
+      );
+    }
     if (intent === "create" && configured) {
       throw new ImBindingServiceError(
         "IM_BINDING_CONFIGURATION_CONFLICT",
         409,
-        "The Agent already has a configured Feishu connection; reauthorize, replace, or unbind it first",
+        "The Agent already has a configured Feishu connection; reauthorize the same App",
       );
     }
     if (intent === "reauthorize" && !configured?.externalAppId) {
@@ -1488,21 +1529,13 @@ export class FeishuSetupService {
         "Feishu reauthorization requires a current configured binding",
       );
     }
-    if (intent === "replace" && !configured) {
-      throw new ImBindingServiceError(
-        "IM_BINDING_CONFIGURATION_CONFLICT",
-        409,
-        "Feishu replacement requires a current configured binding",
-      );
-    }
   }
 
-  async #load(attemptId: string): Promise<SetupRow | undefined> {
-    const [row] = await this.#database
-      .select()
-      .from(imBindings)
-      .where(eq(imBindings.setupAttemptId, attemptId))
-      .limit(1);
+  async #load(
+    attemptId: string,
+    executor: DatabaseClient | DatabaseTransaction = this.#database,
+  ): Promise<SetupRow | undefined> {
+    const [row] = await executor.select().from(imBindings).where(eq(imBindings.setupAttemptId, attemptId)).limit(1);
     return row;
   }
 

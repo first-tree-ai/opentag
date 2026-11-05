@@ -156,6 +156,7 @@ describe("OpenTag Web App Shell", () => {
     fireEvent.click(screen.getByRole("link", { name: "Settings" }));
 
     expect(await screen.findByRole("heading", { name: "Agent settings" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Back to Overview" }).getAttribute("href")).toBe(`/agents/${agentId}`);
     expect(screen.getByRole("link", { name: "All Agents" }).getAttribute("href")).toBe("/agents");
     expect(agentReads).toBe(0);
     expect(screen.queryByLabelText("Loading current server state")).toBeNull();
@@ -254,11 +255,14 @@ describe("OpenTag Web App Shell", () => {
     const computerLabel = await screen.findByText("Computer");
     const computerLink = computerLabel.closest("a");
     expect(screen.getByText("Ada's Mac · macOS · Offline")).toBeTruthy();
-    expect(screen.getByText("Review")).toBeTruthy();
     if (!(computerLink instanceof HTMLAnchorElement)) {
       throw new Error("Expected the Connected computer recovery row to be a link");
     }
     expect(computerLink.getAttribute("href")).toBe(`/agents/${agentId}/settings/computer`);
+    // The row also carries the one fix the Agent list and home give, as its own named link.
+    const fix = screen.getByRole("link", { name: "Computer: Restore connection" });
+    expect(fix.textContent).toBe("Restore connection");
+    expect(fix.getAttribute("href")).toContain("/agents/computers?computerId=");
   });
 
   it("edits the Agent display name without exposing its permanent handle", async () => {

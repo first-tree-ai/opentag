@@ -31,6 +31,13 @@ Provider-specific configuration, binding, and protocol validation.
 - A Runtime owns one durable Provider session binding.
 - `prompt` requires an idle Runtime. `followUp` owns a strict FIFO queue.
 - One Run is active at a time. Every mutation carries an expected Run identity.
+- `steer` resolves with a receipt whose outcome settles with the joined Run: `processed` (the Run completed),
+  `not_started` (the Provider reports it never began the input, so delivering it again is safe), or `interrupted`
+  (it may have begun, but the Run did not complete). Claude Code writes steer input to stdin, where the process can
+  still exit before `command_lifecycle` reports it started, so it reports that start. Codex and Pi acknowledge steer
+  over RPC without a per-input start signal; their input counts as possibly started. If the Run settles while the
+  Provider is accepting steer, only a Provider that reports the input never started may reject it (`run_mismatch`)
+  for redelivery; otherwise the receipt reports the settled Run, so the caller never replays owned input.
 - The Base Runtime serializes and awaits event delivery before settling a Run.
 - Provider terminal ingress may be claimed before queued translation finishes;
   public settlement still waits for the Provider execution to finish.
@@ -141,7 +148,9 @@ model calls. Cloud disables ambient context files, Skills, extensions, templates
 adds the packaged resources explicitly. Local production Pi enables native resources; Claude and
 Codex likewise retain their native project configuration.
 
-Context Tree preparation supplies tree location, availability, and guidance, not every tree page.
+Context Tree preparation supplies tree selection, project path, availability, and guidance, not snapshot paths, commit
+SHAs, or tree pages. Agents obtain the current snapshot through `context-tree sync`; see
+[Context Tree integration](../capabilities/context-tree-integration.md#read-freshness-and-prompt-placement).
 Selected pages and Skill bodies enter context when the Agent reads them. Native Skill catalogs and
 MCP tool descriptions/schema can add input independently of the managed prompt. Local Claude's
 private plugin and MCP names remain stable within one runtime; Codex's private MCP name also lives
@@ -318,7 +327,8 @@ successful child-process cleanup. Length-limited or terminal tool-call output is
 failed with partial output retained. Cleanup failure closes the affected runtime;
 an earlier protocol or model failure remains the primary error. Server per-Session
 stop/status and Cloud lifecycle acceptance remain outside Local E1; see the
-[maintained acceptance harness](https://github.com/first-tree-ai/opentag/blob/main/testing/cloud-computer.md).
+[Local Pi harness](https://github.com/first-tree-ai/opentag/blob/main/scripts/e2e/cloud-computer.mjs)
+(`node scripts/e2e/cloud-computer.mjs --help`).
 
 ### Pi prompt acceptance and compaction
 

@@ -26,6 +26,7 @@ export function TaskActivity({
   task,
   turns,
   internalSessions,
+  internalSessionsFooter,
   replies,
   pagination,
   repliesStatus,
@@ -33,6 +34,8 @@ export function TaskActivity({
   task: TaskSummary;
   turns: TaskTurn[];
   internalSessions?: TaskInternalSessionItem[];
+  /** Paging and error notices for the internal Sessions, shown under their list. */
+  internalSessionsFooter?: ReactNode;
   replies?: CapturedTaskReply[];
   pagination: ReactNode;
   repliesStatus?: ReactNode;
@@ -116,7 +119,11 @@ export function TaskActivity({
       <Text as="h2" id="task-activity-title" variant="heading" DANGEROUS_className="sr-only">
         {m.tasks_activity()}
       </Text>
-      {hasInternalSessions && internalSessions ? <TaskInternalSessionsList sessions={internalSessions} /> : null}
+      {hasInternalSessions && internalSessions ? (
+        <TaskInternalSessionsList footer={internalSessionsFooter} sessions={internalSessions} />
+      ) : (
+        internalSessionsFooter
+      )}
       <TaskActivityTimeline key={task.id} entryIds={entries.map((entry) => entry.id)}>
         {pagination}
         {entries.length > 0 ? (
@@ -159,13 +166,24 @@ export function TaskActivity({
   );
 }
 
-function TaskInternalSessionsList({ sessions }: { sessions: TaskInternalSessionItem[] }) {
+/**
+ * The internal Sessions the Task's Session created, earliest first and ended ones included: what
+ * each was asked to do (its title, or its id when it has none), whether it is still active, and
+ * when it last did something.
+ */
+function TaskInternalSessionsList({ sessions, footer }: { sessions: TaskInternalSessionItem[]; footer?: ReactNode }) {
   return (
-    <div className="grid gap-2 rounded-lg border border-kumo-line bg-kumo-base p-4" data-ui="task-internal-sessions">
+    <section
+      aria-labelledby="task-internal-sessions-title"
+      className="grid gap-2 rounded-lg border border-kumo-line bg-kumo-base p-4"
+      data-ui="task-internal-sessions"
+    >
+      <Text as="h3" id="task-internal-sessions-title" variant="heading">
+        {m.tasks_internal_sessions_heading()}
+      </Text>
       <ul className="grid divide-y divide-kumo-line">
         {sessions.map((session) => {
-          const status = session.status ?? (session.endedAt ? "completed" : "running");
-          const activityAt = session.endedAt ?? session.createdAt;
+          const activityAt = session.lastActivityAt ?? session.endedAt ?? session.createdAt;
           const preview = session.title?.trim() || session.runtimeModel || session.id;
           return (
             <li
@@ -174,13 +192,15 @@ function TaskInternalSessionsList({ sessions }: { sessions: TaskInternalSessionI
               data-ui="task-internal-session-row"
             >
               <div className="flex min-w-0 flex-1 items-center gap-2">
-                <span className="min-w-0 truncate font-medium text-kumo-default">{preview}</span>
+                <span className="min-w-0 truncate font-medium text-kumo-default" title={preview}>
+                  {preview}
+                </span>
                 {preview !== session.id ? (
                   <span className="truncate text-xs text-kumo-subtle">{session.id}</span>
                 ) : null}
               </div>
               <div className="flex items-center gap-3">
-                <StatusIndicator label={taskStatusLabel(status)} tone={taskStatusTone(status)} />
+                <InternalSessionStatus session={session} />
                 <time
                   className="whitespace-nowrap text-xs text-kumo-subtle"
                   dateTime={activityAt}
@@ -193,7 +213,23 @@ function TaskInternalSessionsList({ sessions }: { sessions: TaskInternalSessionI
           );
         })}
       </ul>
-    </div>
+      {footer}
+    </section>
+  );
+}
+
+/**
+ * An internal Session is active until it ends. A development example may still carry a Task status,
+ * which reads as it does elsewhere.
+ */
+function InternalSessionStatus({ session }: { session: TaskInternalSessionItem }) {
+  if (session.status) {
+    return <StatusIndicator label={taskStatusLabel(session.status)} tone={taskStatusTone(session.status)} />;
+  }
+  return session.endedAt ? (
+    <StatusIndicator label={m.tasks_internal_session_ended()} tone="neutral" />
+  ) : (
+    <StatusIndicator label={m.tasks_internal_session_active()} tone="info" />
   );
 }
 

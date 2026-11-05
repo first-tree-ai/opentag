@@ -1,4 +1,4 @@
-import type { AgentUsageWindowDays } from "@opentag/shared/browser";
+import type { AgentUsageWindowDays, ImBindingSummary } from "@opentag/shared/browser";
 
 /**
  * Every cache key the application reads, in one place so that the writes which invalidate them can
@@ -30,6 +30,16 @@ export const queryKeys = {
       ["agents", agentId, "runtime-options", computerId, provider, model] as const,
     config: (agentId: string) => ["agents", agentId, "config"] as const,
     imBinding: (agentId: string) => ["agents", agentId, "imBinding"] as const,
+    conversationEntry: (agentId: string, binding: ImBindingSummary | undefined, updatedAt: string) =>
+      [
+        "agents",
+        agentId,
+        "conversation-entry",
+        binding?.id,
+        binding?.provider,
+        binding?.lastValidatedAt,
+        updatedAt,
+      ] as const,
     feishuSetupAttempt: (agentId: string) => ["agents", agentId, "feishuSetupAttempt"] as const,
     imBindingHandoff: (agentId: string) => ["agents", agentId, "imBindingHandoff"] as const,
     usage: (agentId: string, windowDays: AgentUsageWindowDays) => ["agents", agentId, "usage", windowDays] as const,

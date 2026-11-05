@@ -245,8 +245,22 @@ Other ordinary live resources keep their existing cadence and cache policy.
 The Agent overview's Messaging row identifies the connected Bot by its stored provider name for
 both Feishu and Slack. If that name is unknown, it shows only the provider. The overview header
 does not present the internal Agent handle as an IM address; the Agent's own name and identity
-remain unchanged. This display rule does not add a chat entry or change the settings index or
-legacy capability pages.
+remain unchanged. The settings index and legacy capability pages retain their existing identity
+presentation.
+
+A healthy overview keeps a lightweight **Open in Feishu/Slack** action in its Messaging row for
+returning users. It uses the existing provider handoff contract: Slack's App/Team redirect and
+the Feishu Bot AppLink only for a confirmed Feishu brand. Unknown and Lark brands never inherit a
+guessed route. Short Bot-name search and copying help stays collapsed by default; clipboard
+failure explains manual copying, and missing identity points to Messaging settings. Opening a
+provider URL does not establish its native private-conversation destination or message delivery.
+
+The entry reads existing setup and binding configuration resources to match the exact Agent,
+provider, binding and credential generation. These identity reads are event-driven, with no new
+setup polling or preparation POST. Target changes retire in-flight results and Agent writes
+invalidate their shared cache prefix. A failed identity read affects only this entry: the existing
+batch status remains authoritative, and an unavailable Agent retains its single repair action
+without presenting use as a repair. No Web chat, new API, permissions or automatic message is added.
 
 The Server reads Agent ownership, owned Computers, and binding/installation scope with at most three
 batch SELECTs in one short read-only Repeatable Read transaction. A missing or foreign ID refuses

@@ -2,6 +2,7 @@ import { Link } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import * as m from "../../paraglide/messages.js";
 import { Button, Icon, Popover } from "../../ui/design-system.js";
+import { AgentConversationEntry } from "./agent-conversation-entry.js";
 import type { AgentDetailView } from "./agent-model.js";
 import {
   type AgentDependencyStatus,
@@ -87,7 +88,9 @@ export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
           identity={<span className="truncate">{messagingIdentity}</span>}
           name={m.agents_status_message_channel()}
           status={agentMessagingStatus(agent)}
-        />
+        >
+          <AgentConversationEntry agent={agent} />
+        </AgentStatusRow>
       </ul>
     </section>
   );
@@ -100,6 +103,7 @@ function AgentStatusRow({
   identity,
   name,
   status,
+  children,
 }: {
   agent: AgentDetailView;
   dependency: "computer" | "message-channel";
@@ -107,6 +111,7 @@ function AgentStatusRow({
   identity: ReactNode;
   name: string;
   status: AgentDependencyStatus & { guidance?: string };
+  children?: ReactNode;
 }) {
   // The 44px target uses 1px of existing space on either side of the original 42px two-line block.
   // In a narrow card the status wraps under the row name instead of squeezing it, so the block grows.
@@ -184,6 +189,7 @@ function AgentStatusRow({
           </Popover.Content>
         </Popover>
       )}
+      {children}
     </li>
   );
 }

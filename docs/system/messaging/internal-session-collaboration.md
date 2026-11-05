@@ -38,7 +38,8 @@ the daemon user's files.
 
 `session create` atomically creates an internal child Session and its first message. `session send` addresses an
 existing Session in the same Agent and conversation scope. Both accept an optional `--message-id` for an explicit retry;
-reuse the same ID and identical semantic input after an uncertain result. `accepted` means the target accepted the
+reuse the same ID and identical semantic input after an uncertain result. Any UUID is valid except version 5, which is reserved
+for the messages the Server writes itself. `accepted` means the target accepted the
 message into its bounded FIFO, not that the task completed. On a Local Computer, a message whose target Session is
 running on a steer-capable runtime is steered into the running Run instead of waiting for it to end, whether that Run is an
 IM Turn or another Session message. Runtime acceptance is not delivery: the durable record stays `running` until that Turn ends. It becomes `succeeded` when the Turn completed;
@@ -191,7 +192,9 @@ Safety rules:
   handling a notice, that Session's creator is notified instead, so failed notices only climb the creation tree and end at the
   visible root. A message a Session sent to itself goes the same way. The header alone does not make a message a notice, so a
   message that quotes one keeps its sender: a notice's ID must derive from the Session and message it names, and that Session
-  must have sent it. A Session that computes such an ID on purpose only loses the notice about its own message.
+  must have sent it. The ID is public and `session_messages.id` is global, so ordinary create/send refuses version 5 UUIDs: no
+  Session can occupy a future notice's ID. A row recorded under such an ID before this rule still blocks that one notice, which is
+  then ignored and logged.
 
 No schema change is involved: notices reuse `session_messages` and the existing closure activity projection.
 

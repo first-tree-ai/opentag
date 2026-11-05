@@ -4,6 +4,8 @@ import { gzipSync } from "node:zlib";
 import {
   type NormalizedInboundImEvent,
   SESSION_RUN_OUTCOME_NOTICE_HEADER,
+  SessionCliCreateRequestSchema,
+  SessionCliSendRequestSchema,
   type SessionReconcileRequest,
   type SessionReconcileResult,
 } from "@opentag/shared";
@@ -428,6 +430,93 @@ describe("SessionService with the unit database", () => {
     await expect(
       service.resolveRunOutcomeNotice({ childSessionId: child.session.id, messageId: taskId }),
     ).resolves.toBeUndefined();
+  });
+
+  it("keeps a future notice's ID out of ordinary ingress, so another sender's notice is delivered", async () => {
+    const service = new SessionService(db.database, { now: () => fixture.now });
+    const creator = await service.ensureChatSession(
+      { imBindingId: fixture.bindingId, channelId: "C1", conversationKind: "dm" },
+      "channel",
+    );
+    const internal = (initialMessage: string) =>
+      service.createInternalSessionWithMessage({
+        creatorSessionId: creator.session.id,
+        creatorInstallationId: fixture.installationId,
+        creatorConnectionInstanceId: fixture.instanceId,
+        creatorComputerId: fixture.computerId,
+        creatorPlacementGeneration: 1,
+        messageId: randomUUID(),
+        initialMessage,
+      });
+    const [target, sender, other] = [await internal("target"), await internal("sender"), await internal("other")];
+    const record = (source: typeof sender, messageId: string, targetSessionId: string, content: string) =>
+      service.authorizeAndRecordMessage({
+        messageId,
+        sourceSessionId: source.session.id,
+        sourceInstallationId: fixture.installationId,
+        sourceComputerId: fixture.computerId,
+        sourceConnectionInstanceId: fixture.instanceId,
+        sourcePlacementGeneration: source.placement.generation,
+        targetSessionId,
+        content,
+      });
+    const reported = await record(sender, randomUUID(), target.session.id, "the message that fails");
+    const noticeId = runOutcomeNoticeMessageId(target.session.id, reported.message.id);
+
+    // The other Session computes the public ID and tries to take it through ordinary create and send.
+    expect(
+      SessionCliSendRequestSchema.safeParse({
+        messageId: noticeId,
+        targetSessionId: target.session.id,
+        message: "preclaim",
+      }).success,
+    ).toBe(false);
+    expect(SessionCliCreateRequestSchema.safeParse({ messageId: noticeId, message: "preclaim" }).success).toBe(false);
+
+    const collaboration = new SessionCollaborationService({
+      assembler: { assembleForSession: vi.fn().mockResolvedValue({}) } as never,
+      domain: {
+        requestReconcile: vi.fn().mockResolvedValue({ status: "ready" }),
+        requestSessionMessageDelivery: vi.fn(
+          async (_computer: string, _instance: string, frame: { messageId: string }) => ({
+            status: "accepted",
+            messageId: frame.messageId,
+          }),
+        ),
+      } as never,
+      registry: {
+        capabilityVersion: vi.fn().mockReturnValue(4),
+        currentInstanceId: vi.fn().mockReturnValue(fixture.instanceId),
+        supportsCapability: vi.fn().mockReturnValue(true),
+      } as never,
+      sessions: service,
+    });
+    const notify = (messageId: string, childSessionId = target.session.id) =>
+      collaboration.notifyRunOutcome({
+        childSessionId,
+        messageId,
+        outcome: "failed",
+        reason: "provider_failed",
+        source: {
+          computerId: fixture.computerId,
+          connectionInstanceId: fixture.instanceId,
+          placementGeneration: target.placement.generation,
+        },
+      });
+    await expect(notify(reported.message.id)).resolves.toBe("notified");
+    const [notice] = await db.database.select().from(sessionMessages).where(eq(sessionMessages.id, noticeId));
+    expect(notice).toMatchObject({ sourceSessionId: target.session.id, targetSessionId: sender.session.id });
+    expect(notice?.content.startsWith(SESSION_RUN_OUTCOME_NOTICE_HEADER)).toBe(true);
+
+    // Why the rule is needed: a row already under that ID, recorded before it, still blocks that one notice.
+    const blocked = await record(sender, randomUUID(), target.session.id, "another message that fails");
+    await record(
+      other,
+      runOutcomeNoticeMessageId(target.session.id, blocked.message.id),
+      target.session.id,
+      "older row",
+    );
+    await expect(notify(blocked.message.id)).resolves.toBe("ignored");
   });
 
   it("authorizes messages and rejects stale, unavailable, and mismatched authorities", async () => {

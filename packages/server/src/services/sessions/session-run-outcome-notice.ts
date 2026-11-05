@@ -25,8 +25,8 @@ const NOTICE_IDENTITY = /^Session: ([0-9a-f-]{36})\nMessage: ([0-9a-f-]{36})\n/;
 /**
  * Whether a stored message is a notice openTag wrote. The header alone proves nothing: ordinary content
  * can start with it, for example when quoting a notice. A real notice's id derives from the Session and
- * message it names, and that Session sent it, which a quote under its own id does not satisfy. A Session
- * that computes the id on purpose only loses the notice about its own message.
+ * message it names, and that Session sent it, which a quote under its own id does not satisfy. Ordinary
+ * create/send refuses version 5 ids, so only the Server can record one.
  */
 export function isRunOutcomeNotice(message: { id: string; sourceSessionId: string | null; content: string }): boolean {
   const header = `${SESSION_RUN_OUTCOME_NOTICE_HEADER}\n`;

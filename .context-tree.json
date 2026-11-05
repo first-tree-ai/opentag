@@ -4,6 +4,12 @@
     {
       "kind": "directory",
       "path": "docs"
+    },
+    {
+      "kind": "git",
+      "repository": "first-tree-ai/team-context",
+      "path": ".",
+      "ref": "master"
     }
   ]
 }

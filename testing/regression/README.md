@@ -10,6 +10,8 @@ Regression defects are assigned to `yuezengwu`.
 - [Slack messaging](slack.md): run the conversation, permission, attachment and recovery cases with an authorized
   test App and workspace. External messages, paid provider calls and environment operations require the applicable
   authorization; this catalogue does not grant it.
+- [Provider CLI readiness](provider-cli.md): verify already-bound Computers report current messaging readiness
+  without a first-setup prewarm, and preserve cancellation, repair and unavailable-inspection boundaries.
 
 When an Agent adds or changes a product feature, add or update the corresponding Markdown regression cases in the
 same change. Keep reusable prerequisites, steps and expected observations here. Put task plans, dated execution

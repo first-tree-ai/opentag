@@ -113,42 +113,38 @@ describe("Agent list unreported-accepted index", () => {
         .returning({ id: users.id });
       if (!neighbour) throw new Error("Neighbour fixture missing");
       const noisy = await activityFixture(database, "noisy", neighbour.id);
+      // Spread over many Sessions, as real work is, so the per-Session statistics the planner reads are realistic.
       await client.sql.unsafe(
         `
-        with queued as (
-          insert into im_messages(im_binding_id,provider_event_id,channel_id,external_message_id,provider_revision_key,
-            operation,direction,author_kind,author_external_id,content,provider_context,occurred_at)
-          select s.im_binding_id,'noise-event-'||n,s.channel_id,'noise-'||n,'1','created','inbound','human','human',
-            '{"version":1,"fallbackText":"noise","blocks":[],"truncated":false}'::jsonb,'{"provider":"feishu"}'::jsonb,$2
-          from sessions s, generate_series(1, ${NOISY_BACKLOG}) n
-          where s.id = $1
-          returning id
-        )
-        insert into im_message_deliveries(message_id,session_id,attention,state,placement_generation,next_attempt_at,expires_at)
-        select id,$1,'direct','pending',1,$2,$3 from queued
-        `,
-        [noisy.session.id, NOW.toISOString(), new Date(NOW.getTime() + 86_400_000).toISOString()],
-      );
-
-      await client.sql.unsafe(
-        `
-        with turn_session as (
+        with neighbour_sessions as (
           insert into sessions(im_binding_id,channel_id,conversation_kind,kind,thread_key)
-          select s.im_binding_id,s.channel_id,'channel','thread','turns' from sessions s where s.id = $1
-          returning id, im_binding_id, channel_id
+          select s.im_binding_id,s.channel_id,'channel','thread','noise-'||n
+          from sessions s, generate_series(1, ${NOISY_BACKLOG * 2}) n where s.id = $1
+          returning id, im_binding_id, channel_id, thread_key
         ),
-        turns as (
+        noise as (
           insert into im_messages(im_binding_id,provider_event_id,channel_id,external_message_id,provider_revision_key,
             operation,direction,thread_key,author_kind,author_external_id,content,provider_context,occurred_at)
-          select im_binding_id,'turn-event-'||n,channel_id,'turn-'||n,'1','created','inbound','turns','human','human',
+          select im_binding_id,'noise-event-'||thread_key,channel_id,thread_key,'1','created','inbound',thread_key,'human','human',
             '{"version":1,"fallbackText":"noise","blocks":[],"truncated":false}'::jsonb,'{"provider":"feishu"}'::jsonb,$2
-          from turn_session, generate_series(1, ${NOISY_BACKLOG}) n
-          returning id, external_message_id
+          from neighbour_sessions
+          returning id, thread_key
+        ),
+        numbered as (
+          select noise.id as message_id, neighbour_sessions.id as session_id,
+            row_number() over (order by noise.thread_key) as n
+          from noise inner join neighbour_sessions on neighbour_sessions.thread_key = noise.thread_key
         )
         insert into im_message_deliveries(message_id,session_id,attention,state,placement_generation,input_hash,turn_id,
           report_owner_instance_id,accepted_at,expires_at)
-        select turns.id,turn_session.id,'direct','accepted',1,'input',turns.external_message_id,$3,$2,$4
-        from turns, turn_session
+        select message_id,session_id,'direct',
+          (case when n % 2 = 0 then 'accepted' else 'pending' end)::im_delivery_state,1,
+          case when n % 2 = 0 then 'input' end,
+          case when n % 2 = 0 then 'turn-'||session_id end,
+          case when n % 2 = 0 then $3::uuid end,
+          case when n % 2 = 0 then $2::timestamptz end,
+          $4
+        from numbered
         `,
         [noisy.session.id, NOW.toISOString(), REPORT_OWNER, new Date(NOW.getTime() + 86_400_000).toISOString()],
       );
@@ -204,13 +200,14 @@ describe("Agent list unreported-accepted index", () => {
       expect(rowsRead(plan?.[0]?.Plan as PlanNode, "sessions")).toBeLessThan(IDLE_SESSIONS + 10);
       expect(JSON.stringify(plan)).toContain("sessions_active_channel_unique");
       expect(JSON.stringify(plan)).toContain("sessions_active_thread_unique");
-      // A waiting Task probes its own Sessions, so the index of every Account's unreported Turns is not in the plan. On a
-      // table this small the planner may still hash against pending rows; the benchmark-sized fixture covers row counts.
+      // Every delivery probe starts from one of this Account's Sessions, so the other Account's pending deliveries and
+      // unreported Turns are never read, under the default planner on this small a table too.
       expect(JSON.stringify(plan)).not.toContain("im_message_deliveries_unreported_accepted_idx");
+      expect(rowsRead(plan?.[0]?.Plan as PlanNode, "im_message_deliveries")).toBeLessThan(100);
 
-      // The neighbour's backlog is one Session, so it is one queued Task however deep it is.
+      // The neighbour's own count is correct too: one Task for each of its 2,000 waiting Sessions.
       expect((await noisy.agents.listForAccount(neighbour.id)).agents[0]?.activity).toMatchObject({
-        queuedTaskCount: 1,
+        queuedTaskCount: NOISY_BACKLOG,
       });
     } finally {
       await client.sql.end();
@@ -220,7 +217,7 @@ describe("Agent list unreported-accepted index", () => {
 
 const NOISY_BACKLOG = 2_000;
 const IDLE_SESSIONS = 500;
-const INTERNAL_SESSIONS = 20_000;
+const INTERNAL_SESSIONS = 80_000;
 
 interface PlanNode {
   "Relation Name"?: string;

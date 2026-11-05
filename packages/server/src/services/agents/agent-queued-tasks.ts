@@ -16,6 +16,12 @@ const QUEUED_WINDOW_MARGIN_MS = 24 * 60 * 60 * 1000;
 export const QUEUED_TASK_WINDOW_MS = DIRECT_TTL_MS + QUEUED_WINDOW_MARGIN_MS;
 
 /**
+ * Keeps an `exists` probing row by row from its Session. Without it the planner may decorrelate the probe into a hash
+ * of every Account's matching deliveries, which is cheaper to cost on a small table but reads rows this read must not.
+ */
+const PROBE = sql`offset 0`;
+
+/**
  * Where the Agents' messages went inside the window. The time column is `occurred_at`, the provider's clock,
  * because it is the one in `im_messages_scope_occurred_idx`; `received_at`, which sets a delivery's deadline, has no
  * index. The index does not lead with time, so this reads the bindings' whole message index, without the heap.
@@ -67,6 +73,7 @@ const sessionIsWaiting = sql`(
     where direct_pending.session_id = live.id
       and direct_pending.attention = 'direct'
       and direct_pending.state = 'pending'
+    ${PROBE}
   )
   or (
     exists (
@@ -74,9 +81,10 @@ const sessionIsWaiting = sql`(
       where overheard.session_id = live.id
         and overheard.attention = 'ambient'
         and overheard.state = 'pending'
-        and ${isExecution("overheard", "live")}
+        and ${isExecution("overheard", "live", PROBE)}
+      ${PROBE}
     )
-    and (${liveDeliveryExists("live", "direct")} or (${threadRootAddressed("live")}))
+    and (${liveDeliveryExists("live", "direct", PROBE)} or (${threadRootAddressed("live", PROBE)}))
   )
 )`;
 
@@ -92,7 +100,9 @@ function sessionIsRunning(sessionAlias: string, now: Date) {
     where turn.session_id = ${session}.id
       and turn.attention in ('direct', 'ambient')
       and turn.state = 'accepted'
-      and turn.reported_at is null
+      -- Written so it cannot prove the unreported index's predicate: that index leads with time, not Session, so using
+      -- it for this probe would walk every Account's outstanding Turns.
+      and coalesce(turn.reported_at, 'infinity'::timestamptz) = 'infinity'::timestamptz
       and turn.expires_at > ${now.toISOString()}::timestamptz
       and not exists (
         select 1 from im_message_deliveries later
@@ -100,7 +110,9 @@ function sessionIsRunning(sessionAlias: string, now: Date) {
           and later.attention in ('direct', 'ambient')
           and later.state = 'accepted'
           and (later.accepted_at, later.id) > (turn.accepted_at, turn.id)
+        ${PROBE}
       )
+    ${PROBE}
   )`;
 }
 
@@ -115,6 +127,7 @@ function siblingIsRunning(kind: "channel" | "thread", now: Date) {
       and sibling.ended_at is null
       and sibling.id <> waiting.id
       and ${sessionIsRunning("sibling", now)}
+    ${PROBE}
   )`;
 }
 

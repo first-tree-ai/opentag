@@ -123,8 +123,8 @@ The queued read is one statement in the same snapshot. It finds the conversation
 reads the listed Agents' live channel and thread Sessions among them through `sessions_active_channel_unique` and
 `sessions_active_thread_unique`, so Internal Sessions are not read when these indexes are chosen, and probes each
 Session's waiting deliveries through `im_message_deliveries_overflow_idx`, whose leading columns reach them directly,
-however long the Session's history is. The planner may instead hash the Sessions against
-`im_message_deliveries_pending_idx`, which reads other Accounts' pending rows. A waiting Task then checks its own Sessions for a running Turn, so the read does not touch other Accounts' Turns;
+however long the Session's history is. Each probe stays correlated to its Session (`offset 0`), so the planner cannot
+hash it against every Account's deliveries. A waiting Task then checks its own Sessions for a running Turn, so the read does not touch other Accounts' Turns;
 that check reads the waiting Session's accepted deliveries, however many.
 
 The window (`QUEUED_TASK_WINDOW_MS`) is the seven-day direct TTL plus a margin of one day. A shorter window would hide

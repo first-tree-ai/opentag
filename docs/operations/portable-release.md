@@ -115,9 +115,9 @@ The daemon's updater follows a strict contract:
   arriving, then closes admission and stops the daemon, which finishes its durable writes first. The restarted daemon
   recovers interrupted work; see
   [Automatic retry of accepted work](../system/server-client-boundary.md#automatic-retry-of-accepted-work). A failed
-  install interrupts nothing. Only while the current connection has not negotiated `runtime.sessionRecovery` does the
-  updater close admission and wait for no protected work, with no force timeout, reporting `awaiting_protected_work`;
-  later deliveries receive a retryable busy result during that wait.
+  install interrupts nothing. Only while the Client is registered with a Server that did not negotiate
+  `runtime.sessionRecovery` does the updater close admission and wait for no protected work, with no force timeout,
+  reporting `awaiting_protected_work`; later deliveries receive a retryable busy result during that wait.
 - **One attempt per target.** The attempt is recorded durably before any install work starts. A failure — including
   an interrupted attempt — becomes a blocked state that is never retried automatically: the updater waits for a
   newer target or a manual `opentag upgrade`, which prevents retry and restart storms.

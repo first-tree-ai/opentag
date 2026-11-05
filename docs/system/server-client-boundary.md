@@ -166,12 +166,14 @@ are acceptable: the Provider may or may not have persisted the interrupted turn.
   (interruption records, inbox records, Turn reports and Session message outcome
   reports); a report not yet sent is replayed after the restart. Background
   processes a Run started are lost with it.
-- An automatic upgrade waits only when interrupted work could not be recovered:
-  the current connection has not negotiated `runtime.sessionRecovery`, which
-  includes a Client that is disconnected. Then it closes admission and waits for
-  protected work, and new input is refused with `client_busy` until the wait ends
-  or the connection negotiates recovery. An IM delivery stays pending on the
-  Server and arrives later; a scheduled message is recorded as `unreachable`.
+- An automatic upgrade waits only while the Client is registered with a Server
+  that did not negotiate `runtime.sessionRecovery`, that is, one older than this
+  retry. Then it closes admission and waits for protected work, and new input is
+  refused with `client_busy` until the wait ends or that changes. An IM delivery
+  stays pending on the Server and arrives later; a scheduled message is recorded
+  as `unreachable`. A Client that is not registered does not wait: while
+  disconnected nothing can be delivered, and a Client the Server rejected for its
+  version can finish its work only after upgrading.
 - Manual `opentag upgrade` and `opentag daemon restart` still stop the daemon
   without waiting.
 

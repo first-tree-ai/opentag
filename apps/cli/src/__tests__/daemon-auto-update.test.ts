@@ -113,7 +113,7 @@ function fakeRuntime(
   clientMocks.createClientRuntime.mockResolvedValue({
     run: runtime.run,
     stop: runtime.stop,
-    canRecoverInterruptedWork: () => recoverable?.value ?? false,
+    canInterruptWorkForUpgrade: () => recoverable?.value ?? false,
     quiesceForUpdate: () => {
       runtime.quiesced = true;
       return () => {
@@ -333,6 +333,46 @@ describe("daemon automatic upgrade", () => {
       target: "0.0.2",
       recoveryStatus: "upgrade_required",
     });
+  });
+
+  it("upgrades after a capability rejection even with protected work the rejected Client cannot finish", async () => {
+    const home = await tempHome();
+    clientMocks.readMachineCredentials.mockResolvedValue(machineCredentials());
+    clientMocks.resolveComputerIdentity.mockResolvedValue(computerIdentity());
+    const recoverable = { value: true };
+    const runtime = fakeRuntime(
+      { total: 3 },
+      new RuntimeConnectionError("Required runtime capabilities are unavailable", true, "capability_incompatibility"),
+      recoverable,
+    );
+    const store = memoryStore();
+    const installs: string[] = [];
+
+    const daemon = runDaemonServiceEntry({
+      home,
+      logger: noopLogger(),
+      signals: new EventEmitter() as unknown as NodeJS.Process,
+      autoUpdate: {
+        attach: true,
+        checkIntervalMs: 5,
+        fetchFn: vi.fn(
+          async () =>
+            new Response(JSON.stringify({ channel: "dev", version: "0.0.3" }), {
+              headers: { "content-type": "application/json" },
+            }),
+        ) as typeof fetch,
+        installMode: { mode: "portable", root: "/portable/root", binDir: "/portable/bin" },
+        installTarget: async (target) => {
+          installs.push(target);
+        },
+        refreshService: async () => undefined,
+        stateStore: store,
+      },
+    });
+
+    expect(await daemon).toBe(75);
+    expect(installs).toEqual(["0.0.3"]);
+    expect(runtime.stopped).toBe(true);
   });
 
   it("installs and hands off a newer target after a capability rejection without reconnecting as a new Computer", async () => {

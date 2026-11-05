@@ -1062,6 +1062,8 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
     await inbox.settled();
     expect(onRunOutcome).not.toHaveBeenCalled();
+    // A stopped inbox still counts it, so waiting for protected work on a stopped Client never ends.
+    expect(inbox.pendingCount).toBe(1);
     expect(await store.list("session-message")).toEqual([
       expect.objectContaining({
         status: "running",

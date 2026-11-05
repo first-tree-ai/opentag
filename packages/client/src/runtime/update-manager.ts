@@ -43,8 +43,8 @@ export interface UpdateManagerOptions {
   /** Authoritative protected-work count from the Session runtime boundary. */
   protectedWork(): ProtectedWorkCount;
   /**
-   * Whether the restarted daemon can recover interrupted work. Absent or false means the updater
-   * waits for protected work before installing.
+   * Whether the upgrade may interrupt running work. Absent or false means the updater waits for
+   * protected work before installing.
    */
   canInterruptWork?(): boolean;
   /**
@@ -90,7 +90,7 @@ const defaultSleep = (milliseconds: number): Promise<void> =>
  * Drives automatic upgrades for the portable install mode. One decision loop, one durable attempt
  * per exact target, and monotonic SemVer comparisons only (never an automatic downgrade). The
  * upgrade interrupts running Sessions, because the restarted daemon recovers them; `quiesce` closes
- * admission only for the handoff itself. When interrupted work could not be recovered
+ * admission only for the handoff itself. When the connected Server could not recover them
  * (`canInterruptWork` is false), the updater closes admission and waits for protected work instead.
  *
  * npm-global installs never attach a manager: they upgrade only through the manual CLI command.
@@ -481,8 +481,8 @@ export class UpdateManager {
   }
 
   /**
-   * The fallback while interrupted work could not be recovered: wait for the Session module to
-   * report no protected work, or for recovery to become available (the Client reconnected). There
+   * The fallback while the connected Server could not recover interrupted work: wait for the Session
+   * module to report no protected work, or for that to change (a reconnect or a Server upgrade). There
    * is no force timeout here, because an interruption would surface as a failure. The wait is
    * re-checked on a fixed cadence and logged at a throttled rate.
    */

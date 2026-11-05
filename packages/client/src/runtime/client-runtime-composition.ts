@@ -446,7 +446,7 @@ export class ComposedClientRuntime {
 
   /**
    * Authoritative protected-work snapshot for the automatic-upgrade wait, used only while
-   * `canRecoverInterruptedWork` is false. The Session module owns the bounded lifetime of every
+   * `canInterruptWorkForUpgrade` is false. The Session module owns the bounded lifetime of every
    * counted unit (Turn budgets, delivery deadlines, report retries with terminal outcomes), so a
    * caller may wait on `total === 0` without adding a force timeout of its own.
    */
@@ -472,12 +472,14 @@ export class ComposedClientRuntime {
   }
 
   /**
-   * Whether the Server on the current connection can prepare interrupted work after a restart. It
-   * lets an upgrade interrupt running Sessions instead of waiting for them. A disconnected Client
-   * answers false, because it cannot know what the Server negotiates next.
+   * Whether an upgrade may interrupt running Sessions instead of waiting for them. Only a Server
+   * known not to support Session recovery holds it. A Client that is not registered upgrades too:
+   * a rejected Client can never finish its work without the upgrade, and waiting would end nothing.
    */
-  canRecoverInterruptedWork(): boolean {
-    return this.#connection?.capabilityVersion(RUNTIME_CAPABILITY.sessionRecovery) === 1;
+  canInterruptWorkForUpgrade(): boolean {
+    const connection = this.#connection;
+    if (connection?.state !== "registered") return true;
+    return connection.capabilityVersion(RUNTIME_CAPABILITY.sessionRecovery) === 1;
   }
 
   /**

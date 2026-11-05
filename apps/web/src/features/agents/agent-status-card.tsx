@@ -19,8 +19,8 @@ import {
  * each, using the existing healthy layout's space in every state.
  */
 export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
-  // The same running-Task or Waiting line the Agent list row shows, from the same activity data.
-  const activity = agentActivityDetail(agent, agent.availability.state === "ready");
+  // The same running-Task line the Agent list row shows, from the same activity data.
+  const activity = agentActivityDetail(agent);
   const computer = agentRuntimeIssue(agent) ?? agentComputerStatus(agent);
   const binding = agent.messaging.kind === "ready" ? agent.messaging.value : undefined;
   const provider = runtimeProviderName(agent.runtimeProvider);

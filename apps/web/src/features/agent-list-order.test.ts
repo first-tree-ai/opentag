@@ -385,7 +385,6 @@ describe("Agent availability model and presentation", () => {
       }),
     ).toBeUndefined();
     expect(agentCardStatus({ ...base, evidenceConfirmed: true } as never)).toEqual({
-      detail: "Waiting",
       label: "Ready",
       tone: "success",
     });

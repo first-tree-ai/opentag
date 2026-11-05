@@ -84,11 +84,10 @@ bindings inside the same snapshot that authorized the call.
 
 The Agent list reports whether an Agent is working or merely idle from Turns that a Computer accepted and has not
 reported yet. A working Agent also carries `runningTaskCount`, the number of open Tasks (Sessions) holding such a
-Turn, so several Turns in one Task count once; the list row shows that count, and an idle Ready Agent reads as
-Waiting. The count lets a reader see at a glance which Agents are busy and how busy without opening each one, and
-Waiting says a ready Agent is free to take work. Waiting appears only beside Ready, because beside an offline, paused,
-or blocked status it would contradict the reason the Agent cannot work; a running count shows on every row, since
-work in progress is a fact whatever the status. Queued Tasks are not counted: the row reports work that has started.
+Turn, so several Turns in one Task count once; the list row and the Agent home show that count. The count lets a
+reader see at a glance which Agents are busy and how busy without opening each one; it shows on every row, since work
+in progress is a fact whatever the status. An idle Agent shows no activity detail, so an idle Ready Agent reads just
+Ready: a "Waiting" detail only repeated what Ready already says, and read as the Agent being stuck waiting. Queued Tasks are not counted: the row reports work that has started.
 The list and detail responses include `runningTaskCount` only for a client that sends
 `x-opentag-agent-activity-task-count: 1`; the Web App sends it. Older clients validate the working activity strictly,
 so they keep receiving the shape they were released with.

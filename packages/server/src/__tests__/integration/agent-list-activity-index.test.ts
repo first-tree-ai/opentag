@@ -132,24 +132,23 @@ describe("Agent list unreported-accepted index", () => {
 
       await client.sql.unsafe(
         `
-        with idle as (
+        with turn_session as (
           insert into sessions(im_binding_id,channel_id,conversation_kind,kind,thread_key)
-          select s.im_binding_id,s.channel_id,'channel','thread','turn-'||n
-          from sessions s, generate_series(1, ${NOISY_BACKLOG}) n where s.id = $1
-          returning id, im_binding_id, channel_id, thread_key
+          select s.im_binding_id,s.channel_id,'channel','thread','turns' from sessions s where s.id = $1
+          returning id, im_binding_id, channel_id
         ),
         turns as (
           insert into im_messages(im_binding_id,provider_event_id,channel_id,external_message_id,provider_revision_key,
             operation,direction,thread_key,author_kind,author_external_id,content,provider_context,occurred_at)
-          select im_binding_id,'turn-event-'||thread_key,channel_id,thread_key,'1','created','inbound',thread_key,'human','human',
+          select im_binding_id,'turn-event-'||n,channel_id,'turn-'||n,'1','created','inbound','turns','human','human',
             '{"version":1,"fallbackText":"noise","blocks":[],"truncated":false}'::jsonb,'{"provider":"feishu"}'::jsonb,$2
-          from idle
-          returning id, thread_key
+          from turn_session, generate_series(1, ${NOISY_BACKLOG}) n
+          returning id, external_message_id
         )
         insert into im_message_deliveries(message_id,session_id,attention,state,placement_generation,input_hash,turn_id,
           report_owner_instance_id,accepted_at,expires_at)
-        select turns.id,idle.id,'direct','accepted',1,'input','turn-'||idle.id,$3,$2,$4
-        from turns inner join idle on idle.thread_key = turns.thread_key
+        select turns.id,turn_session.id,'direct','accepted',1,'input',turns.external_message_id,$3,$2,$4
+        from turns, turn_session
         `,
         [noisy.session.id, NOW.toISOString(), REPORT_OWNER, new Date(NOW.getTime() + 86_400_000).toISOString()],
       );

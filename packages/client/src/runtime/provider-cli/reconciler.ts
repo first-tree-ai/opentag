@@ -370,7 +370,9 @@ export class ProviderCliReconciler {
     const inspection = await this.#inspectProvider(provider);
     if (this.#closed || this.#signal?.aborted) return;
     const readiness: ImCliReadinessStatus = inspection?.readiness ?? "unavailable";
-    if (published && this.#imCliPublished.has(provider)) this.#publishImCli(provider, readiness);
+    // Live requirements publish through the selection and target fences below.
+    if (targets.length === 0 && published && this.#imCliPublished.has(provider))
+      this.#publishImCli(provider, readiness);
     if (this.#passiveOverlappedRepair(provider, targets, repairAtStart, selectionAtStart)) return;
     await this.#publishPassiveInspection(provider, inspection, targets, repairAtStart, selectionAtStart);
   }
@@ -398,10 +400,12 @@ export class ProviderCliReconciler {
       const stillLive = liveTargets.filter(
         (target) => this.#current.get(target.integrationId)?.requestId === target.requestId,
       );
+      if (stillLive.length === 0) return;
       if (ready) {
         this.#readySelection.set(provider, ready);
         this.#acceptedOnce.add(provider);
       } else this.#readySelection.delete(provider);
+      this.#publishImCli(provider, ready ? "ready" : "unavailable");
       await Promise.all(
         stillLive.map((requirement) => this.#publishArtifact(requirement, ready ? "ready" : "unavailable")),
       );
@@ -412,6 +416,7 @@ export class ProviderCliReconciler {
     const inspectReason = providerCliArtifactFailureIsManual({ reason: code, stage: "inspect" })
       ? publicReason
       : undefined;
+    this.#publishImCli(provider, "unavailable");
     await Promise.all(
       liveTargets.map((requirement) => {
         if (this.#current.get(requirement.integrationId)?.requestId !== requirement.requestId) return Promise.resolve();

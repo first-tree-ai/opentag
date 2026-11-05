@@ -107,33 +107,35 @@ function notReadyInspect(
   };
 }
 
-async function externalReadyFixture() {
+async function externalReadyFixture(provider: "slack" | "feishu" = "slack") {
   const accountHome = await mkdtemp(join(tmpdir(), "opentag-reconcile-ready-"));
   const layout = resolveProviderCliAccountLayout(accountHome);
   await mkdir(layout.state, { recursive: true });
-  const target = join(accountHome, "slack");
+  const target = join(accountHome, provider);
   await writeFile(target, "#!/bin/sh\nexit 0\n", { mode: 0o700 });
   const identity = await computeFileIdentity(target);
-  const fingerprint = computeTargetFingerprint(identity, "4.10.0");
+  const version = provider === "slack" ? "4.10.0" : "1.0.92";
+  const fingerprint = computeTargetFingerprint(identity, version);
   const selection = await writeProviderCliSelection(
     layout,
-    "slack",
+    provider,
     {
       kind: "external",
       executablePath: identity.path,
       fingerprint,
       trust: "catalog-verified",
-      version: "4.10.0",
+      version,
     },
     undefined,
   );
   return {
     inspection: readyInspect({
+      provider,
       fingerprint,
       selection: {
         kind: "external",
         path: identity.path,
-        version: "4.10.0",
+        version,
         generation: selection.generation,
         trust: "catalog-verified",
       },
@@ -1338,29 +1340,129 @@ describe("provider CLI reconciler", () => {
     ).toBe(false);
   });
 
-  it("passively republishes readiness for a still-live requirement", async () => {
-    const runtime = connection();
-    const fixture = await externalReadyFixture();
-    const inspect = vi.fn().mockResolvedValue(fixture.inspection);
-    const reconciler = new ProviderCliReconciler({
-      connection: runtime,
-      manager: { inspect, ensure: vi.fn(), layout: fixture.layout },
-      validation: { run: vi.fn(), cleanupAll: vi.fn() },
-    });
-    // A prewarm is what publishes IM CLI readiness, so it establishes the passive baseline.
-    await runtime.emit({ ...prewarm, providers: ["slack"] });
-    await runtime.emit(requirement);
-    runtime.send.mockClear();
-    await reconciler.refreshPublishedImCliReadiness();
-    // The passive path re-inspects and re-publishes the same READY readiness for the live target.
-    expect(runtime.setImCliReadiness.mock.calls.map(([observation]) => observation)).toContainEqual({
-      provider: "slack",
-      status: "ready",
-    });
-    // The passive refresh re-inspected the provider and republished readiness for its live target.
-    expect(inspect.mock.calls.length).toBeGreaterThanOrEqual(2);
-    await reconciler.close();
-  });
+  it.each([
+    ["slack", true],
+    ["slack", false],
+    ["feishu", false],
+  ] as const)(
+    "passively republishes readiness for a still-live %s requirement (prewarm: %s)",
+    async (provider, prewarmed) => {
+      const runtime = connection();
+      const fixture = await externalReadyFixture(provider);
+      const inspect = vi.fn().mockResolvedValue(fixture.inspection);
+      const ensure = vi.fn();
+      const run = vi.fn();
+      const current =
+        provider === "slack"
+          ? requirement
+          : {
+              ...requirement,
+              provider,
+              expectedIdentity: { provider, appId: "cli_test", botOpenId: "ou_test", teamBrand: "feishu" as const },
+            };
+      const reconciler = new ProviderCliReconciler({
+        connection: runtime,
+        manager: { inspect, ensure, layout: fixture.layout },
+        validation: { run, cleanupAll: vi.fn() },
+      });
+      if (prewarmed) await runtime.emit({ ...prewarm, providers: [provider] });
+      await runtime.emit(current);
+      expect(runtime.send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "provider-cli:artifact:status",
+          provider,
+          integrationId,
+          requestId,
+          credentialGeneration: 2,
+          status: "ready",
+        }),
+        expect.anything(),
+      );
+      runtime.setImCliReadiness.mockClear();
+      await reconciler.refreshPublishedImCliReadiness();
+      await reconciler.refreshPublishedImCliReadiness();
+      expect(runtime.setImCliReadiness.mock.calls.map(([observation]) => observation)).toEqual([
+        { provider, status: "ready" },
+        { provider, status: "ready" },
+      ]);
+      expect(inspect.mock.calls.length).toBeGreaterThanOrEqual(3);
+      expect(ensure).not.toHaveBeenCalled();
+      expect(run).not.toHaveBeenCalled();
+      await reconciler.close();
+    },
+  );
+
+  it.each(["cancel", "replace", "close"] as const)(
+    "does not seed readiness after its requirement is retired by %s",
+    async (retirement) => {
+      const runtime = connection();
+      const fixture = await externalReadyFixture();
+      let release!: (inspection: ProviderCliInspection) => void;
+      const gate = new Promise<ProviderCliInspection>((resolve) => {
+        release = resolve;
+      });
+      const inspect = vi.fn().mockResolvedValueOnce(fixture.inspection).mockReturnValue(gate);
+      const reconciler = new ProviderCliReconciler({
+        connection: runtime,
+        manager: { inspect, ensure: vi.fn(), layout: fixture.layout },
+        validation: { run: vi.fn(), cleanupAll: vi.fn() },
+      });
+      await runtime.emit(requirement);
+      const passive = reconciler.refreshPublishedImCliReadiness();
+      expect(inspect).toHaveBeenCalledTimes(2);
+      let retirementWork: Promise<unknown> | undefined;
+      if (retirement === "close") retirementWork = reconciler.close();
+      else if (retirement === "replace")
+        retirementWork = runtime.emit({
+          ...requirement,
+          requestId: "99999999-9999-4999-8999-999999999999",
+          credentialGeneration: 3,
+        });
+      else
+        await runtime.emit({
+          type: "provider-cli:cancel",
+          requestId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          requirementRequestId: requestId,
+          provider: "slack",
+          agentId,
+          integrationId,
+          credentialGeneration: 2,
+        });
+      release(fixture.inspection);
+      await passive;
+      await retirementWork;
+      expect(runtime.setImCliReadiness).not.toHaveBeenCalled();
+      await reconciler.close();
+    },
+  );
+
+  it.each(["unknown", "selection-mismatch"] as const)(
+    "keeps %s passive inspection unavailable without prewarm",
+    async (failure) => {
+      const runtime = connection();
+      const fixture = await externalReadyFixture();
+      const inspect = vi.fn().mockResolvedValueOnce(fixture.inspection);
+      const ensure = vi.fn();
+      const run = vi.fn();
+      const reconciler = new ProviderCliReconciler({
+        connection: runtime,
+        manager: { inspect, ensure, layout: fixture.layout },
+        validation: { run, cleanupAll: vi.fn() },
+      });
+      await runtime.emit(requirement);
+      if (failure === "unknown") inspect.mockRejectedValue(new Error("synthetic inspection failure"));
+      else inspect.mockResolvedValue({ ...fixture.inspection, fingerprint: "not-the-selected-artifact" });
+      await reconciler.refreshPublishedImCliReadiness();
+      await reconciler.refreshPublishedImCliReadiness();
+      expect(runtime.setImCliReadiness.mock.calls.map(([observation]) => observation)).toEqual([
+        { provider: "slack", status: "unavailable" },
+        { provider: "slack", status: "unavailable" },
+      ]);
+      expect(ensure).not.toHaveBeenCalled();
+      expect(run).not.toHaveBeenCalled();
+      await reconciler.close();
+    },
+  );
 
   it("stops a passive refresh that becomes unavailable mid-flight", async () => {
     const runtime = connection();
@@ -2144,10 +2246,13 @@ describe("provider CLI reconciler", () => {
     );
     releasePassive(notReadyInspect("slack", "unavailable", { code: "not_installed" }));
     await passive;
+    expect(runtime.setImCliReadiness).not.toHaveBeenCalled();
     expect(runtime.send).toHaveBeenLastCalledWith(
       expect.objectContaining({ type: "provider-cli:artifact:status", status: "ready" }),
       expect.anything(),
     );
+    await reconciler.refreshPublishedImCliReadiness();
+    expect(runtime.setImCliReadiness).toHaveBeenLastCalledWith({ provider: "slack", status: "ready" });
     await reconciler.close();
   });
 });

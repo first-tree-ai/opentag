@@ -72,6 +72,12 @@ new episode; a repeated identical placement notification must not. Public reason
 reconcile capability v2; older peers keep exact v1 frames and a generic stable diagnostic after a bounded unknown
 episode. HTTP responses keep the pre-#490 shape unless the caller opts in with `x-opentag-provider-cli-reason: 2`.
 
+A live binding requirement also establishes generic IM CLI readiness through passive inspection, even when the
+Computer did not receive a first-setup prewarm. Ready requires the inspected artifact to match its selected identity;
+cancelled or replaced requirements and inspections overlapping a repair cannot publish stale readiness. Failed or
+unknown inspections remain unavailable. This read-only publication does not install a CLI or validate credentials;
+the Server retains its separate credential-admission checks.
+
 Preparation uses one existing five-minute operation budget from admission, covering eligibility/requirement
 SQL and socket dispatch waiting as well as the readiness fallback. Close or deadline rejects the admitted
 refresh wait and clears its exact single-flight entry; it never reports an unknown dispatch as successful.

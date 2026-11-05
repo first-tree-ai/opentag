@@ -252,6 +252,21 @@ export class SessionBindingStore {
     });
   }
 
+  /**
+   * Undo an acceptance that was committed here but never acknowledged (its retry input could not
+   * be made durable). Only the exact Turn, still in `accepted`, is removed.
+   */
+  discardAccepted(agentId: string, sessionId: string, turnId: string): Promise<boolean> {
+    return this.#withSessionLock(sessionId, async () => {
+      const path = sessionBindingPath(this.#home, agentId, sessionId);
+      const binding = await this.#requireBinding(agentId, sessionId);
+      if (binding.unresolvedTurn?.turnId !== turnId || binding.unresolvedTurn.phase !== "accepted") return false;
+      const { unresolvedTurn: _discarded, ...rest } = binding;
+      await this.#writeBinding(path, rest);
+      return true;
+    });
+  }
+
   getSteerReceipt(request: RuntimeImSteerRequest, inputHash: string): Promise<RecordedSteerInput | undefined> {
     return this.#withSessionLock(request.sessionId, async () => {
       RuntimeSha256Schema.parse(inputHash);

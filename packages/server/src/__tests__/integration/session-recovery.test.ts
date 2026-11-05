@@ -161,3 +161,52 @@ it("prepares an internal Session with its creator and the current snapshot", asy
   );
   expect(await h.owner()).toBe(h.f.context.instanceId);
 });
+
+it.each([
+  ["ends the Session", "session_ended"],
+  ["moves the placement", "placement_stale"],
+  ["reconnects the Computer", "stale_connection"],
+  ["suspends the Agent", "agent_not_active"],
+] as const)("a concurrent writer that %s before the takeover commits wins: %s", async (change, reason) => {
+  const h = await restarted();
+  const holder = createDatabaseClient(pg.databaseUrl, { max: 1 });
+  const observer = createDatabaseClient(pg.databaseUrl, { max: 1 });
+  clients.push(holder, observer);
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let changed!: () => void;
+  const applied = new Promise<void>((resolve) => {
+    changed = resolve;
+  });
+  const writer = holder.sql.begin(async (tx) => {
+    if (change === "ends the Session") await tx`update sessions set ended_at = now() where id = ${h.f.sessionId}`;
+    if (change === "moves the placement")
+      await tx`update session_placements set generation = generation + 1 where session_id = ${h.f.sessionId}`;
+    if (change === "reconnects the Computer")
+      await tx`update computers set current_instance_id = ${randomUUID()} where id = ${h.context.computerId}`;
+    if (change === "suspends the Agent") await tx`update agents set status = 'suspended' where id = ${h.f.agentId}`;
+    changed();
+    await gate;
+  });
+  await applied;
+  const recovery = h.service.recover(h.frame, h.context);
+  try {
+    // The takeover must wait for the writer instead of deciding on the pre-commit facts.
+    await vi.waitFor(
+      async () => {
+        const [row] = await observer.sql<{ waiting: boolean }[]>`
+          select exists(select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock') as waiting`;
+        expect(row?.waiting).toBe(true);
+      },
+      { timeout: 10_000, interval: 50 },
+    );
+  } finally {
+    release();
+    await writer;
+  }
+  expect(await recovery).toEqual({ status: "rejected", reason });
+  expect(await h.owner()).toBe(h.f.context.instanceId);
+  expect(h.requestReconcile).not.toHaveBeenCalled();
+});

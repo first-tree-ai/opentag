@@ -27,12 +27,16 @@ import { executeProviderCliTurnPlan } from "../index.js";
 import { ClaudeCodeAgentRuntimeFactory } from "../providers/claude-code/agent-runtime.js";
 import { ClaudeCodeProcess } from "../providers/claude-code/process-wire.js";
 import { AdmissionController } from "../runtime/admission-controller.js";
+import { createClientRuntimeHandlers } from "../runtime/client-runtime-composition.js";
 import { ImCredentialEnvironmentError } from "../runtime/im-credential-environment-manager.js";
+import { InterruptedWorkRecovery } from "../runtime/interrupted-work-recovery.js";
+import { turnRetryRecord } from "../runtime/interruption-retry.js";
 import { collectOutgoingReplyReceipts } from "../runtime/provider-cli/outgoing-reply-store.js";
 import { renderProviderOutboxGuidance } from "../runtime/provider-outbox-instructions.js";
 import {
   type DurableFailure,
   type DurableWorkRecord,
+  FileRuntimeDurabilityStore,
   MemoryRuntimeDurabilityStore,
   RuntimeDurabilityMetrics,
   type RuntimeRetryScheduler,
@@ -1010,6 +1014,169 @@ describe("SessionMessageInbox", () => {
         interruption: expect.objectContaining({ reason: "client_shutdown" }),
       }),
     ]);
+  });
+
+  it("keeps the durable FIFO when an orderly stop updates the running message (file store)", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-inbox-fifo-"));
+    try {
+      const store = new FileRuntimeDurabilityStore(home);
+      const targetSessionId = randomUUID();
+      const agentId = randomUUID();
+      const first = delivery({ text: "A", targetSessionId, agentId });
+      const second = delivery({ text: "B", targetSessionId, agentId });
+      let started: () => void = () => undefined;
+      const running = new Promise<void>((resolve) => {
+        started = resolve;
+      });
+      const firstInbox = new SessionMessageInbox({
+        admission: new AdmissionController(),
+        credentialEnvironment: credentialEnvironment(),
+        imCredentialGrantVersion: () => 2,
+        sessionCollaborationVersion: () => 4,
+        persistence: store,
+        reconciler: inboxReconciler(),
+        runtimeManager: {
+          ensureRuntime: vi.fn(
+            async () =>
+              ({
+                waitForIdle: vi.fn(async () => undefined),
+                prompt: (input: { signal?: AbortSignal }) =>
+                  new Promise((_resolve, reject) => {
+                    input.signal?.addEventListener("abort", () => reject(input.signal?.reason), { once: true });
+                    started();
+                  }),
+              }) as never,
+          ),
+          sessionKind: vi.fn(() => "internal" as const),
+        },
+      });
+      await firstInbox.accept(first);
+      await running;
+      await firstInbox.accept(second);
+      firstInbox.stop();
+      await firstInbox.settled();
+      expect((await store.list("session-message")).map((record) => record.payload)).toMatchObject([
+        { content: { text: "A" } },
+        { content: { text: "B" } },
+      ]);
+
+      const order: string[] = [];
+      const restarted = new SessionMessageInbox({
+        admission: new AdmissionController(),
+        credentialEnvironment: credentialEnvironment(),
+        imCredentialGrantVersion: () => 2,
+        sessionCollaborationVersion: () => 4,
+        persistence: store,
+        reconciler: inboxReconciler(),
+        runtimeManager: {
+          ensureRuntime: vi.fn(
+            async () =>
+              ({
+                waitForIdle: vi.fn(async () => undefined),
+                prompt: vi.fn(async (input: { runId: string; input: { items: Array<{ text: string }> } }) => {
+                  order.push(input.input.items.at(-1)?.text ?? "");
+                  return { runId: input.runId, status: "completed", output: [] };
+                }),
+              }) as never,
+          ),
+          sessionKind: vi.fn(() => "internal" as const),
+        },
+      });
+      await restarted.ready();
+      await vi.waitFor(() => expect(order).toEqual(["A", "B"]));
+      await restarted.settled();
+      restarted.stop();
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("runs queued messages after a resumed retry Turn instead of steering them into it", async () => {
+    const store = new MemoryRuntimeDurabilityStore();
+    const queued = delivery({ text: "queued during the outage" });
+    const sessionId = queued.targetSessionId;
+    await store.write(recordFor(queued, "accepted"));
+    let prepared = false;
+    const state: { phase: string; activeRunId?: string } = { phase: "running", activeRunId: "turn-1" };
+    const steer = vi.fn();
+    const prompt = vi.fn(async ({ runId }: { runId: string }) => ({ runId, status: "completed", output: [] }));
+    const runtime = {
+      capabilities: { steer: "supported" },
+      state,
+      steer,
+      waitForIdle: async () => undefined,
+      prompt,
+    };
+    const admission = new AdmissionController();
+    const inbox = new SessionMessageInbox({
+      admission,
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      sessionCollaborationVersion: () => 4,
+      persistence: store,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => runtime as never),
+        isPrepared: () => prepared,
+        runtime: vi.fn(() => runtime as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+      steerRetryMs: 5,
+    });
+    await inbox.ready();
+    expect(inbox.sessionsAwaitingPreparation().map((entry) => entry.sessionId)).toEqual([sessionId]);
+
+    // The resumed IM retry holds the Session while its runtime is running and accepts steers.
+    let endTurn: () => void = () => undefined;
+    const turnEnded = new Promise<void>((resolve) => {
+      endTurn = resolve;
+    });
+    const imRequest = { ...turnRetryRecord(imDelivery(sessionId, queued.agentId), "turn-1") };
+    const reservation = admission.reserve(sessionId, queued.agentId, { acceptedWork: true });
+    if (!reservation.accepted) throw new Error("reservation");
+    const recovery = new InterruptedWorkRecovery({
+      bindingStore: {
+        read: async () =>
+          ({ unresolvedTurn: { turnId: "turn-1", deliveryId: imRequest.deliveryId, phase: "running" } }) as never,
+      },
+      connection: {
+        capabilityVersion: (capability) => (capability === RUNTIME_CAPABILITY.sessionRecovery ? 1 : undefined),
+        send: vi.fn(async () => undefined),
+        subscribeState: () => () => undefined,
+      },
+      custody: { resume: vi.fn(() => true) },
+      inbox,
+      logger: { info: vi.fn(), warn: vi.fn() },
+      reconciler: { setRecovery: vi.fn(), clearRecovery: vi.fn(() => true) },
+      retries: { list: async () => [imRequest], write: async () => undefined, remove: async () => undefined },
+      turnSettled: () => turnEnded,
+    });
+    await recovery.start();
+    const handlers = createClientRuntimeHandlers(
+      { accept: vi.fn(), acceptSteer: vi.fn() } as never,
+      { handleResult: vi.fn() } as never,
+      { afterReconciled: vi.fn(), cancel: vi.fn(), prepare: vi.fn() } as never,
+      recovery,
+    );
+    // The ready reconcile prepares the Session and resumes the Turn: the reconciler answers `running`.
+    prepared = true;
+    expect(recovery.resume(sessionId, { deliveryId: imRequest.deliveryId, turnId: "turn-1" })).toBe(true);
+    await handlers.onReconciled({ desired: "ready", sessionId } as never, { status: "running" } as never);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(steer).not.toHaveBeenCalled();
+    expect(prompt).not.toHaveBeenCalled();
+
+    // The retried Turn ends: the queued message runs as its own Run afterwards.
+    state.phase = "idle";
+    delete state.activeRunId;
+    reservation.reservation.release();
+    endTurn();
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce());
+    await inbox.settled();
+    expect(steer).not.toHaveBeenCalled();
+    expect(inbox.getState(queued.messageId)?.status).toBe("succeeded");
+    recovery.stop();
+    inbox.stop();
   });
 
   it("bounds hydrated recovery and logs when the queue is full", async () => {
@@ -2809,4 +2976,38 @@ class NoProbeSteerRuntime extends BaseAgentRuntime {
   }
 
   protected async closeProvider(): Promise<void> {}
+}
+
+function imDelivery(sessionId: string, agentId: string) {
+  return {
+    type: "im:deliver" as const,
+    requestId: randomUUID(),
+    deliveryId: randomUUID(),
+    imMessageId: randomUUID(),
+    sessionId,
+    agentId,
+    placementGeneration: 1,
+    attention: "direct" as const,
+    content: {
+      kind: "text" as const,
+      text: "hello",
+      providerRef: {
+        provider: "slack" as const,
+        appId: "app-1",
+        teamId: "team-1",
+        botUserId: "bot-1",
+        channelId: "channel-1",
+        messageTs: "1710000000.000001",
+      },
+    },
+    runtime: {
+      contextTrees: [],
+      revision: { agent: { sequence: 1, id: "agent-revision" }, session: { sequence: 1, id: "session-revision" } },
+      agentId,
+      provider: "codex" as const,
+      instructions: { platform: "platform", agent: "agent" },
+      execution: { approvalPolicy: "never" as const, networkAccess: true },
+      workspace: { workspaceId: "workspace-1", mode: "empty_on_create" as const, sharing: "agent" as const },
+    },
+  };
 }

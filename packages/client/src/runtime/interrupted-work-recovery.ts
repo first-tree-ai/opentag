@@ -18,6 +18,8 @@ import type { TurnCustodyOwner } from "./turn-custody-owner.js";
 const RECOVER_RESEND_MS = 10_000;
 /** After this many unanswered or `retry` attempts the interrupted work is reported instead. */
 const RECOVER_MAX_ATTEMPTS = 30;
+/** After `scheduled`, the ready reconcile must arrive (and prepare the Session) within this window. */
+const RECOVER_RECONCILE_MS = 60_000;
 
 interface PendingTurn {
   record: TurnRetryRecord;
@@ -34,12 +36,14 @@ export interface InterruptedWorkRecoveryOptions {
   bindingStore: Pick<SessionBindingStore, "read">;
   connection: Pick<RuntimeConnection, "capabilityVersion" | "send" | "subscribeState">;
   custody: Pick<TurnCustodyOwner, "resume">;
-  inbox: Pick<SessionMessageInbox, "failAwaitingPreparation" | "sessionsAwaitingPreparation">;
+  inbox: Pick<SessionMessageInbox, "failAwaitingPreparation" | "sessionPrepared" | "sessionsAwaitingPreparation">;
   logger?: Pick<ClientLogger, "info" | "warn">;
   now?: () => number;
   reconciler: Pick<SessionReconciler, "clearRecovery" | "setRecovery">;
   retries: Pick<TurnRetryStore, "list" | "remove" | "write">;
   scheduler?: RuntimeRetryScheduler;
+  /** Resolves once a resumed Turn's Run has ended; queued Session messages wait for it. */
+  turnSettled(turnId: string): Promise<void>;
 }
 
 /**
@@ -116,6 +120,11 @@ export class InterruptedWorkRecovery implements InterruptedTurnResumer {
       { sessionId, turnId: turn.turnId, reason: pending.interruption.reason, started },
       started ? "Interrupted Turn automatic retry started" : "Interrupted Turn retry could not start",
     );
+    if (started) {
+      this.#settle(sessionId);
+      // Queued Session messages run after the retried Turn, never steered into it.
+      void this.#options.turnSettled(turn.turnId).then(() => this.#options.inbox.sessionPrepared(sessionId));
+    }
     return started;
   }
 
@@ -127,6 +136,24 @@ export class InterruptedWorkRecovery implements InterruptedTurnResumer {
       { code: "TURN_RETRY_ABANDONED", sessionId, turnId: turn.turnId, reason },
       "Interrupted Turn falls back to failure reporting",
     );
+    // The Session could not be prepared for its retry: waiting Session messages cannot run either.
+    if (this.#settle(sessionId)) void this.#options.inbox.failAwaitingPreparation(sessionId, normalizeReason(reason));
+  }
+
+  /**
+   * A ready reconcile prepared the Session. Its waiting Session messages may run now; a Session whose
+   * Turn is being resumed instead releases them when that Turn ends (see `resume`).
+   */
+  sessionPrepared(sessionId: string): void {
+    if (this.#turns.has(sessionId)) return;
+    this.#settle(sessionId);
+    this.#options.inbox.sessionPrepared(sessionId);
+  }
+
+  /** The ready reconcile for a Session under recovery was refused: give the waiting work up. */
+  reconcileRejected(sessionId: string, reason: string): void {
+    if (!this.#requests.has(sessionId)) return;
+    void this.#giveUp(sessionId, reason);
   }
 
   handleResult(result: SessionRecoverResult): void {
@@ -134,7 +161,11 @@ export class InterruptedWorkRecovery implements InterruptedTurnResumer {
     if (!request || request.frame.requestId !== result.requestId) return;
     request.timer?.cancel();
     if (result.status === "scheduled") {
-      this.#requests.delete(result.sessionId);
+      // Stay the owner until the ready reconcile actually prepares the Session; a lost or failed
+      // reconcile is retried and eventually given up like any other failure.
+      request.timer = this.#scheduler.schedule(RECOVER_RECONCILE_MS, () =>
+        this.#scheduleResend(result.sessionId, request),
+      );
       return;
     }
     if (result.status === "retry") {
@@ -143,6 +174,15 @@ export class InterruptedWorkRecovery implements InterruptedTurnResumer {
     }
     this.#requests.delete(result.sessionId);
     void this.#giveUp(result.sessionId, result.reason ?? result.status);
+  }
+
+  /** Ends the open recover request for a Session; true when one was open. */
+  #settle(sessionId: string): boolean {
+    const request = this.#requests.get(sessionId);
+    if (!request) return false;
+    request.timer?.cancel();
+    this.#requests.delete(sessionId);
+    return true;
   }
 
   async #restore(record: TurnRetryRecord): Promise<void> {
@@ -239,6 +279,7 @@ export class InterruptedWorkRecovery implements InterruptedTurnResumer {
   }
 
   async #giveUp(sessionId: string, reason: string): Promise<void> {
+    this.#settle(sessionId);
     const pending = this.#turns.get(sessionId);
     if (pending) this.abandon(sessionId, pending.record, reason);
     await this.#options.inbox.failAwaitingPreparation(sessionId, normalizeReason(reason));

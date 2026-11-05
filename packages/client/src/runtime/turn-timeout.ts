@@ -7,6 +7,11 @@ export function turnTimeoutMs(request: DirectImMessageDeliveryRequest, now: numb
   return Math.max(1, Math.min(budget, remaining));
 }
 
+/** The automatic retry's fresh budget: the Run budget alone, never the already-spent ingress deadline. */
+export function retryTimeoutMs(request: DirectImMessageDeliveryRequest): number {
+  return request.runtime.budget?.maxDurationMs ?? RUNTIME_DEFAULT_MAX_DURATION_MS;
+}
+
 export function abortExpiredTurn(
   request: DirectImMessageDeliveryRequest,
   now: number,

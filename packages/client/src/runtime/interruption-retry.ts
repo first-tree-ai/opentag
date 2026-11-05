@@ -94,7 +94,8 @@ export interface TurnRetryRecord {
   interruption?: Interruption;
 }
 
-const MAX_RECORDED_STEERS = 16;
+/** Bound on steered messages kept per Turn; further messages are not steered but queued by the Server. */
+export const MAX_RECORDED_STEERS = 16;
 
 /**
  * One small private file per Session (a Session has at most one unresolved Turn). Written when a
@@ -148,16 +149,22 @@ export class TurnRetryStore {
     });
   }
 
-  /** Best effort: never rejects, because a steer must not fail for its retry bookkeeping. */
-  appendSteer(request: RuntimeImSteerRequest): Promise<void> {
-    return this.update(request.sessionId, request.expectedTurnId, (record) =>
-      record.steers.length >= MAX_RECORDED_STEERS || record.steers.some((s) => s.deliveryId === request.deliveryId)
-        ? record
-        : { ...record, steers: [...record.steers, request] },
-    ).then(
-      () => undefined,
-      () => undefined,
-    );
+  /**
+   * Add a steered message to its Turn's retry input before the steer is acknowledged. `full` and
+   * `missing` mean it was not captured, so the caller must not acknowledge the steer; storage errors
+   * reject. A message that was already captured counts as appended.
+   */
+  async appendSteer(request: RuntimeImSteerRequest): Promise<"appended" | "full" | "missing"> {
+    let outcome: "appended" | "full" = "appended";
+    const record = await this.update(request.sessionId, request.expectedTurnId, (current) => {
+      if (current.steers.some((steer) => steer.deliveryId === request.deliveryId)) return current;
+      if (current.steers.length >= MAX_RECORDED_STEERS) {
+        outcome = "full";
+        return current;
+      }
+      return { ...current, steers: [...current.steers, request] };
+    });
+    return record ? outcome : "missing";
   }
 
   remove(sessionId: string, turnId?: string): Promise<void> {
@@ -204,13 +211,11 @@ export function parseTurnRetryRecord(value: unknown): TurnRetryRecord {
   }
   const candidate = value as Record<string, unknown>;
   const request = DirectImMessageDeliveryRequestSchema.parse(candidate.request);
-  const steers = Array.isArray(candidate.steers)
-    ? candidate.steers.slice(0, MAX_RECORDED_STEERS).flatMap((steer) => {
-        // A steer that no longer parses is dropped; it never makes the Turn's own input unreadable.
-        const parsed = RuntimeImSteerRequestSchema.safeParse(steer);
-        return parsed.success ? [parsed.data] : [];
-      })
-    : [];
+  if (!Array.isArray(candidate.steers) || candidate.steers.length > MAX_RECORDED_STEERS) {
+    throw new RuntimeStorageError("invalid", "Turn retry steers are invalid");
+  }
+  // Strict: a record that lost part of its input is unreadable, so the Turn is reported, not retried.
+  const steers = candidate.steers.map((steer) => RuntimeImSteerRequestSchema.parse(steer));
   const interruption = candidate.interruption as Record<string, unknown> | undefined;
   if (
     candidate.schemaVersion !== 1 ||

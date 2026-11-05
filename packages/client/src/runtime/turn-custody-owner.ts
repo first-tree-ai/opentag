@@ -282,9 +282,9 @@ export class TurnCustodyOwner {
         this.#discard(owner);
         return { result: rejected(owner.request, "session_recovery_required") };
       }
-      if (custody.status === "committed" && this.#retries) {
-        // Without this record the Turn simply has no automatic retry; acceptance does not depend on it.
-        await this.#retries.write(turnRetryRecord(owner.request, owner.turnId)).catch(() => undefined);
+      if (custody.status === "committed" && !(await this.#recordRetryInput(owner))) {
+        this.#discard(owner);
+        return { result: rejected(owner.request, "provider_unavailable") };
       }
       this.#reconciler.setActivity(owner.request.sessionId, {
         phase: "running",
@@ -308,6 +308,24 @@ export class TurnCustodyOwner {
     } catch (error) {
       this.#discard(owner);
       return { result: rejected(owner.request, mapStorageError(error)) };
+    }
+  }
+
+  /**
+   * The retry input is part of the acceptance boundary: the binding stores only the input's hash, so
+   * an accepted Turn without its input could not be retried after a restart. When the input cannot be
+   * written, the just-committed acceptance is undone and the delivery is rejected (retryable).
+   */
+  async #recordRetryInput(owner: OwnedDelivery): Promise<boolean> {
+    if (!this.#retries) return true;
+    try {
+      await this.#retries.write(turnRetryRecord(owner.request, owner.turnId));
+      return true;
+    } catch {
+      await this.#bindingStore
+        .discardAccepted(owner.request.agentId, owner.request.sessionId, owner.turnId)
+        .catch(() => false);
+      return false;
     }
   }
 

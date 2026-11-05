@@ -8,7 +8,7 @@ import {
   type SessionRecoverResult,
 } from "@opentag/shared";
 import { and, eq, isNull } from "drizzle-orm";
-import type { DatabaseClient } from "../db/client.js";
+import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
 import { agents, computers, imBindings, imMessageDeliveries, sessionPlacements, sessions } from "../db/schema/index.js";
 import type { ServiceLogger } from "../observability/service-logger.js";
 import type { EffectiveRuntimeSnapshotAssembler } from "../services/runtime-config/effective-runtime-snapshot-assembler.js";
@@ -30,13 +30,22 @@ export interface SessionRecoveryServiceOptions {
   ): Promise<SessionReconcileResult>;
 }
 
+interface RecoveryScope {
+  sessionKind: "channel" | "thread" | "internal";
+  creatorSessionId: string | null;
+  installationId: string;
+}
+
+type Authorization = { refusal: string } | { scope: RecoveryScope; runtime?: EffectiveRuntimeSnapshot };
+
 /**
  * Serves `runtime.sessionRecovery` v1. A Local Client that restarted while accepted work was in
  * flight owns the one automatic retry of that work, but only the Server can prepare the Session
  * for the new connection (a fresh Session CLI proof and the current runtime snapshot). This
- * service authorizes the request against the Session's current placement, moves the report
- * ownership of a named accepted IM Turn to the requesting connection, and schedules an ordinary
- * ready reconcile. It never redelivers input and never writes a Turn Report.
+ * service authorizes the request against the live Agent, binding, Session, placement and current
+ * connection under row locks, moves the report ownership of a named accepted IM Turn to the
+ * requesting connection in that same transaction, and then schedules an ordinary ready reconcile.
+ * It never redelivers input and never writes a Turn Report.
  */
 export class SessionRecoveryService {
   readonly #options: SessionRecoveryServiceOptions;
@@ -47,29 +56,29 @@ export class SessionRecoveryService {
   }
 
   async recover(frame: SessionRecoverRequest, context: RuntimeBusinessContext): Promise<RecoverDecision> {
-    const row = await this.#loadScope(frame.sessionId);
-    const refusal = scopeRefusal(row, frame, context);
-    if (refusal || !row) return rejected(refusal ?? "session_not_found");
     if (!this.#options.registry.canReceiveSnapshot(context.computerId, context.instanceId)) {
       return { status: "retry", reason: "runtime_upgrade_required" };
     }
-    const owned = await this.#takeOverTurn(frame, context);
-    if (owned === "missing") return rejected("turn_not_recoverable");
+    const authorized = await this.#options.database.transaction((transaction) =>
+      authorizeAndTakeOver(transaction, frame, context),
+    );
+    if ("refusal" in authorized) return rejected(authorized.refusal);
     let runtime: EffectiveRuntimeSnapshot;
     try {
-      runtime = owned?.runtime ?? (await this.#options.assembler.assembleForSession(frame.sessionId));
+      runtime = authorized.runtime ?? (await this.#options.assembler.assembleForSession(frame.sessionId));
     } catch {
       return { status: "retry", reason: "runtime_not_ready" };
     }
+    const { scope } = authorized;
     this.#scheduleReconcile(context, {
       type: "session:reconcile",
       requestId: randomUUID(),
-      installationId: row.installationId,
+      installationId: scope.installationId,
       sessionId: frame.sessionId,
       agentId: frame.agentId,
       placementGeneration: frame.placementGeneration,
-      ...(row.sessionKind === "internal" && row.creatorSessionId
-        ? { sessionKind: "internal" as const, creatorSessionId: row.creatorSessionId }
+      ...(scope.sessionKind === "internal" && scope.creatorSessionId
+        ? { sessionKind: "internal" as const, creatorSessionId: scope.creatorSessionId }
         : {}),
       desired: "ready",
       runtime,
@@ -77,61 +86,11 @@ export class SessionRecoveryService {
     return { status: "scheduled" };
   }
 
-  #loadScope(sessionId: string): Promise<RecoveryScope | undefined> {
-    return this.#options.database
-      .select({
-        sessionKind: sessions.kind,
-        endedAt: sessions.endedAt,
-        creatorSessionId: sessions.createdBySessionId,
-        placementComputerId: sessionPlacements.computerId,
-        placementGeneration: sessionPlacements.generation,
-        computerKind: computers.kind,
-        installationId: computers.currentInstallationId,
-        agentId: agents.id,
-        agentStatus: agents.status,
-        agentComputerId: agents.computerId,
-      })
-      .from(sessions)
-      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
-      .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
-      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
-      .innerJoin(agents, eq(agents.id, imBindings.agentId))
-      .where(eq(sessions.id, sessionId))
-      .limit(1)
-      .then(([row]) => row);
-  }
-
   /**
-   * The Client restarted, so the accepted Turn's report owner is a connection that no longer exists.
-   * Only the same Computer's current connection may take it over, and only for the exact accepted,
-   * unreported Turn at the current placement generation. The reconcile then uses the frozen dispatch
-   * snapshot, because the Client's unresolved Turn is fenced to it.
+   * The reconcile result arrives on the same connection; never wait for it inside this frame. A
+   * reconcile that fails or is never answered is retried by the Client, which stays the owner of the
+   * recovery until its Session is actually prepared.
    */
-  async #takeOverTurn(
-    frame: SessionRecoverRequest,
-    context: RuntimeBusinessContext,
-  ): Promise<{ runtime?: EffectiveRuntimeSnapshot } | "missing" | undefined> {
-    if (!frame.deliveryId || !frame.turnId) return undefined;
-    const [owned] = await this.#options.database
-      .update(imMessageDeliveries)
-      .set({ reportOwnerInstanceId: context.instanceId })
-      .where(
-        and(
-          eq(imMessageDeliveries.id, frame.deliveryId),
-          eq(imMessageDeliveries.sessionId, frame.sessionId),
-          eq(imMessageDeliveries.state, "accepted"),
-          eq(imMessageDeliveries.turnId, frame.turnId),
-          eq(imMessageDeliveries.placementGeneration, frame.placementGeneration),
-          isNull(imMessageDeliveries.reportedAt),
-        ),
-      )
-      .returning({ payload: imMessageDeliveries.dispatchPayload });
-    if (!owned) return "missing";
-    const frozen = DirectImMessageDeliveryRequestSchema.safeParse(owned.payload);
-    return frozen.success ? { runtime: frozen.data.runtime } : {};
-  }
-
-  /** The reconcile result arrives on the same connection; never wait for it inside this frame. */
   #scheduleReconcile(context: RuntimeBusinessContext, request: SessionReconcileRequest): void {
     const reconcile = this.#options
       .requestReconcile(context.computerId, context.instanceId, request)
@@ -156,36 +115,115 @@ export class SessionRecoveryService {
   }
 }
 
-interface RecoveryScope {
-  sessionKind: "channel" | "thread" | "internal";
-  endedAt: Date | null;
-  creatorSessionId: string | null;
-  placementComputerId: string;
-  placementGeneration: number;
-  computerKind: string;
-  installationId: string;
-  agentId: string;
-  agentStatus: string;
-  agentComputerId: string | null;
-}
-
-/** Why the Session cannot be recovered on this connection, or undefined when it can. */
-function scopeRefusal(
-  row: RecoveryScope | undefined,
+/**
+ * The authorization and the report-owner takeover share one transaction, so the facts they rely on
+ * cannot change before the write. Lock order follows the Agent lifecycle and maintenance-report
+ * paths: Agent and binding (`FOR SHARE`: lifecycle status writes wait), then the Session
+ * (`FOR NO KEY UPDATE`, as Turn reports and retained claims take it), its placement (`FOR UPDATE`),
+ * the Computer (`FOR SHARE`: a reconnect replacing `current_instance_id` waits), and only then the
+ * delivery row.
+ */
+async function authorizeAndTakeOver(
+  transaction: DatabaseTransaction,
   frame: SessionRecoverRequest,
   context: RuntimeBusinessContext,
-): string | undefined {
-  if (!row) return "session_not_found";
-  if (row.endedAt) return "session_ended";
-  if (row.agentId !== frame.agentId || row.agentComputerId !== context.computerId) return "agent_mismatch";
-  if (row.agentStatus !== "active") return "agent_not_active";
-  if (row.computerKind !== "local") return "cloud_unsupported";
-  if (row.placementComputerId !== context.computerId || row.placementGeneration !== frame.placementGeneration) {
-    return "placement_stale";
-  }
+): Promise<Authorization> {
+  const session = await lockLifecycle(transaction, frame, context);
+  if ("refusal" in session) return session;
+  const computer = await lockPlacement(transaction, frame, context);
+  if ("refusal" in computer) return computer;
   // An internal Session needs its creator, and only an IM Turn names a delivery.
-  if (row.sessionKind === "internal" && (!row.creatorSessionId || frame.deliveryId)) return "session_kind_mismatch";
-  return undefined;
+  if (session.kind === "internal" && (!session.creatorSessionId || frame.deliveryId)) {
+    return { refusal: "session_kind_mismatch" };
+  }
+  const scope: RecoveryScope = {
+    sessionKind: session.kind,
+    creatorSessionId: session.creatorSessionId,
+    installationId: computer.installationId,
+  };
+  if (!frame.deliveryId || !frame.turnId) return { scope };
+  // The restarted Client's old connection still owns the accepted Turn's report. Only this exact
+  // accepted, unreported Turn at the current placement generation moves to the current connection;
+  // the reconcile then uses its frozen dispatch snapshot, because the Client's Turn is fenced to it.
+  const [owned] = await transaction
+    .update(imMessageDeliveries)
+    .set({ reportOwnerInstanceId: context.instanceId })
+    .where(
+      and(
+        eq(imMessageDeliveries.id, frame.deliveryId),
+        eq(imMessageDeliveries.sessionId, frame.sessionId),
+        eq(imMessageDeliveries.state, "accepted"),
+        eq(imMessageDeliveries.turnId, frame.turnId),
+        eq(imMessageDeliveries.placementGeneration, frame.placementGeneration),
+        isNull(imMessageDeliveries.reportedAt),
+      ),
+    )
+    .returning({ payload: imMessageDeliveries.dispatchPayload });
+  if (!owned) return { refusal: "turn_not_recoverable" };
+  const frozen = DirectImMessageDeliveryRequestSchema.safeParse(owned.payload);
+  return frozen.success ? { scope, runtime: frozen.data.runtime } : { scope };
+}
+
+/** Agent and binding `FOR SHARE`, then the live Session `FOR NO KEY UPDATE`. */
+async function lockLifecycle(
+  transaction: DatabaseTransaction,
+  frame: SessionRecoverRequest,
+  context: RuntimeBusinessContext,
+): Promise<{ refusal: string } | { kind: RecoveryScope["sessionKind"]; creatorSessionId: string | null }> {
+  const [agent] = await transaction
+    .select({ status: agents.status, computerId: agents.computerId })
+    .from(agents)
+    .where(eq(agents.id, frame.agentId))
+    .for("share");
+  if (!agent || agent.computerId !== context.computerId) return { refusal: "agent_mismatch" };
+  if (agent.status !== "active") return { refusal: "agent_not_active" };
+  const [identity] = await transaction
+    .select({ bindingId: sessions.imBindingId })
+    .from(sessions)
+    .where(eq(sessions.id, frame.sessionId))
+    .limit(1);
+  if (!identity) return { refusal: "session_not_found" };
+  const [binding] = await transaction
+    .select({ agentId: imBindings.agentId })
+    .from(imBindings)
+    .where(eq(imBindings.id, identity.bindingId))
+    .for("share");
+  if (binding?.agentId !== frame.agentId) return { refusal: "agent_mismatch" };
+  const [session] = await transaction
+    .select({ kind: sessions.kind, endedAt: sessions.endedAt, creatorSessionId: sessions.createdBySessionId })
+    .from(sessions)
+    .where(eq(sessions.id, frame.sessionId))
+    .for("no key update");
+  if (!session || session.endedAt) return { refusal: "session_ended" };
+  return { kind: session.kind, creatorSessionId: session.creatorSessionId };
+}
+
+/** The placement `FOR UPDATE`, then the Computer `FOR SHARE` with its exact current connection. */
+async function lockPlacement(
+  transaction: DatabaseTransaction,
+  frame: SessionRecoverRequest,
+  context: RuntimeBusinessContext,
+): Promise<{ refusal: string } | { installationId: string }> {
+  const [placement] = await transaction
+    .select({ computerId: sessionPlacements.computerId, generation: sessionPlacements.generation })
+    .from(sessionPlacements)
+    .where(eq(sessionPlacements.sessionId, frame.sessionId))
+    .for("update");
+  if (placement?.computerId !== context.computerId || placement.generation !== frame.placementGeneration) {
+    return { refusal: "placement_stale" };
+  }
+  const [computer] = await transaction
+    .select({
+      kind: computers.kind,
+      installationId: computers.currentInstallationId,
+      instanceId: computers.currentInstanceId,
+    })
+    .from(computers)
+    .where(eq(computers.id, context.computerId))
+    .for("share");
+  if (!computer || computer.instanceId !== context.instanceId) return { refusal: "stale_connection" };
+  if (computer.kind !== "local") return { refusal: "cloud_unsupported" };
+  return { installationId: computer.installationId };
 }
 
 function rejected(reason: string): RecoverDecision {

@@ -931,6 +931,8 @@ export async function createClientRuntime(
     logger: moduleLogger("interrupted-work-recovery"),
     reconciler,
     retries: turnRetries,
+    /* v8 ignore next -- late-bound adapter; AgentTurnRunner.whenSettled is covered by interruption-retry tests. */
+    turnSettled: (turnId) => runner.whenSettled(turnId),
   });
   reconciler.setResumer(interruptedWork);
   await interruptedWork.start();
@@ -969,7 +971,7 @@ export async function createClientRuntime(
         if (temporary) await rm(temporary, { recursive: true, force: true });
       }
     },
-    ...createClientRuntimeHandlers(custody, reportOwner, mvpReportRecovery, sessionMessageInbox),
+    ...createClientRuntimeHandlers(custody, reportOwner, mvpReportRecovery, recovery),
     handleSessionRecoverResult: recovery.handleResult.bind(recovery),
     handleTurnActivityResult: runner.handleActivityResult.bind(runner),
     handleSessionMessageOutcomeResult: sessionMessageOutcomes.handleResult.bind(sessionMessageOutcomes),
@@ -1393,7 +1395,7 @@ export function createClientRuntimeHandlers(
   custody: Pick<TurnCustodyOwner, "accept" | "acceptSteer">,
   reportOwner: Pick<TurnReportOwner, "handleResult">,
   recovery: Pick<MvpTurnReportRecovery, "afterReconciled" | "cancel" | "prepare">,
-  inbox?: Pick<SessionMessageInbox, "sessionPrepared">,
+  prepared?: Pick<InterruptedWorkRecovery, "reconcileRejected" | "sessionPrepared">,
 ): ComposedClientRuntimeHandlers {
   return {
     handleDelivery: (request) => custody.accept(request),
@@ -1403,9 +1405,11 @@ export function createClientRuntimeHandlers(
     onReconcileResultSendFailed: (request, result) => recovery.cancel(request, result),
     onReconciled: (request, result) => {
       const replay = recovery.afterReconciled(request, result);
-      // Session messages that waited for this Session's preparation (e.g. after a restart) may run.
-      if (request.desired === "ready" && (result.status === "ready" || result.status === "running")) {
-        inbox?.sessionPrepared(request.sessionId);
+      // Session messages that waited for this Session's preparation (e.g. after a restart) may run. A
+      // resumed retry (`running`) releases them only once it ends, so they are never steered into it.
+      if (request.desired === "ready" && result.status === "ready") prepared?.sessionPrepared(request.sessionId);
+      if (request.desired === "ready" && result.status === "rejected") {
+        prepared?.reconcileRejected(request.sessionId, result.reason ?? "session_recovery_rejected");
       }
       return replay;
     },

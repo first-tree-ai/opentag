@@ -72,8 +72,9 @@ the original input and, for an IM Turn, the messages steered into it. Duplicates
 are acceptable: the Provider may or may not have persisted the interrupted turn.
 
 - Timeout and 429 retry in place, in the same daemon (a 429 after about 30
-  seconds). An IM Turn keeps its delivery and Turn identity, so the retry's
-  report settles the original delivery.
+  seconds). The retry gets a fresh Run budget; the ingress deadline bounds
+  only the first attempt. An IM Turn keeps its delivery and Turn identity, so
+  the retry's report settles the original delivery.
 - An orderly stop (`opentag daemon restart`, upgrade) does not report
   `cancelled / client_shutdown` while the retry is still available; it records
   the interruption durably and leaves the Turn unresolved. A crash leaves no
@@ -81,8 +82,14 @@ are acceptable: the Provider may or may not have persisted the interrupted turn.
 - On startup the daemon spends the retry durably before anything runs, so a
   second interruption is reported, never retried again. The IM Turn's original
   input lives in a per-Session file under `data/runtime/turn-retries/`, written
-  at acceptance and removed when the Turn's result is recorded; a Session
-  message's interruption is kept on its durable inbox record.
+  at acceptance and removed when the Turn's result is recorded. It is part of
+  the acceptance boundary: when it cannot be written, the just-committed
+  custody is undone and the delivery is rejected as retryable. Every steered
+  message is added to it before the steer is acknowledged; when it cannot be
+  (storage failure, or more than 16 steered messages), the steer is deferred
+  and the Server delivers the message after the Turn. A Session message's
+  interruption is kept on its durable inbox record, updated in place so the
+  inbox order survives a restart.
 - Only the Server can prepare a Session for the new connection (current
   snapshot and a fresh Session CLI proof), so after connecting the daemon sends
   `session:recover` for each Session with interrupted or waiting work (see
@@ -92,11 +99,14 @@ are acceptable: the Provider may or may not have persisted the interrupted turn.
   starts the retry. Before and during the retry the Session answers the
   Server's accepted-recovery reconcile with `busy / active_turn`, which defers
   recovery without a diagnostic and is never a report.
-- Session messages waiting for that preparation are not failures; they run in
-  order after the retried Turn. If the Server refuses recovery (for example the
-  Session ended) or does not support it, the IM Turn falls back to its
-  `unknown / turn_state_unknown` recovery report and waiting Session messages
-  fail with a creator notice.
+- The daemon owns each recovery until the Session is actually prepared: after
+  `scheduled` it waits for the ready reconcile, and sends the request again
+  when the reconcile does not arrive. A refused reconcile, a refused request
+  (for example the Session ended), a missing capability, or running out of
+  attempts falls back: the IM Turn gets its `unknown / turn_state_unknown`
+  recovery report and waiting Session messages fail with a creator notice.
+- Session messages waiting for that preparation are not failures. They run in
+  order after the retried Turn has ended; they are never steered into it.
 - Manual `opentag upgrade` and `opentag daemon restart` still stop the daemon
   without draining; automatic upgrades wait for protected work, which includes
   pending retries.

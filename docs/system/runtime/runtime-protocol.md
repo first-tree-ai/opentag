@@ -161,6 +161,11 @@ answers `session:recover:result`:
   (transient), or `unsupported_capability`.
 
 Only the exact current connection of the Session's placement Computer is served; a superseded connection is rejected.
+Authorization and the report-owner takeover run in one transaction that locks the Agent and binding, the Session,
+its placement, and the Computer (whose `current_instance_id` must equal the requesting connection) before the delivery
+row, so a concurrent end, move, suspend, or reconnect either wins and refuses the request or waits for it. `scheduled`
+does not end the Client's ownership: the Client keeps the recovery until the ready reconcile prepares the Session and
+sends the request again when it does not arrive.
 The request never redelivers input and never writes a Turn Report. A Client whose Server did not negotiate the
 capability keeps the previous behavior: it reports interrupted IM Turns and fails waiting Session messages instead of
 retrying them. See [Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work).

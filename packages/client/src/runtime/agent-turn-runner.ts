@@ -70,7 +70,7 @@ import { TurnTraceBuffer } from "./trace-buffer.js";
 import { TurnActivityReporter } from "./turn-activity-reporter.js";
 import type { LiveTurnOwner, TurnCustodyOwner } from "./turn-custody-owner.js";
 import type { TurnReportOwner } from "./turn-report-owner.js";
-import { abortExpiredTurn, turnTimeoutMs } from "./turn-timeout.js";
+import { abortExpiredTurn, retryTimeoutMs, turnTimeoutMs } from "./turn-timeout.js";
 
 export { turnTimeoutMs } from "./turn-timeout.js";
 
@@ -284,6 +284,12 @@ export class AgentTurnRunner {
       return steerResult(request, "deferred", "turn_not_running");
     }
 
+    // Every acknowledged steer must be in the Turn's retry input, so capture it before steering. A
+    // full input or a storage failure leaves the message with the Server to deliver after this Turn.
+    const capture = await this.#retries.appendSteer(request).catch(() => "failed" as const);
+    if (capture === "full") return steerResult(request, "deferred", "steer_unsupported");
+    if (capture !== "appended") return steerResult(request, "deferred", "turn_not_running");
+
     try {
       await runtime.steer({
         expectedRunId: request.expectedTurnId,
@@ -299,8 +305,6 @@ export class AgentTurnRunner {
     } catch {
       return steerResult(request, "deferred", "steer_state_unknown");
     }
-    // Best effort: a retry re-includes steered input so it is not lost with the interrupted Turn.
-    await this.#retries.appendSteer(request);
     return steerResult(request, "steered");
   }
 
@@ -339,6 +343,11 @@ export class AgentTurnRunner {
     this.#stopped = true;
     this.#activity.close();
     for (const turn of this.#turns.values()) turn.abort.abort("client_shutdown");
+  }
+
+  /** Resolves once the Turn's Run (including its in-place retry) has ended. */
+  whenSettled(turnId: string): Promise<void> {
+    return this.#turns.get(turnId)?.promise ?? Promise.resolve();
   }
 
   async settled(): Promise<void> {
@@ -536,11 +545,12 @@ export class AgentTurnRunner {
     };
     this.#logger.info(fields, "Turn started");
     const timeout = new AbortController();
-    const timeoutMs = turnTimeoutMs(owner.request, startedAt);
+    // The automatic retry gets a fresh execution budget; the ingress deadline bounded only the first attempt.
+    const timeoutMs = interruption ? retryTimeoutMs(owner.request) : turnTimeoutMs(owner.request, startedAt);
     turn.expiresAt = new Date(startedAt + timeoutMs).toISOString();
     const timer = setTimeout(() => timeout.abort("turn_timeout"), timeoutMs);
     timer.unref();
-    abortExpiredTurn(owner.request, startedAt, timeout);
+    if (!interruption) abortExpiredTurn(owner.request, startedAt, timeout);
     const expiredBeforeStart = timeout.signal.aborted;
     const signal = AbortSignal.any([shutdownSignal, timeout.signal]);
     let completion: TurnCompletion;
@@ -645,9 +655,6 @@ export class AgentTurnRunner {
     if (completion.outcome === "completed") return undefined;
     const reason = recoverableFailure(completion.errorReason);
     if (!reason) return undefined;
-    // An expired message deadline would abort the retry before it starts.
-    const deadline = turn.owner.request.deadlineAt ? Date.parse(turn.owner.request.deadlineAt) : undefined;
-    if (reason === "turn_timeout" && deadline !== undefined && deadline <= this.#now()) return undefined;
     const restart = reason === "client_shutdown" || shutdownSignal.aborted;
     if (restart && !turn.restartRetry) return undefined;
     const interruption: Interruption = { reason, at: new Date(this.#now()).toISOString() };
@@ -953,7 +960,7 @@ export function buildRetryAgentInput(
 
 /** Without durable Turn input no automatic retry is possible. */
 const NO_TURN_RETRIES: NonNullable<AgentTurnRunnerOptions["retries"]> = {
-  appendSteer: async () => undefined,
+  appendSteer: async () => "appended",
   update: async () => undefined,
 };
 

@@ -203,8 +203,11 @@ export class FileRuntimeDurabilityStore implements RuntimeDurabilityStore {
       await ensurePrivateDirectory(dirname(this.#directory), this.#directory);
       const path = durabilityPath(this.#directory, record.kind);
       const records = (await readDurableJson(path, (value) => parseRecords(value, record.kind))) ?? [];
-      const next = records.filter((candidate) => candidate.key !== record.key);
-      next.push(record as DurableWorkRecord);
+      // Replace an existing record in place: list order is the durable FIFO that hydration restores.
+      const index = records.findIndex((candidate) => candidate.key === record.key);
+      const next = [...records];
+      if (index === -1) next.push(record as DurableWorkRecord);
+      else next[index] = record as DurableWorkRecord;
       await writeDurableJson(path, next);
     });
   }

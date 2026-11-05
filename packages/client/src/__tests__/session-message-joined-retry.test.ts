@@ -359,6 +359,89 @@ describe("the retry count shared by process interruptions and model 429", () => 
     expect(record).toHaveBeenCalledTimes(2);
   });
 
+  it("does not count run time twice when a slow write fails across later ticks", async () => {
+    vi.useFakeTimers();
+    let now = 0;
+    let failWrite: (error: Error) => void = () => undefined;
+    const record = vi.fn(
+      (_ranMs: number) =>
+        new Promise<void>((_resolve, reject) => {
+          failWrite = reject;
+        }),
+    );
+    const clock = trackRunTime(() => now, record);
+    now = RUN_TIME_RECORD_INTERVAL_MS;
+    await vi.advanceTimersByTimeAsync(RUN_TIME_RECORD_INTERVAL_MS);
+    // A later tick while the write is pending starts no second write.
+    now = 2 * RUN_TIME_RECORD_INTERVAL_MS;
+    await vi.advanceTimersByTimeAsync(RUN_TIME_RECORD_INTERVAL_MS);
+    expect(record).toHaveBeenCalledOnce();
+    failWrite(new Error("disk full"));
+    now = 130_000;
+    // Nothing was committed, so all 130 seconds are still to be recorded, and no more than that.
+    await expect(clock.finish()).resolves.toBe(130_000);
+  });
+
+  it("waits for a slow write and then reports only what it did not cover", async () => {
+    vi.useFakeTimers();
+    let now = 0;
+    let finishWrite: () => void = () => undefined;
+    const record = vi.fn(
+      (_ranMs: number) =>
+        new Promise<void>((resolve) => {
+          finishWrite = resolve;
+        }),
+    );
+    const clock = trackRunTime(() => now, record);
+    now = RUN_TIME_RECORD_INTERVAL_MS;
+    await vi.advanceTimersByTimeAsync(RUN_TIME_RECORD_INTERVAL_MS);
+    now = 130_000;
+    const finished = clock.finish();
+    finishWrite();
+    await expect(finished).resolves.toBe(130_000 - RUN_TIME_RECORD_INTERVAL_MS);
+    expect(record).toHaveBeenCalledExactlyOnceWith(RUN_TIME_RECORD_INTERVAL_MS);
+  });
+
+  it("does not resume a Turn after a crash once its last 429 ran out of retries", async () => {
+    const first = await system();
+    first.prompt.mockImplementationOnce(hangs(first));
+    await first.startTurn();
+    const message = first.message("steered");
+    await first.steer(message);
+    // The final 429 committed its count, then the daemon died before the failure was reported.
+    await first.retries.update(first.request.sessionId, TURN_ID, (record) => ({
+      ...record,
+      retries: MAX_AUTOMATIC_RETRIES + 1,
+      interruption: { reason: "provider_rate_limited", at: "T" },
+    }));
+    const second = await system({ home: first.home, request: first.request, prepared: false });
+    await second.inbox.ready();
+    await second.recovery.start();
+    second.prepare();
+    expect(second.recovery.isPendingRetry(second.request.sessionId, TURN_ID)).toBe(false);
+    expect(second.recovery.resume(second.request.sessionId, second.identity)).toBe(false);
+    expect(second.prompt).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(second.inbox.getState(message.messageId)?.status).toBe("failed"));
+    await second.stop();
+    await first.stop();
+  });
+
+  it("still does not count a 429 twice when its retry is waiting", async () => {
+    const first = await system();
+    await first.retries.write({
+      ...turnRetryRecord(first.request, TURN_ID),
+      retries: MAX_AUTOMATIC_RETRIES,
+      interruption: { reason: "provider_rate_limited", at: "T" },
+    });
+    const second = await system({ home: first.home, request: first.request, prepared: false });
+    await second.inbox.ready();
+    await second.recovery.start();
+    expect(second.recovery.isPendingRetry(second.request.sessionId, TURN_ID)).toBe(true);
+    expect((await second.retries.read(second.request.sessionId))?.retries).toBe(MAX_AUTOMATIC_RETRIES);
+    await second.stop();
+    await first.stop();
+  });
+
   it("resumes after a crash during an in-place retry, with the message delivered again", async () => {
     const first = await system();
     first.prompt.mockImplementationOnce(attempt(first, "provider_rate_limited")).mockImplementationOnce(hangs(first));

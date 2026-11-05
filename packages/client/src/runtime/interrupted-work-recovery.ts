@@ -4,6 +4,7 @@ import { type ClientLogger, createLogger } from "../observability/logger.js";
 import {
   acknowledgedSteers,
   type Interruption,
+  MAX_AUTOMATIC_RETRIES,
   nextRetry,
   type TurnRetryRecord,
   type TurnRetryStore,
@@ -217,7 +218,7 @@ export class InterruptedWorkRecovery implements InterruptedTurnResumer {
     // reason goes to the resumed Turn's notice; what ends that Turn is recorded anew.
     const counted = record.interruption?.reason === "provider_rate_limited";
     const { count, exhausted } = counted
-      ? { count: record.retries, exhausted: false }
+      ? { count: record.retries, exhausted: record.retries > MAX_AUTOMATIC_RETRIES }
       : nextRetry({ count: record.retries, ranMs: record.retryRanMs ?? 0 });
     const { interruption: _ended, ...attempt } = record;
     const spent: TurnRetryRecord = { ...attempt, retries: count, retryRanMs: 0 };

@@ -69,14 +69,23 @@ export function trackRunTime(
   now: () => number,
   record: (ranMs: number) => Promise<unknown>,
 ): { finish(): Promise<number> } {
+  // Everything before `since` is recorded. One write at a time, and it moves only once a write commits,
+  // so a failed or slow write can neither lose time nor count it twice.
   let since = now();
-  let writing: Promise<unknown> = Promise.resolve();
+  let writing: Promise<void> | undefined;
   const timer = setInterval(() => {
-    const previous = since;
-    since = now();
-    writing = record(since - previous).catch(() => {
-      since = previous;
-    });
+    if (writing) return;
+    const at = now();
+    writing = record(at - since)
+      .then(
+        () => {
+          since = at;
+        },
+        () => undefined,
+      )
+      .finally(() => {
+        writing = undefined;
+      });
   }, RUN_TIME_RECORD_INTERVAL_MS);
   timer.unref();
   return {

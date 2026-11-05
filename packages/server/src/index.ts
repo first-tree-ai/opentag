@@ -83,7 +83,7 @@ import { createCloudExecutionContext } from "./services/cloud-model-context.js";
 import { CloudModelService, type CloudModelServiceOptions } from "./services/cloud-model-service.js";
 import { createRunnerImagePrewarmWorker } from "./services/cloud-run/runner-image-prewarm-worker.js";
 import { CloudUsageService } from "./services/cloud-usage.js";
-import { ComputerService, deriveMachineFingerprintKey, MachineAuthService } from "./services/computers/index.js";
+import { ComputerService, MachineAuthService } from "./services/computers/index.js";
 import { ApplicationCipher } from "./services/crypto.js";
 import { AgentGitHubCredentialService } from "./services/github/agent-github-credential-service.js";
 import { GitHubApiClient } from "./services/github/github-api-client.js";
@@ -673,7 +673,6 @@ export async function startServer(): Promise<void> {
     });
     const machineAuthService = new MachineAuthService(database, {
       logger: serviceLogger("machine-auth"),
-      machineFingerprintKey: deriveMachineFingerprintKey(config.betterAuthSecret),
       onCredentialRotated: async (computerId, revokedCredentialIds) => {
         await registry.closeComputer(computerId, undefined, revokedCredentialIds);
       },

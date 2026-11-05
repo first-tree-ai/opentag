@@ -15,11 +15,6 @@ import { agents, computerConnectCodes, computerCredentials, computers } from "..
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import { AuthServiceError, generateSecret, hashSecret } from "../auth/index.js";
 import { lockActiveAccount } from "./account-lock.js";
-import {
-  accountMachineFingerprint,
-  lockFingerprintRepairTarget,
-  type MachineFingerprintKey,
-} from "./machine-fingerprint.js";
 import { uniqueConstraintName } from "./pg-errors.js";
 
 export const COMPUTER_CONNECT_CODE_TTL_SECONDS = 15 * 60;
@@ -76,8 +71,6 @@ export interface ComputerConnectExchangeInput {
   machineToken?: string;
   /** The Client understands `outcome` and a token-less `already_connected` result. */
   reportOutcome?: true;
-  /** Client-side SHA-256 of the machine (see machine-fingerprint.ts); absent when unreadable. */
-  machineFingerprint?: string;
 }
 
 export interface ComputerConnectExchangeResult extends ComputerAuthContext {
@@ -110,8 +103,6 @@ export interface MachineAuthServiceOptions {
   onCredentialRotated?: (computerId: string, revokedCredentialIds: readonly string[]) => Promise<void> | void;
   logger?: ServiceLogger;
   presenceTimeoutMs?: number;
-  /** Keys the per-Account machine fingerprint. Without it no fingerprint is stored or matched. */
-  machineFingerprintKey?: MachineFingerprintKey;
 }
 
 type ConnectCodeRow = typeof computerConnectCodes.$inferSelect;
@@ -126,7 +117,6 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
   readonly #onCredentialRotated?: MachineAuthServiceOptions["onCredentialRotated"];
   readonly #logger?: ServiceLogger;
   readonly #presenceTimeoutMs: number;
-  readonly #machineFingerprintKey?: MachineFingerprintKey;
 
   constructor(database: DatabaseClient, options: MachineAuthServiceOptions = {}) {
     this.#database = database;
@@ -134,13 +124,6 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
     this.#onCredentialRotated = options.onCredentialRotated;
     this.#logger = options.logger;
     this.#presenceTimeoutMs = options.presenceTimeoutMs ?? DEFAULT_PRESENCE_TIMEOUT_MS;
-    this.#machineFingerprintKey = options.machineFingerprintKey;
-  }
-
-  /** The stored fingerprint for this exchange, or `null` when the Client sent none or the key is unset. */
-  #fingerprint(accountId: string, input: ComputerConnectExchangeInput): string | null {
-    if (!input.machineFingerprint || !this.#machineFingerprintKey) return null;
-    return accountMachineFingerprint(this.#machineFingerprintKey, accountId, input.machineFingerprint);
   }
 
   async issueForAccount(
@@ -322,7 +305,9 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
       .where(and(eq(computers.currentInstallationId, input.installationId), isNull(computers.deletedAt)))
       .limit(1)
       .for("update");
-    if (!existing) return this.#resolveUnknownInstallation(transaction, connectCode, input, now);
+    if (!existing) {
+      return { outcome: "created", computerId: (await this.#createComputer(transaction, connectCode, input, now)).id };
+    }
     if (existing.ownerAccountId !== accountId) throw computerAccountConflict();
     if (existing.kind !== "local") {
       throw new AuthServiceError(
@@ -340,84 +325,24 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
     // do": repairing rotates the credential, so the Client restarts the daemon on the new version.
     const sameVersion = releaseVersion(existing.clientVersion) === releaseVersion(input.clientVersion);
     if (online && sameVersion && !targetAgentId && input.reportOutcome && presented?.computerId === existing.id) {
-      const fingerprint = this.#fingerprintUpdate(accountId, input);
-      if (fingerprint.machineFingerprint) {
-        await transaction.update(computers).set(fingerprint).where(eq(computers.id, existing.id));
-      }
       return { outcome: "already_connected", computerId: existing.id, credentialId: presented.credentialId };
     }
-    return {
-      outcome: "repaired",
-      computerId: await this.#repairInPlace(transaction, existing.id, accountId, input, now),
-    };
-  }
-
-  /**
-   * An unknown installation may be a machine whose local identity was lost: repair its Computer in
-   * place when the fingerprint names exactly one offline match (see machine-fingerprint.ts); otherwise
-   * create a new Computer.
-   */
-  async #resolveUnknownInstallation(
-    transaction: DatabaseTransaction,
-    connectCode: ConnectCodeRow,
-    input: ComputerConnectExchangeInput,
-    now: Date,
-  ): Promise<{ outcome: "created" | "repaired"; computerId: string }> {
-    const accountId = connectCode.issuedByAccountId;
-    const fingerprint = this.#fingerprint(accountId, input);
-    const recognized = fingerprint
-      ? await lockFingerprintRepairTarget(transaction, {
-          accountId,
-          fingerprint,
-          machine: input,
-          onlineSince: new Date(now.getTime() - this.#presenceTimeoutMs),
-        })
-      : undefined;
-    if (recognized) {
-      return {
-        outcome: "repaired",
-        computerId: await this.#repairInPlace(transaction, recognized, accountId, input, now),
-      };
-    }
-    return { outcome: "created", computerId: (await this.#createComputer(transaction, connectCode, input, now)).id };
-  }
-
-  /**
-   * Repairs a same-Account Local Computer under its existing ID. The installation ID is (re)written, so a
-   * machine recognized by fingerprint adopts its new local identity. `last_seen_at` is kept: the card
-   * keeps saying when the computer was last online until the repaired daemon reports in.
-   */
-  async #repairInPlace(
-    transaction: DatabaseTransaction,
-    computerId: string,
-    accountId: string,
-    input: ComputerConnectExchangeInput,
-    now: Date,
-  ): Promise<string> {
     const [repaired] = await transaction
       .update(computers)
       .set({
         disconnectedAt: null,
-        currentInstallationId: input.installationId,
         displayName: input.displayName,
         platform: input.platform,
         arch: input.arch,
         clientVersion: input.clientVersion,
-        ...this.#fingerprintUpdate(accountId, input),
         currentInstanceId: null,
         connectedAt: null,
         updatedAt: now,
       })
-      .where(and(eq(computers.id, computerId), eq(computers.ownerAccountId, accountId), eq(computers.kind, "local")))
+      .where(and(eq(computers.id, existing.id), eq(computers.ownerAccountId, accountId), eq(computers.kind, "local")))
       .returning({ id: computers.id });
     if (!repaired) throw new Error("The reconnected Computer does not match its issuing Account");
-    return repaired.id;
-  }
-
-  /** Records the fingerprint when one was sent; an absent one never clears what is stored. */
-  #fingerprintUpdate(accountId: string, input: ComputerConnectExchangeInput): { machineFingerprint?: string } {
-    const fingerprint = this.#fingerprint(accountId, input);
-    return fingerprint ? { machineFingerprint: fingerprint } : {};
+    return { outcome: "repaired", computerId: repaired.id };
   }
 
   async #closeRotatedConnection(computerId: string, revokedCredentialIds: readonly string[]): Promise<void> {
@@ -542,7 +467,6 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
           platform: input.platform,
           arch: input.arch,
           clientVersion: input.clientVersion,
-          machineFingerprint: this.#fingerprint(connectCode.issuedByAccountId, input),
           createdAt: now,
           updatedAt: now,
         })
@@ -586,7 +510,6 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
           platform: input.platform,
           arch: input.arch,
           clientVersion: input.clientVersion,
-          ...this.#fingerprintUpdate(connectCode.issuedByAccountId, input),
           currentInstanceId: null,
           connectedAt: null,
           updatedAt: now,

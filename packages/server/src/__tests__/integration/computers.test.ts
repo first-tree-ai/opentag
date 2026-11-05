@@ -22,7 +22,7 @@ import { createDatabaseClient } from "../../db/client.js";
 import { agents, computerConnectCodes, computerCredentials, computers, users } from "../../db/schema/index.js";
 import { COMPUTER_DELETED_CLOSE, ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { AuthService, ConnectCodeService, hashSecret } from "../../services/auth/index.js";
-import { ComputerService, deriveMachineFingerprintKey, MachineAuthService } from "../../services/computers/index.js";
+import { ComputerService, MachineAuthService } from "../../services/computers/index.js";
 import { deferred } from "../support/deferred.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
@@ -61,7 +61,6 @@ async function fixture() {
     onCredentialRotated: async (computerId) => {
       await registry.closeComputer(computerId);
     },
-    machineFingerprintKey: deriveMachineFingerprintKey("integration-login-secret-long-enough-000"),
   });
   const service = new ComputerService(client.database, auth);
   return { ...client, auth, bootstrap, machineAuth, registry, service };
@@ -244,41 +243,6 @@ describe("Computer connection persistence", () => {
         .from(computerConnectCodes)
         .where(eq(computerConnectCodes.id, foreign.connectCodeId));
       expect(foreignCode?.consumedAt).toBeNull();
-    } finally {
-      await value.sql.end();
-    }
-  });
-
-  it("repairs a lost-identity reconnect by fingerprint exactly once when two codes race", async () => {
-    const value = await fixture();
-    try {
-      const machineFingerprint = "f".repeat(64);
-      const issued = await value.machineAuth.issueForAccount(value.bootstrap.userId, {});
-      const first = await value.machineAuth.exchangeConnectCode({
-        ...exchangeInput(issued.code, crypto.randomUUID()),
-        machineFingerprint,
-        reportOutcome: true,
-      });
-      const codes = await Promise.all([
-        value.machineAuth.issueForAccount(value.bootstrap.userId, {}),
-        value.machineAuth.issueForAccount(value.bootstrap.userId, {}),
-      ]);
-      // Two reruns from the same machine with a lost identity, each with its own new installation ID.
-      const results = await Promise.all(
-        codes.map((code) =>
-          value.machineAuth.exchangeConnectCode({
-            ...exchangeInput(code.code, crypto.randomUUID()),
-            machineFingerprint,
-            reportOutcome: true,
-          }),
-        ),
-      );
-      expect(results.map((result) => result.outcome).sort()).toEqual(["repaired", "repaired"]);
-      expect(new Set(results.map((result) => result.computerId))).toEqual(new Set([first.computerId]));
-      const rows = await value.database.select().from(computers);
-      expect(rows).toHaveLength(1);
-      expect(rows[0]?.machineFingerprint).toMatch(/^[0-9a-f]{64}$/);
-      expect(rows[0]?.machineFingerprint).not.toBe(machineFingerprint);
     } finally {
       await value.sql.end();
     }

@@ -121,8 +121,7 @@ and classifies it:
 
 | Installation's live Computer | Result |
 | --- | --- |
-| None (never seen, or deleted), and the machine fingerprint names exactly one offline Local Computer in this Account with the same name, platform, and architecture | Repair that Computer in place (`repaired`) and adopt the new installation ID. |
-| None, otherwise | Create a new Computer (`created`). |
+| None (never seen, or deleted) | Create a new Computer (`created`). |
 | Another Account's, or the presented token belongs to another Account | `COMPUTER_ACCOUNT_CONFLICT` (409). Nothing is consumed or changed. |
 | Same Account, online on the same release, untargeted code, current token presented | `already_connected`: no credential rotation or reconnect, no token returned; the code is redeemed by this Computer so the issuing page reaches its connected state. |
 | Same Account, otherwise (offline, disconnected, another running release, token stale or absent, targeted code) | Repair in place (`repaired`): same Computer ID, `disconnected_at` cleared, credentials rotated, code consumed. |
@@ -160,39 +159,23 @@ answers `outcome` (and may omit the token) only to Clients that sent
 `reportOutcome`, so older Clients keep their strict response shape; a newer
 Client retries once without the optional fields when an older Server rejects them
 as unknown keys, which happens before redemption. Older Clients always send a new
-installation ID and therefore still create a new Computer on rerun. Repair-mode codes keep their targeted behavior.
+installation ID and therefore still create a new Computer on rerun. Repair-mode
+codes keep their targeted behavior.
 
-### Recognizing a machine after its local identity is lost
+The local installation ID is the only identity of a Computer. While it is intact, a
+rerun repairs the original Computer, subject to the Account conflict above. When it
+is lost (deleted home, reinstall), a create-code rerun creates a new Computer and the
+previous one stays where it is, offline, in its own Account. This holds across
+Accounts too: another Account's code on a machine with no local identity creates a
+new Computer in that Account, reveals nothing, and raises no conflict. The Server
+does not try to recognize the physical machine: no hardware identifier is reliably
+unique (cloned images share them), so a match could hand one machine's Computer to
+another, while a duplicate is visible and removable. Offline cards show when each
+Computer was last online so that same-named Computers can be told apart.
 
-A deleted openTag home or reinstall loses the installation ID. Without help the rerun would add a second computer
-with the same name next to the old, offline one, and the two look identical. The Client therefore sends an optional
-`machineFingerprint`: a SHA-256, computed on the machine, of `opentag-machine-v1`, the machine ID (macOS
-IOPlatformUUID; Linux `/etc/machine-id`, then `/var/lib/dbus/machine-id`), the OS user ID, and the resolved openTag
-home. Separate OS users and homes stay separate computers. When no machine ID is readable the field is omitted and the
-exchange behaves as before.
-
-- The Server stores `computers.machine_fingerprint` = HMAC-SHA256(key, Account ID + Client hash). The raw identifier
-  never leaves the machine, and the stored value cannot be reversed or correlated across Accounts. The key is derived
-  with HKDF from the login secret (`BETTER_AUTH_SECRET`, info `opentag-computer-fingerprint-v1`), so no new
-  configuration exists. Rotating that secret makes recorded fingerprints stop matching until each computer connects
-  once; a lost-identity reconnect in that window creates a new computer, as before.
-- Only an unknown installation in create mode consults the fingerprint, after the Account, code, and Agent locks. An
-  online match is a clone and gets a new computer, as do several matches or a match with another name, platform, or
-  architecture: taking over a computer that may be another machine is worse than a duplicate.
-- The name guard leaves one accepted risk. Two machines cloned from one image with the same hostname in the same
-  Account can take over each other's offline computer; the original then reruns connect and becomes a new computer.
-  Requiring the same name keeps the repair to the case users actually see, two identical entries.
-- A match never raises `COMPUTER_ACCOUNT_CONFLICT`: the per-Account key makes cross-Account matches impossible. A
-  machine whose local identity was lost and that connects with another Account's code becomes a new Computer in that
-  Account; the other Account's Computer is left untouched and nothing about it is revealed. Without the local identity
-  there is no proof that the same person is connecting, and a machine changing hands must not be blocked. The
-  conflict stays tied to the installation ID and presented token: a machine whose local identity is still present and
-  bound to another Account stops with it.
-- The fingerprint is recorded on create, repair, and already-connected; an exchange without one never clears it. It is
-  cleared on delete and onboarding reset, has no backfill, and is never returned by an API or logged.
-
-The committed repair clears the current instance but keeps `last_seen_at`, so the computer list keeps saying when
-the computer was last online until the repaired daemon reports in. Registration, heartbeat,
+The committed repair clears the current instance but keeps `last_seen_at`, so the
+computer list keeps saying when the computer was last online until the repaired
+daemon reports in. Registration, heartbeat,
 and queued Runtime business frames independently validate the active credential;
 delivery and approval authority also require the current instance and connection.
 Closing the old socket is cleanup, rather than the authority that revokes it.

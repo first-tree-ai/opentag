@@ -1,2 +1,0 @@
-ALTER TABLE "computers" ADD COLUMN "machine_fingerprint" text;--> statement-breakpoint
-CREATE INDEX "computers_owner_machine_fingerprint_idx" ON "computers" USING btree ("owner_account_id","machine_fingerprint") WHERE "computers"."deleted_at" IS NULL AND "computers"."machine_fingerprint" IS NOT NULL;

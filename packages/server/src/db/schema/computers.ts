@@ -38,12 +38,6 @@ export const computers = pgTable(
      * so the same machine can connect again as a new Computer.
      */
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
-    /**
-     * Per-Account keyed hash of the machine the Client reported (machine ID, OS user, openTag home).
-     * It recognizes the same machine after its local identity was lost. Never returned by an API,
-     * cleared on delete and reset; not unique, because cloned machines legitimately share one.
-     */
-    machineFingerprint: text("machine_fingerprint"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -52,9 +46,6 @@ export const computers = pgTable(
     uniqueIndex("computers_current_installation_id_unique")
       .on(table.currentInstallationId)
       .where(sql`${table.deletedAt} IS NULL`),
-    index("computers_owner_machine_fingerprint_idx")
-      .on(table.ownerAccountId, table.machineFingerprint)
-      .where(sql`${table.deletedAt} IS NULL AND ${table.machineFingerprint} IS NOT NULL`),
     uniqueIndex("computers_owner_account_id_cloud_unique").on(table.ownerAccountId).where(sql`${table.kind} = 'cloud'`),
   ],
 );

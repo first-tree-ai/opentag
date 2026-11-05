@@ -23,7 +23,6 @@ import {
   type DaemonServiceInfo,
   type DaemonServiceManager,
 } from "../daemon/service/index.js";
-import { readMachineFingerprint } from "./machine-fingerprint.js";
 
 export interface ComputerConnectOptions {
   api?: Pick<OpenTagApi, "exchangeComputerConnectCode">;
@@ -86,7 +85,6 @@ export async function runComputerConnect(options: ComputerConnectOptions): Promi
     arch: arch(),
     clientVersion,
     ...(await currentMachineTokenField(home, serverUrl)),
-    ...(await machineFingerprintField(home)),
     reportOutcome: true,
   });
   const result: ComputerConnectResult = {
@@ -221,10 +219,4 @@ function safeFailureMessage(error: unknown, fallback: string, machineToken: stri
   let message = error instanceof Error ? error.message : String(error);
   if (machineToken) message = message.replaceAll(machineToken, "[REDACTED]");
   return redactSecrets(message).trim().slice(0, 512) || fallback;
-}
-
-/** Never blocks a connect: an unreadable machine ID simply leaves the fingerprint out. */
-async function machineFingerprintField(home: string): Promise<{ machineFingerprint?: string }> {
-  const machineFingerprint = await readMachineFingerprint(home).catch(() => undefined);
-  return machineFingerprint ? { machineFingerprint } : {};
 }

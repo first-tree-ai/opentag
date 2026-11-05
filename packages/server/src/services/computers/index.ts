@@ -11,7 +11,6 @@ export {
   type MachineAuthServiceOptions,
   type MachineConnectCodeIssuer,
 } from "./machine-auth-service.js";
-export { deriveMachineFingerprintKey } from "./machine-fingerprint.js";
 export {
   type ProviderReadinessSource,
   projectComputerImCliReadiness,

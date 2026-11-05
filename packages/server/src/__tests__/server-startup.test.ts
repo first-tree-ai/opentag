@@ -267,7 +267,6 @@ vi.mock("../services/channel-target/index.js", () => ({
 }));
 vi.mock("../services/computers/index.js", () => ({
   ComputerService: class {},
-  deriveMachineFingerprintKey: () => Buffer.alloc(32),
   MachineAuthService: class {
     constructor(_database: unknown, options: unknown) {
       state.machineAuthOptions = options;
@@ -718,10 +717,7 @@ describe("Server startup", () => {
 
     const machineAuth = state.machineAuthOptions as {
       onCredentialRotated(computerId: string): Promise<void>;
-      machineFingerprintKey?: Buffer;
     };
-    // The fingerprint key is always derived at startup, so lost-identity recognition is on in every deployment.
-    expect(machineAuth.machineFingerprintKey).toBeInstanceOf(Buffer);
     state.registryCloseComputer.mockResolvedValue(true);
     await machineAuth.onCredentialRotated("computer-9");
     expect(state.registryCloseComputer).toHaveBeenCalledWith("computer-9");

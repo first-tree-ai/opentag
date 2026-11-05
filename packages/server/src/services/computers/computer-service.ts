@@ -236,7 +236,7 @@ export class ComputerService {
       }
       await transaction
         .update(computers)
-        .set({ deletedAt: now, currentInstanceId: null, connectedAt: null, machineFingerprint: null, updatedAt: now })
+        .set({ deletedAt: now, currentInstanceId: null, connectedAt: null, updatedAt: now })
         .where(eq(computers.id, computerId));
       return { computerId, revokedCredentialCount: revoked.length };
     });

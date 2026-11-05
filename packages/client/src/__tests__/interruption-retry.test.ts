@@ -177,6 +177,22 @@ describe("AgentTurnRunner automatic retry", () => {
     expect(h.submit).toHaveBeenCalledOnce();
   });
 
+  it("retries without steered input when the steer receipts cannot be read", async () => {
+    const h = runnerHarness();
+    h.request.runtime.budget = { maxDurationMs: 20 };
+    const steer = steerRequest(h.request, "steered in");
+    h.records.set(h.request.sessionId, { ...turnRetryRecord(h.request, "turn-1"), steers: [steer] });
+    h.receipts.push({ kind: "steer", deliveryId: steer.deliveryId, turnId: "turn-1" });
+    h.bindingRead.mockRejectedValueOnce(new Error("disk"));
+    h.prompt
+      .mockImplementationOnce(abortedOnSignal)
+      .mockImplementationOnce(async () => ({ runId: "turn-1", status: "completed", output: [] }));
+    h.runner.start(owner(h.request));
+    await h.runner.settled();
+    expect(h.prompt).toHaveBeenCalledTimes(2);
+    expect(promptItems(h.prompt, 1).at(-1)?.text).not.toContain("steered in");
+  });
+
   it("reports the failure when the one retry also times out", async () => {
     const h = runnerHarness();
     h.request.runtime.budget = { maxDurationMs: 20 };
@@ -923,12 +939,13 @@ function runnerHarness(options: { restartRetry?: boolean | (() => boolean) } = {
   const recordSteer = vi.fn(async (steer: RuntimeImSteerRequest) => {
     receipts.push({ kind: "steer", deliveryId: steer.deliveryId, turnId: steer.expectedTurnId });
   });
+  const bindingRead = vi.fn(async () => ({ recentRecordedInputs: receipts }));
   const runner = new AgentTurnRunner({
     bindingStore: {
       updateUnresolved,
       getSteerReceipt: vi.fn(async () => undefined),
       recordSteer,
-      read: vi.fn(async () => ({ recentRecordedInputs: receipts })),
+      read: bindingRead,
     } as unknown as SessionBindingStore,
     connection: { send: vi.fn(async () => undefined), capabilityVersion: () => 3 },
     custody: { markReporting, recordResult: vi.fn() } as unknown as TurnCustodyOwner,
@@ -959,6 +976,7 @@ function runnerHarness(options: { restartRetry?: boolean | (() => boolean) } = {
     records,
     retries,
     receipts,
+    bindingRead,
     recordSteer,
     runner,
     runtime,

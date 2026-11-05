@@ -223,11 +223,10 @@ included; see [Agent, Session, and Computer model](../agent-session-computer-mod
 
 ## Automatic retry before a notice
 
-> **Planned — not yet implemented.** Tracking: #1301
-
-The Client daemon will retry a Session message automatically at most once, and only for a recoverable failure: a crash or
-power loss, a restart or upgrade interruption, `turn_timeout`, or a model HTTP 429. This replaces the terminal
-`turn_timeout` and interrupted-steer rules above and the current five-attempt inbox retry; non-recoverable failures stay terminal.
-When the one retry fails, the creator receives the notice. After a daemon restart, each interrupted internal Session
-receives a continuation message with the interruption reason before its queued messages run. See
-[Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work).
+On a Local Computer the daemon retries a Session message automatically at most once, and only after a recoverable
+failure: a crash or power loss, a restart or upgrade interruption, `turn_timeout`, or a model HTTP 429. The retried Run
+starts with the continuation notice and the original message; non-recoverable failures stay terminal and the five-attempt
+inbox retry is gone. The creator receives the notice only when the one retry fails too. After a daemon restart, each
+interrupted Session's message runs its retry once the Server has prepared the Session again, before the Session's queued
+messages. A message steered into a Run that ended `interrupted` is still terminal: the steer receipt does not say why the
+joined Run ended. See [Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work).

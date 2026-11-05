@@ -63,48 +63,15 @@ Delivery responsibility is two-stage, split at the Client's acceptance:
    restart, without starting a second Turn. Placement generation and
    connection-instance checks fence every acceptance and report.
 
-What the Client does today with accepted work that does not complete on a
-Local Computer:
-
-- An IM Turn is never rerun, and the Server shows the person an
-  [error card](messaging/im-feedback.md) for its terminal report. A daemon
-  shutdown reports it `cancelled / client_shutdown` with `executionEffects:
-  may_have_occurred`. A Turn found unresolved after a restart reports `unknown /
-  turn_state_unknown` with `may_have_occurred` when it was starting or running,
-  and `failed / provider_start_failed` with `not_started` when it never reached
-  the Provider. A timeout reports `failed / turn_timeout`: with
-  `may_have_occurred` once the Provider has started, and with `not_started` when
-  the request was already past its deadline before the Provider started (see
-  [IM delivery claim queries](messaging/im-delivery-claim.md)).
-- A Session message follows the inbox retry policy: a failure not classified
-  `never` retries with backoff up to five attempts within 15 minutes, and a
-  message whose Run was in flight at a restart runs again unless that budget is
-  already exhausted, in which case it is dead-lettered. `turn_timeout` and an
-  interrupted steer are terminal. Each terminal failure, including a
-  dead-letter, produces a
-  [Run outcome notice](messaging/internal-session-collaboration.md#run-outcome-notices)
-  for an internal Session's creator.
-
-### Automatic retry of accepted work
-
-> **Planned — not yet implemented.** Tracking: #1301
-
-Automatic retry of already-accepted work belongs to the Client daemon, not the
-Server. It replaces the current rules above that never rerun an interrupted or
-timed-out IM Turn and that retry a Session message up to five times.
-
-- The Client retries only recoverable failures: a process crash or power loss,
-  an upgrade or restart interruption, a Run timeout, and a model API HTTP 429
-  rate limit. Non-recoverable failures, such as local validation errors, are
-  never retried automatically.
-- Each message gets at most one automatic retry. If the retry also fails, the
-  Client reports the failure to the Server, and the Server shows the error to
-  the person.
-- After a daemon restart, the Client injects a continuation message carrying
-  the interruption reason into every interrupted Session — IM channel and
-  thread Sessions as well as internal Sessions — and then processes the queued
-  messages that were not yet processed.
-- A person can always retry manually by sending another message.
+What the Client does with accepted work that does not complete on a Local
+Computer is described next. Without the retry, or once it is spent, the
+outcomes are: an IM Turn reports `cancelled / client_shutdown` for an orderly
+stop, `unknown / turn_state_unknown` (`may_have_occurred`) when found starting
+or running after a restart, `failed / provider_start_failed` (`not_started`)
+when it never reached the Provider, and `failed / turn_timeout` for a timeout;
+the Server shows the person an [error card](messaging/im-feedback.md). A Session
+message ends `failed` and an internal Session's creator gets a
+[Run outcome notice](messaging/internal-session-collaboration.md#run-outcome-notices).
 
 ### Automatic retry of accepted work
 
@@ -138,19 +105,27 @@ are acceptable: the Provider may or may not have persisted the interrupted turn.
   input lives in a per-Session file under `data/runtime/turn-retries/`, written
   at acceptance and removed when the Turn's result is recorded. It is part of
   the acceptance boundary: when it cannot be written, the just-committed
-  custody is undone and the delivery is rejected as retryable. Every steered
-  message is added to it before the steer is acknowledged; when it cannot be
-  (storage failure, or more than 16 steered messages), the steer is deferred
-  and the Server delivers the message after the Turn. A Session message's
+  custody is undone and the delivery is rejected as retryable. If that undo
+  cannot be confirmed either, the durable custody stands and the Turn is
+  accepted without an automatic retry, so an interruption is reported through
+  ordinary recovery. Every steered message is captured in the input before it
+  is steered; when it cannot be (storage failure, or more than 16 steered
+  messages), the steer is deferred and the Server delivers the message after
+  the Turn. A retry replays only captured steers with a durable steer receipt,
+  that is, the ones the Server settled with this Turn. A Session message's
   interruption is kept on its durable inbox record, updated in place so the
-  inbox order survives a restart.
+  inbox order survives a restart; the Server-backed durability adapter does not
+  store it, so a recovered Run there is retried as a crash.
 - Only the Server can prepare a Session for the new connection (current
   snapshot and a fresh Session CLI proof), so after connecting the daemon sends
   `session:recover` for each Session with interrupted or waiting work (see
   [Session recovery](runtime/runtime-protocol.md#session-recovery)). The Server
   moves the IM Turn's report ownership to the new connection and sends a ready
-  reconcile; the daemon prepares the Session around its unresolved Turn and
-  starts the retry. Before and during the retry the Session answers the
+  reconcile, admitted at its send boundary only while the Agent, Session and
+  placement are still live, so a concurrent Agent stop is never overtaken. The
+  daemon prepares the Session around its unresolved Turn and starts the retry;
+  when it cannot start yet (for example admission is full), the retry stays
+  pending and the daemon asks for another reconcile. Before and during the retry the Session answers the
   Server's accepted-recovery reconcile with `busy / active_turn`, which defers
   recovery without a diagnostic and is never a report.
 - The daemon owns each recovery until the Session is actually prepared: after

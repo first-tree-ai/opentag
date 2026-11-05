@@ -91,7 +91,7 @@ Agent reads just Ready: a "Waiting" detail only repeated what Ready already says
 waiting.
 
 Every activity state also carries `queuedTaskCount` when it is positive: the number of Tasks waiting for delivery. A
-Task is one chat Session, or a whole private chat across its Sessions. It waits when one of its live Sessions, on a binding that is not disabled and with a message in the last eight days,
+Task is one chat Session, or a whole private chat across its Sessions. It waits when one of its live Sessions, on a binding that is not disabled,
 holds a pending delivery that counts for the Task and none of its Sessions has a Turn running. A pending delivery counts
 when it addresses the Agent directly, or when it is an execution of a Task somebody addressed: not the channel Session's
 observer copy of a message a Thread Session owns, in a Session with a direct delivery or a Thread whose root was addressed.
@@ -100,15 +100,8 @@ A Turn runs while it is accepted, unreported, before its deadline, and the Sessi
 Agent, or a runtime problem is exactly what an admin needs to see to judge that the Agent is stuck; without it the row
 read as quiet.
 
-The qualification and running rules are the Task list's own, shared from `services/tasks/task-sql.ts`. The count follows
-the Task list's Queued status except in the two shapes the recency window below leaves out:
-
-| Situation | `queuedTaskCount` | Task list |
-| --- | --- | --- |
-| A delivery stays pending more than a day past its deadline, because the expiry pass is far behind or its row is held by an in-flight dispatch | Does not count it | Queued |
-| A message's provider time is more than eight days old when the Server receives it, or it is an older Thread reply a late direct root brought in, and nothing newer is in that conversation | Does not count it | Queued |
-
-The Task list stays the authority for one Task's status.
+The qualification and running rules are the Task list's own, shared from `services/tasks/task-sql.ts`, so the count
+matches its Queued status. The Task list stays the authority for one Task's status.
 
 Clients declare each count separately: `x-opentag-agent-activity-task-count: 1` receives `runningTaskCount`, and
 `x-opentag-agent-activity-queued-count: 1` receives `queuedTaskCount`. The Web App sends both. Older clients validate the
@@ -119,29 +112,23 @@ The two running reads use `im_message_deliveries_unreported_accepted_idx` — pa
 reported_at is null` — as their access path. Without it the reads join every Session of a binding to reach an answer,
 which is proportional to the Agent's history rather than to the Turns actually outstanding.
 
-The queued read is one statement in the same snapshot. It finds the conversations with a message inside the window,
-reads the listed Agents' live channel and thread Sessions among them through `sessions_active_channel_unique` and
-`sessions_active_thread_unique`, so Internal Sessions are not read when these indexes are chosen, and probes each
-Session's waiting deliveries through `im_message_deliveries_overflow_idx`, whose leading columns reach them directly,
-however long the Session's history is. Each probe stays correlated to its Session (`offset 0`), so the planner cannot
-hash it against every Account's deliveries. A waiting Task then checks its own Sessions for a running Turn, so the read does not touch other Accounts' Turns;
-that check reads the waiting Session's accepted deliveries, however many.
+The queued read is one statement in the same snapshot. It reads the listed Agents' live channel and thread Sessions binding by binding
+through `sessions_active_channel_unique` and `sessions_active_thread_unique`, so Internal Sessions are not read when
+these indexes are chosen, and probes each Session's waiting deliveries through `im_message_deliveries_overflow_idx`, whose
+leading columns reach them directly, however long the Session's history is. Each probe stays correlated to its Session
+(`offset 0`), so the planner cannot hash it against every Account's deliveries. A waiting Task then checks its own
+Sessions for a running Turn, so the read does not touch other Accounts' Turns; that check reads the waiting Session's
+accepted deliveries, however many. The read turns JIT off for its transaction: every probe is costed as if it found
+work, so an Account with many Agents passed the JIT threshold, and compiling a read of a few milliseconds took hundreds.
 
-The window (`QUEUED_TASK_WINDOW_MS`) is the seven-day direct TTL plus a margin of one day. A shorter window would hide
-exactly the backlog behind an offline Computer this count exists to show. The margin keeps a row past its deadline
-counted, as the Task list counts it, while the expiry pass reaches it: that pass drains about 1.7 million rows a day at
-its defaults and stops while the Server is down. It also absorbs a provider delivering an event up to a day late. The
-window uses `occurred_at`, the provider's clock, because `im_messages_scope_occurred_idx` holds it; `received_at`, which
-sets the deadline, has no index, and filtering on it read several times more. Time is that index's fourth column, so
-finding recent conversations reads the listed bindings' whole message index, without the table. The window therefore
-saves the most for an Agent with many Sessions of which few are active. When most Sessions were active within eight days
-it cost more than having no window, up to about three times at thousands of Sessions and at fifty thousand.
+The read has no recency window. Why: a Session with a valid pending delivery may have no recent message by any clock with
+an index. `occurred_at` is the provider's and can already be old when a valid request arrives, and `received_at`, which
+sets the delivery's deadline, has no index. A window would show a false zero for that work.
 
 There is no hard limit on an Account's Agents or an Agent's Sessions. Channel and thread Sessions stay live until their
-binding is disabled or their Agent is transferred, and nothing deletes them, so the candidates grow with conversation
-history; the window narrows them to recently active ones, at the cost of reading the message index, which grows with
-message history until retention removes it. In `all_message` mode every new thread in a group adds a Session. That is
-accepted at current scale: thousands of Sessions per Account stay far inside the 500 ms single-query budget. [Issue
+binding is disabled or their Agent is transferred, and nothing deletes them, so the Sessions this read probes grow with
+conversation history. In `all_message` mode every new thread in a group adds one. That is accepted at current scale:
+thousands of Sessions per Account stay far inside the 500 ms single-query budget. [Issue
 #1319](https://github.com/first-tree-ai/opentag/issues/1319) tracks the delivery key and index that would replace the
 read, and when to add them.
 

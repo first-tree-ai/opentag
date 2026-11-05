@@ -5,8 +5,6 @@ import { imMessageDeliveries, imMessages } from "../../db/schema/index.js";
 
 export const IM_QUEUE_WARNING_COUNT = 10;
 export const IM_QUEUE_CAPACITY = 99;
-/** How long a direct message, or an unaddressed follow-up continuing one, waits from when the Server received it. */
-export const DIRECT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const IM_DUPLICATE_PENDING_REASON = "duplicate_pending";
 
 export async function repeatsPendingInput(

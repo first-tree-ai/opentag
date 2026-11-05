@@ -163,7 +163,7 @@ describe("Agent list unreported-accepted index", () => {
       await client.sql.unsafe(
         `
         insert into sessions(im_binding_id,channel_id,conversation_kind,kind,thread_key)
-        select s.im_binding_id,'C1','channel','thread','idle-'||n
+        select s.im_binding_id,'idle-channel','channel','thread','idle-'||n
         from sessions s, generate_series(1, ${IDLE_SESSIONS}) n where s.id = $1
         `,
         [session.id],

@@ -418,20 +418,25 @@ it.each(scenarios)(
 
 const HOUR_MS = 60 * 60 * 1_000;
 
-// Work waiting behind an offline Computer is what this count exists to show. A direct message waits seven days from
-// when the Server received it, so the recency window on the read must not drop one inside that time or its margin.
+// Work waiting behind an offline Computer is what this count exists to show, so no pending Task may drop out because
+// of how old it or its provider time is.
 it.each([
-  { name: "for 13 hours", receivedAgoHours: 13, expiresInHours: 155 },
-  { name: "for almost the whole direct window", receivedAgoHours: 167, expiresInHours: 1 },
-  { name: "past its deadline, inside the window's margin", receivedAgoHours: 180, expiresInHours: -12 },
+  { name: "for 13 hours", receivedAgoHours: 13, occurredAgoHours: 13, expiresInHours: 155 },
+  { name: "for almost the whole direct window", receivedAgoHours: 167, occurredAgoHours: 167, expiresInHours: 1 },
+  {
+    name: "past its deadline, before the expiry pass",
+    receivedAgoHours: 216,
+    occurredAgoHours: 216,
+    expiresInHours: -48,
+  },
+  { name: "with a provider time nine days old", receivedAgoHours: 0, occurredAgoHours: 216, expiresInHours: 168 },
 ])(
   "still counts a direct message waiting $name",
-  async ({ receivedAgoHours, expiresInHours }) => {
+  async ({ receivedAgoHours, occurredAgoHours, expiresInHours }) => {
     const f = await fixture("mention_only");
     try {
-      const receivedAt = new Date(NOW.getTime() - receivedAgoHours * HOUR_MS);
-      f.receivedAt(receivedAt);
-      await f.send({ id: "a", occurredAt: receivedAt });
+      f.receivedAt(new Date(NOW.getTime() - receivedAgoHours * HOUR_MS));
+      await f.send({ id: "a", occurredAt: new Date(NOW.getTime() - occurredAgoHours * HOUR_MS) });
       await client.database
         .update(imMessageDeliveries)
         .set({ expiresAt: new Date(NOW.getTime() + expiresInHours * HOUR_MS) })
@@ -443,47 +448,3 @@ it.each([
   },
   30_000,
 );
-
-// The two shapes the window leaves out, which the docs declare.
-it.each([
-  {
-    name: "stays pending beyond the window's margin",
-    receivedAgoHours: 216,
-    occurredAgoHours: 216,
-    expiresInHours: -48,
-  },
-  {
-    name: "carries a provider time older than the window",
-    receivedAgoHours: 0,
-    occurredAgoHours: 216,
-    expiresInHours: 168,
-  },
-])(
-  "DIFFERS: does not count a direct message that $name",
-  async ({ receivedAgoHours, occurredAgoHours, expiresInHours }) => {
-    const f = await fixture("mention_only");
-    try {
-      f.receivedAt(new Date(NOW.getTime() - receivedAgoHours * HOUR_MS));
-      await f.send({ id: "a", occurredAt: new Date(NOW.getTime() - occurredAgoHours * HOUR_MS) });
-      await client.database
-        .update(imMessageDeliveries)
-        .set({ expiresAt: new Date(NOW.getTime() + expiresInHours * HOUR_MS) })
-        .where(f.deliveriesOf("a"));
-      expect(await f.read()).toEqual({ statuses: ["queued"], queuedTaskCount: 0 });
-    } finally {
-      await f.inbox.close();
-    }
-  },
-  30_000,
-);
-
-it("reads a Thread's window from its own messages, not its channel's", async () => {
-  const f = await fixture("mention_only");
-  try {
-    await f.send({ id: "a", thread: "t1", occurredAt: new Date(NOW.getTime() - 216 * HOUR_MS) });
-    await f.send({ id: "b", thread: "t2" });
-    expect(await f.read()).toEqual({ statuses: ["queued", "queued"], queuedTaskCount: 1 });
-  } finally {
-    await f.inbox.close();
-  }
-}, 30_000);

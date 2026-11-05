@@ -235,6 +235,13 @@ messaging identity that has been disconnected offers **New Agent**, because the 
 Agent and states that resolve on their own offer no action. A fixable row without a way out reads as a dead end next
 to rows that have one, so every fixable state carries the same single link.
 
+The action answers the status the row shows. When the Server's status snapshot names a verdict about a
+dependency setup already finished, that verdict decides the action, not the setup-owned reason it maps to:
+a failed messaging credential check uses **Reconnect channel** and an unavailable messaging CLI uses
+**Fix messaging**, both opening the Agent's messaging settings, on the row and on the Agent's dependency
+rows alike. Check timeouts, rate-limited credential checks and an expired Computer status report resolve on
+their own and offer no action. **Continue setup** stays for setup that is actually unfinished.
+
 Agent list and detail availability use the Server's current status snapshot. A foreground page polls
 `GET /api/v1/agents/status?ids=...` every ten seconds, batching up to 100 unique visible Agent IDs per
 request; hidden tabs do not poll. The Account identity list negotiates this resource with

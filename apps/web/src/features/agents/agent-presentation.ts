@@ -1,4 +1,4 @@
-import type { AgentSummary, ImBindingSummary } from "@opentag/shared/browser";
+import type { AgentStatusReason, AgentStatusSnapshot, AgentSummary, ImBindingSummary } from "@opentag/shared/browser";
 import { formatElapsedCompact, spaceScriptBoundary } from "../../i18n/format.js";
 import { messagingProviderLabel } from "../../im/provider-label.js";
 import * as m from "../../paraglide/messages.js";
@@ -432,8 +432,45 @@ const SETUP_REASONS: ReadonlySet<AgentAvailability["reason"]> = new Set([
 export function agentSetupContinuation(agent: {
   availability: AgentAvailability;
   id: string;
+  serverStatus?: AgentStatusSnapshot;
 }): AgentDependencyStatus["action"] {
-  return SETUP_REASONS.has(agent.availability.reason) ? continueSetupAction(agent) : undefined;
+  // Setup owns a reason only while no Server verdict says the dependency was set up and broke since.
+  const owned = SETUP_REASONS.has(agent.availability.reason) && serverStatusRepair(agent) === undefined;
+  return owned ? continueSetupAction(agent) : undefined;
+}
+
+/**
+ * Server verdicts about a dependency that setup already finished. The Server reports each of them
+ * only after the messaging binding is active and the runtime answered, so the legacy reason they
+ * project to (`handoff_unavailable`, `runtime_unavailable`) must not be read as setup left
+ * unfinished: the card names the verdict, and its action has to repair that verdict.
+ *
+ * `null` marks a verdict that resolves on its own -- a check that timed out or was rate limited is
+ * retried by the Computer, and an expired report is replaced by the next one -- so it offers nothing.
+ */
+const SERVER_REPAIRS: Partial<Record<AgentStatusReason, { label: () => string } | null>> = {
+  credential_validation_failed: { label: m.agents_status_action_reconnect_channel },
+  messaging_cli_unavailable: { label: m.agents_status_action_fix_messaging },
+  credential_validation_timeout: null,
+  credential_rate_limited: null,
+  messaging_cli_check_timed_out: null,
+  runtime_check_timed_out: null,
+  self_check_report_stale: null,
+};
+
+/**
+ * The repair a Server verdict asks for: an action, `null` when the verdict asks for none, or
+ * `undefined` when the verdict is not one of these and the legacy reason still decides.
+ */
+function serverStatusRepair(agent: {
+  availability: AgentAvailability;
+  id: string;
+  serverStatus?: AgentStatusSnapshot;
+}): AgentDependencyStatus["action"] | null {
+  const reason = agent.serverStatus?.reason;
+  if (!reason || agent.availability.state === "unconfirmed" || !(reason in SERVER_REPAIRS)) return undefined;
+  const repair = SERVER_REPAIRS[reason];
+  return repair ? settingsAction(agent.id, repair.label(), "messaging") : null;
 }
 
 /**
@@ -444,12 +481,18 @@ export function agentSetupContinuation(agent: {
  * needs new permissions or a reconnect opens the Agent's messaging settings; an offline Computer
  * opens its connection recovery. A paused Agent was paused on purpose and states that fact without
  * an action, and states that resolve on their own (checks, unknown evidence) offer nothing.
+ *
+ * A Server verdict the card names is answered first, so the action never contradicts the label: a
+ * credential check that failed on a finished setup opens messaging settings, never setup.
  */
 export function agentRowAction(agent: {
   availability: AgentAvailability;
   computer: AgentListItem["computer"];
   id: string;
+  serverStatus?: AgentStatusSnapshot;
 }): AgentDependencyStatus["action"] {
+  const repair = serverStatusRepair(agent);
+  if (repair !== undefined) return repair ?? undefined;
   const setup = agentSetupContinuation(agent);
   if (setup) return setup;
   const { reason } = agent.availability;
@@ -483,7 +526,10 @@ function setupOrMaintenanceAction(
   setupReason: NonNullable<AgentAvailability["reason"]>,
   maintenance?: NonNullable<AgentDependencyStatus["action"]>,
 ): AgentDependencyStatus["action"] {
-  return agent.availability.reason === setupReason ? continueSetupAction(agent) : maintenance;
+  if (agent.availability.reason !== setupReason) return maintenance;
+  const repair = serverStatusRepair(agent);
+  if (repair !== undefined) return repair ?? undefined;
+  return continueSetupAction(agent);
 }
 
 export function agentComputerStatus(agent: AgentDetailView): AgentDependencyStatus {

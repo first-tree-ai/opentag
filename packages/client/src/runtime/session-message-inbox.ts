@@ -242,7 +242,7 @@ export class SessionMessageInbox {
     if (reason) {
       this.#remember(
         key,
-        retryableAuthorityReason(reason) ? { hash, status: "retryable" } : { hash, status: "rejected", reason },
+        retryableRejection(reason) ? { hash, status: "retryable" } : { hash, status: "rejected", reason },
       );
       return deliveryResult(request, "rejected", reason);
     }
@@ -257,7 +257,7 @@ export class SessionMessageInbox {
     const remembered = this.#remembered.get(key);
     if (!remembered) return undefined;
     if (remembered.hash !== hash) return deliveryResult(request, "rejected", "input_conflict");
-    if (remembered.status === "dead-letter" || remembered.status === "failed") {
+    if (remembered.status === "rejected" || remembered.status === "dead-letter" || remembered.status === "failed") {
       return deliveryResult(request, "rejected", remembered.reason ?? "provider_unavailable");
     }
     return remembered.status === "retryable" ? undefined : deliveryResult(request, "accepted");
@@ -1351,8 +1351,10 @@ function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T | 
   });
 }
 
-function retryableAuthorityReason(reason: InputRejectReason): boolean {
+/** A rejection the same message can still overcome, so a replay is evaluated again. */
+function retryableRejection(reason: InputRejectReason): boolean {
   return (
+    reason === "client_busy" ||
     reason === "stale_generation" ||
     reason === "session_not_ready" ||
     reason === "stale_configuration" ||

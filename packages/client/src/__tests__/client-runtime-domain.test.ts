@@ -160,6 +160,46 @@ describe("ClientRuntime domain dispatch", () => {
     );
   });
 
+  it("logs a refused Session message with its reason and no content", async () => {
+    const agentId = randomUUID();
+    const delivery: SessionMessageDeliveryRequest = {
+      type: "session:message:deliver",
+      requestId: randomUUID(),
+      messageId: randomUUID(),
+      sourceSessionId: randomUUID(),
+      targetSessionId: randomUUID(),
+      agentId,
+      placementGeneration: 1,
+      content: { kind: "text" as const, text: "private work" },
+      runtime: { ...snapshot(), agentId, workspace: { ...snapshot().workspace, workspaceId: agentId } },
+    };
+    const logs: RecordedLog[] = [];
+    const runtime = new ClientRuntime(new FrameConnection([delivery]) as unknown as RuntimeConnection, {
+      handleSessionMessageDelivery: (request) => ({
+        type: "session:message:deliver:result" as const,
+        requestId: request.requestId,
+        messageId: request.messageId,
+        targetSessionId: request.targetSessionId,
+        placementGeneration: request.placementGeneration,
+        status: "rejected" as const,
+        reason: "client_busy" as const,
+      }),
+      logger: recordingLogger(logs),
+    });
+    await runtime.run();
+    const entry = logs.find((log) => log.message === "Session message rejected");
+    expect(entry).toMatchObject({
+      level: "warn",
+      fields: {
+        messageId: delivery.messageId,
+        reason: "client_busy",
+        scheduled: false,
+        sessionId: delivery.targetSessionId,
+      },
+    });
+    expect(JSON.stringify(entry)).not.toContain("private work");
+  });
+
   it("routes Session message outcome results to the outcome reporter", async () => {
     const result = {
       type: "session:message:outcome:result" as const,

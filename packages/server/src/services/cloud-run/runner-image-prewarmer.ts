@@ -7,6 +7,9 @@ import type { CloudRunAdminConfig } from "./cloud-run-admin.js";
 import type { AccessTokenProvider } from "./token-provider.js";
 
 const PURPOSE = "runner-image-prewarm";
+const RETRYABLE_READ_STATUSES = new Set([429, 500, 502, 503, 504]);
+class RetryablePrewarmReadError extends Error {}
+
 const PROBE_COMMAND = ["/usr/local/bin/runner-entrypoint"];
 const PROBE_ARGS = [
   "/usr/local/bin/node",
@@ -160,7 +163,7 @@ export class RunnerImagePrewarmer {
     assertLeadership: () => Promise<void>,
     signal?: AbortSignal,
   ): Promise<RunnerImagePrewarmResult> {
-    let existing = await this.#request("GET", this.#v1, deadline, signal);
+    let existing = await this.#read(this.#v1, deadline, signal);
     if (existing) {
       const identity = this.#assertOwned(existing, false);
       state.uid = identity.uid;
@@ -193,7 +196,7 @@ export class RunnerImagePrewarmer {
   ): Promise<RunnerImagePrewarmResult> {
     while (this.#now() < deadline) {
       signal?.throwIfAborted();
-      const view = await this.#request("GET", this.#v1, deadline, signal);
+      const view = await this.#read(this.#v1, deadline, signal);
       if (view) {
         const identity = this.#assertOwned(view, false);
         if (identity.image !== this.image || (state.uid && state.uid !== identity.uid)) {
@@ -249,7 +252,7 @@ export class RunnerImagePrewarmer {
 
   async #cleanup(expectedUid: string | undefined, assertLeadership: () => Promise<void>): Promise<void> {
     const deadline = this.#now() + (this.#options.cleanupTimeoutMs ?? 120_000);
-    const current = await this.#request("GET", this.#v2, deadline);
+    const current = await this.#read(this.#v2, deadline);
     if (!current) return;
     const identity = this.#assertOwned(current, true);
     if (expectedUid && identity.uid !== expectedUid) throw new Error("Runner image prewarm cleanup UID changed");
@@ -260,13 +263,27 @@ export class RunnerImagePrewarmer {
       await this.#request("DELETE", `${this.#v2}?etag=${encodeURIComponent(current.etag)}`, deadline);
     }
     while (this.#now() < deadline) {
-      const after = await this.#request("GET", this.#v2, deadline);
+      const after = await this.#read(this.#v2, deadline);
       if (!after) return;
       if (this.#assertOwned(after, true).uid !== identity.uid)
         throw new Error("Runner image prewarm cleanup UID changed");
       await this.#sleep(Math.min(2_000, Math.max(0, deadline - this.#now())));
     }
     throw new Error("Runner image prewarm deletion deadline exceeded");
+  }
+
+  async #read(url: string, deadline: number, signal?: AbortSignal): Promise<Record<string, unknown> | null> {
+    while (this.#now() < deadline) {
+      try {
+        return await this.#request("GET", url, deadline, signal);
+      } catch (error) {
+        signal?.throwIfAborted();
+        if (!(error instanceof RetryablePrewarmReadError)) throw error;
+      }
+      await this.#sleep(Math.min(2_000, Math.max(0, deadline - this.#now())), signal);
+    }
+    signal?.throwIfAborted();
+    throw new Error("Runner image prewarm request deadline exceeded");
   }
 
   async #request(
@@ -298,10 +315,17 @@ export class RunnerImagePrewarmer {
       });
     } catch {
       signal?.throwIfAborted();
-      throw new Error(`Runner image prewarm ${method} transport failure`);
+      const message = `Runner image prewarm ${method} transport failure`;
+      throw method === "GET" ? new RetryablePrewarmReadError(message) : new Error(message);
     }
     if (response.status === 404) return null;
-    if (!response.ok) throw new Error(`Runner image prewarm ${method} failed with HTTP ${response.status}`);
+    if (!response.ok) {
+      void response.body?.cancel().catch(() => undefined);
+      const message = `Runner image prewarm ${method} failed with HTTP ${response.status}`;
+      if (method === "GET" && RETRYABLE_READ_STATUSES.has(response.status))
+        throw new RetryablePrewarmReadError(message);
+      throw new Error(message);
+    }
     try {
       return record(await readBoundedJson(response));
     } catch {

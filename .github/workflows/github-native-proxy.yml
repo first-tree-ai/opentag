@@ -45,8 +45,20 @@ jobs:
           archive="gh_${version}_${target}.${extension}"
           root="$RUNNER_TEMP/opentag-native-gh"
           mkdir -p "$root"
-          curl --fail --location --retry 2 "https://github.com/cli/cli/releases/download/v${version}/${archive}" -o "$root/$archive"
-          curl --fail --location --retry 2 "https://github.com/cli/cli/releases/download/v${version}/gh_${version}_checksums.txt" -o "$root/checksums.txt"
+          GH_VERSION="$version" GH_ARCHIVE="$archive" GH_DOWNLOAD_ROOT="$root" node --input-type=module <<'NODE'
+          import { writeFileSync } from "node:fs";
+          import { join } from "node:path";
+          import { createProviderCliFetcher } from "./packages/client/dist/index.mjs";
+          const fetcher = createProviderCliFetcher();
+          const base = `https://github.com/cli/cli/releases/download/v${process.env.GH_VERSION}`;
+          for (const [file, dest, maxBytes] of [
+            [process.env.GH_ARCHIVE, process.env.GH_ARCHIVE, 64 * 1024 * 1024],
+            [`gh_${process.env.GH_VERSION}_checksums.txt`, "checksums.txt", 64 * 1024],
+          ]) {
+            const body = await fetcher({ url: `${base}/${file}`, maxBytes, timeoutMs: 120_000 });
+            writeFileSync(join(process.env.GH_DOWNLOAD_ROOT, dest), body);
+          }
+          NODE
           cd "$root"
           awk -v file="$archive" '$2 == file' checksums.txt > selected-checksum.txt
           test -s selected-checksum.txt

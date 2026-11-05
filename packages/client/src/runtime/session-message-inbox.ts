@@ -63,7 +63,11 @@ interface RememberedMessage {
  * that Run's in-place retry and settled through `SessionMessageInbox.settleJoined`.
  */
 export interface JoinableRuns {
-  reserve(message: SessionMessageDeliveryRequestV3, runId: string): boolean;
+  /**
+   * Hold the message's place in the Run. `retry` means the Run is already a retry or a resumed Turn:
+   * it has no further retry to carry the message, so joining it spends the message's own.
+   */
+  reserve(message: SessionMessageDeliveryRequestV3, runId: string): "refused" | "first_attempt" | "retry";
   release(message: SessionMessageDeliveryRequestV3, runId: string): void;
   steered(message: SessionMessageDeliveryRequestV3, runId: string, receipt: AgentSteerReceipt): void;
 }
@@ -116,6 +120,8 @@ export interface SessionMessageInboxOptions {
   steerRetryMs?: number;
   /** Without one, a steered message follows its steer receipt alone. */
   joinableRuns?: JoinableRuns;
+  /** Each Session's recorded Turn interruption, read at startup to name what cut off its joined messages. */
+  turnInterruptions?: () => Promise<ReadonlyMap<string, Interruption>>;
 }
 
 export interface SessionMessageRunOutcomeEvent {
@@ -153,6 +159,7 @@ export class SessionMessageInbox {
   readonly #runtimeManager: SessionMessageInboxOptions["runtimeManager"];
   readonly #steerRetryMs: number;
   readonly #joinableRuns: JoinableRuns | undefined;
+  readonly #turnInterruptions: SessionMessageInboxOptions["turnInterruptions"];
   /** Messages in a joinable Run: how to settle each one when that Run ends. */
   readonly #joined = new Map<string, (outcome: AgentSteerOutcome) => Promise<void>>();
   readonly #queues = new Map<string, QueuedMessage[]>();
@@ -191,6 +198,7 @@ export class SessionMessageInbox {
     this.#runtimeManager = options.runtimeManager;
     this.#steerRetryMs = positive(options.steerRetryMs ?? 1_000, "steerRetryMs");
     this.#joinableRuns = options.joinableRuns;
+    this.#turnInterruptions = options.turnInterruptions;
     this.#readyPromise = this.#hydrate();
   }
 
@@ -440,55 +448,84 @@ export class SessionMessageInbox {
    * stays `running` until the joined Run settles and the runtime reports what became of the input.
    */
   async #steerIntoRunningTurn(sessionId: string, next: QueuedMessage): Promise<boolean> {
-    const lookup = this.#runtimeManager.runtime;
-    if (!lookup) return false;
-    let runtime: AgentRuntime;
-    try {
-      runtime = lookup.call(this.#runtimeManager, sessionId);
-    } catch {
-      return false;
-    }
-    const activeRunId = runtime.state.activeRunId;
-    if (runtime.capabilities.steer !== "supported" || runtime.state.phase !== "running" || !activeRunId) return false;
-    const turnContext = this.#liveTurnContext(sessionId);
-    if (!turnContext) return false;
-    if (this.#joinableRuns && !this.#joinableRuns.reserve(next.request, activeRunId)) return false;
+    const target = this.#steerTarget(sessionId);
+    if (!target) return false;
+    const { runId } = target;
+    const place = this.#joinableRuns?.reserve(next.request, runId) ?? "first_attempt";
+    if (place === "refused") return false;
     const key = sessionMessageKey(next.request);
-    let record = this.#records.get(key);
+    const accepted = this.#records.get(key);
+    let record = accepted;
     let receipt: AgentSteerReceipt;
     try {
-      receipt = await runtime.steer({
-        expectedRunId: activeRunId,
+      if (place === "retry" && record) record = await this.#spendRetryForJoin(record);
+      receipt = await target.runtime.steer({
+        expectedRunId: runId,
         // A message redelivered after an interruption says so: the Agent may have handled it already.
         input: withContinuation(
-          buildSessionMessageInput(next.request, this.#cliCommand, turnContext, new Date(this.#now())),
+          buildSessionMessageInput(next.request, this.#cliCommand, target.turnContext, new Date(this.#now())),
           record?.interruption,
         ),
       });
     } catch {
-      this.#joinableRuns?.release(next.request, activeRunId);
+      // Not handed over: the message stays queued, with the retry it had.
+      if (accepted && record !== accepted) await this.#persist(accepted).catch(() => undefined);
+      this.#joinableRuns?.release(next.request, runId);
       return false;
     }
-    if (record) {
-      try {
-        // A restart before the joined Run settles recovers a `running` record like any interrupted Run.
-        record = await this.#transition(record, "running");
-      } catch {
-        // The record stays `accepted` on disk, so a restart redelivers it; this process still settles it below.
-        this.#logger.warn(
-          { code: "SESSION_MESSAGE_STEER_PERSISTENCE_FAILED", messageId: next.request.messageId },
-          "Steered Session message custody could not be recorded",
-        );
-      }
-    }
+    if (record) record = await this.#recordSteered(record);
     this.#remember(key, { hash: next.hash, status: "accepted" });
     if (this.#joinableRuns) {
       if (record) this.#joinRun(record, next.hash);
-      this.#joinableRuns.steered(next.request, activeRunId, receipt);
+      this.#joinableRuns.steered(next.request, runId, receipt);
     } else if (record) {
       this.#trackSteered(record, next.hash, receipt.outcome);
     }
     return true;
+  }
+
+  /** The Session's running Run, when its runtime can take input now and its target is known. */
+  #steerTarget(
+    sessionId: string,
+  ): { runtime: AgentRuntime; runId: string; turnContext: SessionMessageTurnContext } | undefined {
+    const lookup = this.#runtimeManager.runtime;
+    if (!lookup) return undefined;
+    let runtime: AgentRuntime;
+    try {
+      runtime = lookup.call(this.#runtimeManager, sessionId);
+    } catch {
+      return undefined;
+    }
+    const runId = runtime.state.activeRunId;
+    if (runtime.capabilities.steer !== "supported" || runtime.state.phase !== "running" || !runId) return undefined;
+    const turnContext = this.#liveTurnContext(sessionId);
+    return turnContext ? { runtime, runId, turnContext } : undefined;
+  }
+
+  async #recordSteered(
+    record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
+  ): Promise<DurableWorkRecord<SessionMessageDeliveryRequestV3>> {
+    try {
+      // A restart before the joined Run settles recovers a `running` record like any interrupted Run.
+      return await this.#transition(record, "running");
+    } catch {
+      // The record stays `accepted` on disk, so a restart redelivers it; this process still settles it.
+      this.#logger.warn(
+        { code: "SESSION_MESSAGE_STEER_PERSISTENCE_FAILED", messageId: record.payload.messageId },
+        "Steered Session message custody could not be recorded",
+      );
+      return record;
+    }
+  }
+
+  /** Joining a Run with no further retry uses the message's own: durable before the provider has it. */
+  async #spendRetryForJoin(
+    record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
+  ): Promise<DurableWorkRecord<SessionMessageDeliveryRequestV3>> {
+    if (record.attempts >= MAX_AUTOMATIC_RETRIES) return record;
+    const spent = { ...record, attempts: record.attempts + 1, updatedAt: this.#now() };
+    await this.#persist(spent);
+    return spent;
   }
 
   /** What the Session's live execution needs to name this message's target, if it can. */
@@ -530,7 +567,7 @@ export class SessionMessageInbox {
   }
 
   #joinRun(record: DurableWorkRecord<SessionMessageDeliveryRequestV3>, hash: string): void {
-    let resolve: (outcome: AgentSteerOutcome) => void = () => undefined;
+    let resolve!: (outcome: AgentSteerOutcome) => void;
     const outcome = new Promise<AgentSteerOutcome>((done) => {
       resolve = done;
     });
@@ -785,9 +822,11 @@ export class SessionMessageInbox {
   async #hydrate(): Promise<void> {
     if (!this.#persistence) return;
     const records = await this.#persistence.list<SessionMessageDeliveryRequestV3>("session-message");
+    // A joined message's own record does not say why its Run stopped; the Turn's does. Without it, a crash.
+    const interruptions = await this.#turnInterruptions?.().catch(() => undefined);
     const unpublished: DurableWorkRecord<SessionMessageDeliveryRequestV3>[] = [];
     for (const stored of records) {
-      const pending = await this.#hydrateRecord(stored);
+      const pending = await this.#hydrateRecord(stored, interruptions);
       if (pending) unpublished.push(pending);
     }
     for (const record of unpublished) {
@@ -799,6 +838,7 @@ export class SessionMessageInbox {
   /** Restore one durable record; returns it when its terminal outcome still needs a report. */
   async #hydrateRecord(
     stored: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
+    interruptions: ReadonlyMap<string, Interruption> | undefined,
   ): Promise<DurableWorkRecord<SessionMessageDeliveryRequestV3> | undefined> {
     const request = SessionMessageDeliveryRequestV3Schema.safeParse(stored.payload);
     if (!request.success) return undefined;
@@ -825,9 +865,10 @@ export class SessionMessageInbox {
     if (record.status === "running") {
       // The daemon stopped while this message's Run was in flight: a crash leaves no reason behind,
       // an orderly stop records `client_shutdown`. It gets the message's one automatic retry.
+      const known = record.interruption ?? interruptions?.get(record.payload.targetSessionId);
       const interruption: Interruption = {
-        reason: recoverableFailure(record.interruption?.reason) ?? "daemon_crash",
-        at: record.interruption?.at ?? new Date(this.#now()).toISOString(),
+        reason: recoverableFailure(known?.reason) ?? "daemon_crash",
+        at: known?.at ?? new Date(this.#now()).toISOString(),
       };
       if (record.attempts >= MAX_AUTOMATIC_RETRIES) {
         const failure = interruptedFailure(record.payload.requestId, interruption.reason);

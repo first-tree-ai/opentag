@@ -189,6 +189,8 @@ interface RunningTurn {
   arrivals: Map<string, number>;
   /** Set once the Turn's outcome is decided; a message acknowledged later follows its own receipt. */
   finalized: boolean;
+  /** Whether the current attempt is a retry or a resumed Turn, so no further retry can carry a message. */
+  retrying: boolean;
   /** Messages an earlier attempt held, replayed in the current attempt's input. */
   steers: readonly SteeredInput[];
 }
@@ -222,7 +224,7 @@ export class AgentTurnRunner {
   readonly #outgoingReplies: AgentTurnRunnerOptions["outgoingReplies"];
   readonly #agentErrorReporter: AgentTurnErrorReporter;
   readonly #retries: NonNullable<AgentTurnRunnerOptions["retries"]>;
-  readonly #sessionMessages: AgentTurnRunnerOptions["sessionMessages"];
+  readonly #sessionMessages: NonNullable<AgentTurnRunnerOptions["sessionMessages"]>;
   readonly #restartRetryAvailable: () => boolean;
   readonly #turns = new Map<string, RunningTurn>();
   #stopped = false;
@@ -249,7 +251,7 @@ export class AgentTurnRunner {
     // wants no tracker gets a runner that reports into nothing, not a second branch to get wrong.
     this.#agentErrorReporter = options.agentErrorReporter ?? (() => undefined);
     this.#retries = options.retries ?? NO_TURN_RETRIES;
-    this.#sessionMessages = options.sessionMessages;
+    this.#sessionMessages = options.sessionMessages ?? NO_SESSION_MESSAGES;
     this.#restartRetryAvailable = options.restartRetryAvailable ?? (() => false);
   }
 
@@ -280,6 +282,7 @@ export class AgentTurnRunner {
       joining: new Map(),
       arrivals: new Map(),
       finalized: false,
+      retrying: options.continuation !== undefined,
       steers: options.steers ?? [],
     };
     turn.promise = this.#run(turn, abort.signal)
@@ -358,16 +361,19 @@ export class AgentTurnRunner {
   }
 
   /**
-   * Hold a place in this running Turn for a Session message about to be steered into it. False leaves
-   * the message queued: the Turn is not running here, or it already holds as many as it can carry.
+   * Hold a place in this running Turn for a Session message about to be steered into it. `refused`
+   * leaves the message queued: the Turn is not running here, or it holds as many as it can carry.
    */
-  reserveSessionMessage(message: SessionMessageDeliveryRequestV3, turnId: string): boolean {
+  reserveSessionMessage(
+    message: SessionMessageDeliveryRequestV3,
+    turnId: string,
+  ): "refused" | "first_attempt" | "retry" {
     const turn = this.#turns.get(turnId);
-    if (!turn || turn.phase !== "running" || turn.owner.request.sessionId !== message.targetSessionId) return false;
+    if (!turn || turn.phase !== "running" || turn.owner.request.sessionId !== message.targetSessionId) return "refused";
     const held = turn.steers.filter((steer) => steer.type === "session:message:deliver").length;
-    if (held + turn.joined.size + turn.joining.size >= MAX_RECORDED_STEERS) return false;
+    if (held + turn.joined.size + turn.joining.size >= MAX_RECORDED_STEERS) return "refused";
     turn.arrivals.set(steeredInputId(message), turn.arrivals.size);
-    let done: () => void = () => undefined;
+    let done!: () => void;
     const steering = new Promise<void>((resolve) => {
       done = () => {
         turn.steering.delete(steering);
@@ -376,14 +382,14 @@ export class AgentTurnRunner {
     });
     turn.steering.add(steering);
     turn.joining.set(message.messageId, done);
-    return true;
+    return turn.retrying ? "retry" : "first_attempt";
   }
 
   /** The reserved message was steered: an in-place retry of this Turn now carries it. */
   sessionMessageSteered(message: SessionMessageDeliveryRequestV3, turnId: string, receipt: AgentSteerReceipt): void {
     const turn = this.#turns.get(turnId);
     if (!turn || turn.finalized) {
-      void receipt.outcome.then((outcome) => this.#sessionMessages?.settle(message, outcome));
+      void receipt.outcome.then((outcome) => this.#sessionMessages.settle(message, outcome));
     } else {
       turn.joined.set(message.messageId, { message, receipt });
     }
@@ -675,7 +681,7 @@ export class AgentTurnRunner {
               turn.steers,
               interruption,
               new Date(this.#now()),
-              this.#sessionMessages?.input,
+              this.#sessionMessages.input,
             )
           : buildAgentInput(owner.request, undefined, undefined, new Date(this.#now())),
         signal: runSignal,
@@ -779,9 +785,9 @@ export class AgentTurnRunner {
     const steers = spent.steers.length === 0 ? [] : await this.#acknowledgedImSteers(turn, spent);
     if (!steers) return false;
     const messages = await this.#sessionMessagesForRetry(turn, interruption);
-    turn.steers = [...steers, ...messages].sort(
-      (left, right) => (turn.arrivals.get(steeredInputId(left)) ?? 0) - (turn.arrivals.get(steeredInputId(right)) ?? 0),
-    );
+    const arrival = (input: SteeredInput) => turn.arrivals.get(steeredInputId(input)) ?? 0;
+    turn.steers = [...steers, ...messages].sort((left, right) => arrival(left) - arrival(right));
+    turn.retrying = true;
     return true;
   }
 
@@ -809,7 +815,7 @@ export class AgentTurnRunner {
     for (const [id, { message, receipt }] of [...turn.joined]) {
       if ((await receipt.outcome) !== "not_started") continue;
       turn.joined.delete(id);
-      await this.#sessionMessages?.settle(message, "not_started");
+      await this.#sessionMessages.settle(message, "not_started");
     }
   }
 
@@ -823,8 +829,8 @@ export class AgentTurnRunner {
   ): Promise<SessionMessageDeliveryRequestV3[]> {
     const carried: SessionMessageDeliveryRequestV3[] = [];
     for (const { message } of turn.joined.values()) {
-      if (await this.#sessionMessages?.spendRetry(message, interruption)) carried.push(message);
-      else await this.#sessionMessages?.settle(message, "interrupted");
+      if (await this.#sessionMessages.spendRetry(message, interruption)) carried.push(message);
+      else await this.#sessionMessages.settle(message, "interrupted");
     }
     turn.joined = new Map();
     return carried;
@@ -835,7 +841,7 @@ export class AgentTurnRunner {
     turn.finalized = true;
     const completed = completion.outcome === "completed";
     const settle = (message: SessionMessageDeliveryRequestV3, outcome: AgentSteerOutcome) =>
-      this.#sessionMessages?.settle(message, outcome);
+      this.#sessionMessages.settle(message, outcome);
     await Promise.allSettled([
       ...turn.steers.flatMap((steer) =>
         steer.type === "session:message:deliver" ? [settle(steer, completed ? "processed" : "interrupted")] : [],
@@ -1116,7 +1122,7 @@ export function buildRetryAgentInput(
   steers: readonly SteeredInput[],
   interruption: Interruption,
   processedAt: Date = new Date(),
-  sessionMessageInput?: NonNullable<AgentTurnRunnerOptions["sessionMessages"]>["input"],
+  sessionMessageInput: NonNullable<AgentTurnRunnerOptions["sessionMessages"]>["input"] = NO_SESSION_MESSAGES.input,
 ): AgentInput {
   const original = buildAgentInput(request, undefined, undefined, processedAt);
   const steered = steers.flatMap((steer): AgentInput["items"] => {
@@ -1128,7 +1134,6 @@ export function buildRetryAgentInput(
         },
       ];
     }
-    if (!sessionMessageInput) throw new Error("A Session message joined the Turn without an owner to build its input");
     return [...sessionMessageInput(steer, processedAt).items];
   });
   return {
@@ -1151,6 +1156,15 @@ export function buildRetryAgentInput(
 function steeredInputId(input: SteeredInput): string {
   return input.type === "im:steer" ? `im:${input.deliveryId}` : `session:${input.messageId}`;
 }
+
+/** Without an owner no Session message can be carried by a retry. */
+const NO_SESSION_MESSAGES: NonNullable<AgentTurnRunnerOptions["sessionMessages"]> = {
+  input: () => {
+    throw new Error("A Session message joined the Turn without an owner to build its input");
+  },
+  spendRetry: async () => false,
+  settle: async () => undefined,
+};
 
 /** Without durable Turn input no automatic retry is possible. */
 const NO_TURN_RETRIES: NonNullable<AgentTurnRunnerOptions["retries"]> = {

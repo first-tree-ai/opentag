@@ -241,17 +241,21 @@ that Turn's retry and the Turn resumed after a crash. What happens next depends 
   starts, and gets the Turn's result. It is not queued again. The list is kept in memory, not in the Turn's retry file.
 - **Crash or restart.** The Turn is resumed with the continuation notice, without its Session messages. Messages already
   steered before the crash, then queued messages, are steered into the resumed Turn in order once it is running. A message
-  that was already steered carries the continuation notice, so the Agent knows it may have handled it already. Until then
+  that was already steered carries the continuation notice with the Turn's own recorded reason (a restart, or a timeout or
+  429 whose retry was still pending; a crash otherwise), so the Agent knows it may have handled it already. Until then
   they wait in the FIFO, re-checking about once per second. If the resumed Turn ends first, they run as their own Runs, in
   order, as they do when the runtime cannot steer. If the Turn cannot be resumed, the existing fallback applies: the
   waiting messages fail with a creator notice.
-- **A message steered into a retry or a resumed Turn gets no further retry.** If that Turn fails, the message fails with
-  one notice. So does a message whose one retry could not be recorded, and a message whose in-place retry was interrupted
-  by a crash.
+- **A message steered into a retry or a resumed Turn gets no further retry.** Its one retry is spent durably before the
+  steer, so if that Turn fails or the daemon crashes during it, the message fails with one notice and does not run again.
+  If that write fails, the message is not steered and stays queued; if the runtime then refuses the steer, the retry is
+  given back. In a retry in place, a message that was already in the Turn fails the same way when its retry cannot be
+  recorded, and when a crash interrupts that retry.
 - **A failure that is not recoverable** fails the message without a retry.
 
-A message stays queued and waits for the Turn to end when the runtime cannot steer, when the Turn already carries 16
-Session messages, or when a visible Session has no IM outbox context.
+A message stays queued and waits for the Turn to end when the runtime cannot steer or refuses the steer, when the Turn
+already carries 16 Session messages, when a visible Session has no IM outbox context, or when its spent retry cannot be
+written.
 
 The accepted cost is possible repeats. After a crash the resumed Turn may already have the steered message in its history,
 and the message is delivered again; the continuation notice tells the Agent, but cannot prevent every repeat. A message

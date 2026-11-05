@@ -863,6 +863,8 @@ export async function createClientRuntime(
     logger: moduleLogger("session-message-outcome"),
     persistence: options.durabilityStore ?? new FileRuntimeDurabilityStore(options.home),
   });
+  // Durable input of accepted IM Turns, for their one automatic retry (Local only).
+  const turnRetries = new TurnRetryStore(options.home);
   let runner: AgentTurnRunner;
   const sessionMessageInbox = new SessionMessageInbox({
     admission,
@@ -882,11 +884,10 @@ export async function createClientRuntime(
     reconciler,
     runtimeManager,
     sessionCollaborationVersion: connection.capabilityVersion.bind(connection, RUNTIME_CAPABILITY.sessionCollaboration),
+    turnInterruptions: turnRetries.interruptions.bind(turnRetries),
     turnPlan: providerCliTurnPlans,
   });
   await Promise.all([reportOwner.ready(), sessionMessageOutcomes.ready(), sessionMessageInbox.ready()]);
-  // Durable input of accepted IM Turns, for their one automatic retry (Local only).
-  const turnRetries = new TurnRetryStore(options.home);
   const restartRetryAvailable = () => connection.capabilityVersion(RUNTIME_CAPABILITY.sessionRecovery) === 1;
   let interruptedWork: InterruptedWorkRecovery | undefined;
   const mvpReportRecovery = new MvpTurnReportRecovery({
@@ -937,9 +938,9 @@ export async function createClientRuntime(
     retries: turnRetries,
     restartRetryAvailable,
     sessionMessages: {
-      input: (message, processedAt) => sessionMessageInbox.joinedRunInput(message, processedAt),
-      spendRetry: (message, interruption) => sessionMessageInbox.spendJoinedRetry(message, interruption),
-      settle: (message, outcome) => sessionMessageInbox.settleJoined(message, outcome),
+      input: sessionMessageInbox.joinedRunInput.bind(sessionMessageInbox),
+      spendRetry: sessionMessageInbox.spendJoinedRetry.bind(sessionMessageInbox),
+      settle: sessionMessageInbox.settleJoined.bind(sessionMessageInbox),
     },
   });
   interruptedWork = new InterruptedWorkRecovery({

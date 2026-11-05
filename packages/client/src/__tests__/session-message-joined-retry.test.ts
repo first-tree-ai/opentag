@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   type DirectImMessageDeliveryRequest,
   RUNTIME_CAPABILITY,
+  RUNTIME_FINAL_TEXT_MAX_BYTES,
   type RuntimeImSteerRequest,
   type SessionMessageDeliveryRequestV3,
 } from "@opentag/shared";
@@ -13,7 +14,12 @@ import type { AgentRunResult, AgentSteerOutcome, AgentSteerReceipt } from "../ag
 import { AdmissionController } from "../runtime/admission-controller.js";
 import { AgentTurnRunner, buildRetryAgentInput } from "../runtime/agent-turn-runner.js";
 import { InterruptedWorkRecovery } from "../runtime/interrupted-work-recovery.js";
-import { MAX_RECORDED_STEERS, TurnRetryStore, turnRetryRecord } from "../runtime/interruption-retry.js";
+import {
+  type Interruption,
+  MAX_RECORDED_STEERS,
+  TurnRetryStore,
+  turnRetryRecord,
+} from "../runtime/interruption-retry.js";
 import { FileRuntimeDurabilityStore } from "../runtime/runtime-durability.js";
 import type { SessionBindingStore } from "../runtime/session-binding-store.js";
 import { SessionMessageInbox } from "../runtime/session-message-inbox.js";
@@ -247,7 +253,7 @@ describe("a Session message steered into an IM Turn that retries in place", () =
     s.prompt.mockImplementationOnce(attempt(s, "completed")).mockImplementation(s.finishes);
     await s.startTurn();
     for (let index = 0; index < MAX_RECORDED_STEERS; index += 1) {
-      expect(s.runner.reserveSessionMessage(s.message("filler"), TURN_ID)).toBe(true);
+      expect(s.runner.reserveSessionMessage(s.message("filler"), TURN_ID)).toBe("first_attempt");
     }
     const message = s.message("overflow");
     await s.inbox.accept(message);
@@ -276,10 +282,10 @@ describe("a Session message steered into an IM Turn that retries in place", () =
   it("cannot be reserved by a Turn that is not running or belongs to another Session", async () => {
     const s = await system();
     const message = s.message("x");
-    expect(s.runner.reserveSessionMessage(message, "no-such-turn")).toBe(false);
+    expect(s.runner.reserveSessionMessage(message, "no-such-turn")).toBe("refused");
     s.prompt.mockImplementationOnce(attempt(s, "completed"));
     await s.startTurn();
-    expect(s.runner.reserveSessionMessage({ ...message, targetSessionId: randomUUID() }, TURN_ID)).toBe(false);
+    expect(s.runner.reserveSessionMessage({ ...message, targetSessionId: randomUUID() }, TURN_ID)).toBe("refused");
     s.endAttempt();
     await s.runner.settled();
     await s.stop();
@@ -290,7 +296,7 @@ describe("a Session message steered into an IM Turn that retries in place", () =
     s.prompt.mockImplementationOnce(attempt(s, "completed"));
     await s.startTurn();
     const message = s.message("late");
-    expect(s.runner.reserveSessionMessage(message, TURN_ID)).toBe(true);
+    expect(s.runner.reserveSessionMessage(message, TURN_ID)).toBe("first_attempt");
     s.endAttempt();
     await s.runner.settled();
     const settle = vi.spyOn(s.inbox, "settleJoined");
@@ -298,6 +304,189 @@ describe("a Session message steered into an IM Turn that retries in place", () =
     s.runner.sessionMessageSteered(message, TURN_ID, receipt);
     await vi.waitFor(() => expect(settle).toHaveBeenCalledWith(message, "processed"));
     await s.stop();
+  });
+});
+
+describe("a Session message's one retry when it joins a Run with none left", () => {
+  it("is spent before the provider has it, so a crash during an in-place retry fails the message", async () => {
+    const first = await system();
+    first.prompt.mockImplementationOnce(attempt(first, "turn_timeout")).mockImplementationOnce(hangs(first));
+    await first.startTurn();
+    await vi.waitFor(() => expect(first.prompt).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+    const fresh = first.message("joined the retry");
+    let attemptsAtSteer: number | undefined;
+    first.runtime.steer.mockImplementationOnce(async () => {
+      attemptsAtSteer = (await first.stored(fresh))?.attempts;
+      return { outcome: new Promise<AgentSteerOutcome>(() => undefined) };
+    });
+    await first.steer(fresh);
+    expect(attemptsAtSteer).toBe(1);
+
+    const second = await system({ home: first.home, request: first.request });
+    await second.inbox.ready();
+    await vi.waitFor(() => expect(second.inbox.getState(fresh.messageId)?.status).toBe("failed"));
+    expect(second.prompt).not.toHaveBeenCalled();
+    expect(second.runtime.steer).not.toHaveBeenCalled();
+    await second.stop();
+    await first.stop();
+  });
+
+  it("is spent when a queued message joins a resumed Turn, so a second crash fails the message", async () => {
+    const first = await system();
+    first.prompt.mockImplementationOnce(hangs(first));
+    await first.startTurn();
+    first.runtime.state.phase = "idle";
+    const queued = first.message("queued before the crash");
+    await first.inbox.accept(queued);
+    expect((await first.stored(queued))?.attempts).toBe(0);
+
+    const second = await system({ home: first.home, request: first.request, prepared: false });
+    second.prompt.mockImplementationOnce(hangs(second));
+    await second.inbox.ready();
+    await second.recovery.start();
+    second.prepare();
+    expect(second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
+    await vi.waitFor(() => expect(second.inbox.getState(queued.messageId)?.status).toBe("running"));
+    expect(second.steerText(0)).not.toContain("Your previous turn was interrupted");
+    expect((await second.stored(queued))?.attempts).toBe(1);
+
+    const third = await system({ home: first.home, request: first.request });
+    await third.inbox.ready();
+    await vi.waitFor(() => expect(third.inbox.getState(queued.messageId)?.status).toBe("failed"));
+    expect(third.prompt).not.toHaveBeenCalled();
+    await third.stop();
+    await second.stop();
+    await first.stop();
+  });
+
+  it("does not spend it twice for a message already retried after a crash", async () => {
+    const first = await system();
+    first.prompt.mockImplementationOnce(hangs(first));
+    await first.startTurn();
+    const message = first.message("steered before the crash");
+    await first.steer(message);
+
+    const second = await system({ home: first.home, request: first.request, prepared: false });
+    second.prompt.mockImplementationOnce(hangs(second));
+    await second.inbox.ready();
+    await second.recovery.start();
+    second.prepare();
+    expect(second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
+    await vi.waitFor(() => expect(second.inbox.getState(message.messageId)?.status).toBe("running"));
+    expect((await second.stored(message))?.attempts).toBe(1);
+    await second.stop();
+    await first.stop();
+  });
+
+  it("stays queued, not steered, when the spend cannot be written", async () => {
+    const s = await system();
+    s.prompt.mockImplementationOnce(attempt(s, "turn_timeout")).mockImplementationOnce(attempt(s, "completed"));
+    await s.startTurn();
+    await vi.waitFor(() => expect(s.prompt).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+    // The runtime refuses to take the message until the failing write has been tried.
+    s.runtime.state.phase = "idle";
+    const message = s.message("write failed");
+    await s.inbox.accept(message);
+    s.failNextWrite();
+    s.runtime.state.phase = "running";
+    await vi.waitFor(() => expect(s.writeFailures()).toBe(1));
+    // No provider call for the failed write; the next try spends and steers.
+    await vi.waitFor(() => expect(s.runtime.steer).toHaveBeenCalledOnce());
+    expect((await s.stored(message))?.attempts).toBe(1);
+    s.endAttempt();
+    await s.runner.settled();
+    await s.stop();
+  });
+
+  it("gives the retry back when the steer is refused after the spend", async () => {
+    const s = await system();
+    s.prompt.mockImplementationOnce(attempt(s, "turn_timeout")).mockImplementationOnce(attempt(s, "completed"));
+    await s.startTurn();
+    await vi.waitFor(() => expect(s.prompt).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+    s.runtime.steer.mockRejectedValue(new Error("run_mismatch"));
+    const message = s.message("refused");
+    await s.inbox.accept(message);
+    await vi.waitFor(() => expect(s.runtime.steer).toHaveBeenCalled());
+    s.endAttempt();
+    await s.runner.settled();
+    await vi.waitFor(async () => expect((await s.stored(message))?.attempts).toBe(0));
+    expect(s.inbox.getState(message.messageId)?.status).toBe("accepted");
+    await s.stop();
+  });
+});
+
+describe("the interruption a joined message reports after an orderly stop", () => {
+  it("keeps client_shutdown from the Turn, with the production stop order", async () => {
+    const first = await system({ restartRetry: true });
+    first.prompt.mockImplementationOnce(attempt(first, "turn_timeout"));
+    await first.startTurn();
+    const message = first.message("steered before the stop");
+    await first.steer(message);
+    first.inbox.stop();
+    first.runner.stop();
+    await first.runner.settled();
+    expect((await first.retries.read(first.request.sessionId))?.interruption?.reason).toBe("client_shutdown");
+
+    const second = await system({ home: first.home, request: first.request, prepared: false });
+    second.prompt.mockImplementationOnce(attempt(second, "completed"));
+    await second.inbox.ready();
+    await second.recovery.start();
+    second.prepare();
+    expect(second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
+    await vi.waitFor(() => expect(second.runtime.steer).toHaveBeenCalledOnce());
+    expect(second.promptText(0)).toContain("restarted or upgraded");
+    expect(second.steerText(0)).toContain("restarted or upgraded");
+    expect(second.steerText(0)).not.toContain("stopped unexpectedly");
+    second.endAttempt();
+    await second.runner.settled();
+    await second.stop();
+    await first.stop();
+  });
+
+  it("keeps the 429 when the stop comes during its backoff", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const first = await system({ restartRetry: true });
+    first.prompt.mockImplementationOnce(attempt(first, "provider_rate_limited"));
+    await first.startTurn();
+    const message = first.message("steered before the 429");
+    await first.steer(message);
+    first.endAttempt();
+    while (!(await first.retries.read(first.request.sessionId))?.interruption) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    first.inbox.stop();
+    first.runner.stop();
+    await first.runner.settled();
+    vi.useRealTimers();
+
+    const second = await system({ home: first.home, request: first.request, prepared: false });
+    second.prompt.mockImplementationOnce(attempt(second, "completed"));
+    await second.inbox.ready();
+    await second.recovery.start();
+    second.prepare();
+    expect(second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
+    await vi.waitFor(() => expect(second.runtime.steer).toHaveBeenCalledOnce());
+    expect(second.promptText(0)).toContain("HTTP 429");
+    expect(second.steerText(0)).toContain("HTTP 429");
+    second.endAttempt();
+    await second.runner.settled();
+    await second.stop();
+    await first.stop();
+  });
+
+  it("falls back to a crash when the Turn's interruption cannot be read", async () => {
+    const first = await system();
+    first.prompt.mockImplementationOnce(hangs(first));
+    await first.startTurn();
+    const message = first.message("steered");
+    await first.steer(message);
+    const list = vi.spyOn(TurnRetryStore.prototype, "list").mockRejectedValueOnce(new Error("disk"));
+    const second = await system({ home: first.home, request: first.request, prepared: false });
+    await second.inbox.ready();
+    list.mockRestore();
+    expect((await second.stored(message))?.interruption?.reason).toBe("daemon_crash");
+    await second.stop();
+    await first.stop();
   });
 });
 
@@ -416,6 +605,90 @@ describe("Session messages after a crash or restart", () => {
   });
 });
 
+describe("a Turn whose joined messages meet other paths", () => {
+  it("orders messages without a recorded arrival first", async () => {
+    const s = await system();
+    s.prompt.mockImplementationOnce(attempt(s, "turn_timeout")).mockImplementationOnce(s.finishes);
+    await s.startTurn();
+    const recorded = s.imSteer("already in the record");
+    s.receipts.push({ kind: "steer", deliveryId: recorded.deliveryId, turnId: TURN_ID });
+    await s.retries.write({ ...turnRetryRecord(s.request, TURN_ID), steers: [recorded] });
+    await s.steer(s.message("joined later"));
+    await s.runner.settled();
+    const text = s.promptText(1);
+    expect(text.indexOf("already in the record")).toBeLessThan(text.indexOf("joined later"));
+    await s.stop();
+  });
+
+  it("fails a message the provider processed when the Turn's own result is a failure", async () => {
+    const s = await system();
+    s.prompt.mockImplementationOnce(async (_input) => {
+      s.emit({ type: "run_started", runId: TURN_ID });
+      await new Promise<void>((resolve) => {
+        s.endAttempt = resolve;
+      });
+      s.runEnded("processed");
+      return {
+        runId: TURN_ID,
+        status: "completed",
+        output: [{ type: "text", text: "x".repeat(RUNTIME_FINAL_TEXT_MAX_BYTES + 1) }],
+      };
+    });
+    await s.startTurn();
+    const message = s.message("steered");
+    await s.steer(message);
+    s.endAttempt();
+    await s.runner.settled();
+    expect(s.inbox.getState(message.messageId)?.status).toBe("failed");
+    await s.stop();
+  });
+
+  it("settles a message acknowledged while the Turn is reporting by its own receipt", async () => {
+    const s = await system();
+    s.prompt.mockImplementationOnce(attempt(s, "completed"));
+    await s.startTurn();
+    const message = s.message("late");
+    expect(s.runner.reserveSessionMessage(message, TURN_ID)).toBe("first_attempt");
+    const settle = vi.spyOn(s.inbox, "settleJoined");
+    s.create.mockImplementationOnce((input) => {
+      s.runner.sessionMessageSteered(message, TURN_ID, { outcome: Promise.resolve("processed") });
+      return { ...input, type: "turn:report" as const, requestId: randomUUID(), resultHash: "c".repeat(64) };
+    });
+    s.endAttempt();
+    await s.runner.settled();
+    await vi.waitFor(() => expect(settle).toHaveBeenCalledWith(message, "processed"));
+    // Releasing again, or a message that never held a place, is harmless.
+    s.runner.releaseSessionMessage(message, TURN_ID);
+    await s.stop();
+  });
+
+  it("releases a place while the Turn is still running without leaving it in flight", async () => {
+    const s = await system();
+    s.prompt.mockImplementationOnce(attempt(s, "completed"));
+    await s.startTurn();
+    const message = s.message("x");
+    s.runner.reserveSessionMessage(message, TURN_ID);
+    s.runner.releaseSessionMessage(message, TURN_ID);
+    s.runner.releaseSessionMessage(message, TURN_ID);
+    s.endAttempt();
+    await s.runner.settled();
+    await s.stop();
+  });
+
+  it("has no owner to carry a message when the runner is built without one", async () => {
+    const s = await system({ withoutOwner: true });
+    s.prompt.mockImplementationOnce(attempt(s, "turn_timeout")).mockImplementationOnce(s.finishes);
+    await s.startTurn();
+    const message = s.message("nobody owns this");
+    expect(s.runner.reserveSessionMessage(message, TURN_ID)).toBe("first_attempt");
+    s.runner.sessionMessageSteered(message, TURN_ID, { outcome: Promise.resolve("interrupted") });
+    await s.runner.settled();
+    expect(s.prompt).toHaveBeenCalledTimes(2);
+    expect(s.promptText(1)).not.toContain("nobody owns this");
+    await s.stop();
+  });
+});
+
 describe("the input of a Session message in a retry", () => {
   it("refuses to render a Session message without its owner", () => {
     const request = imDelivery();
@@ -498,6 +771,8 @@ async function system(
     home?: string;
     request?: DirectImMessageDeliveryRequest;
     prepared?: boolean;
+    restartRetry?: boolean;
+    withoutOwner?: boolean;
     sessionKind?: "internal" | "visible";
   } = {},
 ) {
@@ -507,11 +782,13 @@ async function system(
   const retries = new TurnRetryStore(home);
   const durable = new FileRuntimeDurabilityStore(home);
   let failingWrites = 0;
+  let writeFailures = 0;
   const persistence = {
     list: durable.list.bind(durable),
     write: async (record: Parameters<FileRuntimeDurabilityStore["write"]>[0]) => {
       if (failingWrites > 0) {
         failingWrites -= 1;
+        writeFailures += 1;
         throw new Error("disk full");
       }
       await durable.write(record);
@@ -579,6 +856,7 @@ async function system(
     },
     sessionCollaborationVersion: () => 4,
     steerRetryMs: 5,
+    turnInterruptions: () => retries.interruptions(),
   });
   const bindingRead = vi.fn(async () => ({
     recentRecordedInputs: receipts,
@@ -617,15 +895,21 @@ async function system(
     },
     logger: logger as never,
     retries,
-    restartRetryAvailable: () => false,
-    sessionMessages: {
-      input: (message, processedAt) => inbox.joinedRunInput(message, processedAt),
-      spendRetry: (message, interruption) => inbox.spendJoinedRetry(message, interruption),
-      settle: async (message, outcome) => {
-        await inbox.settleJoined(message, outcome);
-        order.push("settled");
-      },
-    },
+    restartRetryAvailable: () => options.restartRetry === true,
+    ...(options.withoutOwner
+      ? {}
+      : {
+          sessionMessages: {
+            input: (message: SessionMessageDeliveryRequestV3, processedAt: Date) =>
+              inbox.joinedRunInput(message, processedAt),
+            spendRetry: (message: SessionMessageDeliveryRequestV3, interruption: Interruption) =>
+              inbox.spendJoinedRetry(message, interruption),
+            settle: async (message: SessionMessageDeliveryRequestV3, outcome: AgentSteerOutcome) => {
+              await inbox.settleJoined(message, outcome);
+              order.push("settled");
+            },
+          },
+        }),
   });
   let reservation: { release(): void } | undefined;
   const start = (startOptions?: Parameters<AgentTurnRunner["start"]>[1]) => {
@@ -666,8 +950,15 @@ async function system(
     retries,
     recovery,
     prompt,
+    create,
+    receipts,
     onRunOutcome,
     outbox,
+    writeFailures: () => writeFailures,
+    stored: async (message: SessionMessageDeliveryRequestV3) =>
+      (await durable.list("session-message")).find(
+        (record) => record.key === `${message.targetSessionId}:${message.messageId}`,
+      ),
     get steerOutcome() {
       return fixture.steerOutcome;
     },

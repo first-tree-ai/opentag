@@ -118,6 +118,15 @@ export class TurnRetryStore {
     this.#directory = resolve(this.#root, "turn-retries");
   }
 
+  /** The recorded interruption of each Session's Turn: what its joined Session messages were cut off by. */
+  async interruptions(): Promise<ReadonlyMap<string, Interruption>> {
+    const interruptions = new Map<string, Interruption>();
+    for (const record of await this.list()) {
+      if (record.interruption) interruptions.set(record.sessionId, record.interruption);
+    }
+    return interruptions;
+  }
+
   async list(): Promise<TurnRetryRecord[]> {
     if (!(await validatePrivateDirectory(this.#root, this.#directory))) return [];
     const records: TurnRetryRecord[] = [];

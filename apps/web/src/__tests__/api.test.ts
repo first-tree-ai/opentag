@@ -94,6 +94,36 @@ describe("BrowserApi", () => {
     });
   });
 
+  it("carries the viewer IANA timezone on Agent and Cloud usage reads", async () => {
+    const seen: string[] = [];
+    const fetchImpl = vi.fn<typeof fetch>(async (input) => {
+      seen.push(String(input));
+      if (String(input).startsWith("/api/v1/agents/")) {
+        return jsonResponse({
+          windowDays: 30,
+          startedAt: "2026-07-27T00:00:00.000Z",
+          endedAt: "2026-08-25T23:59:59.999Z",
+          tasks: 0,
+          measuredTasks: 0,
+          failed: 0,
+          inputTokens: 0,
+          cachedInputTokens: 0,
+          outputTokens: 0,
+          tokens: 0,
+          daily: [],
+        });
+      }
+      return jsonResponse({ enabled: false });
+    });
+    const api = new BrowserApi(fetchImpl);
+    await api.agentUsage(SETUP_AGENT_ID, 30, "Asia/Shanghai");
+    await api.cloudUsage(7, "Asia/Shanghai");
+    expect(seen).toEqual([
+      `/api/v1/agents/${SETUP_AGENT_ID}/usage?days=30&timezone=Asia%2FShanghai`,
+      "/api/v1/cloud/billing/usage?windowDays=7&timezone=Asia%2FShanghai",
+    ]);
+  });
+
   it("updates a Task title with the Account PATCH contract and CSRF header", async () => {
     setDocumentCookie("opentag_csrf=task-csrf; Path=/");
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {

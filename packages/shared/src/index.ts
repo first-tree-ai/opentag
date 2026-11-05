@@ -55,6 +55,8 @@ export {
   AgentSummarySchema,
   type AgentUsageDetail,
   AgentUsageDetailSchema,
+  type AgentUsageQuery,
+  AgentUsageQuerySchema,
   type AgentUsageSummary,
   AgentUsageSummarySchema,
   type AgentUsageWindowDays,
@@ -75,6 +77,7 @@ export {
   UpdateAgentRequestSchema,
   type UpdateAgentRuntimeConfig,
   UpdateAgentRuntimeConfigSchema,
+  UsageTimezoneSchema,
 } from "./agent.js";
 export * from "./agent-permissions.js";
 export * from "./agent-self.js";

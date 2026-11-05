@@ -110,6 +110,7 @@ function siblingIsRunning(kind: "channel" | "thread", now: Date) {
     select 1 from sessions sibling
     where sibling.im_binding_id = waiting.im_binding_id
       and sibling.channel_id = waiting.channel_id
+      and sibling.conversation_kind = 'dm'
       and sibling.kind = ${sql.raw(`'${kind}'`)}
       and sibling.ended_at is null
       and sibling.id <> waiting.id

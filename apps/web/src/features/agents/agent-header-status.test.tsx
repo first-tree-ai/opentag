@@ -110,7 +110,7 @@ describe("Overview name-area status", () => {
       agentView({ state: "problem", reason: "agent_paused", agentStatus: "suspended" }),
     );
     expect(within(header).getAllByText("Paused")).toHaveLength(1);
-    expect(within(header).getByText("This Agent is paused and doesn't receive new messages.")).toBeTruthy();
+    expect(within(header).getByText("This Agent is paused. Resume it to start receiving messages again.")).toBeTruthy();
     expect(within(header).getByRole("button", { name: "Resume Agent" })).toBeTruthy();
     expect(header.querySelector('[data-ui="agent-lifecycle-notice"]')).toBeNull();
   });

@@ -8,7 +8,7 @@ import { useAccount } from "../session/session-context.js";
 import { AgentTasksSection } from "../tasks-page.js";
 import { AgentAvatar } from "./agent-avatar.js";
 import type { AgentDetailView } from "./agent-model.js";
-import { agentCardStatus, agentMessagingStatus } from "./agent-presentation.js";
+import { agentCardStatus, agentMessagingStatus, agentRecoveryMessage } from "./agent-presentation.js";
 import { useAgentDetailView } from "./agent-queries.js";
 import { agentDetailLink, agentSettingsLink } from "./agent-routes.js";
 import { AgentSchedulesSection } from "./agent-schedules-section.js";
@@ -169,7 +169,7 @@ function AgentOverviewStatus({ agent }: { agent: AgentDetailView }) {
         />
         {paused ? <ResumeAgentButton agentId={agent.id} /> : null}
       </div>
-      {paused ? <p className="text-kumo-subtle">{m.agent_settings_status_paused_description()}</p> : null}
+      {paused ? <p className="text-kumo-subtle">{agentRecoveryMessage()}</p> : null}
     </section>
   );
 }

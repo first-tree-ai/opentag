@@ -1259,6 +1259,58 @@ describe("SessionMessageInbox", () => {
     },
   );
 
+  it("queues a second message behind the Session's running Session-message Run instead of steering it", async () => {
+    const targetSessionId = randomUUID();
+    const agentId = randomUUID();
+    const state: { phase: string; activeRunId?: string } = { phase: "idle" };
+    const prompts: string[] = [];
+    let finishFirst!: () => void;
+    const firstRunning = new Promise<void>((resolve) => {
+      finishFirst = resolve;
+    });
+    const steer = vi.fn();
+    const runtime = {
+      capabilities: { steer: "supported" },
+      state,
+      steer,
+      waitForIdle: async () => undefined,
+      prompt: vi.fn(async (request: { runId: string; input: { items: readonly { text: string }[] } }) => {
+        prompts.push(request.input.items.at(-1)?.text ?? "");
+        state.phase = "running";
+        state.activeRunId = request.runId;
+        if (prompts.length === 1) await firstRunning;
+        state.phase = "idle";
+        delete state.activeRunId;
+        return { runId: request.runId, status: "completed", output: [] };
+      }),
+    };
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      sessionCollaborationVersion: () => 3,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => runtime as never),
+        runtime: vi.fn(() => runtime as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+      steerRetryMs: 5,
+    });
+    expect((await inbox.accept(delivery({ targetSessionId, agentId, text: "first" }))).status).toBe("accepted");
+    await vi.waitFor(() => expect(state.activeRunId).toMatch(/^session-message-/));
+    expect((await inbox.accept(delivery({ targetSessionId, agentId, text: "second" }))).status).toBe("accepted");
+    // The per-Session drain awaits the running Session-message Run, so the next message is never steered into it.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(steer).not.toHaveBeenCalled();
+    expect(prompts).toEqual(["first"]);
+    finishFirst();
+    await vi.waitFor(() => expect(prompts).toEqual(["first", "second"]));
+    await inbox.settled();
+    expect(steer).not.toHaveBeenCalled();
+    inbox.stop();
+  });
+
   it("deduplicates the same logical payload and rejects a conflicting retry", async () => {
     const inbox = new SessionMessageInbox({
       admission: new AdmissionController(),

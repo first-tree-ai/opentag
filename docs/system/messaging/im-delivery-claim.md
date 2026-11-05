@@ -317,6 +317,13 @@ the failure code already recorded for the delivery adds nothing an operator can 
 terminal settlement always emits its own line. The pre-claim code is read in the claim, so no
 extra query is needed.
 
+If a steer target completes between claiming the follow-up and rechecking the target, the worker
+keeps `IM_DELIVERY_STEER_TARGET_ENDED` and the normal retry schedule without an error diagnostic
+only when the target is still accepted, its Session, Turn and report owner match, a `completed`
+report is recorded, and the follow-up has no frozen dispatch request. The retry warning retains
+the delivery ID, code and delay. Missing or mismatched targets, other report outcomes and frozen
+dispatches retain their failure diagnostics; the code alone does not identify an expected fallback.
+
 A timed-out attempt is recorded once, by the deadline. The aborted operation does not record a
 second, contradictory failure: that write would describe the same attempt and would reset the
 consecutive-timeout count the deadline just produced.

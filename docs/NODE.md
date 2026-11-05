@@ -67,9 +67,14 @@ same pull request as the code they describe.
   people involved change the tree; do not block work on a private
   understanding. Content under a Planned marker is not drift: it states a
   settled decision the code does not implement yet.
-- Test plans, acceptance runs, and validation evidence are not knowledge-base
-  content; they live in the repository's
-  [`testing/`](https://github.com/first-tree-ai/opentag/blob/main/testing/README.md) directory.
+- Maintained Markdown release regression cases covering the main product features
+  live in [`testing/regression/`](https://github.com/first-tree-ai/opentag/tree/main/testing/regression)
+  and run before every release. Agents update matching cases when changing a
+  product feature. Task plans, acceptance results, performance reports, validation
+  evidence and local test environment configuration stay outside the source
+  repository and knowledge base; retain useful redacted records in the task's
+  GitHub PR or Issue. Existing automated tests and CI remain in their owning
+  package, app or tooling directories.
 - The knowledge base is maintained in English only.
 - Edit an existing page before adding one. Add a page only when it has a
   distinct, independently findable subject, and add a directory only for at

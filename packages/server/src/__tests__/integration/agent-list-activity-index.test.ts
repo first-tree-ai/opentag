@@ -1,6 +1,6 @@
 /**
  * The Agent list's two unreported-accepted reads must use the partial index that exists for them, and
- * its queued-Task read must be scoped to the listed Agents before it reads a pending delivery.
+ * its queued-Task read must start from the listed Agents' live Sessions without reading Internal Sessions.
  *
  * Without it, the reads join every Session of a binding to answer "which Turns are still unreported?", which
  * cost 100,001 probes for one hot Agent in the 100k-row benchmark. This suite runs the real service, captures
@@ -98,7 +98,7 @@ describe("Agent list unreported-accepted index", () => {
     }
   }, 60_000);
 
-  it("scopes the queued read to the listed Agents before it reads any pending delivery", async () => {
+  it("reads the queued count in two steps from the listed Agents' live Sessions", async () => {
     const client = createDatabaseClient(testDatabase.databaseUrl);
     const queries: { query: string; params: unknown[] }[] = [];
     try {
@@ -106,7 +106,7 @@ describe("Agent list unreported-accepted index", () => {
         schema,
         logger: { logQuery: (query, params) => queries.push({ query, params }) },
       });
-      // Another Account's Agent with a deep queue: its backlog must not be read for this Account's list.
+      // Another Account's Agent with a deep queue: it must not change this Account's count.
       const [neighbour] = await database
         .insert(users)
         .values({ email: `neighbour-${randomUUID()}@example.test`, displayName: "Neighbour", setupCompletedAt: NOW })
@@ -131,7 +131,6 @@ describe("Agent list unreported-accepted index", () => {
       );
 
       const { owner, agents, agent, session, message } = await activityFixture(database, "queued");
-      // A message still waiting for delivery: the Task list reads this Task as Queued.
       await database.insert(imMessageDeliveries).values({
         messageId: message.id,
         sessionId: session.id,
@@ -141,6 +140,23 @@ describe("Agent list unreported-accepted index", () => {
         nextAttemptAt: NOW,
         expiresAt: new Date(NOW.getTime() + 86_400_000),
       });
+      // Many long-lived idle conversations and the Internal Sessions a busy binding piles up.
+      await client.sql.unsafe(
+        `
+        insert into sessions(im_binding_id,channel_id,conversation_kind,kind,thread_key)
+        select s.im_binding_id,'C1','channel','thread','idle-'||n
+        from sessions s, generate_series(1, ${IDLE_SESSIONS}) n where s.id = $1
+        `,
+        [session.id],
+      );
+      await client.sql.unsafe(
+        `
+        insert into sessions(im_binding_id,channel_id,conversation_kind,kind,created_by_session_id)
+        select s.im_binding_id,'C1','dm','internal',s.id
+        from sessions s, generate_series(1, ${INTERNAL_SESSIONS}) n where s.id = $1
+        `,
+        [session.id],
+      );
       await client.sql.unsafe("analyze");
 
       queries.length = 0;
@@ -149,26 +165,31 @@ describe("Agent list unreported-accepted index", () => {
         state: "idle",
         queuedTaskCount: 1,
       });
-      const queued = queries.filter((entry) => entry.query.includes("pending_channels"));
-      // The neighbour's backlog is one private chat, so it is one queued Task however deep it is.
+      const liveSessionReads = queries.filter((entry) => entry.query.includes(`"kind" = 'channel'`));
+      const pendingReads = queries.filter((entry) => entry.query.includes("= any($1::uuid[])"));
+      expect(liveSessionReads).toHaveLength(1);
+      expect(pendingReads).toHaveLength(1);
+
+      // Both steps run under the default planner. The first reads the live Sessions through their partial
+      // indexes and no Internal Session; the array parameter carries every one of them to the second.
+      const [liveRead] = liveSessionReads;
+      if (!liveRead) throw new Error("Live Session read missing");
+      const [explained] = await client.sql.unsafe(
+        `explain (analyze, format json) ${liveRead.query}`,
+        liveRead.params as never[],
+      );
+      const plan = explained?.["QUERY PLAN"];
+      // The listed Account's other fixture Agents add at most a few live Sessions.
+      expect(rowsRead(plan?.[0]?.Plan as PlanNode, "sessions")).toBeLessThan(IDLE_SESSIONS + 10);
+      expect(JSON.stringify(plan)).toContain("sessions_active_channel_unique");
+      expect(JSON.stringify(plan)).toContain("sessions_active_thread_unique");
+      expect(String(pendingReads[0]?.params[0]).split(",").length).toBeGreaterThan(IDLE_SESSIONS);
+
+      // The neighbour's backlog is one Session, so it is one queued Task however deep it is.
       expect((await noisy.agents.listForAccount(neighbour.id)).agents[0]?.activity).toEqual({
         state: "idle",
         queuedTaskCount: 1,
       });
-
-      // Under the default planner, the seed that finds waiting work never touches the neighbour's backlog.
-      // (The topic chain after it reads only the channels the seed returned; on a table this small the
-      // planner may still scan it whole, which the benchmark-sized fixture does not.)
-      expect(queued).toHaveLength(1);
-      for (const statement of queued) {
-        const [explained] = await client.sql.unsafe(
-          `explain (analyze, format json) ${statement.query}`,
-          statement.params as never[],
-        );
-        const seed = findSubplan(explained?.["QUERY PLAN"], "CTE pending_channels");
-        const deliveryRowsRead = rowsRead(seed, "im_message_deliveries");
-        expect(deliveryRowsRead).toBeLessThan(10);
-      }
     } finally {
       await client.sql.end();
     }
@@ -176,25 +197,16 @@ describe("Agent list unreported-accepted index", () => {
 });
 
 const NOISY_BACKLOG = 2_000;
+const IDLE_SESSIONS = 500;
+const INTERNAL_SESSIONS = 20_000;
 
 interface PlanNode {
-  "Subplan Name"?: string;
   "Relation Name"?: string;
   "Actual Rows"?: number;
   "Actual Loops"?: number;
   "Rows Removed by Filter"?: number;
   "Rows Removed by Index Recheck"?: number;
   Plans?: PlanNode[];
-}
-
-/** The plan node of one named subplan, such as a CTE. */
-function findSubplan(plan: unknown, name: string): PlanNode {
-  const search = (node: PlanNode): PlanNode | undefined =>
-    node["Subplan Name"] === name ? node : (node.Plans ?? []).map(search).find((found) => found !== undefined);
-  const root = (plan as { Plan: PlanNode }[] | undefined)?.[0]?.Plan;
-  const found = root ? search(root) : undefined;
-  if (!found) throw new Error(`EXPLAIN has no ${name}`);
-  return found;
 }
 
 /** Rows a plan subtree read from one table: those its scans returned plus those their filters discarded. */

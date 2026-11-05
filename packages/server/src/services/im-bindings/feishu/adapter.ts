@@ -403,7 +403,9 @@ export function normalizeFeishuMessage(input: VerifiedFeishuEnvelope): Normalize
         externalId: input.message.messageId,
         revisionKey: String(input.message.createTime),
         operation,
-        threadKey: input.message.threadId ?? input.message.rootId ?? null,
+        // Only a real Feishu thread defines a Thread Session. A quote reply in an ordinary group carries
+        // root_id/parent_id without thread_id and stays in the channel Session with its reply target.
+        threadKey: input.message.threadId ?? null,
         replyToExternalId: input.message.replyToMessageId ?? null,
         author: {
           externalId: input.message.senderId,

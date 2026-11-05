@@ -1690,6 +1690,7 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
         command: process.execPath,
         args: [fixture],
         env: { PATH: process.env.PATH, CODEX_FIXTURE_SCENARIO: "history-large" },
+        maxLineBytes: 1024 * 1024,
         requestTimeoutMs: 5_000,
       },
       probeRunner: async () => ({ appServer: true, credential: true, experimentalTools: true, version: "fixture" }),

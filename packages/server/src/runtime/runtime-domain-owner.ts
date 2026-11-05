@@ -11,6 +11,7 @@ import {
   hashTuple,
   type ImMessageDeliveryResult,
   RUNTIME_CAPABILITY,
+  RUNTIME_SESSION_COLLABORATION_RUN_OUTCOME_VERSION,
   type RuntimeImCredentialGrantRequest,
   type RuntimeImCredentialGrantResult,
   type RuntimeImSteerRequest,
@@ -19,6 +20,8 @@ import {
   type SessionMessageDeliveryRequest,
   type SessionMessageDeliveryRequestV3,
   type SessionMessageDeliveryResult,
+  type SessionMessageOutcomeReport,
+  type SessionMessageOutcomeResult,
   type SessionReconcileRequest,
   type SessionReconcileResult,
   type TurnReportRequest,
@@ -107,6 +110,14 @@ export interface RuntimeDomainOwnerOptions {
   maxPendingRequests?: number;
   onTurnActivity?(frame: TurnActivityRequest, context: RuntimeBusinessContext): Promise<TurnActivityResult>;
   onTrace?(batch: AgentTraceBatch, context: RuntimeBusinessContext): Promise<void> | void;
+  /**
+   * Session-collaboration v4 Run outcome report from the exact current connection. Called only
+   * after the instance and capability checks; it answers `notified`, `ignored`, or `retry`.
+   */
+  onSessionMessageOutcome?(
+    frame: SessionMessageOutcomeReport,
+    context: RuntimeBusinessContext,
+  ): Promise<SessionMessageOutcomeResult["status"]>;
   onImCredentialGrant?(
     request: RuntimeImCredentialGrantRequest,
     context: RuntimeBusinessContext & { imCredentialGrantVersion: 1 | 2 },
@@ -236,7 +247,10 @@ export class RuntimeDomainOwner {
   readonly #custody: RuntimeCustodyStore;
   readonly #logger?: ServiceLogger;
   readonly #options: Required<Pick<RuntimeDomainOwnerOptions, "maxPendingRequests" | "requestTimeoutMs">> &
-    Pick<RuntimeDomainOwnerOptions, "onImCredentialGrant" | "onTrace" | "onTurnActivity" | "prepareReconcile">;
+    Pick<
+      RuntimeDomainOwnerOptions,
+      "onImCredentialGrant" | "onSessionMessageOutcome" | "onTrace" | "onTurnActivity" | "prepareReconcile"
+    >;
   readonly #pending = new Map<string, PendingRequest>();
   readonly #startingDeliveries = new Map<string, StartingDelivery>();
   readonly #expiredDeliveries = new Map<string, ExpiredDelivery>();
@@ -254,6 +268,7 @@ export class RuntimeDomainOwner {
     this.#options = {
       maxPendingRequests: options.maxPendingRequests ?? 1024,
       onTrace: options.onTrace,
+      onSessionMessageOutcome: options.onSessionMessageOutcome,
       onTurnActivity: options.onTurnActivity,
       onImCredentialGrant: options.onImCredentialGrant,
       prepareReconcile: options.prepareReconcile,
@@ -720,10 +735,7 @@ export class RuntimeDomainOwner {
     };
   }
 
-  async handle(
-    frame: DomainBusinessFrame,
-    context: RuntimeBusinessContext,
-  ): Promise<TurnReportResult | TurnActivityResult | RuntimeImCredentialGrantResult | undefined> {
+  async handle(frame: DomainBusinessFrame, context: RuntimeBusinessContext): Promise<DomainBusinessResult | undefined> {
     if (this.#closed) return undefined;
     return this.#track(this.#handleFrame(frame, context));
   }
@@ -731,7 +743,8 @@ export class RuntimeDomainOwner {
   async #handleFrame(
     frame: DomainBusinessFrame,
     context: RuntimeBusinessContext,
-  ): Promise<TurnReportResult | TurnActivityResult | RuntimeImCredentialGrantResult | undefined> {
+  ): Promise<DomainBusinessResult | undefined> {
+    if (frame.type === "session:message:outcome") return this.#handleSessionMessageOutcome(frame, context);
     if (this.#registry.currentInstanceId(context.computerId) !== context.instanceId) {
       if (frame.type === "turn:report") {
         return {
@@ -790,6 +803,20 @@ export class RuntimeDomainOwner {
       await this.#options.onTrace?.(frame, context);
     }
     return undefined;
+  }
+
+  async #handleSessionMessageOutcome(
+    frame: SessionMessageOutcomeReport,
+    context: RuntimeBusinessContext,
+  ): Promise<SessionMessageOutcomeResult> {
+    if (this.#registry.currentInstanceId(context.computerId) !== context.instanceId) {
+      return sessionOutcomeResult(frame, "stale_generation");
+    }
+    const version = context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.sessionCollaboration] ?? 0;
+    if (version < RUNTIME_SESSION_COLLABORATION_RUN_OUTCOME_VERSION || !this.#options.onSessionMessageOutcome) {
+      return sessionOutcomeResult(frame, "unsupported_capability");
+    }
+    return sessionOutcomeResult(frame, await this.#options.onSessionMessageOutcome(frame, context));
   }
 
   #handleActivity(
@@ -1334,9 +1361,26 @@ function runtimeDomainFailureAttrs(error: unknown): Record<string, unknown> {
   return outcomeAttrs("failed", code);
 }
 
-function businessFailureResult(frame: unknown): RuntimeImCredentialGrantResult | undefined {
+type DomainBusinessResult =
+  | TurnReportResult
+  | TurnActivityResult
+  | RuntimeImCredentialGrantResult
+  | SessionMessageOutcomeResult;
+
+function sessionOutcomeResult(
+  frame: SessionMessageOutcomeReport,
+  status: SessionMessageOutcomeResult["status"],
+): SessionMessageOutcomeResult {
+  return { type: "session:message:outcome:result", requestId: frame.requestId, messageId: frame.messageId, status };
+}
+
+function businessFailureResult(
+  frame: unknown,
+): RuntimeImCredentialGrantResult | SessionMessageOutcomeResult | undefined {
   const parsed = ClientRuntimeBusinessFrameSchema.safeParse(frame);
   if (!parsed.success) return undefined;
+  // A processing failure proves nothing about the notice: the Client keeps the report and resends.
+  if (parsed.data.type === "session:message:outcome") return sessionOutcomeResult(parsed.data, "retry");
   if (parsed.data.type === "im:credential") {
     return {
       type: "im:credential:result",
@@ -1359,6 +1403,9 @@ function domainLaneKey(frame: ClientRuntimeBusinessFrame): string {
   if (frame.type === "im:credential") return `session:${frame.sessionId}`;
   if (frame.type === "session:message:deliver:result") {
     return `session-message:${frame.targetSessionId}:${frame.messageId}`;
+  }
+  if (frame.type === "session:message:outcome") {
+    return `session-message-outcome:${frame.targetSessionId}:${frame.messageId}`;
   }
   if (frame.type === "provider-cli:artifact:status" || frame.type === "provider-cli:validation:result") {
     return `provider-cli:${frame.integrationId}:${frame.credentialGeneration}`;

@@ -17,6 +17,7 @@ import {
   RuntimeOpaqueIdSchema,
   SessionMessageDeliveryRequestSchema,
   SessionMessageDeliveryRequestV3Schema,
+  TurnFailureReasonSchema,
   TurnReportRequestSchema,
 } from "./runtime-domain.js";
 
@@ -77,10 +78,19 @@ export const RUNNER_SESSION_COLLABORATION_VERSION = 1 as const;
  * handshake instead of executing without collaboration authority.
  */
 export const RUNNER_SESSION_COLLABORATION_V2 = 2 as const;
+/**
+ * E8 version 3: everything in version 2, plus the Runner's `session:message:settled` frame may
+ * carry the terminal failure `reason` (for example `turn_timeout`). The Runner includes the field
+ * only on a connection whose welcome echoed version 3, so an older Server's strict settled schema
+ * never sees it; the Server uses it to tell an internal Session's creator why its Run ended.
+ */
+export const RUNNER_SESSION_COLLABORATION_V3 = 3 as const;
 export const RunnerSessionCollaborationVersionSchema = z.union([
   z.literal(RUNNER_SESSION_COLLABORATION_VERSION),
   z.literal(RUNNER_SESSION_COLLABORATION_V2),
+  z.literal(RUNNER_SESSION_COLLABORATION_V3),
 ]);
+export type RunnerSessionCollaborationVersion = z.infer<typeof RunnerSessionCollaborationVersionSchema>;
 
 /** The Cloud Session-collaboration frame budget; mirrors the delivery run frame bound. */
 const RUNNER_SESSION_MESSAGE_CONTEXT_REFINE = (value: {
@@ -736,6 +746,12 @@ export const RunnerCloudSessionMessageSettledFrameSchema = z
     messageId: z.string().uuid(),
     turnId: RuntimeOpaqueIdSchema,
     outcome: z.enum(["completed", "failed", "cancelled", "unknown"]),
+    /**
+     * Collaboration version 3 only: the terminal failure reason of a non-completed Run. Sent only
+     * after a version-3 welcome; a completed settlement never carries one, and the Server ignores
+     * it on a completed outcome.
+     */
+    reason: TurnFailureReasonSchema.optional(),
   })
   .strict();
 export type RunnerCloudSessionMessageSettledFrame = z.infer<typeof RunnerCloudSessionMessageSettledFrameSchema>;

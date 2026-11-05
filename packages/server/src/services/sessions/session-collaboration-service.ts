@@ -10,6 +10,7 @@ import {
   type SessionMessageDeliveryRequest,
   type SessionMessageDeliveryRequestV3,
   type SessionMessageDeliveryResult,
+  type SessionMessageRunOutcome,
   type SessionMessageScheduledOrigin,
   type SessionReconcileResult,
 } from "@opentag/shared";
@@ -22,6 +23,7 @@ import {
 } from "../../runtime/runtime-domain-owner.js";
 import type { EffectiveRuntimeSnapshotAssembler } from "../runtime-config/index.js";
 import type { SessionCliSourceContext } from "./session-cli-proof-service.js";
+import { renderRunOutcomeNotice, runOutcomeNoticeMessageId } from "./session-run-outcome-notice.js";
 import type {
   AuthorizedScheduledMessageRoute,
   AuthorizedSessionMessageRoute,
@@ -115,6 +117,33 @@ export interface ScheduledMessageDispatchOutcome {
   code: string | null;
 }
 
+/**
+ * One internal Session Run that ended without completing, as reported by the exact live Runtime
+ * connection that executed it (the Local Computer connection or the Cloud Runner connection).
+ * The connection facts become the notice's source authority, so a stale or foreign connection
+ * can never notify a creator on the child's behalf.
+ */
+export interface RunOutcomeNoticeInput {
+  childSessionId: string;
+  messageId: string;
+  outcome: SessionMessageRunOutcome;
+  reason: string;
+  source: { computerId: string; connectionInstanceId: string; placementGeneration: number };
+}
+
+/**
+ * `notified`: the creator accepted the notice (now or earlier). `ignored`: final, nothing to
+ * notify (not an internal child, ended Session, unknown message, or a final rejection).
+ * `retry`: the notice exists or could not be recorded yet, and its delivery was not accepted;
+ * the reporter may resend the same report, which reuses the same notice row.
+ */
+export type RunOutcomeNoticeStatus = "notified" | "ignored" | "retry";
+
+/** The narrow surface Runtime owners use to report a non-completed internal Session Run. */
+export interface RunOutcomeNotifier {
+  notifyRunOutcome(input: RunOutcomeNoticeInput): Promise<RunOutcomeNoticeStatus>;
+}
+
 /** The narrow dispatch surface the schedule scheduler depends on. */
 export interface ScheduleDispatch {
   dispatchScheduledMessage(
@@ -201,6 +230,7 @@ export interface SessionCollaborationServiceOptions {
     | "disableScheduleForInvalidTarget"
     | "hasAcceptedScheduledMessage"
     | "recordMessageOutcome"
+    | "resolveRunOutcomeNotice"
     | "resolveScheduledMessageRoute"
     | "withCollaborationDispatchAdmission"
     | "withScheduledDispatchAdmission"
@@ -697,6 +727,49 @@ export class SessionCollaborationService {
     } catch (error) {
       return this.#failure(input.messageId, error);
     }
+  }
+
+  /**
+   * Tell the creator of an internal Session that one of its Runs ended without completing. The
+   * notice is an ordinary SessionMessage from the child to its creator with a deterministic id,
+   * so it reuses the existing authorization, lock order, idempotency, activity projection, and
+   * delivery (including visible-Session callback rules). Notices only ever travel to the
+   * creator, so they move strictly up the creation tree and can never echo back to the child.
+   */
+  async notifyRunOutcome(input: RunOutcomeNoticeInput): Promise<RunOutcomeNoticeStatus> {
+    const noticeId = runOutcomeNoticeMessageId(input.childSessionId, input.messageId);
+    let result: SessionCliCommandResponse;
+    try {
+      const notice = await this.#sessions.resolveRunOutcomeNotice({
+        childSessionId: input.childSessionId,
+        messageId: input.messageId,
+      });
+      if (!notice) return "ignored";
+      const attempt = await this.#sessions.authorizeAndRecordMessage({
+        messageId: noticeId,
+        sourceSessionId: input.childSessionId,
+        sourceInstallationId: notice.installationId,
+        sourceComputerId: input.source.computerId,
+        sourceConnectionInstanceId: input.source.connectionInstanceId,
+        sourcePlacementGeneration: input.source.placementGeneration,
+        targetSessionId: notice.creatorSessionId,
+        content: renderRunOutcomeNotice(input),
+      });
+      result = await this.#deliver(attempt, notice.creatorSessionId);
+    } catch (error) {
+      result = this.#failure(noticeId, error);
+    }
+    if (result.status === "accepted") return "notified";
+    if (result.status === "rejected") {
+      this.#logInternalFailure("SESSION_RUN_OUTCOME_NOTICE_REJECTED", {
+        childSessionId: input.childSessionId,
+        code: result.code,
+        messageId: input.messageId,
+        noticeId,
+      });
+      return "ignored";
+    }
+    return "retry";
   }
 
   async #deliver(attempt: SessionMessageAttempt, sessionId: string): Promise<SessionCliCommandResponse> {

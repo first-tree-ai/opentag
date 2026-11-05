@@ -24,7 +24,7 @@ import {
   UpdateAgentRequestSchema,
 } from "@opentag/shared";
 import { and, asc, eq, gte, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
-import { alias } from "drizzle-orm/pg-core";
+import { alias, unionAll } from "drizzle-orm/pg-core";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   agentMcpServers,
@@ -48,7 +48,6 @@ import type { McpCredentialCipher } from "../mcp/mcp-credential-cipher.js";
 import { resolveAgentRuntimeConfig } from "../runtime-config/index.js";
 import type { CloudModelCatalog } from "../sandboxes/cloud-model-catalog.js";
 import { markEndedDescendantsInactive } from "../sessions/session-closure.js";
-import { queuedTaskCountsByAgent } from "../tasks/index.js";
 import { AgentTransferError, type AgentTransferInput, type AgentTransferResult } from "./agent-transfer.js";
 import {
   deliveryUsageTokenCounts,
@@ -61,7 +60,7 @@ import { AgentServiceError, resourceNotFound } from "./errors.js";
 
 type AgentRow = typeof agents.$inferSelect;
 type AgentRuntimeConfigRow = typeof agentRuntimeConfigs.$inferSelect;
-type QueryExecutor = Pick<DatabaseClient, "execute" | "select" | "selectDistinct" | "selectDistinctOn">;
+type QueryExecutor = Pick<DatabaseClient, "select" | "selectDistinct" | "selectDistinctOn">;
 
 const AGENT_ACTIVITY_REPORT_DELIVERY_SLACK_HOURS = 1;
 const MILLISECONDS_PER_HOUR = 60 * 60 * 1_000;
@@ -558,9 +557,7 @@ export class AgentService {
 
   async #readActivityByAgent(
     executor: QueryExecutor,
-    callerUserId: string,
     agentIds: readonly string[],
-    now: Date,
     recoveryStartedAt: Date,
   ): Promise<Map<string, AgentListActivity>> {
     // One row per working Agent: its open Tasks (Sessions) and the latest accepted Turn among them.
@@ -601,28 +598,64 @@ export class AgentService {
         ),
       );
 
-    /*
-     * Tasks still waiting for delivery, counted exactly as the Task list reads "Queued": a direct
-     * topic, not ended and not running, with a pending delivery in a live Session of an active
-     * binding. They wait whether or not the Agent is working, so the count rides on every activity
-     * state, and it is what shows an admin that work is piling up behind an offline Computer. The read
-     * is scoped to these Agents' live conversations before it touches a delivery, and only channels
-     * holding waiting work are classified into topics; see `queuedTaskCountsByAgent`.
-     */
-    const queuedRows = await executor.execute<{ agentId: string; queuedTaskCount: number } & Record<string, unknown>>(
-      queuedTaskCountsByAgent({ accountId: callerUserId, agentIds, now }),
-    );
+    const queuedByAgent = await this.#readQueuedTaskCounts(executor, agentIds);
 
     const activityByAgent = projectActivityByAgent(activityRows);
     for (const row of staleActivityRows) {
       if (!activityByAgent.has(row.agentId)) activityByAgent.set(row.agentId, { state: "unknown" });
     }
-    for (const row of queuedRows) {
-      if (row.queuedTaskCount <= 0) continue;
-      const activity = activityByAgent.get(row.agentId) ?? { state: "idle" };
-      activityByAgent.set(row.agentId, { ...activity, queuedTaskCount: row.queuedTaskCount });
+    for (const [agentId, queuedTaskCount] of queuedByAgent) {
+      const activity = activityByAgent.get(agentId) ?? { state: "idle" };
+      activityByAgent.set(agentId, { ...activity, queuedTaskCount });
     }
     return activityByAgent;
+  }
+
+  /**
+   * How many live Sessions of each Agent hold a direct delivery still waiting, read in two steps inside
+   * the caller's snapshot: the Agents' live channel and thread Sessions, then the pending deliveries of
+   * those Sessions. Waiting work is counted per Session from delivery state alone, so this differs from
+   * the Task list's Queued in the ways `docs/system/agent-usage.md` lists. The Session list grows with
+   * the conversations the Agents have taken part in and has no upper bound; the same page names the
+   * limit this is accepted under and the tracking Issue for what replaces it.
+   *
+   * The literal predicates keep each branch on its partial active-Session index, so the Internal
+   * Sessions a busy binding accumulates are never read. The ids travel as one array parameter because
+   * the list is unbounded and a bind parameter per id stops at the protocol's limit.
+   */
+  async #readQueuedTaskCounts(executor: QueryExecutor, agentIds: readonly string[]): Promise<Map<string, number>> {
+    const liveSessions = (kind: "channel" | "thread") =>
+      executor
+        .select({ agentId: imBindings.agentId, sessionId: sessions.id })
+        .from(imBindings)
+        .innerJoin(sessions, eq(sessions.imBindingId, imBindings.id))
+        .where(
+          and(
+            inArray(imBindings.agentId, agentIds),
+            eq(imBindings.status, "active"),
+            sql`${sessions.kind} = ${sql.raw(`'${kind}'`)}`,
+            isNull(sessions.endedAt),
+          ),
+        );
+    const live = await unionAll(liveSessions("channel"), liveSessions("thread"));
+    if (live.length === 0) return new Map();
+    const waiting = await executor
+      .selectDistinct({ sessionId: imMessageDeliveries.sessionId })
+      .from(imMessageDeliveries)
+      .where(
+        and(
+          sql`${imMessageDeliveries.sessionId} = any(${`{${live.map((row) => row.sessionId).join(",")}}`}::uuid[])`,
+          eq(imMessageDeliveries.attention, "direct"),
+          eq(imMessageDeliveries.state, "pending"),
+        ),
+      );
+    const agentBySession = new Map(live.map((row) => [row.sessionId, row.agentId]));
+    const counts = new Map<string, number>();
+    for (const { sessionId } of waiting) {
+      const agentId = agentBySession.get(sessionId);
+      if (agentId) counts.set(agentId, (counts.get(agentId) ?? 0) + 1);
+    }
+    return counts;
   }
 
   async listForAccount(callerUserId: string): Promise<ListAgentsResponse> {
@@ -673,13 +706,7 @@ export class AgentService {
         if (summaries.length === 0) return { summaries, activityByAgent: new Map(), usageRows: [] };
         await this.#afterReadAuthorization?.("list");
         const agentIds = summaries.map((agent) => agent.id);
-        const activityByAgent = await this.#readActivityByAgent(
-          transaction,
-          callerUserId,
-          agentIds,
-          now,
-          recoveryStartedAt,
-        );
+        const activityByAgent = await this.#readActivityByAgent(transaction, agentIds, recoveryStartedAt);
         const usageRows = await readAgentUsageSummaries(transaction, {
           agentIds,
           startedAt: usageStartedAt,
@@ -779,15 +806,8 @@ export class AgentService {
     return this.#database.transaction(
       async (transaction) => {
         const agent = await this.#readAgentSummary(transaction, callerUserId, agentId);
-        const now = this.#now();
-        const recoveryStartedAt = new Date(now.getTime() - AGENT_ACTIVITY_RECOVERY_WINDOW_MS);
-        const activityByAgent = await this.#readActivityByAgent(
-          transaction,
-          callerUserId,
-          [agentId],
-          now,
-          recoveryStartedAt,
-        );
+        const recoveryStartedAt = new Date(this.#now().getTime() - AGENT_ACTIVITY_RECOVERY_WINDOW_MS);
+        const activityByAgent = await this.#readActivityByAgent(transaction, [agentId], recoveryStartedAt);
         return { ...agent, activity: activityByAgent.get(agentId) ?? { state: "idle" } };
       },
       { isolationLevel: "repeatable read", accessMode: "read only" },

@@ -4,8 +4,8 @@
  *
  * This file is only the wiring: arguments, Docker, PostgreSQL, migrations and file output. The run
  * itself, the measurement and the container checks live in `scripts/benchmark/`, beside this file,
- * where unit tests drive them through injected ports. Importing those modules never starts a
- * container, and no test imports this file.
+ * where unit tests drive them through injected ports. Entry tests replace the run before importing
+ * this file, so they verify wiring without starting a container.
  *
  * It owns one disposable loopback container, never reads `DATABASE_URL` or a `.env` file, applies the
  * real migrations, keeps constraints and indexes enabled, and uses the service client's default query
@@ -18,6 +18,7 @@
  */
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { drizzle } from "drizzle-orm/postgres-js";
@@ -29,7 +30,7 @@ import { parseBenchmarkArgs } from "./benchmark/args.js";
 import { runBenchmark } from "./benchmark/run.js";
 
 const { phase, output } = parseBenchmarkArgs(process.argv, {
-  defaultOutput: fileURLToPath(new URL("../../../testing/performance/task-queries/", import.meta.url)),
+  defaultOutput: resolve(tmpdir(), "opentag-benchmarks/task-queries"),
   resolvePath: resolve,
 });
 const containerName = `opentag-task-bench-${process.pid}`;
@@ -83,10 +84,7 @@ await runBenchmark({
   mkdir: (path) => mkdirSync(path, { recursive: true }),
   write: (path, contents) => writeFileSync(path, contents),
   gitHead: () => execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
-  // Source cleanliness only: the evidence directory is not a code change.
-  gitDirty: () =>
-    execFileSync("git", ["status", "--porcelain", "--", ".", ":!testing/performance"], { encoding: "utf8" }).trim() !==
-    "",
+  gitDirty: () => execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" }).trim() !== "",
   clock: () => performance.now(),
   log: (line) => console.log(line),
   ids: {

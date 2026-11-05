@@ -138,7 +138,7 @@ uses provider failure handling. Existing claim expiry and the next scan recover 
 
 Local automated coverage includes real PostgreSQL state, concurrent connections and mocked Slack HTTP.
 It does not establish deployment or native visual acceptance. Follow the
-[feedback verification record](https://github.com/first-tree-ai/opentag/blob/main/testing/verification/im-feedback.md)
+[Slack regression checklist](https://github.com/first-tree-ai/opentag/blob/main/testing/regression/slack.md)
 and use an explicitly authorized test installation before claiming a native result.
 
 ## Fixed Slack capability contract
@@ -189,8 +189,8 @@ normal openTag ingress: every admitted inbound message is persisted first, then 
 delivery. Private channels and MPIMs still require an invitation. The Agent may discover existing DMs and MPIMs, but
 `conversations.open` is limited to exactly one user ID for a one-to-one DM; V1 does not promise creation of a new MPIM.
 
-A credential-free local live acceptance checklist for a separately registered test Team/App is in
-[slack-live-acceptance.md](https://github.com/first-tree-ai/opentag/blob/main/testing/slack-live-acceptance.md).
+A credential-free release regression checklist for a separately registered test Team/App is in
+[Slack messaging regression](https://github.com/first-tree-ai/opentag/blob/main/testing/regression/slack.md).
 
 Web shows one primary action for the current state. Installation failures retry the same App; only an authorization failure offers reauthorization. Confirmed pending requests offer **View approval** and secondary **Continue**. While the setup record is present (persisted on disk for a Local Computer, or within the current Server process for a Cloud Agent), a denied request or uncertain creation never offers a new-App retry; if the Server restarts during an unfinished Cloud setup, check existing Apps in Slack and use **Manual setup**. App/Team IDs and safe error codes are in **Diagnostics**.
 

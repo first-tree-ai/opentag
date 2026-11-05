@@ -49,6 +49,8 @@ export const queryKeys = {
     detail: (taskId: string) => ["tasks", taskId, "detail"] as const,
     /** One Task's captured outbound replies, a sibling of its detail with its own cursor. */
     replies: (taskId: string) => ["tasks", taskId, "replies"] as const,
+    /** One Task's internal Sessions, a sibling of its detail paged with their own cursor. */
+    internalSessions: (taskId: string) => ["tasks", taskId, "internalSessions"] as const,
   },
 
   feishuSetupAttempt: (attemptId: string) => ["feishuSetupAttempts", attemptId] as const,

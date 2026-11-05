@@ -997,6 +997,63 @@ describe("E7 automatic idle reclamation", () => {
     expect(rowB.currentResourceUid).toBe(replacement.row.currentResourceUid);
   });
 
+  it("refuses idle reclaim and sibling borrow while a settlement ack is withheld on the exact allocation", async () => {
+    const accountId = await account();
+    const work = new CloudSessionWorkTracker();
+    const stack = sessionWorkStack(work);
+    const ready = await readySandbox(stack, accountId, "room-settlement-custody");
+    // The creator notice is in flight (or its settling connection left before the ack): the
+    // durable row is already terminal and only the in-memory custody protects the Runner journal.
+    const messageId = randomUUID();
+    work.holdSettlement(ready.scope, ready.row.sessionId, messageId, "turn-settled");
+    const b = await ownedSandbox(accountId, "room-settlement-custody-borrower");
+
+    const createsBefore = stack.fake.createCalls.length;
+    await stack.service.startForAccount(accountId, b.sandbox.sandboxId);
+    // The borrow skipped the custody-holding sibling and cold-allocated instead.
+    expect(stack.fake.createCalls.length).toBe(createsBefore + 1);
+    expect((await sandboxRow(ready.row.id)).lifecycle).toBe("ready");
+    expect((await sandboxRow(ready.row.id)).currentResourceName).toBe(ready.row.currentResourceName);
+
+    stack.advance(IDLE_TIMEOUT_MS + 1_000);
+    await stack.service.reclaimIdleSandboxes();
+    const held = await sandboxRow(ready.row.id);
+    expect(held.lifecycle).toBe("ready");
+    expect(held.idleReclaimAt).toBeNull();
+
+    // The ack reached the exact Runner: custody is released and the same sweep reclaims normally.
+    work.releaseSettlement(ready.scope, messageId, "turn-settled");
+    await stack.service.reclaimIdleSandboxes();
+    expect((await sandboxRow(ready.row.id)).lifecycle).toBe("unallocated");
+  });
+
+  it("refuses an idle claim through the durable barrier alone while settlement custody is held", async () => {
+    const accountId = await account();
+    const work = new CloudSessionWorkTracker();
+    const owner = new CloudSessionCollaborationOwner({
+      assembler: new EffectiveRuntimeSnapshotAssembler(unit.database),
+      database: unit.database,
+      durableWork: new PostgresRuntimeDurableWorkStore(unit.database),
+      fence: new CloudRuntimeFence(),
+      hub: new RunnerHub(),
+      work,
+    });
+    // Without the fast pre-filter, the barrier evaluated inside the claim transaction still sees it.
+    const stack = makeStack({ sessionWorkBarrier: (input) => owner.hasUnsettledSessionWork(input) });
+    const ready = await readySandbox(stack, accountId, "room-settlement-custody-barrier");
+    const messageId = randomUUID();
+    work.holdSettlement(ready.scope, ready.row.sessionId, messageId, "turn-settled");
+    stack.advance(IDLE_TIMEOUT_MS + 1_000);
+    await stack.service.reclaimIdleSandboxes();
+    const held = await sandboxRow(ready.row.id);
+    expect(held.lifecycle).toBe("ready");
+    expect(held.idleReclaimAt).toBeNull();
+    expect(stack.fake.liveInstanceCount()).toBe(1);
+    work.releaseSettlement(ready.scope, messageId, "turn-settled");
+    await stack.service.reclaimIdleSandboxes();
+    expect((await sandboxRow(ready.row.id)).lifecycle).toBe("unallocated");
+  });
+
   it("clears a claimed binding that the provider confirms absent without a delete call", async () => {
     const accountId = await account();
     const stack = makeStack();

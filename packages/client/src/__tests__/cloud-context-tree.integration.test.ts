@@ -43,14 +43,50 @@ async function runManaged(
   args: readonly string[],
   environment: NodeJS.ProcessEnv,
 ): Promise<Record<string, unknown>> {
-  const { stdout } = await execFileAsync(join(binDirectory, "context-tree"), [...args], {
-    encoding: "utf8",
-    env: { ...environment, PATH: `${binDirectory}${delimiter}${environment.PATH ?? ""}` },
-  }).catch((error: unknown) => {
+  return runManagedRaw(binDirectory, args, environment).catch((error: unknown) => {
     const detail = error as { stderr?: string; stdout?: string; message?: string };
     throw new Error(`managed context-tree failed: ${detail.stderr || detail.stdout || detail.message || "no output"}`);
   });
+}
+
+/** Run one command through the managed shim and return its JSON output even when it exits nonzero. */
+async function runManagedResult(
+  binDirectory: string,
+  args: readonly string[],
+  environment: NodeJS.ProcessEnv,
+): Promise<{ readonly code: number; readonly payload: Record<string, unknown> }> {
+  try {
+    return { code: 0, payload: await runManagedRaw(binDirectory, args, environment) };
+  } catch (error) {
+    const detail = error as { code?: number; stdout?: string };
+    if (typeof detail.code !== "number" || !detail.stdout) throw error;
+    return { code: detail.code, payload: JSON.parse(detail.stdout.trim()) as Record<string, unknown> };
+  }
+}
+async function runManagedRaw(
+  binDirectory: string,
+  args: readonly string[],
+  environment: NodeJS.ProcessEnv,
+): Promise<Record<string, unknown>> {
+  const { stdout } = await execFileAsync(join(binDirectory, "context-tree"), [...args], {
+    encoding: "utf8",
+    env: { ...environment, PATH: `${binDirectory}${delimiter}${environment.PATH ?? ""}` },
+  });
   return JSON.parse(stdout.trim()) as Record<string, unknown>;
+}
+
+/**
+ * Preparation only configures the selection; the Agent syncs through the managed shim at a task
+ * boundary, as the context-tree-read skill instructs, and keeps the returned treeRoot.
+ */
+async function prepareAndSync(input: Parameters<typeof prepareCloudContextTree>[0], environment: NodeJS.ProcessEnv) {
+  const prepared = await prepareCloudContextTree(input);
+  const tree = treeResult(prepared);
+  if (tree.status !== "available" || !prepared.binDirectory) throw new Error("expected an available tree");
+  const synced = await runManaged(prepared.binDirectory, ["sync", "--project-path", tree.projectPath], environment);
+  const [entry] = synced.connections as { ok: boolean; treeRoot: string }[];
+  if (!entry?.ok) throw new Error(JSON.stringify(synced));
+  return { binDirectory: prepared.binDirectory, projectPath: tree.projectPath, treePath: entry.treeRoot };
 }
 
 async function recordMemberMemory(worktreePath: string, slug: string, memory: string): Promise<void> {
@@ -185,18 +221,15 @@ describe("Cloud Context Tree continuity (real CLI)", () => {
     "publishes a prepared %s write after archive save and restore through the managed CLI",
     async (directory) => {
       const fixtureValue = await fixture("cloud-ct-roundtrip-", directory);
-      const first = await prepareCloudContextTree(fixtureValue.input());
-      const firstTree = treeResult(first);
-      expect(firstTree).toMatchObject({ status: "ready" });
-      if (firstTree.status !== "ready" || !first.binDirectory) throw new Error("expected a ready tree");
-      const treePath = firstTree.treePath;
+      const first = await prepareAndSync(fixtureValue.input(), fixtureValue.environment);
+      const treePath = first.treePath;
       expect(treePath.startsWith(`${fixtureValue.workspace}/`)).toBe(true);
 
       // The Agent prepares a write through the managed CLI; the worktree lands INSIDE the saved
       // workspace because the shim pins HOME there.
       const prepared = await runManaged(
         first.binDirectory,
-        ["write", "prepare", "--project-path", firstTree.projectPath],
+        ["write", "prepare", "--project-path", first.projectPath],
         fixtureValue.environment,
       );
       const worktreePath = prepared.treeRoot as string;
@@ -226,9 +259,9 @@ describe("Cloud Context Tree continuity (real CLI)", () => {
       // A fresh Turn: fresh scratch, same workspace, same reserved write worktree.
       const scratch = join(fixtureValue.root, "scratch-next");
       await mkdir(scratch, { recursive: true });
-      const second = await prepareCloudContextTree(fixtureValue.input({ scratch }));
-      expect(treeResult(second)).toMatchObject({ status: "ready" });
-      if (treeResult(second).status !== "ready" || !second.binDirectory) throw new Error("expected a ready tree");
+      const second = await prepareAndSync(fixtureValue.input({ scratch }), fixtureValue.environment);
+      // Repository caches and snapshots were restored, so the next sync reuses the same snapshot.
+      expect(second.treePath).toBe(treePath);
       const finished = await runManaged(
         second.binDirectory,
         ["write", "finish", prepared.id as string, "--message", "docs: restore prepared write", "--publish"],
@@ -252,11 +285,7 @@ describe("Cloud Context Tree continuity (real CLI)", () => {
     "keeps a dirty restored %s checkout inspectable without resetting it",
     async (directory) => {
       const fixtureValue = await fixture("cloud-ct-dirty-", directory);
-      const first = await prepareCloudContextTree(fixtureValue.input());
-      const firstTree = treeResult(first);
-      expect(firstTree).toMatchObject({ status: "ready" });
-      if (firstTree.status !== "ready") throw new Error("expected a ready tree");
-      const treePath = firstTree.treePath;
+      const { treePath } = await prepareAndSync(fixtureValue.input(), fixtureValue.environment);
 
       // An unpublished direct edit in the Session checkout: the CLI reports DIRTY_TREE on the next
       // Turn and nothing here may reset it.
@@ -271,19 +300,26 @@ describe("Cloud Context Tree continuity (real CLI)", () => {
       const scratch = join(fixtureValue.root, "scratch-next");
       await mkdir(scratch, { recursive: true });
       const second = await prepareCloudContextTree(fixtureValue.input({ scratch }));
-      // Dirty is reported truthfully, but the checkpoint stays addressable for inspection.
-      expect(treeResult(second)).toMatchObject({ status: "unavailable", reason: "DIRTY_TREE" });
-      expect(second.binDirectory).toBeUndefined();
+      // Preparation does not inspect the snapshot; the Agent's own sync reports dirty truthfully,
+      // and the checkout stays addressable for inspection.
+      const tree = treeResult(second);
+      if (tree.status !== "available" || !second.binDirectory) throw new Error("expected an available tree");
+      const synced = await runManagedResult(
+        second.binDirectory,
+        ["sync", "--project-path", tree.projectPath],
+        fixtureValue.environment,
+      );
+      expect(synced.code).not.toBe(0);
+      expect(synced.payload.connections).toMatchObject([{ ok: false, error: { code: "DIRTY_TREE" } }]);
       expect(await readFile(join(treePath, "NODE.md"), "utf8")).toContain("Unpublished draft edit.");
     },
     60_000,
   );
 
-  it("preserves sparse read caches conservatively and restores offline without persisting cleanup logs", async () => {
+  it("always keeps sparse read caches and snapshots, restores offline, and does not persist cleanup logs", async () => {
     const value = await fixture("cloud-ct-sparse-cache-", "docs");
-    const prepared = await prepareCloudContextTree(value.input());
-    const tree = treeResult(prepared);
-    if (tree.status !== "ready" || !prepared.binDirectory) throw new Error("expected a ready tree");
+    const prepared = await prepareAndSync(value.input(), value.environment);
+    const tree = prepared;
     const state = join(value.workspace, ".opentag/context-tree/home/.context-tree");
     const configurationPath = join(value.workspace, ".opentag/context-tree/project/.context-tree.json");
     const configuration = await readFile(configurationPath, "utf8");
@@ -295,6 +331,7 @@ describe("Cloud Context Tree continuity (real CLI)", () => {
     await restoreWorkspaceArchive(archive, value.workspace, info);
     expect(await readFile(configurationPath, "utf8")).toBe(configuration);
     expect((await stat(join(state, "repositories"))).isDirectory()).toBe(true);
+    expect((await stat(tree.treePath)).isDirectory()).toBe(true);
     await expect(stat(join(state, "cleanup"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(stat(join(tree.treePath, "../src"))).rejects.toMatchObject({ code: "ENOENT" });
     const offline = await runManaged(
@@ -307,9 +344,8 @@ describe("Cloud Context Tree continuity (real CLI)", () => {
 
   it("retains committed sparse sessions and empty sessions across restore for later publish and abort", async () => {
     const value = await fixture("cloud-ct-sparse-committed-", "docs");
-    const first = await prepareCloudContextTree(value.input());
-    const tree = treeResult(first);
-    if (tree.status !== "ready" || !first.binDirectory) throw new Error("expected a ready tree");
+    const first = await prepareAndSync(value.input(), value.environment);
+    const tree = first;
     const session = await runManaged(
       first.binDirectory,
       ["write", "prepare", "--project-path", tree.projectPath],

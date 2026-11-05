@@ -9,7 +9,6 @@
   "agents_card_activity_queued_tasks_single": "{count} task waiting",
   "agents_card_activity_running_tasks_plural": "{count} tasks running",
   "agents_card_activity_running_tasks_single": "{count} task running",
-  "agents_card_activity_waiting": "Waiting",
   "agents_card_activity_working": "Working now · started {elapsed} ago",
   "agents_card_status_cannot_receive_messages": "Cannot receive messages",
   "agents_card_status_checking": "Checking",

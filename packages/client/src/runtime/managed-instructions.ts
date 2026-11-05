@@ -1,6 +1,11 @@
 import type { EffectiveRuntimeSnapshot } from "@opentag/shared";
-import { AGENT_SLUG_CHARACTERS, contextTreeName, contextTreeSelector } from "@opentag/shared";
-import type { ContextTreeStatus as ManagedContextTreeStatus } from "./context-tree-connections.js";
+import {
+  AGENT_SLUG_CHARACTERS,
+  contextTreeName,
+  contextTreeSelector,
+  SESSION_RUN_OUTCOME_NOTICE_HEADER,
+} from "@opentag/shared";
+import type { ContextTreeResult, ContextTreeStatus as ManagedContextTreeStatus } from "./context-tree-connections.js";
 import { GITHUB_MCP_INSTRUCTIONS, renderProviderOutboxGuidance } from "./provider-outbox-instructions.js";
 
 export type ManagedEnvironment = "local" | "cloud";
@@ -40,7 +45,7 @@ function renderCloudExecutionContext(): readonly string[] {
     "",
     "- You run inside a Session-scoped Cloud Sandbox. The workspace is this Session's own; it is not shared with other Sessions.",
     "- The workspace and Pi conversation for this Session recover from the last successful save when the environment is replaced. Unsaved changes can be lost; running processes and background services do not survive Turn cleanup or replacement.",
-    "- Saved workspaces are limited to 256 MiB of file content, 50,000 entries and a 128 MiB compressed archive. Hard links, sockets, FIFOs and links outside the workspace cannot be saved. Keep dependency caches, large installs and disposable build output outside the workspace (for example /tmp); recreate them on later Turns. Exceeding these limits blocks further execution and requires recovery or explicit discard of unsaved changes.",
+    "- Saved workspaces are limited to 512 MiB of file content, 50,000 entries and a 512 MiB compressed archive. Hard links, sockets, FIFOs and links outside the workspace cannot be saved. Keep dependency caches, large installs and disposable build output outside the workspace (for example /tmp); recreate them on later Turns. Exceeding these limits blocks further execution and requires recovery or explicit discard of unsaved changes.",
     "- Credentials are execution-scoped and short-lived; the managed IM CLIs reach providers through the platform proxy. Never ask the user for tokens. Never persist execution-scoped handles or Session proof. Explicitly requested Slack App management uses a separate native login and private files as described below.",
     "",
   ];
@@ -158,14 +163,15 @@ function renderSession(context: ManagedSessionContext): readonly string[] {
     "",
     ...(context.sessionKind === "internal"
       ? [
-          "You are an internal Session. Focus on the delegated task, report progress, questions, and the final result to the creating or coordinating Session, and do not publish directly to IM.",
+          `You are an internal Session. Focus on the delegated task and do not publish directly to IM. Report to the creating or coordinating Session with \`${context.cliCommand} session send\`: milestones only when useful (such as a key finding or being blocked), questions, and the final result.`,
           "You may create further internal Sessions when platform-level Session collaboration is useful.",
         ]
       : [
-          "You are a visible Session. You may handle work directly, use Provider-native subagents when available, or create OpenTag internal Sessions when platform-level Session collaboration is useful.",
+          ...renderVisibleDelegation(context),
           "When you speak, be warm and natural, adapting to the user and the situation. Speaking rarely is part of being a good teammate.",
           "OpenTag manages the working and error reactions on incoming messages. Do not add, change, or remove these status reactions yourself; keep the provider CLI for the requested work and final result.",
           "While working, do not send intermediate progress messages, status cards, steps, or todo lists to IM, or change the working reaction mid-task. Questions needed to proceed and required approval requests are still allowed.",
+          "Long-running delegated or multi-step work is the exception: post a short new IM message at each meaningful milestone (started, key finding, blocked and needs input, done). The done milestone is the one self-contained final result, not a separate completion message, and a start notice that was already sent, such as a scheduled task's start notification, counts as started. Never edit an earlier message for progress, because edits do not notify, and do not send routine check-ins. Short work stays silent until the final reply.",
         ]),
     "OpenTag internal Sessions and Provider-native subagents are separate mechanisms and are not interchangeable.",
     `When a user explicitly requests an OpenTag internal Session and Session collaboration is available, use ${context.cliCommand} session create; do not substitute a Provider-native subagent.`,
@@ -174,6 +180,25 @@ function renderSession(context: ManagedSessionContext): readonly string[] {
     ...renderSlackProvisioning(context),
     "",
     ...(context.sessionKind === "visible" ? renderWhenToSpeak() : []),
+  ];
+}
+
+/**
+ * When a visible Session delegates. Its own Run shares one time budget, holds the IM conversation
+ * until it ends, and is aborted on timeout, so long work moves to an internal Session; native
+ * subagents run inside that same Run and stay limited to short side tasks. Without the Session
+ * CLI, long work stays in this Run with an explicit busy notice and a split when it may not fit.
+ */
+function renderVisibleDelegation(context: ManagedSessionContext): readonly string[] {
+  if (!context.sessionCliAvailable) {
+    return [
+      "You are a visible Session. Handle quick work directly.",
+      "OpenTag internal Sessions are unavailable in this Run, so do work likely to take long (multi-step coding, debugging, test runs, broad research; roughly over 10 minutes) directly here: reply in IM promptly that it has started and that this conversation stays busy until it finishes, then post milestones as described below. Your Run has a limited time budget and is aborted on timeout; if the work may not fit, say so and split it into parts the user can request in separate messages. Provider-native subagents run inside this Run, are not visible in OpenTag, and do not survive a restart, so use them only for short, bounded side tasks within the current Run.",
+    ];
+  }
+  return [
+    "You are a visible Session. Handle quick work directly.",
+    `For work likely to take long (multi-step coding, debugging, test runs, broad research; roughly over 10 minutes) or that should continue on its own, create an OpenTag internal Session with \`${context.cliCommand} session create\` and a \`--max-duration-ms\` sized to the task, reply in IM promptly that the work has started, and publish the result when the child reports back. Your own Run has a limited time budget, is aborted on timeout, and holds this conversation until it ends; Provider-native subagents run inside it, are not visible in OpenTag, and do not survive a restart, so use them only for short, bounded side tasks within the current Run.`,
   ];
 }
 
@@ -192,7 +217,7 @@ function renderWhenToSpeak(): readonly string[] {
     '- `direct` (a DM or an @-mention of you): reply by default. End the Turn without sending only when the message just closes the loop on something you already finished ("thanks", "ok", 👍) and asks nothing new, the sender asks for no reply or says it is FYI, or it duplicates a message you already handled. When unsure, reply.',
     "- `ambient` (a channel message you overheard, or a follow-up in a Thread you were brought into earlier): stay silent by default. Reply only when the message is clearly meant for you: it names you and asks you to do or answer something, it answers a question you asked, or it continues a task you own in this conversation. People talking to each other, even about your topic or with a question you could answer, is not meant for you. Being in a Thread is not being addressed; judge every message on its own. When unsure, stay silent.",
     "- Never send a message only to acknowledge, thank, agree, restate, or summarize what was just said, or to offer unrequested help. Never answer another agent's acknowledgement.",
-    '- When you do reply, send one self-contained message and stop. Do not follow up with check-ins or "anything else?".',
+    '- When you do reply, send one self-contained message and stop. Do not follow up with check-ins or "anything else?". Long work adds only the milestone messages described above, and its final result, which is the done milestone, is still one self-contained message.',
     "",
   ];
 }
@@ -206,6 +231,7 @@ function renderSessionCollaboration(context: ManagedSessionContext): readonly st
     `- ${context.cliCommand} session create --message <task>`,
     `- ${context.cliCommand} session send <target-session-id> --message <text>`,
     `- ${context.cliCommand} session list`,
+    `Each Run of an internal Session is stopped when its time budget runs out; the child keeps its conversation, but the interrupted work does not finish on its own. When you create one, estimate how long the task needs and pass \`--max-duration-ms\` with headroom: for example 4 hours (14400000) for coding, debugging, or test runs, up to the 24-hour maximum (86400000) for very long work. Without it, the Session gets the larger of 2 hours and this Agent's configured budget.`,
     context.environment === "cloud"
       ? "Your source Session identity is supplied by this execution. Do not copy or persist its temporary proof."
       : "The current Session identity is supplied by runtime-managed CLI context. Do not pass or look for agentId or sourceSessionId arguments.",
@@ -216,6 +242,7 @@ function renderSessionCollaboration(context: ManagedSessionContext): readonly st
       : []),
     "An accepted result means the target accepted the message for processing; it does not mean the delegated task is complete.",
     "If a command result is uncertain, retry with the same messageId and exactly the same semantic input.",
+    `A message that begins with "${SESSION_RUN_OUTCOME_NOTICE_HEADER}" is written by openTag, not by the child: an internal Session you created stopped before finishing (for example \`timed_out\` after reaching its maximum Run duration), so its final result will not arrive on its own. openTag does not rerun it. The child keeps its conversation context; to continue, send it a follow-up with \`${context.cliCommand} session send <child-session-id> --message <text>\`, or choose another approach. Decide what, if anything, the user needs to hear.`,
     ...(context.environment === "cloud"
       ? [
           `A child Session reports through \`${context.cliCommand} session send\`; its final text is not automatically returned to its parent.`,
@@ -225,9 +252,13 @@ function renderSessionCollaboration(context: ManagedSessionContext): readonly st
 }
 
 /**
- * The Context Tree section. The Agent is told plainly when durable memory is absent or stale, so
- * it cannot mistake a failed connection for an empty tree or a failed synchronization for the
- * newest published state.
+ * The Context Tree section. The Agent is told plainly when durable memory is absent or unavailable,
+ * so it cannot mistake a failed connection for an empty tree.
+ *
+ * OpenTag does not sync while preparing a Turn, so this section names only the selection and the
+ * project path. It never carries a snapshot path or commit: those change with every published
+ * revision and would invalidate the provider's prompt cache. The Agent obtains the current
+ * snapshot itself through `context-tree sync`, following the `context-tree-read` skill.
  */
 function renderContextTree(
   environment: ManagedEnvironment,
@@ -260,33 +291,11 @@ function renderContextTree(
   ];
 }
 
-function renderContextTreeFacts(
-  environment: ManagedEnvironment,
-  status: Exclude<ManagedContextTreeStatus, { status: "configured" }>,
-): readonly string[] {
-  if (status.status === "ready") {
-    if (environment === "cloud") {
-      return [
-        `Use --project-path ${JSON.stringify(status.projectPath)} for managed tree commands.`,
-        `Context Tree: ${status.treePath} — synchronized at the start of this Turn${
-          status.branch && status.sha ? ` (branch ${status.branch}, commit ${status.sha.slice(0, 12)})` : ""
-        }.`,
-      ];
-    }
-    return [
-      `Context Tree: ${status.treePath}`,
-      `Use --project-path ${JSON.stringify(status.projectPath)} for managed tree commands.`,
-    ];
-  }
-  if (status.status === "stale") {
-    return [
-      `Use --project-path ${JSON.stringify(status.projectPath)} for managed tree commands.`,
-      `Context Tree: ${status.treePath} — ${
-        status.reason === "DIRTY_TREE"
-          ? "the preserved checkout has unpublished changes"
-          : `this Turn's synchronization failed (${status.reason})`
-      }.`,
-    ];
+type ContextTreeEntryStatus = Exclude<ManagedContextTreeStatus, { status: "configured" }> | ContextTreeResult;
+
+function renderContextTreeFacts(environment: ManagedEnvironment, status: ContextTreeEntryStatus): readonly string[] {
+  if (status.status === "available") {
+    return [`Use --project-path ${JSON.stringify(status.projectPath)} for managed tree commands.`];
   }
   if (status.status === "unconfigured") {
     return environment === "cloud"
@@ -295,43 +304,34 @@ function renderContextTreeFacts(
         ]
       : ["Context Tree: disabled for this Agent. Connect one on the Agent's Context Tree page."];
   }
-  return [
-    status.reason === "PREPARING"
-      ? "Context Tree preparation is continuing in the background."
-      : `Context Tree unavailable (${status.reason}).`,
-  ];
+  return [`Context Tree unavailable (${status.reason}).`];
 }
 
 function renderContextTreeGuidance(
   environment: ManagedEnvironment,
   snapshot: EffectiveRuntimeSnapshot,
-  status: Exclude<ManagedContextTreeStatus, { status: "configured" }>,
+  status: ContextTreeEntryStatus,
 ): readonly string[] {
-  if (status.status === "ready") return renderReadyTreeGuidance(environment, snapshot);
-  if (status.status === "stale") return renderStaleTreeGuidance();
+  if (status.status === "available") return renderAvailableTreeGuidance(environment, snapshot, status.projectPath);
   if (status.status === "unconfigured") return renderUnconfiguredTreeGuidance(environment);
   return renderUnavailableTreeGuidance(environment, status.reason);
 }
 
-function renderReadyTreeGuidance(
+function renderAvailableTreeGuidance(
   environment: ManagedEnvironment,
   snapshot: EffectiveRuntimeSnapshot,
+  projectPath: string,
 ): readonly string[] {
   return [
-    "Ready Context Trees are connected on this Agent's Context Tree page.",
-    "Remote tree paths are read-only snapshots. Use context-tree write prepare for an isolated worktree, then write finish to commit and optionally publish. Never edit snapshots.",
+    "Available Context Trees are connected on this Agent's Context Tree page.",
+    `Read Context through the context-tree-read skill. At the start of each task, run \`context-tree sync --project-path ${JSON.stringify(projectPath)}\` and keep the returned treeRoot for that task; sync again at the next task boundary rather than reusing an earlier task's path.`,
+    "Returned tree paths are read-only snapshots. Use context-tree write prepare for an isolated worktree, then write finish to commit and optionally publish. Never edit snapshots.",
+    "If sync fails, report the failure. `context-tree sync --offline` returns the cached snapshot, which may be outdated; read it as stale context. Preserve existing write sessions and unpublished work; do not reset or discard them.",
     "Agents share published memory only when they select the same repository, directory, and branch. Unpublished work remains in the prepared worktree.",
     "Read relevant context before changing code, and record durable decisions using the context-tree-read and context-tree-write skills.",
     "Repository-owned directory trees use their own project configuration and normal host Git workflow.",
     ...(environment === "cloud" ? ["Do not install native cleanup schedules in this ephemeral sandbox."] : []),
     renderMemberDirectoryGuidance(environment, snapshot),
-    "",
-  ];
-}
-
-function renderStaleTreeGuidance(): readonly string[] {
-  return [
-    "The cached snapshot may be outdated. Read it as stale context. Preserve existing write sessions and unpublished work; do not reset or discard them. Retry sync when available.",
     "",
   ];
 }
@@ -348,25 +348,18 @@ function renderUnconfiguredTreeGuidance(environment: ManagedEnvironment): readon
 function renderUnavailableTreeGuidance(environment: ManagedEnvironment, reason: string): readonly string[] {
   if (environment === "cloud") {
     return [
-      "Unavailable trees are not active for this Turn; other ready trees remain usable. Continue the task without those trees. Do not assume earlier decisions were recorded, and do not attempt to repair, create, or connect a tree yourself. Any unpublished drafts from earlier Turns remain preserved in this Session's workspace.",
+      "Unavailable trees are not active for this Turn; other available trees remain usable. Continue the task without those trees. Do not assume earlier decisions were recorded, and do not attempt to repair, create, or connect a tree yourself. Any unpublished drafts from earlier Turns remain preserved in this Session's workspace.",
       ...(reason === "GITHUB_PERMISSION"
         ? [
             "The current execution does not grant this Session the selected repository, so the managed connection stays detached until the grant returns.",
-          ]
-        : []),
-      ...(reason === "DIRTY_TREE"
-        ? [
-            "The preserved checkout contains unpublished changes from an earlier Turn. They were left untouched; do not commit, reset, or discard them silently — report their presence.",
           ]
         : []),
       "",
     ];
   }
   return [
-    "Unavailable trees are not active for this Session. Other ready trees remain usable.",
-    reason === "PREPARING"
-      ? "Trees still preparing may become usable in a later Session."
-      : "Do not assume earlier decisions were recorded in unavailable trees, and do not attempt to repair the tree yourself.",
+    "Unavailable trees are not active for this Session. Other available trees remain usable.",
+    "Do not assume earlier decisions were recorded in unavailable trees, and do not attempt to repair the tree yourself.",
     "",
   ];
 }

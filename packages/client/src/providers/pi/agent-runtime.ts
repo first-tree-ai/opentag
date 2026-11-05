@@ -487,7 +487,13 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     return failure;
   }
 
-  protected override async steerProvider(request: AgentSteerRequest): Promise<void> {
+  /**
+   * Pi's `steer` RPC answers after the agent queued the message into its running loop (with native
+   * resources, after the streaming check below). Pi exposes no per-input start signal, so no custody
+   * probe is returned: the acknowledged input counts as possibly started, and a Run that does not
+   * complete reports it `interrupted`.
+   */
+  protected override async steerProvider(request: AgentSteerRequest): Promise<undefined> {
     /* v8 ignore next -- BaseAgentRuntime admits steer only while executeRun owns an active prompt. */
     if (!this.#promptAccepted) throw new AgentRuntimeError("run_mismatch", "there is no active Pi prompt");
     await this.#promptAccepted.promise;

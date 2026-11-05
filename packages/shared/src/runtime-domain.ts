@@ -38,6 +38,7 @@ export {
   RUNTIME_DEFAULT_MAX_DURATION_MS,
   RUNTIME_ID_MAX_BYTES,
   RUNTIME_INSTRUCTIONS_MAX_BYTES,
+  RUNTIME_INTERNAL_SESSION_DEFAULT_MAX_DURATION_MS,
   RUNTIME_MAX_DURATION_MS,
   RuntimeInstructionSchema,
   RuntimeInstructionsSchema,
@@ -782,6 +783,50 @@ export const SessionMessageDeliveryRequestV3Schema = z
     }
   });
 
+/*
+ * Session-collaboration v4: Run outcome reporting. A Client that negotiated
+ * `runtime.sessionCollaboration` >= 4 reports a Session message Run that ended terminally without
+ * completing (timeout, permanent failure, exhausted retries). The Server uses it only to notify
+ * the creator of an internal Session; it is not a Turn Report and never changes delivery custody.
+ * A peer that negotiated a lower version never receives or sends these frames.
+ */
+export const SessionMessageRunOutcomeSchema = z.enum(["timed_out", "failed", "cancelled", "unknown"]);
+/**
+ * The first line of the Server-written creator notice for a non-completed internal Session Run.
+ * Managed instructions describe notices by this exact header, so both sides share one constant.
+ */
+export const SESSION_RUN_OUTCOME_NOTICE_HEADER = "[openTag notice] Internal Session Run did not complete";
+/** Stable machine-readable reason, e.g. `turn_timeout`; never free text or provider output. */
+export const SessionMessageRunOutcomeReasonSchema = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/);
+
+export const SessionMessageOutcomeReportSchema = z
+  .object({
+    type: z.literal("session:message:outcome"),
+    requestId: RuntimeRequestIdSchema,
+    messageId: z.string().uuid(),
+    targetSessionId: z.string().uuid(),
+    agentId: z.string().uuid(),
+    placementGeneration: RuntimeSequenceSchema,
+    outcome: SessionMessageRunOutcomeSchema,
+    reason: SessionMessageRunOutcomeReasonSchema,
+  })
+  .strict();
+
+/**
+ * Server answer to one Run outcome report. `notified` and `ignored` are final for the report;
+ * `retry` means the creator notice exists but its delivery was not accepted yet (or the Server
+ * could not process the report), so the Client resends the same report later. `stale_generation`
+ * and `unsupported_capability` are final for this connection.
+ */
+export const SessionMessageOutcomeResultSchema = z
+  .object({
+    type: z.literal("session:message:outcome:result"),
+    requestId: RuntimeRequestIdSchema,
+    messageId: z.string().uuid(),
+    status: z.enum(["notified", "ignored", "retry", "stale_generation", "unsupported_capability"]),
+  })
+  .strict();
+
 const TraceEventBaseSchema = z.object({
   sequence: z.number().int().safe().positive(),
   at: z.string().datetime({ offset: true }),
@@ -1282,6 +1327,7 @@ export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
    * only `runtime.sessionCollaboration` v2 never receives a scheduled frame at all.
    */
   SessionMessageDeliveryRequestV3Schema,
+  SessionMessageOutcomeResultSchema,
   TurnReportResultSchema,
   TurnActivityResultSchema,
   RuntimeImCredentialGrantResultSchema,
@@ -1305,6 +1351,7 @@ export const ClientRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   ImMessageDeliveryResultSchema,
   RuntimeImSteerResultSchema,
   SessionMessageDeliveryResultSchema,
+  SessionMessageOutcomeReportSchema,
   AgentTraceBatchSchema,
   TurnReportRequestSchema,
   TurnActivityRequestSchema,
@@ -1342,6 +1389,9 @@ export type InternalSessionRuntimeOverrides = z.infer<typeof InternalSessionRunt
 export type SessionMessageDeliveryRequest = z.infer<typeof SessionMessageDeliveryRequestSchema>;
 export type SessionMessageDeliveryRequestV3 = z.infer<typeof SessionMessageDeliveryRequestV3Schema>;
 export type SessionMessageDeliveryResult = z.infer<typeof SessionMessageDeliveryResultSchema>;
+export type SessionMessageRunOutcome = z.infer<typeof SessionMessageRunOutcomeSchema>;
+export type SessionMessageOutcomeReport = z.infer<typeof SessionMessageOutcomeReportSchema>;
+export type SessionMessageOutcomeResult = z.infer<typeof SessionMessageOutcomeResultSchema>;
 export type AgentTraceEvent = z.infer<typeof AgentTraceEventSchema>;
 export type AgentTraceBatch = z.infer<typeof AgentTraceBatchSchema>;
 export type TurnReportRequest = z.infer<typeof TurnReportRequestSchema>;

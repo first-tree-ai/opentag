@@ -1,0 +1,142 @@
+import { randomUUID } from "node:crypto";
+import type { Page } from "@playwright/test";
+import { baseURL } from "../playwright.config.js";
+import { expectNoPageOverflow } from "./browser-contract.js";
+import { expect, smokeTest as test } from "./fixtures.js";
+
+const taskId = "10000000-0000-4000-8000-0000000000aa";
+// The Server bounds an internal Session title at 120 code points; wide characters are the worst case.
+const longTitle = "在协作群里构建完整的本地开发及测试环境，然后持续识别体验问题并提交修复。".repeat(4).slice(0, 120);
+const unbrokenText = `https://example.com/${"long-path-segment-".repeat(30)}`;
+
+async function createAgent(page: Page): Promise<string> {
+  const cookies = await page.context().cookies();
+  const csrf = cookies.find((cookie) => cookie.name === "opentag_csrf")?.value;
+  if (!csrf) throw new Error("The authenticated storage state has no openTag CSRF cookie");
+  const response = await page.request.post("/api/v1/agents", {
+    data: {
+      creationIntentId: randomUUID(),
+      name: `task-layout-${randomUUID()}`,
+      displayName: "Task Layout Agent",
+      runtimeProvider: "codex",
+    },
+    headers: { Origin: baseURL, "content-type": "application/json", "x-opentag-csrf": csrf },
+  });
+  expect(response.ok(), await response.text()).toBeTruthy();
+  return ((await response.json()) as { id: string }).id;
+}
+
+/** The real Task page and shell over a synthetic Task: no route creates internal Sessions in a smoke run. */
+async function installTask(page: Page, agentId: string): Promise<void> {
+  const at = new Date(Date.now() - 60_000).toISOString();
+  const task = {
+    id: taskId,
+    agent: { id: agentId, name: "task-layout", displayName: "Task Layout Agent", runtimeProvider: "codex" },
+    source: { provider: "feishu", conversationKind: "channel", channelId: "layout-channel", threadKey: null },
+    sessionKind: "channel",
+    title: "Task with a long internal Session",
+    status: "running",
+    createdAt: at,
+    endedAt: null,
+    lastActivityAt: at,
+  };
+  const turn = {
+    deliveryId: "20000000-0000-4000-8000-0000000000aa",
+    attention: "direct",
+    delivery: {
+      state: "accepted",
+      attemptCount: 1,
+      acceptedAt: at,
+      steeredAt: null,
+      expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+      reason: null,
+      lastErrorCode: null,
+      isRunning: true,
+    },
+    message: {
+      id: "30000000-0000-4000-8000-0000000000aa",
+      externalMessageId: "layout-message",
+      operation: "created",
+      authorKind: "human",
+      authorDisplayName: "Layout Tester",
+      fallbackText: unbrokenText,
+      truncated: false,
+      occurredAt: at,
+    },
+    absorbedBy: null,
+    report: null,
+  };
+  const internalSession = {
+    id: "40000000-0000-4000-8000-0000000000aa",
+    createdBySessionId: taskId,
+    createdAt: at,
+    endedAt: null,
+    runtimeModel: null,
+    runtimeReasoningEffort: null,
+    title: longTitle,
+    lastActivityAt: at,
+  };
+  const json = (body: unknown) => ({ contentType: "application/json", body: JSON.stringify(body) });
+  await page.route(`**/api/v1/sessions/${taskId}/detail?**`, (route) =>
+    route.fulfill(json({ task, turns: { items: [turn], nextCursor: null } })),
+  );
+  await page.route(`**/api/v1/sessions/${taskId}/detail/internal-sessions**`, (route) =>
+    route.fulfill(json({ items: [internalSession], nextCursor: null })),
+  );
+  await page.route(`**/api/v1/sessions/${taskId}/replies**`, (route) =>
+    route.fulfill(json({ items: [], nextCursor: null })),
+  );
+}
+
+async function expectContentNotScrolledSideways(page: Page): Promise<void> {
+  const content = await page.locator('[data-ui="content"]').evaluate((element) => {
+    const before = element.scrollLeft;
+    // The region clips overflow but scripts can still scroll it, as the Task page's load-time scroll does.
+    element.scrollLeft = 10_000;
+    const reachable = element.scrollLeft;
+    element.scrollLeft = before;
+    return { before, reachable, clientWidth: element.clientWidth, scrollWidth: element.scrollWidth };
+  });
+  expect(content.scrollWidth, "content region horizontal overflow").toBeLessThanOrEqual(content.clientWidth);
+  expect(content.before, "content region scrollLeft").toBe(0);
+  expect(content.reachable, "content region reachable scrollLeft").toBe(0);
+}
+
+async function expectInsideArticle(page: Page, selector: string): Promise<void> {
+  const [article, element] = await Promise.all([
+    page.locator('[data-ui="task-conversation-page"]').boundingBox(),
+    page.locator(selector).first().boundingBox(),
+  ]);
+  if (!article || !element) throw new Error(`Expected ${selector} and the Task page to have layout boxes`);
+  expect(element.x + element.width, `${selector} right edge`).toBeLessThanOrEqual(article.x + article.width + 0.5);
+}
+
+for (const width of [390, 1440, 2000]) {
+  test.describe(`Task detail at ${width}px`, () => {
+    test.use({ viewport: { width, height: 900 } });
+
+    test("keeps a long internal Session title from widening the page", async ({ page }) => {
+      const agentId = await createAgent(page);
+      await installTask(page, agentId);
+      const row = page.locator('[data-ui="task-internal-session-row"]');
+      const detailURL = `/agents/${agentId}/tasks/${taskId}`;
+
+      await page.goto(detailURL, { waitUntil: "networkidle" });
+      await expect(row).toBeVisible();
+      await expectContentNotScrolledSideways(page);
+      await expectNoPageOverflow(page);
+      await expectInsideArticle(page, '[data-ui="task-thread"]');
+      await expectInsideArticle(page, '[data-ui="task-internal-sessions"]');
+      await expectInsideArticle(page, '[data-ui="task-message-request"]');
+      await expect(page.locator('[data-ui="task-conversation-header"]')).toContainText("Running");
+
+      // Reopening lays out the cached internal Sessions before the Task page's load-time scroll runs.
+      await page.getByRole("navigation", { name: "Back to Tasks" }).getByRole("link").click();
+      await expect(page).toHaveURL(new RegExp(`/agents/${agentId}/tasks(\\?.*)?$`));
+      await page.goBack();
+      await expect(page).toHaveURL(new RegExp(`${taskId}$`));
+      await expect(row).toBeVisible();
+      await expectContentNotScrolledSideways(page);
+    });
+  });
+}

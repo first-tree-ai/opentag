@@ -21,16 +21,10 @@ The Server's existing durable delivery custody remains authoritative for executi
 Platform credential exclusion relies on the directory boundary. It is not secret detection for
 files an Agent or user independently creates in the workspace. Other Session directories are not
 mounted or synchronized. Agent-wide Context Tree integration remains E8. Under
-`.opentag/context-tree/home/.context-tree`, `cleanup` logs are always omitted, and reconstructable
-read-only Git caches (`repositories` and `snapshots`) are omitted when no active `sessions` or
-`worktrees` entries exist and every snapshot worktree is verified clean in-process against a
-detached commit reachable from published upstream refs in its bare repository (without spawning
-`git` over workspace config). Whenever loose or packed local branch refs, unpublished commits,
-rewritten/force-pushed upstream history, staged changes, unstaged edits, or untracked files
-exist—or when Git cleanliness cannot be verified—those directories are preserved in the archive.
-Sparse snapshots are conservatively preserved: the in-process verifier does not treat
-intentionally unmaterialized tracked files as proof that a snapshot is clean. Their
-full Git index, cache, and any isolated write sessions remain available after restore.
+`.opentag/context-tree/home/.context-tree`, `cleanup` logs are always omitted. Repository caches,
+snapshots, and isolated write sessions are always kept in the archive and count toward its limits,
+so a restored workspace keeps unpublished work and an Agent's first sync after restore fetches only
+new commits.
 
 Gateway write routing hints (`{id, source}` only) live in
 `.opentag/context-tree/command-sessions` inside the workspace. Fresh Runner hosts and rebinding
@@ -168,9 +162,10 @@ overwrite or automatic empty fallback is allowed.
 ## Resource and rollout limits
 
 The fixed configuration remains 1 vCPU / 1 GiB. Archive processing streams rather than buffering
-the whole payload. Initial safety limits are 128 MiB compressed, 256 MiB expanded, and 50,000
-entries; exceeding a limit fails saving/restoring explicitly. Temporary files also consume the
-Instance's memory-backed filesystem, so these limits are not a guarantee against workload OOM.
+the whole payload. Safety limits are 512 MiB compressed, 512 MiB expanded, and 50,000 entries;
+exceeding a limit fails saving/restoring explicitly. The workspace and temporary archive files both
+consume the Instance's memory-backed filesystem, so these limits are not a guarantee against workload
+OOM: a workspace near the limit plus its archive can approach the Instance's full 1 GiB.
 The Cloud system prompt explains these limits and directs disposable dependency caches/build output
 outside the saved workspace; those files must be recreated on subsequent Turns.
 Relative workspace symlinks are supported. Hard links (including internal hard links), unsafe
@@ -183,7 +178,7 @@ Existing E3/E4 allocations are not automatically migrated: a previously allocate
 an archive is rejected before creating a replacement Instance. Initial acceptance uses a new Session; retaining an existing live
 workspace requires a separate migration procedure before switching its Runner.
 Existing storage configuration and allocation identity are reused. The ingress/reverse proxy must
-allow the archive body size (128 MiB) and the transfer deadline (120 seconds); verify these values
+allow the archive body size (512 MiB) and the transfer deadline (120 seconds); verify these values
 in staging before enabling E5. Workspace HTTP requests and the Runner WSS connection must
 reach the same Server process while connection ownership is held in the in-memory Runner hub.
 Local tests do not prove the

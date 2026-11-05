@@ -1,4 +1,4 @@
-import type { EffectiveRuntimeSnapshot } from "@opentag/shared";
+import { type EffectiveRuntimeSnapshot, SESSION_RUN_OUTCOME_NOTICE_HEADER } from "@opentag/shared";
 import { describe, expect, it } from "vitest";
 import { type ManagedSessionContext, renderManagedSystemPrompt } from "../runtime/managed-instructions.js";
 
@@ -188,9 +188,9 @@ describe("renderManagedSystemPrompt Agent Home", () => {
 
     const unavailable = renderManagedSystemPrompt(snapshot, {
       ...session,
-      contextTree: { status: "unavailable", reason: "DIRTY_TREE" },
+      contextTree: { status: "unavailable", reason: "SHIM_UNAVAILABLE" },
     });
-    expect(unavailable).toContain("Context Tree unavailable (DIRTY_TREE)");
+    expect(unavailable).toContain("Context Tree unavailable (SHIM_UNAVAILABLE)");
     expect(unavailable).toContain("Do not assume earlier decisions were recorded");
     expect(unavailable).toContain("do not attempt to repair the tree yourself");
   });
@@ -214,9 +214,8 @@ it("attributes partial memory results to sources without disabling healthy trees
           path: ".",
           ref: "main",
           repository: "acme/team",
-          status: "ready",
+          status: "available",
           projectPath: "/managed/project",
-          treePath: "/trees/team",
         },
         {
           kind: "git" as const,
@@ -231,12 +230,12 @@ it("attributes partial memory results to sources without disabling healthy trees
   });
   expect(prompt).toContain("team — acme/team");
   expect(prompt).toContain("product — acme/product");
-  expect(prompt).toContain("Other ready trees remain usable");
+  expect(prompt).toContain("Other available trees remain usable");
   expect(prompt).toContain("exact tree selector for every write");
   expect(prompt).not.toContain("Durable memory is not active for this Session");
 });
 
-it("renders shared multi-tree instructions once while preserving each path and reason", () => {
+it("renders shared multi-tree instructions once while preserving each selector and reason", () => {
   const prompt = renderManagedSystemPrompt(snapshot, {
     ...session,
     contextTree: {
@@ -247,26 +246,16 @@ it("renders shared multi-tree instructions once while preserving each path and r
           path: ".",
           ref: "main",
           repository: "acme/team",
-          status: "ready",
+          status: "available",
           projectPath: "/managed/project",
-          treePath: "/trees/team",
         },
         {
           kind: "git" as const,
-          path: ".",
-          ref: "main",
+          path: "docs",
+          ref: "release",
           repository: "acme/product",
-          status: "ready",
+          status: "available",
           projectPath: "/managed/project",
-          treePath: "/trees/product",
-        },
-        {
-          kind: "git" as const,
-          path: ".",
-          ref: "main",
-          repository: "acme/pending",
-          status: "unavailable",
-          reason: "PREPARING",
         },
         {
           kind: "git" as const,
@@ -279,46 +268,41 @@ it("renders shared multi-tree instructions once while preserving each path and r
       ],
     },
   });
-  expect(prompt).toContain("Context Tree: /trees/team");
-  expect(prompt).toContain("Context Tree: /trees/product");
-  expect(prompt).toContain("pending — acme/pending");
-  expect(prompt).toContain("preparation is continuing");
+  expect(prompt).toContain("team — acme/team/. (main):");
+  expect(prompt).toContain("acme/product/docs (release):");
+  expect(prompt).toContain("Tree selector: ");
+  expect(prompt.match(/Use --project-path "\/managed\/project" for managed tree commands\./g)).toHaveLength(2);
   expect(prompt).toContain("GITHUB_PERMISSION");
+  expect(prompt.match(/context-tree sync --project-path "\/managed\/project"/g)).toHaveLength(1);
   expect(prompt.match(/context-tree-read and context-tree-write skills/g)).toHaveLength(1);
   expect(prompt.match(/Do not write to another Agent's member directory/g)).toHaveLength(1);
-  expect(prompt.match(/Other ready trees remain usable/g)).toHaveLength(1);
+  expect(prompt.match(/Other available trees remain usable/g)).toHaveLength(1);
 });
 
-it("keeps preparation guidance separate from failures in a configured tree list", () => {
-  const prompt = renderManagedSystemPrompt(snapshot, {
-    ...session,
-    contextTree: {
-      status: "configured",
-      connections: [
-        {
-          kind: "git" as const,
-          path: ".",
-          ref: "main",
-          repository: "acme/team",
-          status: "ready",
-          projectPath: "/managed/project",
-          treePath: "/trees/team",
-        },
-        {
-          kind: "git" as const,
-          path: ".",
-          ref: "main",
-          repository: "acme/pending",
-          status: "unavailable",
-          reason: "PREPARING",
-        },
-      ],
-    },
-  });
-  expect(prompt).toContain("preparation is continuing in the background");
-  expect(prompt).toContain("not active for this Session");
-  expect(prompt).toContain("Other ready trees remain usable");
-  expect(prompt).not.toContain("repair the tree");
+it("tells the Agent to sync through the read skill and carries no snapshot path or commit", () => {
+  for (const context of [session, cloudSession]) {
+    const prompt = renderManagedSystemPrompt(snapshot, {
+      ...context,
+      contextTree: {
+        status: "configured",
+        connections: [
+          {
+            kind: "git" as const,
+            path: "docs",
+            ref: "main",
+            repository: "acme/team",
+            status: "available",
+            projectPath: "/managed/project",
+          },
+        ],
+      },
+    });
+    expect(prompt).toContain("Read Context through the context-tree-read skill");
+    expect(prompt).toContain('`context-tree sync --project-path "/managed/project"`');
+    expect(prompt).toContain("keep the returned treeRoot for that task");
+    expect(prompt).not.toMatch(/synchronized at the start of this Turn|commit [0-9a-f]{7,}|\/snapshots\//);
+    expect(prompt).not.toContain("Context Tree: /");
+  }
 });
 
 describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
@@ -342,6 +326,28 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
       expect(prompt).not.toContain("optionally");
       expect(prompt).not.toContain("unnecessary");
       expect(prompt).toContain("OpenTag internal Sessions and Provider-native subagents are separate mechanisms");
+      expect(prompt).toContain(
+        "Long-running delegated or multi-step work is the exception: post a short new IM message at each meaningful milestone (started, key finding, blocked and needs input, done).",
+      );
+      expect(prompt).toContain("Never edit an earlier message for progress, because edits do not notify");
+      expect(prompt).toContain("Short work stays silent until the final reply.");
+      expect(prompt).toContain(
+        "Long work adds only the milestone messages described above, and its final result, which is the done milestone, is still one self-contained message.",
+      );
+      expect(prompt).toContain(
+        "The done milestone is the one self-contained final result, not a separate completion message, and a start notice that was already sent, such as a scheduled task's start notification, counts as started.",
+      );
+    }
+    for (const [prompt, cli] of [
+      [local, "opentag-dev"],
+      [cloud, "opentag"],
+    ] as const) {
+      expect(prompt).toContain("You are a visible Session. Handle quick work directly.");
+      expect(prompt).toContain(
+        `roughly over 10 minutes) or that should continue on its own, create an OpenTag internal Session with \`${cli} session create\` and a \`--max-duration-ms\` sized to the task, reply in IM promptly that the work has started, and publish the result when the child reports back.`,
+      );
+      expect(prompt).toContain("use them only for short, bounded side tasks within the current Run.");
+      expect(prompt).toContain(`use ${cli} session create; do not substitute a Provider-native subagent.`);
     }
     expect(local).toContain("Current Session: session-1");
     expect(cloud).toContain("Current Session: cloud-session-1");
@@ -358,8 +364,12 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
       expect(prompt).toContain("Session kind: internal");
       expect(prompt).toContain("do not publish directly to IM");
       expect(prompt).toContain(
-        "report progress, questions, and the final result to the creating or coordinating Session",
+        `Report to the creating or coordinating Session with \`${base.cliCommand} session send\`: milestones only when useful`,
       );
+      expect(prompt).toContain("questions, and the final result.");
+      expect(prompt).toContain("You may create further internal Sessions");
+      expect(prompt).not.toContain("Handle quick work directly");
+      expect(prompt).not.toContain("post a short new IM message at each meaningful milestone");
       expect(prompt).toContain("Creator Session: session-parent-1");
       expect(prompt).not.toContain("emoji");
       expect(prompt).not.toContain("be warm and natural");
@@ -404,6 +414,14 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
         "Session collaboration commands are unavailable because managed Session context is missing.",
       );
       expect(unavailable).not.toContain("session create --message");
+      expect(unavailable).toContain("You are a visible Session. Handle quick work directly.");
+      expect(unavailable).toContain("OpenTag internal Sessions are unavailable in this Run");
+      expect(unavailable).toContain("this conversation stays busy until it finishes");
+      expect(unavailable).toContain("split it into parts the user can request in separate messages");
+      expect(unavailable).toContain("use them only for short, bounded side tasks within the current Run");
+      expect(unavailable).toContain("post a short new IM message at each meaningful milestone");
+      expect(unavailable).not.toContain("use Provider-native subagents when available");
+      expect(unavailable).not.toContain("create an OpenTag internal Session with");
     }
 
     const local = renderManagedSystemPrompt(snapshot, session);
@@ -415,6 +433,7 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
     expect(local).toContain("An accepted result means the target accepted the message for processing");
     expect(local).toContain("retry with the same messageId and exactly the same semantic input");
     expect(local).not.toContain("its final text is not automatically returned to its parent");
+    expect(local).toContain("pass `--max-duration-ms` with headroom");
 
     const cloud = renderManagedSystemPrompt(snapshot, cloudSession);
     expect(cloud).toContain("Session collaboration is available through these commands:");
@@ -426,6 +445,19 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
     expect(cloud).toContain("An accepted result means the target accepted the message for processing");
     expect(cloud).toContain("retry with the same messageId and exactly the same semantic input");
     expect(cloud).toContain("its final text is not automatically returned to its parent");
+    expect(cloud).toContain("pass `--max-duration-ms` with headroom");
+
+    // Both environments explain the Server-written creator notice and how to continue the child.
+    for (const [prompt, cli] of [
+      [local, "opentag-dev"],
+      [cloud, "opentag"],
+    ] as const) {
+      expect(prompt).toContain(
+        `A message that begins with "${SESSION_RUN_OUTCOME_NOTICE_HEADER}" is written by openTag`,
+      );
+      expect(prompt).toContain("openTag does not rerun it");
+      expect(prompt).toContain(`\`${cli} session send <child-session-id> --message <text>\``);
+    }
   });
 
   it("renders session-specific instructions from the snapshot on both environments", () => {
@@ -446,9 +478,9 @@ describe("renderManagedSystemPrompt Cloud environment", () => {
     expect(prompt).toContain("## Cloud execution context");
     expect(prompt).toContain("Session-scoped Cloud Sandbox");
     expect(prompt).toContain("recover from the last successful save");
-    expect(prompt).toContain("256 MiB");
+    expect(prompt).toContain("512 MiB of file content");
     expect(prompt).toContain("50,000 entries");
-    expect(prompt).toContain("128 MiB");
+    expect(prompt).toContain("512 MiB compressed archive");
     expect(prompt).toContain("Hard links, sockets, FIFOs");
     expect(prompt).toContain("execution-scoped and short-lived");
     expect(prompt).not.toContain("## Agent Home");
@@ -468,42 +500,34 @@ describe("renderManagedSystemPrompt Cloud environment", () => {
     expect(prompt).toContain("paste the MCP configuration into this chat");
   });
 
-  it("renders the current Context Tree truthfully with the Agent slug and exact path", () => {
+  it("renders the Cloud Context Tree with the Agent slug and project path", () => {
     const slugSnapshot: EffectiveRuntimeSnapshot = {
       ...snapshot,
       instructions: { ...snapshot.instructions, platform: "OpenTag Agent slug: tree-agent" },
     };
-    const ready = renderManagedSystemPrompt(slugSnapshot, {
+    const available = renderManagedSystemPrompt(slugSnapshot, {
       ...cloudSession,
       contextTree: {
-        status: "ready",
-        projectPath: "/managed/project",
-        treePath: "/ws/tree",
-        branch: "master",
-        sha: "a".repeat(40),
+        status: "configured",
+        connections: [
+          {
+            kind: "git" as const,
+            path: ".",
+            ref: "master",
+            repository: "acme/team",
+            status: "available",
+            projectPath: "/managed/project",
+          },
+        ],
       },
     });
-    expect(ready).toContain(
-      "Context Tree: /ws/tree — synchronized at the start of this Turn (branch master, commit aaaaaaaaaaaa).",
-    );
-    expect(ready).toContain("tree-agent");
-    expect(ready).toContain("members/tree-agent/");
-    expect(ready).toContain("Unpublished work remains in the prepared worktree.");
-
-    const dirty = renderManagedSystemPrompt(snapshot, {
-      ...cloudSession,
-      contextTree: { status: "stale", projectPath: "/managed/project", treePath: "/ws/tree", reason: "DIRTY_TREE" },
-    });
-    expect(dirty).toContain("Context Tree: /ws/tree");
-    expect(dirty).toContain("unpublished changes");
-    expect(dirty).toContain("do not reset or discard");
-
-    const stale = renderManagedSystemPrompt(snapshot, {
-      ...cloudSession,
-      contextTree: { status: "stale", projectPath: "/managed/project", treePath: "/ws/tree", reason: "TIMEOUT" },
-    });
-    expect(stale).toContain("may be outdated");
-    expect(stale).toContain("TIMEOUT");
+    expect(available).toContain('Use --project-path "/managed/project" for managed tree commands.');
+    expect(available).toContain("tree-agent");
+    expect(available).toContain("members/tree-agent/");
+    expect(available).toContain("Unpublished work remains in the prepared worktree.");
+    expect(available).toContain("may be outdated");
+    expect(available).toContain("do not reset or discard");
+    expect(available).toContain("Do not install native cleanup schedules");
 
     const unconfigured = renderManagedSystemPrompt(snapshot, {
       ...cloudSession,
@@ -530,30 +554,16 @@ describe("renderManagedSystemPrompt Cloud environment", () => {
             path: ".",
             ref: "main",
             repository: "acme/team",
-            status: "ready",
+            status: "available",
             projectPath: "/managed/project",
-            treePath: "/trees/team",
-            branch: "main",
-            sha: "a".repeat(40),
           },
           {
             kind: "git" as const,
             path: ".",
             ref: "main",
             repository: "acme/product",
-            status: "ready",
+            status: "available",
             projectPath: "/managed/project",
-            treePath: "/trees/product",
-          },
-          {
-            kind: "git" as const,
-            path: ".",
-            ref: "main",
-            repository: "acme/stale",
-            status: "stale",
-            projectPath: "/managed/project",
-            treePath: "/trees/stale",
-            reason: "DIRTY_TREE",
           },
           {
             kind: "git" as const,
@@ -577,12 +587,11 @@ describe("renderManagedSystemPrompt Cloud environment", () => {
     expect(prompt.match(/^## Context Trees$/gm)).toHaveLength(1);
     expect(prompt).not.toMatch(/^## Context Tree$/m);
     expect(prompt).toContain("team — acme/team");
-    expect(prompt).toContain("Context Tree: /trees/product");
-    expect(prompt).toContain("branch main, commit aaaaaaaaaaaa");
-    expect(prompt).toContain("Context Tree: /trees/stale");
-    expect(prompt).toContain("do not reset or discard");
+    expect(prompt).toContain("product — acme/product");
     expect(prompt).toContain("GITHUB_PERMISSION");
+    expect(prompt).toContain("TIMEOUT");
     expect(prompt.match(/context-tree-read and context-tree-write skills/g)).toHaveLength(1);
+    expect(prompt.match(/Read Context through the context-tree-read skill/g)).toHaveLength(1);
     expect(prompt.match(/Do not write to another Agent's member directory/g)).toHaveLength(1);
     expect(prompt.match(/Continue the task without those trees/g)).toHaveLength(1);
   });

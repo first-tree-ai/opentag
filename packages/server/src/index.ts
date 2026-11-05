@@ -140,7 +140,12 @@ import { SandboxIdleReclaimer } from "./services/sandboxes/idle-reclaimer.js";
 import { SandboxService } from "./services/sandboxes/index.js";
 import type { SandboxAllocationReconciliation } from "./services/sandboxes/sandbox-runner-service.js";
 import { ScheduleScheduler, ScheduleService } from "./services/schedules/index.js";
-import { SessionCliProofService, SessionCollaborationService, SessionService } from "./services/sessions/index.js";
+import {
+  type RunOutcomeNotifier,
+  SessionCliProofService,
+  SessionCollaborationService,
+  SessionService,
+} from "./services/sessions/index.js";
 import { AccountSetupService } from "./services/setup/index.js";
 import { S3SkillObjectStore, SkillObjectGc, SkillPresetService, SkillService } from "./services/skills/index.js";
 import { RemoteSkillService } from "./services/skills/source/remote-skill-service.js";
@@ -962,8 +967,22 @@ export async function startServer(): Promise<void> {
       perfLogger,
     );
     const slackWorkingStore = new SlackWorkingStore(database);
+    // Bound after the collaboration service exists; the service itself depends on this owner.
+    let runOutcomeNotifier: RunOutcomeNotifier | undefined;
     const domainOwner = new RuntimeDomainOwner(registry, custody, {
       onTurnActivity: (frame, context) => acknowledgeFeedbackActivity(database, frame, context),
+      onSessionMessageOutcome: async (frame, context) =>
+        (await runOutcomeNotifier?.notifyRunOutcome({
+          childSessionId: frame.targetSessionId,
+          messageId: frame.messageId,
+          outcome: frame.outcome,
+          reason: frame.reason,
+          source: {
+            computerId: context.computerId,
+            connectionInstanceId: context.instanceId,
+            placementGeneration: frame.placementGeneration,
+          },
+        })) ?? "retry",
       logger: serviceLogger("runtime-domain"),
       onImCredentialGrant: (request, context) => imBindingService.issueRuntimeCredentialGrant(request, context),
       prepareReconcile: (computerId, connectionInstanceId, request) =>
@@ -1193,6 +1212,8 @@ export async function startServer(): Promise<void> {
       cloud: cloudSessionOwner,
       logger: serviceLogger("session-collaboration"),
     });
+    runOutcomeNotifier = sessionCollaborationService;
+    cloudSessionOwner?.setRunOutcomeNotifier(sessionCollaborationService);
     const imDeliveryLogger = serviceLogger("im-delivery");
     /*
      * The MCP management plane. Every outbound request goes through one fetcher that enforces the

@@ -108,7 +108,7 @@ const diagnosticSchema = z
     acceptanceTimerPaused: z.boolean().optional(),
     abortSource: z.enum(["run_signal", "client_shutdown", "turn_timeout"]).optional(),
     proxyStartMs: durationSchema.optional(),
-    contextTreeSyncMs: durationSchema.optional(),
+    contextTreePreparationMs: durationSchema.optional(),
     skillsAssembleMs: durationSchema.optional(),
   })
   .strict()

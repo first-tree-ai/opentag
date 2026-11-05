@@ -7,8 +7,9 @@ import {
   type SessionMessageDeliveryRequestV3,
   SessionMessageDeliveryRequestV3Schema,
   type SessionMessageDeliveryResult,
+  SessionMessageRunOutcomeReasonSchema,
 } from "@opentag/shared";
-import type { AgentInput, AgentRuntime } from "../agent-runtime/types.js";
+import type { AgentInput, AgentRuntime, AgentSteerOutcome, AgentSteerReceipt } from "../agent-runtime/types.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import type { AdmissionController } from "./admission-controller.js";
 import { ImCredentialEnvironmentError } from "./im-credential-environment-manager.js";
@@ -56,7 +57,7 @@ export interface SessionMessageInboxOptions {
   admission: AdmissionController;
   cliCommand?: string;
   credentialEnvironment: Pick<RuntimeCredentialEnvironmentManager, "cleanup" | "prepare"> &
-    Partial<Pick<RuntimeCredentialEnvironmentManager, "mode">>;
+    Partial<Pick<RuntimeCredentialEnvironmentManager, "mode" | "outboxContextForSession">>;
   turnPlan?: {
     cleanup(input: ProviderCliTurnPlanPrepareInput): Promise<void>;
     prepare(input: ProviderCliTurnPlanPrepareInput, signal?: AbortSignal): Promise<unknown>;
@@ -69,13 +70,22 @@ export interface SessionMessageInboxOptions {
   metrics?: RuntimeDurabilityMetrics;
   now?: () => number;
   onFailure?(failure: DurableFailure): void;
+  /**
+   * Called when a message's Run reaches a terminal non-completed state (timeout, permanent
+   * failure, or exhausted retries). The Server uses the report to notify an internal Session's
+   * creator; it ignores reports for visible Sessions. The terminal inbox record carries a
+   * `pending` outcome-report marker until this resolves, so it must resolve only once the report
+   * is durable and reject otherwise; hydration calls it again for a still-pending record, so it
+   * must be idempotent per message.
+   */
+  onRunOutcome?(outcome: SessionMessageRunOutcomeEvent): void | Promise<void>;
   persistence?: RuntimeDurabilityStore;
   retryPolicy?: Partial<RuntimeRetryPolicy>;
   scheduler?: RuntimeRetryScheduler;
   timeoutScheduler?: RuntimeRetryScheduler;
   /**
    * The negotiated `runtime.sessionCollaboration` version. A scheduled-origin delivery is only
-   * legal on a v3 channel; anything else is refused at the wire boundary instead of being
+   * legal on a v3-or-newer channel; anything else is refused at the wire boundary instead of being
    * silently executed or silently dropped. Already-accepted durable records are unaffected —
    * recovery never re-checks the negotiation.
    */
@@ -84,8 +94,23 @@ export interface SessionMessageInboxOptions {
     SessionReconciler,
     "checkSessionMessageDelivery" | "clearActivity" | "setActivity" | "withAgentLock"
   >;
-  runtimeManager: Pick<SessionRuntimeManager, "ensureRuntime" | "sessionKind">;
+  runtimeManager: Pick<SessionRuntimeManager, "ensureRuntime" | "sessionKind"> &
+    Partial<Pick<SessionRuntimeManager, "runtime">>;
+  /** How often a message waiting behind a busy Session re-checks whether it can steer into the running Turn. */
+  steerRetryMs?: number;
 }
+
+export interface SessionMessageRunOutcomeEvent {
+  messageId: string;
+  targetSessionId: string;
+  agentId: string;
+  placementGeneration: number;
+  outcome: "timed_out" | "failed";
+  reason: string;
+}
+
+/** The stable code a Run outcome report carries for a timed-out Session message. */
+export const SESSION_MESSAGE_TURN_TIMEOUT_CODE = "turn_timeout";
 
 export class SessionMessageInbox {
   readonly #admission: AdmissionController;
@@ -100,6 +125,7 @@ export class SessionMessageInbox {
   readonly #metrics?: RuntimeDurabilityMetrics;
   readonly #now: () => number;
   readonly #onFailure?: SessionMessageInboxOptions["onFailure"];
+  readonly #onRunOutcome?: SessionMessageInboxOptions["onRunOutcome"];
   readonly #persistence?: RuntimeDurabilityStore;
   readonly #retryPolicy: RuntimeRetryPolicy;
   readonly #scheduler: RuntimeRetryScheduler;
@@ -107,12 +133,15 @@ export class SessionMessageInbox {
   readonly #sessionCollaborationVersion: SessionMessageInboxOptions["sessionCollaborationVersion"];
   readonly #reconciler: SessionMessageInboxOptions["reconciler"];
   readonly #runtimeManager: SessionMessageInboxOptions["runtimeManager"];
+  readonly #steerRetryMs: number;
   readonly #queues = new Map<string, QueuedMessage[]>();
   readonly #drains = new Map<string, Promise<void>>();
   readonly #records = new Map<string, DurableWorkRecord<SessionMessageDeliveryRequestV3>>();
   readonly #remembered = new Map<string, RememberedMessage>();
   readonly #abort = new AbortController();
   readonly #retryTimers = new Map<string, { cancel(): void }>();
+  /** Steered messages waiting for the Run they joined to settle. */
+  readonly #steerSettlements = new Set<Promise<void>>();
   readonly #readyPromise: Promise<void>;
   #queuedTotal = 0;
 
@@ -129,6 +158,7 @@ export class SessionMessageInbox {
     this.#metrics = options.metrics;
     this.#now = options.now ?? Date.now;
     this.#onFailure = options.onFailure;
+    this.#onRunOutcome = options.onRunOutcome;
     this.#persistence = options.persistence;
     this.#retryPolicy = normalizeRetryPolicy(options.retryPolicy);
     this.#scheduler = options.scheduler ?? defaultRuntimeRetryScheduler;
@@ -136,6 +166,7 @@ export class SessionMessageInbox {
     this.#sessionCollaborationVersion = options.sessionCollaborationVersion;
     this.#reconciler = options.reconciler;
     this.#runtimeManager = options.runtimeManager;
+    this.#steerRetryMs = positive(options.steerRetryMs ?? 1_000, "steerRetryMs");
     this.#readyPromise = this.#hydrate();
   }
 
@@ -167,7 +198,7 @@ export class SessionMessageInbox {
     // Gate every scheduled v3 frame, including duplicates previously accepted under v3.
     if (
       request.scheduledOrigin !== undefined &&
-      this.#sessionCollaborationVersion() !== RUNTIME_SESSION_COLLABORATION_SCHEDULED_VERSION
+      (this.#sessionCollaborationVersion() ?? 0) < RUNTIME_SESSION_COLLABORATION_SCHEDULED_VERSION
     ) {
       return deliveryResult(request, "rejected", "configuration_unsupported");
     }
@@ -277,7 +308,7 @@ export class SessionMessageInbox {
   }
 
   async settled(): Promise<void> {
-    await Promise.allSettled([...this.#drains.values()]);
+    await Promise.allSettled([...this.#drains.values(), ...this.#steerSettlements]);
   }
 
   #startDrain(sessionId: string): void {
@@ -300,14 +331,123 @@ export class SessionMessageInbox {
       }
       let reservation = this.#admission.reserve(sessionId, next.request.agentId, { acceptedWork: true });
       while (!reservation.accepted) {
-        await this.#admission.waitForRelease(this.#abort.signal);
+        // A busy Session usually has a running Turn: the message joins it instead of waiting for it to end.
+        if (await this.#steerIntoRunningTurn(sessionId, next)) break;
+        await this.#waitForReleaseOrSteerRetry();
         reservation = this.#admission.reserve(sessionId, next.request.agentId, { acceptedWork: true });
       }
       queue?.shift();
       this.#queuedTotal -= 1;
+      if (!reservation.accepted) continue;
       reservation.reservation.markActive();
       await this.#runMessage(sessionId, next, reservation.reservation);
     }
+  }
+
+  async #waitForReleaseOrSteerRetry(): Promise<void> {
+    const retry = new AbortController();
+    const timer = this.#timeoutScheduler.schedule(this.#steerRetryMs, () => retry.abort());
+    try {
+      await this.#admission.waitForRelease(AbortSignal.any([this.#abort.signal, retry.signal]));
+    } catch (error) {
+      if (this.#abort.signal.aborted) throw error;
+    } finally {
+      timer.cancel();
+    }
+  }
+
+  /**
+   * Steers an accepted message into the Session's running Turn when its runtime accepts input
+   * mid-Turn. The running Turn already holds the Session's credentials and IM outbox target; any
+   * refusal leaves the message queued as before. An accepted steer is not yet a delivery: the record
+   * stays `running` until the joined Run settles and the runtime reports what became of the input.
+   */
+  async #steerIntoRunningTurn(sessionId: string, next: QueuedMessage): Promise<boolean> {
+    const lookup = this.#runtimeManager.runtime;
+    if (!lookup) return false;
+    let runtime: AgentRuntime;
+    try {
+      runtime = lookup.call(this.#runtimeManager, sessionId);
+    } catch {
+      return false;
+    }
+    const activeRunId = runtime.state.activeRunId;
+    if (runtime.capabilities.steer !== "supported" || runtime.state.phase !== "running" || !activeRunId) return false;
+    let turnContext: SessionMessageTurnContext = { sessionKind: "internal" };
+    if (this.#runtimeManager.sessionKind(sessionId) === "visible") {
+      const outboxContext = this.#credentialEnvironment.outboxContextForSession?.(sessionId);
+      if (!outboxContext) return false;
+      turnContext = { sessionKind: "visible", outboxContext };
+    }
+    let receipt: AgentSteerReceipt;
+    try {
+      receipt = await runtime.steer({
+        expectedRunId: activeRunId,
+        input: buildSessionMessageInput(next.request, this.#cliCommand, turnContext, new Date(this.#now())),
+      });
+    } catch {
+      return false;
+    }
+    const key = `${next.request.targetSessionId}:${next.request.messageId}`;
+    let record = this.#records.get(key);
+    if (record) {
+      try {
+        // A restart before the joined Run settles recovers a `running` record like any interrupted Run.
+        record = await this.#transition(record, "running");
+      } catch {
+        // The record stays `accepted` on disk, so a restart redelivers it; this process still settles it below.
+        this.#logger.warn(
+          { code: "SESSION_MESSAGE_STEER_PERSISTENCE_FAILED", messageId: next.request.messageId },
+          "Steered Session message custody could not be recorded",
+        );
+      }
+    }
+    this.#remember(key, { hash: next.hash, status: "accepted" });
+    if (record) this.#trackSteered(record, next.hash, receipt);
+    return true;
+  }
+
+  #trackSteered(
+    record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
+    hash: string,
+    receipt: AgentSteerReceipt,
+  ): void {
+    const settlement = untilAborted(receipt.outcome, this.#abort.signal)
+      // Once stopped, the `running` record is recovered on the next start instead.
+      .then((outcome) => (outcome ? this.#settleSteered(record, hash, outcome) : undefined))
+      .finally(() => this.#steerSettlements.delete(settlement));
+    this.#steerSettlements.add(settlement);
+  }
+
+  /**
+   * Resolves a steered message once its joined Run settled:
+   * - `processed`: delivered.
+   * - `not_started`: the provider never began it, so it returns to the FIFO and is delivered again.
+   * - `interrupted`: the provider may have acted on it before the Run failed or was cancelled, so it
+   *   fails permanently instead of being replayed.
+   */
+  async #settleSteered(
+    record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
+    hash: string,
+    outcome: AgentSteerOutcome,
+  ): Promise<void> {
+    const messageId = record.payload.messageId;
+    if (outcome === "interrupted") {
+      await this.#handleFailure(record, hash, "prompt", steerInterruptedFailure(record.payload.requestId));
+      return;
+    }
+    const status = outcome === "processed" ? "succeeded" : "accepted";
+    let next = record;
+    try {
+      next = await this.#transition(record, status);
+    } catch {
+      this.#logger.warn(
+        { code: "SESSION_MESSAGE_STEER_PERSISTENCE_FAILED", messageId, outcome },
+        "Steered Session message outcome could not be recorded",
+      );
+    }
+    this.#remember(record.key, { hash, status });
+    if (outcome === "not_started") this.#enqueue(next.payload, hash);
   }
 
   async #runMessage(
@@ -398,7 +538,10 @@ export class SessionMessageInbox {
         this.#remember(key, { hash: next.hash, status: "succeeded" });
       }
     } catch (error) {
-      if (current) await this.#handleFailure(current, next.hash, phase, error);
+      // Only the Run budget timer counts as a timeout; daemon stop and revocation keep their
+      // existing recovery semantics.
+      const timedOut = timeout.signal.aborted && !this.#abort.signal.aborted && executionSignal?.aborted !== true;
+      if (current) await this.#handleFailure(current, next.hash, phase, error, timedOut);
     } finally {
       timer?.cancel();
       await this.#cleanupTurnPlan(turnPlanInput);
@@ -506,38 +649,58 @@ export class SessionMessageInbox {
   async #hydrate(): Promise<void> {
     if (!this.#persistence) return;
     const records = await this.#persistence.list<SessionMessageDeliveryRequestV3>("session-message");
+    const unpublished: DurableWorkRecord<SessionMessageDeliveryRequestV3>[] = [];
     for (const stored of records) {
-      const request = SessionMessageDeliveryRequestV3Schema.safeParse(stored.payload);
-      if (!request.success) continue;
-      /*
-       * Hydration recomputes the semantic hash with the SAME branch function as first accept, so
-       * an ordinary record keeps its frozen v2-era hash and a scheduled record reproduces the
-       * hash computed when it was accepted — never a "everything conflicts after upgrade" wave.
-       */
-      const hash = sessionMessageSemanticHash(request.data);
-      const key = stored.key;
-      let record = { ...stored, payload: request.data } as DurableWorkRecord<SessionMessageDeliveryRequestV3>;
-      this.#records.set(key, record);
-      if (record.status === "succeeded") {
-        this.#remember(key, { hash, status: "succeeded" });
-        continue;
-      }
-      if (record.status === "dead-letter" || record.status === "failed") {
-        this.#remember(key, { hash, status: record.status, reason: "provider_unavailable" });
-        continue;
-      }
-      if (retryExhausted(this.#retryPolicy, record, this.#now())) {
-        record = await this.#transition(record, "dead-letter", { nextAttemptAt: undefined });
-        this.#remember(key, { hash, status: "dead-letter", reason: "provider_unavailable" });
-        continue;
-      }
-      if (record.status === "running") {
-        record = { ...record, status: "retryable", nextAttemptAt: this.#now(), updatedAt: this.#now() };
-        await this.#persist(record);
-      }
-      this.#remember(key, { hash, status: "retryable" });
-      this.#enqueue(record.payload, hash);
+      const pending = await this.#hydrateRecord(stored);
+      if (pending) unpublished.push(pending);
     }
+    for (const record of unpublished) {
+      const { outcome, code } = terminalRunOutcome(record);
+      await this.#publishRunOutcome(record, outcome, code);
+    }
+  }
+
+  /** Restore one durable record; returns it when its terminal outcome still needs a report. */
+  async #hydrateRecord(
+    stored: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
+  ): Promise<DurableWorkRecord<SessionMessageDeliveryRequestV3> | undefined> {
+    const request = SessionMessageDeliveryRequestV3Schema.safeParse(stored.payload);
+    if (!request.success) return undefined;
+    /*
+     * Hydration recomputes the semantic hash with the SAME branch function as first accept, so
+     * an ordinary record keeps its frozen v2-era hash and a scheduled record reproduces the
+     * hash computed when it was accepted — never a "everything conflicts after upgrade" wave.
+     */
+    const hash = sessionMessageSemanticHash(request.data);
+    const key = stored.key;
+    let record = { ...stored, payload: request.data } as DurableWorkRecord<SessionMessageDeliveryRequestV3>;
+    this.#records.set(key, record);
+    if (record.status === "succeeded") {
+      this.#remember(key, { hash, status: "succeeded" });
+      return undefined;
+    }
+    if (record.status === "dead-letter" || record.status === "failed") {
+      this.#remember(key, { hash, status: record.status, reason: "provider_unavailable" });
+      // The terminal fact committed but its report never reached the reporter (for example a
+      // crash in between): re-derive it. Records without the marker predate it and are not
+      // backfilled; the Run is never rerun either way.
+      return record.outcomeReport === "pending" ? record : undefined;
+    }
+    if (retryExhausted(this.#retryPolicy, record, this.#now())) {
+      record = await this.#transition(record, "dead-letter", {
+        nextAttemptAt: undefined,
+        ...this.#pendingOutcomeReport(),
+      });
+      this.#remember(key, { hash, status: "dead-letter", reason: "provider_unavailable" });
+      return record;
+    }
+    if (record.status === "running") {
+      record = { ...record, status: "retryable", nextAttemptAt: this.#now(), updatedAt: this.#now() };
+      await this.#persist(record);
+    }
+    this.#remember(key, { hash, status: "retryable" });
+    this.#enqueue(record.payload, hash);
+    return undefined;
   }
 
   #enqueue(request: SessionMessageDeliveryRequestV3, hash: string): void {
@@ -572,33 +735,46 @@ export class SessionMessageInbox {
     hash: string,
     phase: string,
     error: unknown,
+    timedOut = false,
   ): Promise<void> {
-    const failure = durableFailureFromUnknown(
+    const reported = durableFailureFromUnknown(
       record.payload.requestId,
       phase,
       error,
       phase === "credential" ? "credential_unavailable" : phase === "prompt" ? "provider_failed" : "runtime_failed",
     );
+    /*
+     * A Run that used its whole budget is terminal: rerunning the same message from scratch
+     * would repeat the work and likely time out again. The Session keeps its provider context, so
+     * the creator decides whether to continue it with a follow-up message.
+     */
+    const failure: DurableFailure = timedOut
+      ? { ...reported, code: SESSION_MESSAGE_TURN_TIMEOUT_CODE, retryability: "never" }
+      : reported;
     this.#emitFailure(failure);
     const attempts = record.attempts + 1;
     const now = this.#now();
     const candidate = { ...record, attempts, lastError: failure, updatedAt: now };
+    // The terminal status and the creator-notice intent commit in ONE record write.
+    const terminalFields = { nextAttemptAt: undefined, ...this.#pendingOutcomeReport() };
     if (failure.retryability === "never") {
-      await this.#transition(candidate, "failed", { nextAttemptAt: undefined }).catch(() => undefined);
+      const terminal = await this.#transition(candidate, "failed", terminalFields).catch(() => undefined);
       this.#remember(record.key, { hash, status: "failed", reason: "provider_unavailable" });
       this.#logger.warn(
         { code: failure.code, messageId: record.payload.messageId, phase, status: "failed" },
         "Session message failed permanently",
       );
+      await this.#publishRunOutcome(terminal ?? candidate, timedOut ? "timed_out" : "failed", failure.code);
       return;
     }
     if (retryExhausted(this.#retryPolicy, candidate, now)) {
-      await this.#transition(candidate, "dead-letter", { nextAttemptAt: undefined }).catch(() => undefined);
+      const terminal = await this.#transition(candidate, "dead-letter", terminalFields).catch(() => undefined);
       this.#remember(record.key, { hash, status: "dead-letter", reason: "provider_unavailable" });
       this.#logger.warn(
         { code: failure.code, messageId: record.payload.messageId, phase, status: "dead-letter" },
         "Session message moved to dead letter",
       );
+      await this.#publishRunOutcome(terminal ?? candidate, "failed", failure.code);
       return;
     }
     const nextAttemptAt = now + retryDelay(this.#retryPolicy, attempts);
@@ -614,6 +790,52 @@ export class SessionMessageInbox {
     }
     this.#remember(record.key, { hash, status: "retryable" });
     this.#scheduleRetry(retryable, hash);
+  }
+
+  #pendingOutcomeReport(): Pick<DurableWorkRecord, "outcomeReport"> {
+    return this.#onRunOutcome ? { outcomeReport: "pending" } : {};
+  }
+
+  /**
+   * Hand a terminal Run outcome to the durable reporter, then mark the inbox record `published`.
+   * A failure leaves the marker `pending`, so the next hydration hands it over again; the reporter
+   * and the Server's UUIDv5 notice identity make that repeat harmless. The inbox state machine
+   * never depends on reporting.
+   */
+  async #publishRunOutcome(
+    record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
+    outcome: "timed_out" | "failed",
+    code: string,
+  ): Promise<void> {
+    if (!this.#onRunOutcome) return;
+    const request = record.payload;
+    try {
+      await this.#onRunOutcome({
+        messageId: request.messageId,
+        targetSessionId: request.targetSessionId,
+        agentId: request.agentId,
+        placementGeneration: request.placementGeneration,
+        outcome,
+        reason: SessionMessageRunOutcomeReasonSchema.safeParse(code).success ? code : "run_failed",
+      });
+    } catch {
+      this.#warnRunOutcomeFailed(request.messageId);
+      return;
+    }
+    if (record.outcomeReport !== "pending" || this.#records.get(record.key) !== record) return;
+    await this.#persist({ ...record, outcomeReport: "published", updatedAt: this.#now() }).catch(() =>
+      this.#logger.warn(
+        { code: "SESSION_MESSAGE_PERSISTENCE_FAILED", messageId: request.messageId, status: record.status },
+        "Session message outcome handoff could not be marked; it is handed over again on restart",
+      ),
+    );
+  }
+
+  #warnRunOutcomeFailed(messageId: string): void {
+    this.#logger.warn(
+      { code: "SESSION_MESSAGE_OUTCOME_REPORT_FAILED", messageId },
+      "Session message Run outcome could not be queued for reporting",
+    );
   }
 
   #emitFailure(failure: DurableFailure): void {
@@ -652,6 +874,45 @@ export class SessionMessageInbox {
       this.#remembered.delete(oldest);
     }
   }
+}
+
+/** The report a committed terminal record implies, matching what `#handleFailure` reported. */
+function terminalRunOutcome(record: DurableWorkRecord<SessionMessageDeliveryRequestV3>): {
+  outcome: "timed_out" | "failed";
+  code: string;
+} {
+  const code = record.lastError?.code ?? "retry_exhausted";
+  return { outcome: code === SESSION_MESSAGE_TURN_TIMEOUT_CODE ? "timed_out" : "failed", code };
+}
+
+function steerInterruptedFailure(requestId: string): DurableFailure {
+  return {
+    code: "session_message_steer_interrupted",
+    category: "dependency",
+    retryability: "never",
+    phase: "provider",
+    requestId,
+    message: "The Run ended after the provider may have started this steered Session message",
+  };
+}
+
+/** Resolves with the promise's value, or with `undefined` once the signal aborts first. */
+function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T | undefined> {
+  if (signal.aborted) return Promise.resolve(undefined);
+  return new Promise<T | undefined>((resolve, reject) => {
+    const onAbort = () => resolve(undefined);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
+  });
 }
 
 function retryableAuthorityReason(reason: InputRejectReason): boolean {

@@ -169,11 +169,8 @@ consume the Instance's memory-backed filesystem, so these limits are not a guara
 OOM: an incompressible workspace near the limit plus its archive uses about 1 GiB before the
 Runner's own memory.
 
-The move from 1 GiB followed staging measurements on 2026-11-05 at 1 GiB, with the archive code
-uploading directly to object storage and no Agent running: 256 MiB of incompressible content peaked
-at 925 MiB, and 480 MiB ran out of memory while packing. The 120-second limit covers transfers, not
-packing, so a save can stall without an error. Whether the limits are safe at 2 GiB has not been
-measured.
+The 120-second limit covers transfers, not packing, so a save under memory pressure can stall without
+an error until the Instance is killed.
 The Cloud system prompt explains these limits and directs disposable dependency caches/build output
 outside the saved workspace; those files must be recreated on subsequent Turns.
 Relative workspace symlinks are supported. Hard links (including internal hard links), unsafe

@@ -115,13 +115,17 @@ describe("BrowserApi", () => {
   it("asks for the running and queued Task counts on the Agent list and detail reads", async () => {
     const seen: string[] = [];
     const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
-      seen.push(`${String(input)} ${new Headers(init?.headers).get("x-opentag-agent-activity-task-count")}`);
+      const headers = new Headers(init?.headers);
+      seen.push(
+        `${String(input)} ${headers.get("x-opentag-agent-activity-task-count")} ${headers.get("x-opentag-agent-activity-queued-count")}`,
+      );
       return jsonResponse({ agents: [] });
     });
     const api = new BrowserApi(fetchImpl);
     await api.agents();
     await api.agent(taskSummary.agent.id).catch(() => undefined);
-    expect(seen).toEqual(["/api/v1/agents 2", `/api/v1/agents/${taskSummary.agent.id} 2`]);
+    // The running count's value stays exactly 1, the only value a released Server recognizes.
+    expect(seen).toEqual(["/api/v1/agents 1 1", `/api/v1/agents/${taskSummary.agent.id} 1 1`]);
   });
 
   it("updates the current user profile with PATCH, response parsing, and browser CSRF", async () => {

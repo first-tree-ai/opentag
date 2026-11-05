@@ -91,32 +91,29 @@ Agent reads just Ready: a "Waiting" detail only repeated what Ready already says
 waiting.
 
 Every activity state also carries `queuedTaskCount` when it is positive: the number of Tasks waiting for delivery. A
-Task is one chat Session, or a whole private chat across its Sessions. It waits when one of its live Sessions, on a
-binding that is not disabled and with a message in the last eight days, holds a qualifying pending delivery and none of
-its Sessions holds an unreported Turn before its deadline. A pending delivery qualifies when it addresses the Agent directly, when it is an unaddressed
-follow-up the inbox kept for the direct window, or when it was overheard in a Session somebody addressed directly and is
-not the channel Session's observer copy of a message a Thread Session owns. The row and the Agent home show the count as
+Task is one chat Session, or a whole private chat across its Sessions. It waits when one of its live Sessions, on a binding that is not disabled and with a message in the last eight days,
+holds a pending delivery that counts for the Task and none of its Sessions has a Turn running. A pending delivery counts
+when it addresses the Agent directly, or when it is an execution of a Task somebody addressed: not the channel Session's
+observer copy of a message a Thread Session owns, in a Session with a direct delivery or a Thread whose root was addressed.
+A Turn runs while it is accepted, unreported, before its deadline, and the Session's latest acceptance. The row and the Agent home show the count as
 "N tasks waiting" on every status, beside any running count. Why: queued work behind an offline Computer, a paused
 Agent, or a runtime problem is exactly what an admin needs to see to judge that the Agent is stuck; without it the row
 read as quiet.
 
-The count follows the Task list's Queued status except in these shapes:
+The qualification and running rules are the Task list's own, shared from `services/tasks/task-sql.ts`. The count follows
+the Task list's Queued status except in the two shapes the recency window below leaves out:
 
 | Situation | `queuedTaskCount` | Task list |
 | --- | --- | --- |
-| A crashed Turn stays unreported before its deadline, a later Turn in the Session reported, and a direct message waits | Does not count it until the crashed Turn's deadline | Queued |
-| The only direct message of a Thread was edited into an unaddressed one, which waits under the direct window | Counts it | Not a Task |
 | A delivery stays pending more than a day past its deadline, because the expiry pass is far behind or its row is held by an in-flight dispatch | Does not count it | Queued |
 | A message's provider time is more than eight days old when the Server receives it, or it is an older Thread reply a late direct root brought in, and nothing newer is in that conversation | Does not count it | Queued |
 
-Why: the first would need each Session's accepted history, which the Task list reads for one page but this read must not
-read for every Agent list and Agent home request. `runningTaskCount` makes the same simplification, so a row stays
-consistent with itself. The second is rare, and telling it apart needs the whole Thread's delivery history. The last two
-come from the recency window below. The Task list stays the authority for one Task's status.
+The Task list stays the authority for one Task's status.
 
-Clients declare which counts they read with `x-opentag-agent-activity-task-count`: `1` receives `runningTaskCount`,
-`2` also receives `queuedTaskCount`, and no header receives neither. The Web App sends `2`. Older clients validate the
-activity strictly, so each keeps receiving the shape it was released with.
+Clients declare each count separately: `x-opentag-agent-activity-task-count: 1` receives `runningTaskCount`, and
+`x-opentag-agent-activity-queued-count: 1` receives `queuedTaskCount`. The Web App sends both. Older clients validate the
+activity strictly, so each keeps receiving the shape it was released with. Why two headers: a released Server recognizes
+only the exact value `1` of the first, so a newer Web that changed it would lose the running count from that Server.
 
 The two running reads use `im_message_deliveries_unreported_accepted_idx` — partial on `state = 'accepted' and
 reported_at is null` — as their access path. Without it the reads join every Session of a binding to reach an answer,
@@ -126,8 +123,9 @@ The queued read is one statement in the same snapshot. It finds the conversation
 reads the listed Agents' live channel and thread Sessions among them through `sessions_active_channel_unique` and
 `sessions_active_thread_unique`, so Internal Sessions are not read when these indexes are chosen, and probes each
 Session's waiting deliveries through `im_message_deliveries_overflow_idx`, whose leading columns reach them directly,
-however long the Session's history is. Running Sessions come from `im_message_deliveries_unreported_accepted_idx`,
-which is read across Accounts but holds only outstanding Turns.
+however long the Session's history is. The planner may instead hash the Sessions against
+`im_message_deliveries_pending_idx`, which reads other Accounts' pending rows. A waiting Task then checks its own Sessions for a running Turn, so the read does not touch other Accounts' Turns;
+that check reads the waiting Session's accepted deliveries, however many.
 
 The window (`QUEUED_TASK_WINDOW_MS`) is the seven-day direct TTL plus a margin of one day. A shorter window would hide
 exactly the backlog behind an offline Computer this count exists to show. The margin keeps a row past its deadline

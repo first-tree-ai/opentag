@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
-import { AMBIENT_TTL_MS, DIRECT_TTL_MS } from "../im/im-queue-policy.js";
-import { liveDeliveryExists } from "../tasks/task-sql.js";
+import { DIRECT_TTL_MS } from "../im/im-queue-policy.js";
+import { isExecution, liveDeliveryExists, threadRootAddressed } from "../tasks/task-sql.js";
 
 type QueuedTaskExecutor = Pick<DatabaseClient, "execute">;
 
@@ -44,7 +44,8 @@ function liveSessions(agentIds: readonly string[], kind: "channel" | "thread") {
           select im_binding_id, channel_id, thread_key from recent
         )`;
   return sql`
-    select binding.agent_id, session.id, session.kind, session.conversation_kind, session.channel_id
+    select binding.agent_id, session.id, session.im_binding_id, session.kind, session.conversation_kind,
+      session.channel_id, session.thread_key
     from im_bindings binding
     inner join sessions session on session.im_binding_id = binding.id
     where binding.agent_id = any(${`{${agentIds.join(",")}}`}::uuid[])
@@ -56,10 +57,9 @@ function liveSessions(agentIds: readonly string[], kind: "channel" | "thread") {
 }
 
 /**
- * Whether a live Session holds a pending delivery that makes its Task wait: a direct one; an unaddressed
- * follow-up the inbox kept for the direct window (the same inference as `hadDirectRetention`); or a message
- * overheard in a Session somebody addressed directly, unless it is the channel Session's observer copy of a
- * message a Thread Session owns. Those are the Task list's qualification and execution rules.
+ * Whether a live Session holds a pending delivery that makes its Task queue, by the Task list's own rules: a direct
+ * delivery, or an overheard one that counts as an execution of a Task somebody addressed. Only a Session with a
+ * pending delivery reads the qualification, so it never costs an idle Session more than these index ranges.
  */
 const sessionIsWaiting = sql`(
   exists (
@@ -68,38 +68,61 @@ const sessionIsWaiting = sql`(
       and direct_pending.attention = 'direct'
       and direct_pending.state = 'pending'
   )
-  or exists (
-    select 1
-    from im_message_deliveries overheard
-    inner join im_messages message on message.id = overheard.message_id
-    where overheard.session_id = live.id
-      and overheard.attention = 'ambient'
-      and overheard.state = 'pending'
-      and (
-        overheard.expires_at - message.received_at > ${AMBIENT_TTL_MS} * interval '1 millisecond'
-        or (
-          ${liveDeliveryExists("live", "direct")}
-          and not (
-            live.kind = 'channel'
-            and exists (
-              select 1
-              from im_message_deliveries owner
-              inner join sessions owner_session on owner_session.id = owner.session_id
-              where owner.message_id = overheard.message_id
-                and owner_session.kind = 'thread'
-            )
-          )
-        )
-      )
+  or (
+    exists (
+      select 1 from im_message_deliveries overheard
+      where overheard.session_id = live.id
+        and overheard.attention = 'ambient'
+        and overheard.state = 'pending'
+        and ${isExecution("overheard", "live")}
+    )
+    and (${liveDeliveryExists("live", "direct")} or (${threadRootAddressed("live")}))
   )
 )`;
 
 /**
- * How many Tasks of each Agent are waiting, in one statement inside the caller's snapshot. A Task is one
- * Session, or a whole private chat; it waits when one of its live Sessions holds a qualifying pending delivery
- * and none holds a Turn still running. No Task rollup is read, so this differs from the Task list in the ways
- * `docs/system/agent-usage.md` lists, and the read grows with the Agents' messages and recently active Sessions,
- * which have no upper bound; the same page names the Issue tracking that.
+ * Whether a Session has a Turn still running, by the Task list's rule: accepted and unreported before its deadline, and
+ * no later Turn accepted in the Session. It starts from the Session, so no other Account's Turn is read, and it only
+ * runs for a Task that is waiting, so reading the Session's accepted history stays bound to work that is queued.
+ */
+function sessionIsRunning(sessionAlias: string, now: Date) {
+  const session = sql.raw(sessionAlias);
+  return sql`exists (
+    select 1 from im_message_deliveries turn
+    where turn.session_id = ${session}.id
+      and turn.attention in ('direct', 'ambient')
+      and turn.state = 'accepted'
+      and turn.reported_at is null
+      and turn.expires_at > ${now.toISOString()}::timestamptz
+      and not exists (
+        select 1 from im_message_deliveries later
+        where later.session_id = turn.session_id
+          and later.attention in ('direct', 'ambient')
+          and later.state = 'accepted'
+          and (later.accepted_at, later.id) > (turn.accepted_at, turn.id)
+      )
+  )`;
+}
+
+/** Whether another live Session of a waiting private chat runs a Turn; each kind stays on its partial index. */
+function siblingIsRunning(kind: "channel" | "thread", now: Date) {
+  return sql`exists (
+    select 1 from sessions sibling
+    where sibling.im_binding_id = waiting.im_binding_id
+      and sibling.channel_id = waiting.channel_id
+      and sibling.kind = ${sql.raw(`'${kind}'`)}
+      and sibling.ended_at is null
+      and sibling.id <> waiting.id
+      and ${sessionIsRunning("sibling", now)}
+  )`;
+}
+
+/**
+ * How many Tasks of each Agent are queued, in one statement inside the caller's snapshot, by the Task list's
+ * qualification and status rules. A Task is one Session, or a whole private chat. It is queued when one of its live
+ * Sessions holds a qualifying pending delivery and none has a Turn running. `docs/system/agent-usage.md` lists what the
+ * recency window leaves out, and the read grows with the Agents' messages and recently active Sessions, which have no
+ * upper bound; the same page names the Issue tracking that.
  */
 export async function readQueuedTaskCounts(
   executor: QueuedTaskExecutor,
@@ -115,29 +138,19 @@ export async function readQueuedTaskCounts(
       union all
       ${liveSessions(agentIds, "thread")}
     ),
-    running as materialized (
-      select distinct session_id
-      from im_message_deliveries
-      where state = 'accepted' and reported_at is null and expires_at > ${now.toISOString()}::timestamptz
-    ),
-    session_work as materialized (
-      select live.*, ${sessionIsWaiting} as waiting, live.id in (select session_id from running) as is_running
-      from live
-    ),
-    tasks as (
-      select
-        agent_id,
-        case when conversation_kind = 'dm' then channel_id else id::text end as task_key,
-        bool_or(waiting) as waiting,
-        bool_or(is_running) as is_running
-      from session_work
-      where waiting or is_running
-      group by agent_id, task_key
+    waiting as materialized (
+      select * from live where ${sessionIsWaiting}
     )
-    select agent_id as "agentId", count(*)::int as "queuedTaskCount"
-    from tasks
-    where waiting and not is_running
-    group by agent_id
+    select waiting.agent_id as "agentId", count(distinct (
+      case when waiting.conversation_kind = 'dm' then waiting.channel_id else waiting.id::text end
+    ))::int as "queuedTaskCount"
+    from waiting
+    where not ${sessionIsRunning("waiting", now)}
+      and not (
+        waiting.conversation_kind = 'dm'
+        and (${siblingIsRunning("channel", now)} or ${siblingIsRunning("thread", now)})
+      )
+    group by waiting.agent_id
   `);
   return new Map(rows.map((row) => [row.agentId, row.queuedTaskCount]));
 }

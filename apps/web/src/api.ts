@@ -8,6 +8,8 @@ import {
   type AccountSetupCompletion,
   AccountSetupCompletionSchema,
   type AccountSetupResetMode,
+  AGENT_ACTIVITY_QUEUED_COUNT_HEADER,
+  AGENT_ACTIVITY_QUEUED_COUNT_VERSION,
   AGENT_ACTIVITY_TASK_COUNT_HEADER,
   AGENT_ACTIVITY_TASK_COUNT_VERSION,
   AGENT_STATUS_HEADER,
@@ -460,6 +462,7 @@ export class BrowserApi {
     return this.request(HTTP_PATHS.accountAgents, ListAgentsResponseSchema, {
       headers: {
         [AGENT_ACTIVITY_TASK_COUNT_HEADER]: AGENT_ACTIVITY_TASK_COUNT_VERSION,
+        [AGENT_ACTIVITY_QUEUED_COUNT_HEADER]: AGENT_ACTIVITY_QUEUED_COUNT_VERSION,
         [AGENT_STATUS_HEADER]: AGENT_STATUS_VERSION,
       },
     });
@@ -535,7 +538,10 @@ export class BrowserApi {
 
   agent(agentId: string): Promise<AgentDetail> {
     return this.request(agentByIdPath(agentId), AgentDetailSchema, {
-      headers: { [AGENT_ACTIVITY_TASK_COUNT_HEADER]: AGENT_ACTIVITY_TASK_COUNT_VERSION },
+      headers: {
+        [AGENT_ACTIVITY_TASK_COUNT_HEADER]: AGENT_ACTIVITY_TASK_COUNT_VERSION,
+        [AGENT_ACTIVITY_QUEUED_COUNT_HEADER]: AGENT_ACTIVITY_QUEUED_COUNT_VERSION,
+      },
     });
   }
 

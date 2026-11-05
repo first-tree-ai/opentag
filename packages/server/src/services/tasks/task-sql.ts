@@ -110,7 +110,7 @@ export function messageOwnerTaskId(messageAlias: string): SQL {
  * revision of its message superseded does not, and neither does the channel Session's ambient
  * observer copy of a message a thread Session owns. `sessionAlias` is the delivery's Task Session.
  */
-function isExecution(deliveryAlias: string, sessionAlias: string): SQL {
+export function isExecution(deliveryAlias: string, sessionAlias: string): SQL {
   const d = sql.raw(deliveryAlias);
   const ss = sql.raw(sessionAlias);
   return sql`not (${d}.state = 'expired' and ${d}.reason = ${SUPERSEDED_REVISION})
@@ -132,7 +132,7 @@ function isExecution(deliveryAlias: string, sessionAlias: string): SQL {
  * addressed directly is still a Task then, because the conversation continues the request that
  * started it. A superseded revision of the root's delivery does not count.
  */
-function threadRootAddressed(sessionAlias: string): SQL {
+export function threadRootAddressed(sessionAlias: string): SQL {
   const ts = sql.raw(sessionAlias);
   return sql`${ts}.kind = 'thread'
     and ${ts}.conversation_kind <> 'dm'

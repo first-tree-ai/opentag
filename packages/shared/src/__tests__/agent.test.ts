@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  AGENT_ACTIVITY_QUEUED_COUNT_VERSION,
+  AGENT_ACTIVITY_TASK_COUNT_VERSION,
   AgentAdminConfigSchema,
   AgentCreationIntentResultSchema,
   AgentDetailSchema,
@@ -12,7 +14,10 @@ import {
   AgentUsageWindowDaysSchema,
   CreateAgentRequestSchema,
   ListAgentsResponseSchema,
+  projectAgentActivityForClient,
   RebindAgentComputerRequestSchema,
+  requestsAgentActivityQueuedCount,
+  requestsAgentActivityTaskCount,
   UpdateAgentRequestSchema,
 } from "../agent.js";
 import { AgentNameSchema as BrowserAgentNameSchema } from "../browser.js";
@@ -549,5 +554,33 @@ describe("Agent contracts", () => {
     expect(RUNTIME_IM_RESOURCE_TEMPLATE).toContain(":imMessageId");
     expect(runtimeWebSocketUrl("https://example.test/base")).toBe("wss://example.test/api/v1/computer/ws");
     expect(runtimeWebSocketUrl("http://example.test")).toBe("ws://example.test/api/v1/computer/ws");
+  });
+});
+
+describe("Agent activity count negotiation", () => {
+  const activity = {
+    state: "working" as const,
+    startedAt: "2026-11-05T00:00:00.000Z",
+    runningTaskCount: 2,
+    queuedTaskCount: 3,
+  };
+
+  it("keeps the running count against a released Server, which recognizes only the exact value 1", () => {
+    // That Server's whole negotiation: it knows no queued header, and strips the count for any other value.
+    const releasedServerRecognizes = (value: string) => value === "1";
+    expect(releasedServerRecognizes(AGENT_ACTIVITY_TASK_COUNT_VERSION)).toBe(true);
+  });
+
+  it("gives each client only the counts it declared", () => {
+    const { queuedTaskCount: _queued, ...runningOnly } = activity;
+    const { runningTaskCount: _running, ...queuedOnly } = activity;
+    const { queuedTaskCount: _q, runningTaskCount: _r, ...neither } = activity;
+    expect(projectAgentActivityForClient(activity, true, true)).toEqual(activity);
+    expect(projectAgentActivityForClient(activity, true)).toEqual(runningOnly);
+    expect(projectAgentActivityForClient(activity, false, true)).toEqual(queuedOnly);
+    expect(projectAgentActivityForClient(activity, false)).toEqual(neither);
+    expect(requestsAgentActivityTaskCount("2")).toBe(false);
+    expect(requestsAgentActivityQueuedCount(AGENT_ACTIVITY_QUEUED_COUNT_VERSION)).toBe(true);
+    expect(requestsAgentActivityQueuedCount(undefined)).toBe(false);
   });
 });

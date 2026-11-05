@@ -106,7 +106,7 @@ describe("Agent list unreported-accepted index", () => {
         schema,
         logger: { logQuery: (query, params) => queries.push({ query, params }) },
       });
-      // Another Account's Agent with a deep queue: it must not change this Account's count.
+      // Another Account's Agent with a deep queue and many unreported Turns: neither may change this Account's count.
       const [neighbour] = await database
         .insert(users)
         .values({ email: `neighbour-${randomUUID()}@example.test`, displayName: "Neighbour", setupCompletedAt: NOW })
@@ -128,6 +128,30 @@ describe("Agent list unreported-accepted index", () => {
         select id,$1,'direct','pending',1,$2,$3 from queued
         `,
         [noisy.session.id, NOW.toISOString(), new Date(NOW.getTime() + 86_400_000).toISOString()],
+      );
+
+      await client.sql.unsafe(
+        `
+        with idle as (
+          insert into sessions(im_binding_id,channel_id,conversation_kind,kind,thread_key)
+          select s.im_binding_id,s.channel_id,'channel','thread','turn-'||n
+          from sessions s, generate_series(1, ${NOISY_BACKLOG}) n where s.id = $1
+          returning id, im_binding_id, channel_id, thread_key
+        ),
+        turns as (
+          insert into im_messages(im_binding_id,provider_event_id,channel_id,external_message_id,provider_revision_key,
+            operation,direction,thread_key,author_kind,author_external_id,content,provider_context,occurred_at)
+          select im_binding_id,'turn-event-'||thread_key,channel_id,thread_key,'1','created','inbound',thread_key,'human','human',
+            '{"version":1,"fallbackText":"noise","blocks":[],"truncated":false}'::jsonb,'{"provider":"feishu"}'::jsonb,$2
+          from idle
+          returning id, thread_key
+        )
+        insert into im_message_deliveries(message_id,session_id,attention,state,placement_generation,input_hash,turn_id,
+          report_owner_instance_id,accepted_at,expires_at)
+        select turns.id,idle.id,'direct','accepted',1,'input','turn-'||idle.id,$3,$2,$4
+        from turns inner join idle on idle.thread_key = turns.thread_key
+        `,
+        [noisy.session.id, NOW.toISOString(), REPORT_OWNER, new Date(NOW.getTime() + 86_400_000).toISOString()],
       );
 
       const { owner, agents, agent, session, message } = await activityFixture(database, "queued");
@@ -181,10 +205,13 @@ describe("Agent list unreported-accepted index", () => {
       expect(rowsRead(plan?.[0]?.Plan as PlanNode, "sessions")).toBeLessThan(IDLE_SESSIONS + 10);
       expect(JSON.stringify(plan)).toContain("sessions_active_channel_unique");
       expect(JSON.stringify(plan)).toContain("sessions_active_thread_unique");
+      // The other Account's unreported Turns are not read. The planner may still hash the Sessions against the pending
+      // rows, as `agent-usage.md` says, so this bounds the read at those and no more.
+      expect(JSON.stringify(plan)).not.toContain("im_message_deliveries_unreported_accepted_idx");
+      expect(rowsRead(plan?.[0]?.Plan as PlanNode, "im_message_deliveries")).toBeLessThan(NOISY_BACKLOG + 100);
 
       // The neighbour's backlog is one Session, so it is one queued Task however deep it is.
-      expect((await noisy.agents.listForAccount(neighbour.id)).agents[0]?.activity).toEqual({
-        state: "idle",
+      expect((await noisy.agents.listForAccount(neighbour.id)).agents[0]?.activity).toMatchObject({
         queuedTaskCount: 1,
       });
     } finally {

@@ -10,7 +10,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, expect, it } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
-import { computers, imBindings, imMessageDeliveries, imMessages, sessions } from "../../db/schema/index.js";
+import { computers, imBindings, imMessageDeliveries, sessions } from "../../db/schema/index.js";
 import { AgentService } from "../../services/agents/index.js";
 import { ImMessageInbox } from "../../services/im/im-message-inbox.js";
 import { disableImBindingInTransaction } from "../../services/im-bindings/index.js";
@@ -180,7 +180,7 @@ const scenarios: {
   mode?: "mention_only" | "all_message";
   /** The Task list's statuses, sorted. */
   statuses: string[];
-  /** Equal to the number of `queued` statuses except in the two scenarios the docs list as differences. */
+  /** Always the number of `queued` statuses. */
   count: number;
   run: (f: Fixture) => Promise<void>;
 }[] = [
@@ -255,9 +255,9 @@ const scenarios: {
     },
   },
   {
-    name: "08 DIFFERS: a crashed Turn before a later reported Turn still reads as running here",
+    name: "08 a crashed Turn before a later reported Turn does not read as running",
     statuses: ["queued"],
-    count: 0,
+    count: 1,
     run: async (f) => {
       await f.send({ id: "a" });
       await f.accept("a", { acceptedAt: new Date(NOW.getTime() - 3_000_000) });
@@ -392,9 +392,9 @@ const scenarios: {
     },
   },
   {
-    name: "21 DIFFERS: a Thread whose only direct message was edited into an unaddressed one",
+    name: "21 a Thread whose only direct message was edited into an unaddressed one is not a Task",
     statuses: [],
-    count: 1,
+    count: 0,
     run: async (f) => {
       await f.send({ id: "a", thread: "t1" });
       await f.send({ id: "a", thread: "t1", direct: false, revision: "2", occurredAt: NOW });
@@ -415,23 +415,6 @@ it.each(scenarios)(
   },
   30_000,
 );
-
-it("writes the direct retention the ambient rule infers continuity from", async () => {
-  const f = await fixture("mention_only");
-  try {
-    await f.send({ id: "a", thread: "t1" });
-    await f.send({ id: "b", thread: "t1", direct: false });
-    const [row] = await client.database
-      .select({ expiresAt: imMessageDeliveries.expiresAt, receivedAt: imMessages.receivedAt })
-      .from(imMessageDeliveries)
-      .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
-      .where(f.deliveriesOf("b"));
-    assert(row);
-    expect(row.expiresAt.getTime() - row.receivedAt.getTime()).toBeGreaterThan(24 * 60 * 60 * 1_000);
-  } finally {
-    await f.inbox.close();
-  }
-}, 30_000);
 
 const HOUR_MS = 60 * 60 * 1_000;
 

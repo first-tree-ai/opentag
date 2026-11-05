@@ -153,6 +153,7 @@
   "agents_status_computer_runtime_sign_in_required": "需要登录 {providerName}",
   "agents_status_computer_runtime_unavailable": "{providerName} 不可用",
   "agents_status_credential_failed": "消息凭据校验失败",
+  "agents_status_credential_provider_unreachable": "暂时无法连接消息服务商",
   "agents_status_credential_rate_limited": "消息凭据校验受到限流",
   "agents_status_credential_timeout": "消息凭据校验超时",
   "agents_status_details_label": "{name}：{status}",

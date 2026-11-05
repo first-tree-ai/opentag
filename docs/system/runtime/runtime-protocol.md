@@ -230,12 +230,22 @@ uses a monotonic 90-second deadline; the stale socket sweep runs at most five se
 Credential validation runs on registration or a changed binding generation, explicit Check again,
 a scoped authentication-failure hint, and a ten-minute timer. A new-protocol validation episode
 makes one external attempt within the existing 15-second grant budget and the provider's ten-second
-request deadline. It does not add automatic retry attempts. Rate limiting sets a ten-minute cooldown;
-manual checks and hints cannot bypass it. Current scoped proxy HTTP 401 responses and Slack's
+request deadline. It does not add automatic retry attempts. A Computer runs one validation process,
+so a check it answers as busy made no external attempt; the Server sends it again within the same
+budget. Rate limiting sets a ten-minute cooldown; manual checks and hints cannot bypass it. Current scoped proxy HTTP 401 responses and Slack's
 recognized revoked/invalid authentication responses trigger a debounced recheck, without changing
 or replaying the original operation. The first check can expose a neutral initialization for at most
 15 seconds. Later checks preserve the previous complete answer until they settle, including an
-explicit timeout failure. A reconnect may reuse one unexpired credential result only for the same
+explicit timeout failure. A ready answer stands for 60 seconds past the ten-minute interval, because
+a recheck can start late and still use its whole budget; after that it reads as a timeout.
+
+Only a verdict from the provider is a failed credential check. A check that could not reach the
+provider (network, DNS, HTTP 5xx, a token endpoint outage) reads as provider unreachable, and rate
+limiting and timeouts keep their own reasons. These resolve on the next check, so they never ask the
+user to reconnect, and they do not replace a rejection the provider already gave for the same
+credential generation. Feishu's rate limit code `99991400` counts as rate limiting on any HTTP status.
+A Server-side token exchange that Feishu refuses is answered to the CLI in Feishu's own shape, so
+proxied checks reach the same verdict as direct ones. A reconnect may reuse one unexpired credential result only for the same
 Computer, installation, binding and credential generation, until its original ten-minute expiry.
 Offline presence always overrides it. No readiness survives Server restart.
 

@@ -83,7 +83,7 @@ describe("a Session message steered into an IM Turn that retries in place", () =
     await s.stop();
   });
 
-  it("fails with the Turn, without a retry, when the Turn reaches its duration limit", async () => {
+  it("runs once more on its own, without a Turn retry, when the Turn reaches its duration limit", async () => {
     const s = await system();
     s.prompt.mockImplementationOnce(attempt(s, "turn_timeout"));
     await s.startTurn();
@@ -91,12 +91,11 @@ describe("a Session message steered into an IM Turn that retries in place", () =
     await s.steer(message);
     s.endAttempt();
     await s.runner.settled();
-    expect(s.prompt).toHaveBeenCalledOnce();
     expect(s.create).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ outcome: "failed", errorReason: "turn_timeout" }),
       3,
     );
-    expect(s.inbox.getState(message.messageId)?.status).toBe("failed");
+    await redeliveredOnce(s, message, 2);
     await s.stop();
   });
 
@@ -141,7 +140,7 @@ describe("a Session message steered into an IM Turn that retries in place", () =
     await s.stop();
   });
 
-  it("fails once when the Turn's retries run out", async () => {
+  it("runs once more on its own when the Turn's retries run out", async () => {
     const s = await system();
     s.prompt
       .mockImplementationOnce(attempt(s, "provider_rate_limited"))
@@ -157,15 +156,11 @@ describe("a Session message steered into an IM Turn that retries in place", () =
       s.endAttempt();
     }
     await s.runner.settled();
-    expect(s.prompt).toHaveBeenCalledTimes(1 + MAX_AUTOMATIC_RETRIES);
-    expect(s.inbox.getState(message.messageId)?.status).toBe("failed");
-    expect(s.onRunOutcome).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ messageId: message.messageId, reason: "session_message_steer_interrupted" }),
-    );
+    await redeliveredOnce(s, message, 2 + MAX_AUTOMATIC_RETRIES);
     await s.stop();
   });
 
-  it("fails without a retry when the Turn's failure is not recoverable", async () => {
+  it("runs once more on its own when the Turn's failure is not recoverable", async () => {
     const s = await system();
     s.prompt.mockImplementationOnce(attempt(s, "provider_error"));
     await s.startTurn();
@@ -173,9 +168,54 @@ describe("a Session message steered into an IM Turn that retries in place", () =
     await s.steer(message);
     s.endAttempt();
     await s.runner.settled();
+    await redeliveredOnce(s, message, 2);
+    await s.stop();
+  });
+
+  it("fails and notifies when the delivery on its own fails too, with no further delivery", async () => {
+    const s = await system();
+    s.prompt.mockImplementationOnce(attempt(s, "provider_error")).mockImplementationOnce(async () => ({
+      runId: "run",
+      status: "failed",
+      output: [],
+      error: { code: "provider_error", message: "failed again" } as never,
+    }));
+    await s.startTurn();
+    const message = s.message("steered");
+    await s.steer(message);
+    s.endAttempt();
+    await s.runner.settled();
+    s.releaseTurn();
+    await vi.waitFor(() => expect(s.inbox.getState(message.messageId)?.status).toBe("failed"));
+    expect(s.prompt).toHaveBeenCalledTimes(2);
+    expect(s.inbox.getState(message.messageId)?.steerRedelivered).toBe(true);
+    expect(s.onRunOutcome).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ messageId: message.messageId, outcome: "failed", reason: "provider_error" }),
+    );
+    await s.stop();
+  });
+
+  it("does not deliver the message again when the Turn was cancelled", async () => {
+    const s = await system();
+    s.prompt.mockImplementationOnce(async () => {
+      s.emit({ type: "run_started", runId: TURN_ID });
+      await new Promise<void>((resolve) => {
+        s.endAttempt = resolve;
+      });
+      s.runEnded("interrupted");
+      return { runId: TURN_ID, status: "cancelled", output: [] };
+    });
+    await s.startTurn();
+    const message = s.message("steered");
+    await s.steer(message);
+    s.endAttempt();
+    await s.runner.settled();
+    await vi.waitFor(() => expect(s.inbox.getState(message.messageId)?.status).toBe("failed"));
+    expect(s.inbox.getState(message.messageId)?.steerRedelivered).toBeUndefined();
     expect(s.prompt).toHaveBeenCalledOnce();
-    expect(s.inbox.getState(message.messageId)?.status).toBe("failed");
-    expect(s.onRunOutcome).toHaveBeenCalledOnce();
+    expect(s.onRunOutcome).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ reason: "session_message_steer_interrupted" }),
+    );
     await s.stop();
   });
 
@@ -197,7 +237,7 @@ describe("a Session message steered into an IM Turn that retries in place", () =
     await new Promise((resolve) => setTimeout(resolve, 0));
     s.endAttempt();
     await s.runner.settled();
-    expect(s.inbox.getState(late.messageId)?.status).toBe("failed");
+    await redeliveredOnce(s, late, 4);
     await s.stop();
   });
 
@@ -231,7 +271,7 @@ describe("a Session message steered into an IM Turn that retries in place", () =
     await s.stop();
   });
 
-  it("fails the message when the Turn cannot retry at all", async () => {
+  it("runs once more on its own when the Turn cannot retry at all", async () => {
     const s = await system();
     s.prompt.mockImplementationOnce(attempt(s, "provider_rate_limited"));
     await s.startTurn();
@@ -240,8 +280,7 @@ describe("a Session message steered into an IM Turn that retries in place", () =
     await s.retries.remove(s.request.sessionId);
     s.endAttempt();
     await s.runner.settled();
-    expect(s.prompt).toHaveBeenCalledOnce();
-    expect(s.inbox.getState(message.messageId)?.status).toBe("failed");
+    await redeliveredOnce(s, message, 2);
     await s.stop();
   });
 
@@ -420,8 +459,7 @@ describe("the retry count shared by process interruptions and model 429", () => 
     second.prepare();
     expect(second.recovery.isPendingRetry(second.request.sessionId, TURN_ID)).toBe(false);
     expect(second.recovery.resume(second.request.sessionId, second.identity)).toBe(false);
-    expect(second.prompt).not.toHaveBeenCalled();
-    await vi.waitFor(() => expect(second.inbox.getState(message.messageId)?.status).toBe("failed"));
+    await vi.waitFor(() => expect(second.inbox.getState(message.messageId)?.steerRedelivered).toBe(true));
     await second.stop();
     await first.stop();
   });
@@ -475,7 +513,7 @@ describe("the retry count shared by process interruptions and model 429", () => 
     await first.stop();
   });
 
-  it("counts a crash and a 429 together, and fails the Turn and its message when they run out", async () => {
+  it("counts a crash and a 429 together; when they run out the Turn fails and its message runs on its own", async () => {
     const first = await system();
     first.prompt.mockImplementationOnce(hangs(first));
     await first.startTurn();
@@ -497,12 +535,11 @@ describe("the retry count shared by process interruptions and model 429", () => 
     await new Promise((resolve) => setTimeout(resolve, 0));
     second.endAttempt();
     await second.runner.settled();
-    expect(second.prompt).toHaveBeenCalledTimes(2);
     expect(second.create).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ outcome: "failed", errorReason: "provider_rate_limited" }),
       3,
     );
-    await vi.waitFor(() => expect(second.inbox.getState(message.messageId)?.status).toBe("failed"));
+    await redeliveredOnce(second, message, 3);
     await second.stop();
     await first.stop();
   });
@@ -573,7 +610,7 @@ describe("the retry count shared by process interruptions and model 429", () => 
     return { next, pending };
   }
 
-  it("stops resuming a Turn after two retries in a row, and fails the messages steered into it", async () => {
+  it("stops resuming a Turn after two retries in a row, and delivers the messages steered into it again", async () => {
     const first = await system();
     first.prompt.mockImplementationOnce(hangs(first));
     await first.startTurn();
@@ -593,15 +630,14 @@ describe("the retry count shared by process interruptions and model 429", () => 
     const { next: last, pending } = await restartTurn(first, 120 * MINUTE);
     daemons.push(last);
     expect(pending).toBe(false);
-    expect(last.inbox.getState(steered.messageId)?.status).toBe("failed");
+    expect(last.inbox.getState(steered.messageId)).toMatchObject({ status: "accepted", steerRedelivered: true });
     expect(last.inbox.getState(queued.messageId)?.status).toBe("accepted");
-    expect(last.onRunOutcome).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ messageId: steered.messageId }),
-    );
-    // A later restart cannot revive it: its failure is being reported.
+    expect(last.onRunOutcome).not.toHaveBeenCalled();
+    // A later restart cannot revive the Turn, and the message keeps its one delivery.
     const { next: later, pending: revived } = await restartTurn(first, 100 * MINUTE);
     daemons.push(later);
     expect(revived).toBe(false);
+    expect(later.inbox.getState(steered.messageId)?.steerRedelivered).toBe(true);
     for (const daemon of daemons) await daemon.stop();
   });
 
@@ -732,15 +768,16 @@ describe("failing the messages of a Turn that ran out of retries", () => {
     return { first, second, message };
   }
 
-  it("does not hold up startup, run the message, or report it until its failure is written", async () => {
+  it("does not hold up startup or run the message until its redelivery is written", async () => {
     const { first, second, message } = await exhausted(1 + 2);
     // The retry record write takes one failure's place only if it comes first: it does not fail here.
     await second.recovery.start();
     await vi.waitFor(() => expect(second.writeFailures()).toBeGreaterThanOrEqual(1));
-    await vi.waitFor(() => expect(second.inbox.getState(message.messageId)?.status).toBe("failed"), { timeout: 8_000 });
+    await vi.waitFor(() => expect(second.inbox.getState(message.messageId)?.steerRedelivered).toBe(true), {
+      timeout: 8_000,
+    });
     expect(second.prompt).not.toHaveBeenCalled();
-    expect(second.onRunOutcome).toHaveBeenCalledOnce();
-    expect(second.inbox.queuedCount).toBe(0);
+    expect(second.onRunOutcome).not.toHaveBeenCalled();
     await second.stop();
     await first.stop();
   }, 12_000);
@@ -813,7 +850,7 @@ describe("Session messages after a crash or restart", () => {
     await first.stop();
   });
 
-  it("fails a message steered into the resumed Turn when that Turn fails, without running it again", async () => {
+  it("runs a message steered into the resumed Turn on its own once when that Turn fails", async () => {
     const first = await system();
     first.prompt.mockImplementationOnce(hangs(first));
     await first.startTurn();
@@ -829,11 +866,7 @@ describe("Session messages after a crash or restart", () => {
     await vi.waitFor(() => expect(second.runtime.steer).toHaveBeenCalledOnce());
     second.endAttempt();
     await second.runner.settled();
-    await vi.waitFor(() => expect(second.inbox.getState(message.messageId)?.status).toBe("failed"));
-    second.releaseTurn();
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(second.prompt).toHaveBeenCalledOnce();
-    expect(second.onRunOutcome).toHaveBeenCalledOnce();
+    await redeliveredOnce(second, message, 2);
     await second.stop();
     await first.stop();
   });
@@ -882,7 +915,7 @@ describe("a Turn whose joined messages meet other paths", () => {
     await s.stop();
   });
 
-  it("fails a message the provider processed when the Turn's own result is a failure", async () => {
+  it("delivers a message the provider processed again when the Turn's own result is a failure", async () => {
     const s = await system();
     s.prompt.mockImplementationOnce(async (_input) => {
       s.emit({ type: "run_started", runId: TURN_ID });
@@ -901,7 +934,7 @@ describe("a Turn whose joined messages meet other paths", () => {
     await s.steer(message);
     s.endAttempt();
     await s.runner.settled();
-    expect(s.inbox.getState(message.messageId)?.status).toBe("failed");
+    await redeliveredOnce(s, message, 2);
     await s.stop();
   });
 
@@ -979,6 +1012,17 @@ describe("the input of a Session message in a retry", () => {
     await s.stop();
   });
 });
+
+/** The Turn failed and the message then succeeded in its one delivery on its own, the last of `prompts`. */
+async function redeliveredOnce(s: System, message: SessionMessageDeliveryRequestV3, prompts: number): Promise<void> {
+  s.releaseTurn();
+  await vi.waitFor(() => expect(s.inbox.getState(message.messageId)?.status).toBe("succeeded"));
+  expect(s.inbox.getState(message.messageId)?.steerRedelivered).toBe(true);
+  expect(s.prompt).toHaveBeenCalledTimes(prompts);
+  expect(s.promptText(prompts - 1)).toContain("Your previous turn was interrupted");
+  expect(s.promptText(prompts - 1)).toContain("may duplicate");
+  expect(s.onRunOutcome).not.toHaveBeenCalled();
+}
 
 /** One attempt of the Turn. A timeout comes from the Turn's real budget; others end on `endAttempt`. */
 function attempt(s: System, ending: "turn_timeout" | "provider_rate_limited" | "provider_error" | "completed") {

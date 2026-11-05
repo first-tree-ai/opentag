@@ -72,6 +72,12 @@ export interface JoinableRuns {
   steered(message: SessionMessageDeliveryRequestV3, runId: string, receipt: AgentSteerReceipt): void;
 }
 
+/**
+ * What became of a message in a Run that ended: a steer outcome, or `cancelled` when a stop or cancel
+ * ended the Run, which does not deliver the message again.
+ */
+export type JoinedRunOutcome = AgentSteerOutcome | "cancelled";
+
 export interface SessionMessageInboxOptions {
   admission: AdmissionController;
   cliCommand?: string;
@@ -160,7 +166,7 @@ export class SessionMessageInbox {
   /** Joined messages whose Turn ran out of retries; each keeps its queue place until its failure commits. */
   readonly #failingJoined = new Set<string>();
   /** Messages in a joinable Run: how to settle each one when that Run ends. */
-  readonly #joined = new Map<string, (outcome: AgentSteerOutcome) => Promise<void>>();
+  readonly #joined = new Map<string, (outcome: JoinedRunOutcome) => Promise<void>>();
   readonly #queues = new Map<string, QueuedMessage[]>();
   readonly #drains = new Map<string, Promise<void>>();
   /** Sessions whose queued messages wait for the Server to prepare them (e.g. after a restart). */
@@ -573,9 +579,9 @@ export class SessionMessageInbox {
   }
 
   /**
-   * A Turn's retries ran out at startup: the messages steered into it share its count, so they fail with
-   * it instead of running again. One whose failure cannot be written yet stays queued and is not run: the
-   * drain keeps trying before anything else. Never waits for that, so a full disk cannot hold up startup.
+   * A Turn's retries ran out at startup. A message steered into it is delivered again on its own, once,
+   * and one that already was fails. One whose new state cannot be written yet stays queued and is not run:
+   * the drain keeps trying before anything else. Never waits for that, so a full disk cannot hold up startup.
    */
   async failJoinedRun(runId: string): Promise<void> {
     for (const record of [...this.#records.values()]) {
@@ -588,7 +594,7 @@ export class SessionMessageInbox {
     }
   }
 
-  /** A joined message whose Turn ran out of retries never runs: it waits here for its failure to commit. */
+  /** A joined message whose Turn ran out of retries does not run until what becomes of it is durable. */
   async #holdFailingJoined(next: QueuedMessage): Promise<boolean> {
     const key = sessionMessageKey(next.request);
     if (!this.#failingJoined.has(key)) return false;
@@ -596,11 +602,29 @@ export class SessionMessageInbox {
     return true;
   }
 
-  /** True once the message's failure is durable and reported, and only then is it out of the queue. */
+  /**
+   * True once the message's next delivery is durable, or its failure is durable and reported, and only
+   * then is it out of the queue.
+   */
   async #settleJoinedFailure(key: string): Promise<boolean> {
     const record = this.#records.get(key);
     if (!record) return true;
     const messageId = record.payload.messageId;
+    if (!record.steerRedelivered) {
+      const next = redelivered(record, record.interruption?.reason, this.#now());
+      const written = await this.#persist(next).then(
+        () => true,
+        () => false,
+      );
+      if (written) this.#failingJoined.delete(key);
+      else {
+        this.#logger.warn(
+          { code: "SESSION_MESSAGE_PERSISTENCE_FAILED", messageId, status: next.status },
+          "Session message redelivery could not be recorded; it stays queued and is not run",
+        );
+      }
+      return written;
+    }
     const failure = interruptedFailure(record.payload.requestId, "daemon_crash");
     const terminal = await this.#transition(
       { ...record, attempts: record.attempts + 1, lastError: failure, updatedAt: this.#now() },
@@ -630,7 +654,7 @@ export class SessionMessageInbox {
   }
 
   /** The Run this message joined ended; resolves once the message's outcome is durable. */
-  settleJoined(message: SessionMessageDeliveryRequestV3, outcome: AgentSteerOutcome): Promise<void> {
+  settleJoined(message: SessionMessageDeliveryRequestV3, outcome: JoinedRunOutcome): Promise<void> {
     const key = sessionMessageKey(message);
     const settle = this.#joined.get(key);
     this.#joined.delete(key);
@@ -638,8 +662,8 @@ export class SessionMessageInbox {
   }
 
   #joinRun(record: DurableWorkRecord<SessionMessageDeliveryRequestV3>, hash: string): void {
-    let resolve!: (outcome: AgentSteerOutcome) => void;
-    const outcome = new Promise<AgentSteerOutcome>((done) => {
+    let resolve!: (outcome: JoinedRunOutcome) => void;
+    const outcome = new Promise<JoinedRunOutcome>((done) => {
       resolve = done;
     });
     const settlement = this.#trackSteered(record, hash, outcome);
@@ -652,7 +676,7 @@ export class SessionMessageInbox {
   #trackSteered(
     record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
     hash: string,
-    steerOutcome: Promise<AgentSteerOutcome>,
+    steerOutcome: Promise<JoinedRunOutcome>,
   ): Promise<void> {
     const settlement = untilAborted(steerOutcome, this.#abort.signal)
       // Once stopped, the `running` record is recovered on the next start instead.
@@ -666,18 +690,23 @@ export class SessionMessageInbox {
    * Resolves a steered message once its joined Run settled:
    * - `processed`: delivered.
    * - `not_started`: the provider never began it, so it returns to the FIFO and is delivered again.
-   * - `interrupted`: the Run it joined ended without completing and has no further in-place retry to
-   *   carry it, so it fails permanently.
+   * - `interrupted`: the Run it joined finally failed, so it is delivered again on its own, once. A
+   *   message that already was fails permanently.
+   * - `cancelled`: a stop or cancel ended the Run, so it fails permanently.
    */
   async #settleSteered(
     joined: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
     hash: string,
-    outcome: AgentSteerOutcome,
+    outcome: JoinedRunOutcome,
   ): Promise<void> {
     // A retry that carried the message spent its attempt on the record since it joined.
     const record = this.#records.get(joined.key) ?? joined;
     const messageId = record.payload.messageId;
-    if (outcome === "interrupted") {
+    if (outcome === "interrupted" && !record.steerRedelivered) {
+      await this.#redeliverSteered(record, hash);
+      return;
+    }
+    if (outcome === "interrupted" || outcome === "cancelled") {
       await this.#handleFailure(record, hash, "prompt", steerInterruptedFailure(record.payload.requestId));
       return;
     }
@@ -693,6 +722,23 @@ export class SessionMessageInbox {
     }
     this.#remember(record.key, { hash, status });
     if (outcome === "not_started") this.#enqueue(next.payload, hash);
+  }
+
+  /** The record is durable before the message runs again, so a restart cannot deliver it twice this way. */
+  async #redeliverSteered(record: DurableWorkRecord<SessionMessageDeliveryRequestV3>, hash: string): Promise<void> {
+    try {
+      const next = redelivered(record, "steered_run_failed", this.#now());
+      await this.#transition(next, next.status);
+    } catch {
+      // The record stays `running` on disk, so a restart recovers it.
+      this.#logger.warn(
+        { code: "SESSION_MESSAGE_STEER_PERSISTENCE_FAILED", messageId: record.payload.messageId },
+        "Session message could not be recorded for its delivery after the steered Run failed",
+      );
+      return;
+    }
+    this.#remember(record.key, { hash, status: "accepted" });
+    this.#enqueue(record.payload, hash);
   }
 
   /**
@@ -721,7 +767,7 @@ export class SessionMessageInbox {
         attempt = await this.#attemptRun(sessionId, next, run);
       }
       // After a stop, the `running` records of these messages are recovered on the next start instead.
-      if (!this.#abort.signal.aborted) await run.settle(attempt === "completed");
+      if (!this.#abort.signal.aborted) await run.settle(attempt);
     } finally {
       this.#messageRuns.delete(run.id);
       await this.#reconciler.withAgentLock(next.request.agentId, async () => reservation.release());
@@ -733,7 +779,7 @@ export class SessionMessageInbox {
     sessionId: string,
     next: QueuedMessage,
     run: SessionMessageRun,
-  ): Promise<"completed" | "ended" | { retry: DurableWorkRecord<SessionMessageDeliveryRequestV3> }> {
+  ): Promise<"completed" | "ended" | "cancelled" | { retry: DurableWorkRecord<SessionMessageDeliveryRequestV3> }> {
     const runId = run.id;
     const key = `${next.request.targetSessionId}:${next.request.messageId}`;
     let current = this.#records.get(key);
@@ -745,7 +791,8 @@ export class SessionMessageInbox {
     let timer: { cancel(): void } | undefined;
     let runSignal: AbortSignal | undefined;
     let executionSignal: AbortSignal | undefined;
-    let outcome: "completed" | "ended" | { retry: DurableWorkRecord<SessionMessageDeliveryRequestV3> } = "ended";
+    let outcome: "completed" | "ended" | "cancelled" | { retry: DurableWorkRecord<SessionMessageDeliveryRequestV3> } =
+      "ended";
     let runTime: { finish(): Promise<number> } | undefined;
     const settleRunTime = async () => {
       // Once per Run: a returned failure reaches this again on its way to the failure path.
@@ -837,9 +884,10 @@ export class SessionMessageInbox {
     } catch (error) {
       // Only the Run budget timer counts as a timeout; daemon stop and revocation keep their
       // existing recovery semantics.
-      const timedOut = timeout.signal.aborted && !this.#abort.signal.aborted && executionSignal?.aborted !== true;
+      const revoked = executionSignal?.aborted === true;
+      const timedOut = timeout.signal.aborted && !this.#abort.signal.aborted && !revoked;
       await settleRunTime();
-      if (current) outcome = await this.#attemptFailed(current, next.hash, run, phase, error, timedOut);
+      if (current) outcome = await this.#attemptFailed(current, next.hash, run, phase, error, timedOut, revoked);
     } finally {
       timer?.cancel();
       await this.#cleanupTurnPlan(turnPlanInput);
@@ -860,11 +908,14 @@ export class SessionMessageInbox {
     phase: string,
     error: unknown,
     timedOut: boolean,
-  ): Promise<"ended" | { retry: DurableWorkRecord<SessionMessageDeliveryRequestV3> }> {
+    revoked: boolean,
+  ): Promise<"ended" | "cancelled" | { retry: DurableWorkRecord<SessionMessageDeliveryRequestV3> }> {
     // On a stop the restarted daemon recovers the messages, so nothing here waits for them.
     const steersSettled = this.#abort.signal.aborted || (await run.endAttempt());
     const retry = await this.#handleFailure(record, hash, phase, error, timedOut, steersSettled);
-    return retry ? { retry } : "ended";
+    if (retry) return { retry };
+    // Revocation or control/owner replacement stopped the Run, which does not deliver its messages again.
+    return revoked ? "cancelled" : "ended";
   }
 
   #requirePreparedOutbox(
@@ -967,11 +1018,13 @@ export class SessionMessageInbox {
       const pending = await this.#hydrateRecord(stored, waiting);
       if (pending) unpublished.push(pending);
     }
-    // Only now, with every record restored: a message fails with the Run it joined instead of running.
+    // Only now, with every record restored: a message whose Run failed is not steered back into it.
     for (const { record, hash } of waiting) {
-      if (this.#joinedRunFailed(record)) {
+      if (this.#joinedRunFailed(record) && record.steerRedelivered) {
         const reason = recoverableFailure(record.interruption?.reason) ?? "daemon_crash";
         await this.#failTerminally(record, hash, "runtime", interruptedFailure(record.payload.requestId, reason));
+      } else if (this.#joinedRunFailed(record)) {
+        await this.#redeliverSteered(record, hash);
       } else {
         this.#enqueue(record.payload, hash);
       }
@@ -1322,6 +1375,23 @@ function withCarriedMessages(input: AgentInput, carried: readonly AgentInput[]):
       },
       ...carried.flatMap((message) => message.items),
     ],
+  };
+}
+
+/** The message's record for its one delivery on its own after the Run it was steered into failed. */
+function redelivered(
+  record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
+  reason: string | undefined,
+  now: number,
+): DurableWorkRecord<SessionMessageDeliveryRequestV3> {
+  const { joinedRunId: _joined, retryRanMs: _retryRan, ...rest } = record;
+  return {
+    ...rest,
+    attempts: 0,
+    interruption: { reason: reason ?? "steered_run_failed", at: new Date(now).toISOString() },
+    status: "accepted",
+    steerRedelivered: true,
+    updatedAt: now,
   };
 }
 

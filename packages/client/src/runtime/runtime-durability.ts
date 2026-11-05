@@ -165,6 +165,11 @@ export interface DurableWorkRecord<T = unknown> {
   readonly retryRanMs?: number;
   /** Session-message only: the Run this message was steered into, whose retry count it shares. */
   readonly joinedRunId?: string;
+  /**
+   * Session-message only: the Run it was steered into failed and it was delivered again. That happens
+   * once per message, and this survives a restart so it stays once.
+   */
+  readonly steerRedelivered?: boolean;
   readonly interruption?: { readonly reason: string; readonly at: string };
   readonly payload: T;
   readonly status: DurableWorkStatus;

@@ -115,7 +115,7 @@ are acceptable: the Provider may or may not have persisted the interrupted turn.
 - On startup the daemon counts the retry durably before anything runs, unless a
   429 already counted it and only the wait was interrupted. When the
   retries have run out, the Turn gets its recovery report and the Session
-  messages steered into it fail with it. The IM Turn's original
+  messages steered into it are delivered again on their own, once. The IM Turn's original
   input lives in a per-Session file under `data/runtime/turn-retries/`, written
   at acceptance and removed when the Turn's result is recorded. It is part of
   the acceptance boundary: when it cannot be written, the just-committed

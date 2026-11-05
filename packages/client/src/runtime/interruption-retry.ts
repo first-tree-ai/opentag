@@ -26,10 +26,16 @@ import { deriveRuntimeKey } from "./runtime-paths.js";
  *   power loss; a Session message steered into a Turn records nothing itself, so also a stop).
  * - `client_shutdown`: an orderly daemon stop (restart, upgrade) cancelled the Run.
  * - `provider_rate_limited`: the model API answered HTTP 429.
+ * - `steered_run_failed`: the Run a Session message was steered into failed, and the message runs again.
  */
-export type InterruptionReason = "daemon_crash" | "client_shutdown" | "provider_rate_limited";
+export type InterruptionReason = "daemon_crash" | "client_shutdown" | "provider_rate_limited" | "steered_run_failed";
 
-const REASONS = new Set<InterruptionReason>(["daemon_crash", "client_shutdown", "provider_rate_limited"]);
+const REASONS = new Set<InterruptionReason>([
+  "daemon_crash",
+  "client_shutdown",
+  "provider_rate_limited",
+  "steered_run_failed",
+]);
 
 /** At most this many automatic retries in a row. */
 export const MAX_AUTOMATIC_RETRIES = 2;
@@ -111,6 +117,8 @@ function describeInterruption(reason: InterruptionReason): string {
       return "the OpenTag daemon was restarted or upgraded";
     case "provider_rate_limited":
       return "the model API rate-limited the request (HTTP 429)";
+    case "steered_run_failed":
+      return "the turn this message was steered into failed";
   }
 }
 

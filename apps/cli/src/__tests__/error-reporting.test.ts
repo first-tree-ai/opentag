@@ -483,6 +483,32 @@ describe("reportCommandFailure", () => {
     await expect(reportCommandFailure(new Error("x"), validation, { home, fetchImpl })).resolves.toEqual({ ok: false });
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
+
+  it("never reports broken-pipe (EPIPE) errors through reportCliError or reportCommandFailure", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 202 }));
+    const home = await loggedInHome("https://opentag.example");
+    const epipe = Object.assign(new Error("write EPIPE"), { code: "EPIPE", errno: -32, syscall: "write" });
+    const wrappedEpipe = new Error("wrapped write failure", { cause: epipe });
+    const epipeCommandError = new CommandError(
+      { code: "EPIPE", category: "internal", retryability: "never", phase: "shutdown" },
+      "write EPIPE",
+    );
+    const internalCommandError = new CommandError(
+      { code: "INTERNAL_ERROR", category: "internal", retryability: "never", phase: "unknown" },
+      "write EPIPE",
+    );
+
+    expect(shouldReportCommandError(epipeCommandError)).toBe(false);
+    await expect(reportCliError(epipe, { home, fetchImpl })).resolves.toEqual({ ok: false });
+    await expect(reportCliError(wrappedEpipe, { home, fetchImpl })).resolves.toEqual({ ok: false });
+    await expect(reportCommandFailure(epipe, internalCommandError, { home, fetchImpl })).resolves.toEqual({
+      ok: false,
+    });
+    await expect(reportCommandFailure(new Error("other"), epipeCommandError, { home, fetchImpl })).resolves.toEqual({
+      ok: false,
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 });
 
 describe("installCliProcessErrorReporting", () => {

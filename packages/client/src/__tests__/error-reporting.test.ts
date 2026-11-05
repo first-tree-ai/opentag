@@ -236,4 +236,31 @@ describe("installProcessErrorReporting", () => {
     target.emit("uncaughtException", new Error("boom"));
     await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(1));
   });
+
+  it("exits cleanly with code 0 without logging, printing, or reporting on EPIPE", () => {
+    for (const [origin, failure] of [
+      ["uncaughtException", Object.assign(new Error("write EPIPE"), { code: "EPIPE", errno: -32, syscall: "write" })],
+      [
+        "unhandledRejection",
+        new Error("wrapped broken pipe", {
+          cause: Object.assign(new Error("write EPIPE"), { code: "EPIPE" }),
+        }),
+      ],
+    ] as const) {
+      const target = new EventEmitter();
+      const { entries, logger } = recordingLogger();
+      const report = vi.fn().mockResolvedValue({ ok: true });
+      const exit = vi.fn();
+      const print = vi.fn();
+      const uninstall = installProcessErrorReporting({ report, logger, target, exit, print, waitMs: 50 });
+
+      target.emit(origin, failure);
+
+      expect(exit).toHaveBeenCalledExactlyOnceWith(0);
+      expect(report).not.toHaveBeenCalled();
+      expect(print).not.toHaveBeenCalled();
+      expect(entries).toEqual([]);
+      uninstall();
+    }
+  });
 });

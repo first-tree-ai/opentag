@@ -4,8 +4,11 @@ import { buildChildEnvironment } from "../core/command/environment.js";
 import {
   CommandError,
   type CommandResult,
+  commandExitCode,
   EXIT_CODES,
   executeCommand,
+  isBrokenPipeError,
+  observeCommandFailures,
   presentCommand,
   toCommandError,
 } from "../core/command/policy.js";
@@ -157,6 +160,101 @@ describe("CLI command result policy", () => {
       error: { requestId: "request-file-1" },
     });
     expect(stderr.join(" ")).toContain("request request-file-1");
+  });
+
+  it("treats broken-pipe (EPIPE) errors as a clean exit without stderr output, error logs, or failure observers", async () => {
+    const epipe = Object.assign(new Error("write EPIPE"), { code: "EPIPE", errno: -32, syscall: "write" });
+    const wrappedEpipe = new Error("downstream closed", { cause: epipe });
+    const circular: { cause?: unknown; code?: string } = {};
+    circular.cause = circular;
+
+    expect(isBrokenPipeError(epipe)).toBe(true);
+    expect(isBrokenPipeError(wrappedEpipe)).toBe(true);
+    expect(isBrokenPipeError(circular)).toBe(false);
+    expect(isBrokenPipeError(new Error("boom"))).toBe(false);
+
+    const commandError = toCommandError(epipe);
+    expect(commandError).toMatchObject({
+      code: "EPIPE",
+      category: "cancelled",
+      retryability: "never",
+      phase: "shutdown",
+    });
+    expect(commandExitCode(commandError)).toBe(EXIT_CODES.success);
+
+    const stderr: string[] = [];
+    expect(
+      presentCommand(
+        { ok: false, error: commandError, exitCode: commandExitCode(commandError) },
+        { stderr: (chunk) => stderr.push(chunk) },
+      ),
+    ).toBe(EXIT_CODES.success);
+    expect(stderr).toEqual([]);
+
+    expect(
+      presentCommand(
+        { ok: true, value: "hello", exitCode: EXIT_CODES.success },
+        {
+          stdout: () => {
+            throw epipe;
+          },
+          stderr: (chunk) => stderr.push(chunk),
+        },
+      ),
+    ).toBe(EXIT_CODES.success);
+    expect(
+      presentCommand(
+        {
+          ok: false,
+          error: new CommandError(
+            { code: "INTERNAL_ERROR", category: "internal", retryability: "never", phase: "request" },
+            "failed",
+          ),
+          exitCode: EXIT_CODES.failure,
+        },
+        {
+          stderr: () => {
+            throw epipe;
+          },
+        },
+      ),
+    ).toBe(EXIT_CODES.success);
+    expect(() =>
+      presentCommand(
+        { ok: true, value: "hello", exitCode: EXIT_CODES.success },
+        {
+          stdout: () => {
+            throw new Error("write EIO");
+          },
+        },
+      ),
+    ).toThrow("write EIO");
+
+    const observed = vi.fn();
+    const detach = observeCommandFailures(observed);
+    const errorLog = vi.fn();
+    const logger: ClientLogger = {
+      child: () => logger,
+      debug: () => undefined,
+      error: errorLog,
+      info: () => undefined,
+      warn: () => undefined,
+    };
+    try {
+      await expect(
+        executeCommand(
+          async () => {
+            throw epipe;
+          },
+          { logger, stderr: (chunk) => stderr.push(chunk) },
+        ),
+      ).resolves.toBe(EXIT_CODES.success);
+      expect(stderr).toEqual([]);
+      expect(errorLog).not.toHaveBeenCalled();
+      expect(observed).not.toHaveBeenCalled();
+    } finally {
+      detach();
+    }
   });
 });
 

@@ -1,7 +1,7 @@
 import type { ListTasksResponse, TaskSummary } from "@opentag/shared/browser";
 import { useInfiniteQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
-import { type ReactNode, type Ref, useMemo, useRef, useState } from "react";
+import { type ReactNode, type Ref, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, browserApi } from "../api.js";
 import { PageHeader } from "../components/kumo/page-header/page-header.js";
 import { compareText, foldCase, formatDateTime, formatRelativeTime } from "../i18n/format.js";
@@ -33,7 +33,7 @@ import {
 } from "./resource/resource-state.js";
 import { useRememberedState } from "./shell/shell-memory.js";
 import { TaskCancelControl } from "./task-cancel.js";
-import { TaskActivity } from "./task-conversation.js";
+import { TaskActivity, TaskInternalSessionsList } from "./task-conversation.js";
 import type { TaskDetailView } from "./task-detail-view.js";
 import {
   TASK_STATUS_GROUPS,
@@ -426,6 +426,8 @@ export function TaskDetailPage({
   }
 
   const task = first.task;
+  const internalSessions =
+    (internalSessionsQuery.supplied ? internalSessionsQuery.sessions : first.internalSessions) ?? [];
   const repliesStatus = <TaskRepliesStatus query={repliesQuery} />;
   const pagination = (
     <TaskActivityPagination loadMoreError={loadMoreError} repliesQuery={repliesQuery} taskQuery={taskQuery} />
@@ -438,34 +440,80 @@ export function TaskDetailPage({
         <TaskBackLink agentId={agentId ?? task.agent.id} showExamples={showExamples} />
       </nav>
 
-      <header className="grid grid-cols-1 gap-4" data-ui="task-conversation-header">
-        {/*
-         * The title may be a message excerpt or a saved title, so nothing shares its row. The
-         * status is a fact about the Task and sits with the other facts, last, where it reads as
-         * the outcome of what precedes it; equal columns keep it in one place whatever the title
-         * or the Agent name measures.
-         */}
-        <div className="min-w-0 wrap-anywhere">
-          <Text as="h1" headingSize="body" variant="heading">
-            {task.title}
-          </Text>
-        </div>
-        <TaskDetailFacts agentScoped={agentId === task.agent.id} task={task} />
-        <TaskCancelControl detailKey={detailKey} enabled={!showExamples} task={task} />
+      {/* The title may be a message excerpt or a saved title, so nothing shares its row. */}
+      <header className="min-w-0 wrap-anywhere" data-ui="task-conversation-header">
+        <Text as="h1" headingSize="body" variant="heading">
+          {task.title}
+        </Text>
       </header>
 
       {refreshError ? <ResourceRefreshNotice error={refreshError} onRetry={() => void taskQuery.refetch()} /> : null}
 
-      <TaskActivity
-        task={task}
-        internalSessions={internalSessionsQuery.supplied ? internalSessionsQuery.sessions : first.internalSessions}
-        internalSessionsFooter={<TaskInternalSessionsPagination query={internalSessionsQuery} />}
-        replies={repliesQuery.supplied ? repliesQuery.replies : undefined}
-        repliesStatus={repliesStatus}
-        turns={turns}
-        pagination={pagination}
-      />
+      {/*
+       * The overview comes first in the document on every width: a narrow page reads it above the
+       * conversation, and a wide page only places it in the side column, so keyboard and screen
+       * reader order stays one order, the outcome before the record. 56rem keeps two columns on a
+       * 1280px window, where the conversation column still has about 590px.
+       */}
+      <div
+        className="grid grid-cols-1 gap-6 @min-[56rem]/content:grid-cols-[minmax(0,1fr)_18rem] @min-[56rem]/content:gap-8"
+        data-ui="task-detail-layout"
+      >
+        <TaskDetailOverview>
+          <TaskDetailFacts agentScoped={agentId === task.agent.id} task={task} />
+          <TaskCancelControl detailKey={detailKey} enabled={!showExamples} task={task} />
+          <TaskInternalSessionsList
+            footer={<TaskInternalSessionsPagination query={internalSessionsQuery} />}
+            sessions={internalSessions}
+          />
+        </TaskDetailOverview>
+        <div className="min-w-0 @min-[56rem]/content:col-start-1 @min-[56rem]/content:row-start-1">
+          <TaskActivity
+            task={task}
+            emptyStateHidden={internalSessions.length > 0}
+            replies={repliesQuery.supplied ? repliesQuery.replies : undefined}
+            repliesStatus={repliesStatus}
+            turns={turns}
+            pagination={pagination}
+          />
+        </div>
+      </div>
     </article>
+  );
+}
+
+/**
+ * The Task's facts, cancel control and internal Sessions. Beside the conversation it stays in view
+ * while the conversation scrolls, and scrolls on its own once it is taller than the window. It takes
+ * a keyboard stop only while it actually scrolls. The horizontal margin leaves room for the focus
+ * outline of a title at its edge, which a scrolling region would otherwise clip.
+ */
+function TaskDetailOverview({ children }: { children: ReactNode }) {
+  const contentRef = useRef<HTMLDivElement>(null);
+  const regionRef = useRef<HTMLElement>(null);
+  const [scrolls, setScrolls] = useState(false);
+  useEffect(() => {
+    const region = regionRef.current;
+    const content = contentRef.current;
+    if (!region || !content || typeof ResizeObserver === "undefined") return;
+    const measure = () => setScrolls(region.scrollHeight > region.clientHeight + 1);
+    const observer = new ResizeObserver(measure);
+    observer.observe(region);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, []);
+  return (
+    <section
+      aria-label={m.tasks_overview()}
+      className="min-w-0 @min-[56rem]/content:sticky @min-[56rem]/content:top-6 @min-[56rem]/content:col-start-2 @min-[56rem]/content:row-start-1 @min-[56rem]/content:-mx-1 @min-[56rem]/content:max-h-[calc(100dvh-3rem)] @min-[56rem]/content:self-start @min-[56rem]/content:overflow-y-auto @min-[56rem]/content:px-1"
+      data-ui="task-detail-overview"
+      ref={regionRef}
+      tabIndex={scrolls ? 0 : undefined}
+    >
+      <div className="grid grid-cols-1 gap-6" ref={contentRef}>
+        {children}
+      </div>
+    </section>
   );
 }
 
@@ -902,8 +950,8 @@ function TaskDetailFacts({ agentScoped, task }: { agentScoped: boolean; task: Ta
   return (
     <dl
       className={`grid grid-cols-2 gap-x-8 gap-y-4 border-y border-kumo-line py-4 @min-[36rem]/content:grid-cols-3 ${
-        agentScoped ? "@min-[48rem]/content:grid-cols-4" : "@min-[60rem]/content:grid-cols-5"
-      }`}
+        agentScoped ? "@min-[48rem]/content:grid-cols-4" : ""
+      } @min-[56rem]/content:grid-cols-1 @min-[56rem]/content:border-t-0 @min-[56rem]/content:pt-0`}
       aria-label={m.tasks_details()}
     >
       {agentScoped ? null : (

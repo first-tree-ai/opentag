@@ -2255,4 +2255,57 @@ describe("provider CLI reconciler", () => {
     expect(runtime.setImCliReadiness).toHaveBeenLastCalledWith({ provider: "slack", status: "ready" });
     await reconciler.close();
   });
+
+  it("does not let refreshPublishedImCliReadiness overwrite an active ensure prewarm with a stale install inspection", async () => {
+    const runtime = connection();
+    const fixture = await externalReadyFixture();
+    let initial = true;
+    let ensured = false;
+    let ensureStarted!: () => void;
+    let releaseEnsure!: () => void;
+    let releasePassive!: (value: ProviderCliInspection) => void;
+    const started = new Promise<void>((resolve) => {
+      ensureStarted = resolve;
+    });
+    const ensureGate = new Promise<void>((resolve) => {
+      releaseEnsure = resolve;
+    });
+    const passiveGate = new Promise<ProviderCliInspection>((resolve) => {
+      releasePassive = resolve;
+    });
+    const inspect = vi.fn(async () => {
+      if (initial) {
+        initial = false;
+        return notReadyInspect("slack", "install", { code: "not_installed" });
+      }
+      if (!ensured) return passiveGate;
+      return fixture.inspection;
+    });
+    const ensure = vi.fn(async () => {
+      ensureStarted();
+      await ensureGate;
+      ensured = true;
+      return { ok: true, action: "installed-managed" } as never;
+    });
+    const reconciler = new ProviderCliReconciler({
+      connection: runtime,
+      manager: { inspect, ensure, layout: fixture.layout },
+      refreshRuntimeProvider: vi.fn(async () => ({ provider: "codex" as const, status: "ready" as const })),
+      validation: { run: vi.fn(), cleanupAll: vi.fn() },
+    });
+
+    const active = runtime.emit({ ...prewarm, mode: "ensure", runtimeProvider: "codex", providers: ["slack"] });
+    await started;
+    const passive = reconciler.refreshPublishedImCliReadiness();
+    releasePassive(notReadyInspect("slack", "install", { code: "not_installed" }));
+    await passive;
+    releaseEnsure();
+    await active;
+
+    expect(runtime.setImCliReadiness.mock.calls.map(([observation]) => observation)).toEqual([
+      { provider: "slack", status: "checking" },
+      { provider: "slack", status: "ready" },
+    ]);
+    await reconciler.close();
+  });
 });

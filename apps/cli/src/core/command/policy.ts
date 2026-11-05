@@ -62,7 +62,7 @@ export class CommandError extends Error {
 
 type SuccessCommandResult<T> = { ok: true; value: T; exitCode: typeof EXIT_CODES.success };
 type FailureCommandResultBase<T> = { ok: false; error: CommandError; value?: T };
-type FailureCommandResult<T> = FailureCommandResultBase<T> & { exitCode: Exclude<CommandExitCode, 0> };
+type FailureCommandResult<T> = FailureCommandResultBase<T> & { exitCode: CommandExitCode };
 export type CommandResult<T> = SuccessCommandResult<T> | FailureCommandResult<T>;
 type CommandFormatValueOptions<T> = { formatValue?: (value: T) => string };
 type CommandFormatWriterOptions = { stdout?: (chunk: string) => void; stderr?: (chunk: string) => void };
@@ -73,9 +73,75 @@ export type CommandExecutionOptions<T> = CommandPresentationOptions<T> & {
   phase?: CommandPhase;
 };
 
+const OUTPUT_BROKEN_PIPE_SYMBOL = Symbol.for("opentag.outputBrokenPipe");
+
+/** Whether an error (or any cause in its chain) carries `code === "EPIPE"`. */
+export function hasBrokenPipeCode(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (current !== null && typeof current === "object" && !seen.has(current)) {
+    seen.add(current);
+    if ((current as { code?: unknown }).code === "EPIPE") return true;
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/**
+ * Mark an `EPIPE` error (and any `EPIPE` cause in its chain) as originating from a CLI
+ * `stdout`/`stderr` write or stream error boundary. Only errors marked at an owned output boundary
+ * are treated as clean downstream pipe closures; non-output `EPIPE` failures (such as a child
+ * process `stdin` pipe) remain reportable internal errors.
+ */
+export function markOutputBrokenPipeError<T>(error: T): T {
+  if (!hasBrokenPipeCode(error)) return error;
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (current !== null && typeof current === "object" && !seen.has(current)) {
+    seen.add(current);
+    if (current === error || (current as { code?: unknown }).code === "EPIPE") {
+      Object.defineProperty(current, OUTPUT_BROKEN_PIPE_SYMBOL, {
+        value: true,
+        configurable: true,
+      });
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return error;
+}
+
+/**
+ * Whether an error (or any cause in its chain) is a broken-pipe write (`EPIPE`) confirmed at the
+ * CLI `stdout`/`stderr` output boundary.
+ */
+export function isBrokenPipeError(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (current !== null && typeof current === "object" && !seen.has(current)) {
+    seen.add(current);
+    if (
+      (current as { code?: unknown }).code === "EPIPE" &&
+      (current as { [OUTPUT_BROKEN_PIPE_SYMBOL]?: unknown })[OUTPUT_BROKEN_PIPE_SYMBOL] === true
+    ) {
+      return true;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 /** Convert errors from Commander, Zod, the API, and Node into one local contract. */
 export function toCommandError(error: unknown, phase: CommandPhase = "unknown"): CommandError {
   if (error instanceof CommandError) return error;
+  if (isBrokenPipeError(error)) {
+    return markOutputBrokenPipeError(
+      new CommandError(
+        { code: "EPIPE", category: "cancelled", retryability: "never", phase: "shutdown" },
+        "The output stream was closed by the reader",
+        { cause: error },
+      ),
+    );
+  }
   if (isZodError(error)) {
     return new CommandError(
       { code: "VALIDATION_ERROR", category: "validation", retryability: "never", phase: "validation" },
@@ -193,27 +259,50 @@ export function presentCommand<T>(
     const output = options.json
       ? JSON.stringify({ ok: true, result: value })
       : (options.formatValue ?? ((item) => formatHumanValue(item)))(value);
-    stdout(`${output}\n`);
+    writeOutputLine(stdout, output);
     return EXIT_CODES.success;
   }
   const error = result.error;
-  const value = result.value === undefined ? undefined : redactValue(result.value);
-  const output = options.json
-    ? JSON.stringify({
-        ok: false,
-        error: {
-          code: error.code,
-          category: error.category,
-          retryability: error.retryability,
-          phase: error.phase,
-          ...(error.requestId ? { requestId: error.requestId } : {}),
-          message: error.message,
-        },
-        ...(value === undefined ? {} : { result: value }),
-      })
-    : `${error.code}: ${error.message}${error.requestId ? ` (request ${error.requestId})` : ""}`;
-  stderr(`${output}\n`);
+  if (isBrokenPipeError(error)) {
+    return EXIT_CODES.success;
+  }
+  const output = formatFailureOutput(error, result.value, Boolean(options.json));
+  if (writeOutputLine(stderr, output) === "epipe") {
+    return EXIT_CODES.success;
+  }
   return result.exitCode;
+}
+
+function writeOutputLine(writer: (chunk: string) => void, output: string): "written" | "epipe" {
+  try {
+    writer(`${output}\n`);
+    return "written";
+  } catch (error) {
+    if (hasBrokenPipeCode(error)) {
+      markOutputBrokenPipeError(error);
+      return "epipe";
+    }
+    throw error;
+  }
+}
+
+function formatFailureOutput<T>(error: CommandError, rawValue: T | undefined, json: boolean): string {
+  const value = rawValue === undefined ? undefined : redactValue(rawValue);
+  if (json) {
+    return JSON.stringify({
+      ok: false,
+      error: {
+        code: error.code,
+        category: error.category,
+        retryability: error.retryability,
+        phase: error.phase,
+        ...(error.requestId ? { requestId: error.requestId } : {}),
+        message: error.message,
+      },
+      ...(value === undefined ? {} : { result: value }),
+    });
+  }
+  return `${error.code}: ${error.message}${error.requestId ? ` (request ${error.requestId})` : ""}`;
 }
 
 export type CommandFailureObserver = (error: unknown, commandError: CommandError) => void;
@@ -241,6 +330,9 @@ export async function executeCommand<T>(
     return presentCommand({ ok: true, value: await operation(), exitCode: EXIT_CODES.success }, options);
   } catch (error) {
     const commandError = toCommandError(error, options.phase);
+    if (isBrokenPipeError(commandError)) {
+      return presentCommand({ ok: false, error: commandError, exitCode: commandExitCode(commandError) }, options);
+    }
     const structuredError = commandError.toStructuredError();
     (options.logger ?? createLogger("cli")).error(
       {
@@ -327,7 +419,8 @@ function isZodError(
   );
 }
 
-export function commandExitCode(error: CommandError): Exclude<CommandExitCode, typeof EXIT_CODES.success> {
+export function commandExitCode(error: CommandError): CommandExitCode {
+  if (isBrokenPipeError(error)) return EXIT_CODES.success;
   if (error.category === "validation") return EXIT_CODES.usage;
   if (error.category === "unavailable" || error.category === "timeout" || error.category === "dependency") {
     return EXIT_CODES.serviceUnavailable;

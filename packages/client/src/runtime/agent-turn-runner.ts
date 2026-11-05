@@ -13,6 +13,7 @@ import {
   type RuntimeImSteerResult,
   redactForLog,
   redactSensitive,
+  type SessionMessageDeliveryRequestV3,
   type TurnActivityResult,
   type TurnFailureReason,
   type TurnOutgoingReplySnapshot,
@@ -26,6 +27,8 @@ import type {
   AgentRunResult,
   AgentRuntime,
   AgentRuntimeEvent,
+  AgentSteerOutcome,
+  AgentSteerReceipt,
   JsonValue,
 } from "../agent-runtime/types.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
@@ -37,6 +40,7 @@ import {
   buildContinuationNotice,
   type Interruption,
   MAX_AUTOMATIC_RETRIES,
+  MAX_RECORDED_STEERS,
   RATE_LIMIT_RETRY_DELAY_MS,
   recoverableFailure,
   type TurnRetryRecord,
@@ -116,6 +120,15 @@ export interface AgentTurnRunnerOptions {
   readonly retries?: Pick<TurnRetryStore, "appendSteer" | "removeSteer" | "update">;
   /** Whether a Turn interrupted by shutdown can be retried after restart (`runtime.sessionRecovery`). */
   readonly restartRetryAvailable?: () => boolean;
+  /** The owner of Session messages steered into a Turn; an in-place retry carries them along. */
+  readonly sessionMessages?: {
+    /** The message's input for a retry, built once the retry's credentials are prepared. */
+    input(message: SessionMessageDeliveryRequestV3, processedAt: Date): AgentInput;
+    /** Durably spend the message's one retry; false means it cannot join this one and must fail. */
+    spendRetry(message: SessionMessageDeliveryRequestV3, interruption: Interruption): Promise<boolean>;
+    /** Resolves once the message's outcome is durable. */
+    settle(message: SessionMessageDeliveryRequestV3, outcome: AgentSteerOutcome): Promise<void>;
+  };
 }
 
 export interface TurnStartOptions {
@@ -148,6 +161,9 @@ export interface AgentTurnFailure {
 /** Never throws and never awaited: a tracker that is slow or broken must not hold a turn open. */
 export type AgentTurnErrorReporter = (failure: AgentTurnFailure) => void;
 
+/** A message that joined a running Turn; a retry replays them in the order they arrived. */
+type SteeredInput = RuntimeImSteerRequest | SessionMessageDeliveryRequestV3;
+
 /** How long an automatic retry waits for steers still in flight before it gives up. */
 const STEER_SETTLE_TIMEOUT_MS = 10_000;
 
@@ -164,8 +180,17 @@ interface RunningTurn {
   /** Negotiation is cleared on disconnect, and shutdown disconnects first: sample it at start. */
   readonly restartRetry: boolean;
   /** Steers not yet answered; each one settles and never rejects. */
-  steering: Set<Promise<RuntimeImSteerResult>>;
-  steers: readonly RuntimeImSteerRequest[];
+  steering: Set<Promise<unknown>>;
+  /** Session messages that joined the current attempt, with what the provider did with them. */
+  joined: Map<string, { message: SessionMessageDeliveryRequestV3; receipt: AgentSteerReceipt }>;
+  /** Session messages being steered: how to end each one's place in `steering`. */
+  joining: Map<string, () => void>;
+  /** When each steered message arrived, across IM and Session messages. */
+  arrivals: Map<string, number>;
+  /** Set once the Turn's outcome is decided; a message acknowledged later follows its own receipt. */
+  finalized: boolean;
+  /** Messages an earlier attempt held, replayed in the current attempt's input. */
+  steers: readonly SteeredInput[];
 }
 
 export interface TurnCompletion {
@@ -197,6 +222,7 @@ export class AgentTurnRunner {
   readonly #outgoingReplies: AgentTurnRunnerOptions["outgoingReplies"];
   readonly #agentErrorReporter: AgentTurnErrorReporter;
   readonly #retries: NonNullable<AgentTurnRunnerOptions["retries"]>;
+  readonly #sessionMessages: AgentTurnRunnerOptions["sessionMessages"];
   readonly #restartRetryAvailable: () => boolean;
   readonly #turns = new Map<string, RunningTurn>();
   #stopped = false;
@@ -223,6 +249,7 @@ export class AgentTurnRunner {
     // wants no tracker gets a runner that reports into nothing, not a second branch to get wrong.
     this.#agentErrorReporter = options.agentErrorReporter ?? (() => undefined);
     this.#retries = options.retries ?? NO_TURN_RETRIES;
+    this.#sessionMessages = options.sessionMessages;
     this.#restartRetryAvailable = options.restartRetryAvailable ?? (() => false);
   }
 
@@ -249,6 +276,10 @@ export class AgentTurnRunner {
       ...(options.continuation ? { continuation: options.continuation } : {}),
       restartRetry: this.#restartRetryAvailable(),
       steering: new Set(),
+      joined: new Map(),
+      joining: new Map(),
+      arrivals: new Map(),
+      finalized: false,
       steers: options.steers ?? [],
     };
     turn.promise = this.#run(turn, abort.signal)
@@ -291,6 +322,7 @@ export class AgentTurnRunner {
       return steerResult(request, "deferred", "turn_not_running");
     }
 
+    turn.arrivals.set(steeredInputId(request), turn.arrivals.size);
     const steering = this.#steerRunningTurn(turn, runtime, request, semanticHash);
     turn.steering.add(steering);
     void steering.finally(() => turn.steering.delete(steering));
@@ -323,6 +355,46 @@ export class AgentTurnRunner {
       return steerResult(request, "deferred", "steer_state_unknown");
     }
     return steerResult(request, "steered");
+  }
+
+  /**
+   * Hold a place in this running Turn for a Session message about to be steered into it. False leaves
+   * the message queued: the Turn is not running here, or it already holds as many as it can carry.
+   */
+  reserveSessionMessage(message: SessionMessageDeliveryRequestV3, turnId: string): boolean {
+    const turn = this.#turns.get(turnId);
+    if (!turn || turn.phase !== "running" || turn.owner.request.sessionId !== message.targetSessionId) return false;
+    const held = turn.steers.filter((steer) => steer.type === "session:message:deliver").length;
+    if (held + turn.joined.size + turn.joining.size >= MAX_RECORDED_STEERS) return false;
+    turn.arrivals.set(steeredInputId(message), turn.arrivals.size);
+    let done: () => void = () => undefined;
+    const steering = new Promise<void>((resolve) => {
+      done = () => {
+        turn.steering.delete(steering);
+        resolve();
+      };
+    });
+    turn.steering.add(steering);
+    turn.joining.set(message.messageId, done);
+    return true;
+  }
+
+  /** The reserved message was steered: an in-place retry of this Turn now carries it. */
+  sessionMessageSteered(message: SessionMessageDeliveryRequestV3, turnId: string, receipt: AgentSteerReceipt): void {
+    const turn = this.#turns.get(turnId);
+    if (!turn || turn.finalized) {
+      void receipt.outcome.then((outcome) => this.#sessionMessages?.settle(message, outcome));
+    } else {
+      turn.joined.set(message.messageId, { message, receipt });
+    }
+    this.releaseSessionMessage(message, turnId);
+  }
+
+  /** The reserved message's place is over, whether it was steered or stays with the inbox. */
+  releaseSessionMessage(message: SessionMessageDeliveryRequestV3, turnId: string): void {
+    const turn = this.#turns.get(turnId);
+    turn?.joining.get(message.messageId)?.();
+    turn?.joining.delete(message.messageId);
   }
 
   async respondToApproval(request: RuntimeApprovalDecision): Promise<RuntimeApprovalResult> {
@@ -360,11 +432,6 @@ export class AgentTurnRunner {
     this.#stopped = true;
     this.#activity.close();
     for (const turn of this.#turns.values()) turn.abort.abort("client_shutdown");
-  }
-
-  /** Resolves once the Turn's Run (including its in-place retry) has ended. */
-  whenSettled(turnId: string): Promise<void> {
-    return this.#turns.get(turnId)?.promise ?? Promise.resolve();
   }
 
   async settled(): Promise<void> {
@@ -467,6 +534,7 @@ export class AgentTurnRunner {
     // The interruption is durable; the restarted daemon runs the automatic retry.
     if (!attempt) return;
     const { completion, turnPlanInput } = attempt;
+    await this.#settleSessionMessages(turn, completion);
 
     const traceSummary = await trace.finish();
     const outgoingReplies = await this.#collectOutgoingReplies(turnPlanInput, owner, turn.reportVersion >= 2);
@@ -530,7 +598,7 @@ export class AgentTurnRunner {
         await trace.finish();
         return undefined;
       }
-      if (!next || !(await this.#claimRetry(turn))) {
+      if (!next || !(await this.#claimRetry(turn, next))) {
         return { completion: attempt.completion, ...(planInput ? { turnPlanInput: planInput } : {}) };
       }
       this.#logger.info({ ...fields, reason: next.reason }, "Turn automatic retry started");
@@ -602,7 +670,13 @@ export class AgentTurnRunner {
          * at delivery receipt. It is prompt input only and never enters a persistent hash.
          */
         input: interruption
-          ? buildRetryAgentInput(owner.request, turn.steers, interruption, new Date(this.#now()))
+          ? buildRetryAgentInput(
+              owner.request,
+              turn.steers,
+              interruption,
+              new Date(this.#now()),
+              this.#sessionMessages?.input,
+            )
           : buildAgentInput(owner.request, undefined, undefined, new Date(this.#now())),
         signal: runSignal,
         /*
@@ -688,8 +762,8 @@ export class AgentTurnRunner {
   }
 
   /** Durably spend the Turn's one automatic retry before it starts; false leaves the failure reported. */
-  async #claimRetry(turn: RunningTurn): Promise<boolean> {
-    const { agentId, sessionId } = turn.owner.request;
+  async #claimRetry(turn: RunningTurn, interruption: Interruption): Promise<boolean> {
+    const { sessionId } = turn.owner.request;
     // No new steer joins once the attempt ended, but one in flight may still be acknowledged: its
     // capture and receipt must be durable before the retry input is read.
     if (!(await this.#steersSettled(turn))) {
@@ -699,9 +773,23 @@ export class AgentTurnRunner {
       );
       return false;
     }
+    await this.#returnUnstartedSessionMessages(turn);
     const spent = await this.#retries.update(sessionId, turn.owner.turnId, spendRetry).catch(() => undefined);
     if (!spent) return false;
-    if (spent.steers.length === 0) return true;
+    const steers = spent.steers.length === 0 ? [] : await this.#acknowledgedImSteers(turn, spent);
+    if (!steers) return false;
+    const messages = await this.#sessionMessagesForRetry(turn, interruption);
+    turn.steers = [...steers, ...messages].sort(
+      (left, right) => (turn.arrivals.get(steeredInputId(left)) ?? 0) - (turn.arrivals.get(steeredInputId(right)) ?? 0),
+    );
+    return true;
+  }
+
+  async #acknowledgedImSteers(
+    turn: RunningTurn,
+    spent: Pick<TurnRetryRecord, "steers">,
+  ): Promise<RuntimeImSteerRequest[] | undefined> {
+    const { agentId, sessionId } = turn.owner.request;
     // Only the binding that still holds this Turn can say which steers it owns. Without it an
     // acknowledged steer cannot be told from an unacknowledged one, so a retry could silently drop
     // input the Server settled with this Turn: report the failure instead.
@@ -711,10 +799,52 @@ export class AgentTurnRunner {
         { code: "TURN_RETRY_STEER_RECEIPTS_UNAVAILABLE", sessionId, turnId: turn.owner.turnId },
         "Turn automatic retry refused: steer receipts are unavailable",
       );
-      return false;
+      return undefined;
     }
-    turn.steers = acknowledgedSteers(spent.steers, binding);
-    return true;
+    return acknowledgedSteers(spent.steers, binding);
+  }
+
+  /** A message the provider never began goes back to the inbox's FIFO instead of into the retry. */
+  async #returnUnstartedSessionMessages(turn: RunningTurn): Promise<void> {
+    for (const [id, { message, receipt }] of [...turn.joined]) {
+      if ((await receipt.outcome) !== "not_started") continue;
+      turn.joined.delete(id);
+      await this.#sessionMessages?.settle(message, "not_started");
+    }
+  }
+
+  /**
+   * The Session messages this retry carries. Each spends its own retry durably first, so a crash
+   * during this retry fails the message instead of running it again; one that cannot fails now.
+   */
+  async #sessionMessagesForRetry(
+    turn: RunningTurn,
+    interruption: Interruption,
+  ): Promise<SessionMessageDeliveryRequestV3[]> {
+    const carried: SessionMessageDeliveryRequestV3[] = [];
+    for (const { message } of turn.joined.values()) {
+      if (await this.#sessionMessages?.spendRetry(message, interruption)) carried.push(message);
+      else await this.#sessionMessages?.settle(message, "interrupted");
+    }
+    turn.joined = new Map();
+    return carried;
+  }
+
+  /** Every Session message that joined the Turn ends with it. */
+  async #settleSessionMessages(turn: RunningTurn, completion: TurnCompletion): Promise<void> {
+    turn.finalized = true;
+    const completed = completion.outcome === "completed";
+    const settle = (message: SessionMessageDeliveryRequestV3, outcome: AgentSteerOutcome) =>
+      this.#sessionMessages?.settle(message, outcome);
+    await Promise.allSettled([
+      ...turn.steers.flatMap((steer) =>
+        steer.type === "session:message:deliver" ? [settle(steer, completed ? "processed" : "interrupted")] : [],
+      ),
+      ...[...turn.joined.values()].map(async ({ message, receipt }) => {
+        const outcome = await receipt.outcome;
+        await settle(message, outcome === "processed" && !completed ? "interrupted" : outcome);
+      }),
+    ]);
   }
 
   async #steersSettled(turn: RunningTurn): Promise<boolean> {
@@ -983,15 +1113,24 @@ export function buildAgentInput(
  */
 export function buildRetryAgentInput(
   request: DirectImMessageDeliveryRequest,
-  steers: readonly RuntimeImSteerRequest[],
+  steers: readonly SteeredInput[],
   interruption: Interruption,
   processedAt: Date = new Date(),
+  sessionMessageInput?: NonNullable<AgentTurnRunnerOptions["sessionMessages"]>["input"],
 ): AgentInput {
   const original = buildAgentInput(request, undefined, undefined, processedAt);
-  const steered = steers.map(
-    (steer) =>
-      `[${steer.content.providerRef.provider} message ${JSON.stringify(steer.content.providerRef)}]: ${steer.content.text}`,
-  );
+  const steered = steers.flatMap((steer): AgentInput["items"] => {
+    if (steer.type === "im:steer") {
+      return [
+        {
+          type: "text",
+          text: `[${steer.content.providerRef.provider} message ${JSON.stringify(steer.content.providerRef)}]: ${steer.content.text}`,
+        },
+      ];
+    }
+    if (!sessionMessageInput) throw new Error("A Session message joined the Turn without an owner to build its input");
+    return [...sessionMessageInput(steer, processedAt).items];
+  });
   return {
     items: [
       { type: "text", text: buildContinuationNotice(interruption) },
@@ -1000,12 +1139,17 @@ export function buildRetryAgentInput(
         ? [
             {
               type: "text" as const,
-              text: `Messages that arrived during the interrupted turn (they may also be in your history):\n${steered.join("\n")}`,
+              text: "Messages that arrived during the interrupted turn, in order (they may also be in your history):",
             },
+            ...steered,
           ]
         : []),
     ],
   };
+}
+
+function steeredInputId(input: SteeredInput): string {
+  return input.type === "im:steer" ? `im:${input.deliveryId}` : `session:${input.messageId}`;
 }
 
 /** Without durable Turn input no automatic retry is possible. */

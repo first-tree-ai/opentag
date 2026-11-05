@@ -1091,14 +1091,19 @@ describe("SessionMessageInbox", () => {
     }
   });
 
-  it("runs queued messages after a resumed retry Turn instead of steering them into it", async () => {
+  it("steers queued messages into a resumed retry Turn as soon as it runs", async () => {
     const store = new MemoryRuntimeDurabilityStore();
     const queued = delivery({ text: "queued during the outage" });
     const sessionId = queued.targetSessionId;
     await store.write(recordFor(queued, "accepted"));
     let prepared = false;
     const state: { phase: string; activeRunId?: string } = { phase: "running", activeRunId: "turn-1" };
-    const steer = vi.fn();
+    let endTurn: (outcome: AgentSteerOutcome) => void = () => undefined;
+    const steer = vi.fn(async () => ({
+      outcome: new Promise<AgentSteerOutcome>((resolve) => {
+        endTurn = resolve;
+      }),
+    }));
     const prompt = vi.fn(async ({ runId }: { runId: string }) => ({ runId, status: "completed", output: [] }));
     const runtime = {
       capabilities: { steer: "supported" },
@@ -1127,10 +1132,6 @@ describe("SessionMessageInbox", () => {
     expect(inbox.sessionsAwaitingPreparation().map((entry) => entry.sessionId)).toEqual([sessionId]);
 
     // The resumed IM retry holds the Session while its runtime is running and accepts steers.
-    let endTurn: () => void = () => undefined;
-    const turnEnded = new Promise<void>((resolve) => {
-      endTurn = resolve;
-    });
     const imRequest = { ...turnRetryRecord(imDelivery(sessionId, queued.agentId), "turn-1") };
     const reservation = admission.reserve(sessionId, queued.agentId, { acceptedWork: true });
     if (!reservation.accepted) throw new Error("reservation");
@@ -1152,7 +1153,6 @@ describe("SessionMessageInbox", () => {
       logger: { info: vi.fn(), warn: vi.fn() },
       reconciler: { setRecovery: vi.fn(), clearRecovery: vi.fn(() => true) },
       retries: { list: async () => [imRequest], write: async () => undefined, remove: async () => undefined },
-      turnSettled: () => turnEnded,
     });
     await recovery.start();
     const handlers = createClientRuntimeHandlers(
@@ -1165,18 +1165,16 @@ describe("SessionMessageInbox", () => {
     prepared = true;
     expect(recovery.resume(sessionId, { deliveryId: imRequest.deliveryId, turnId: "turn-1" })).toBe(true);
     await handlers.onReconciled({ desired: "ready", sessionId } as never, { status: "running" } as never);
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(steer).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(steer).toHaveBeenCalledOnce());
     expect(prompt).not.toHaveBeenCalled();
 
-    // The retried Turn ends: the queued message runs as its own Run afterwards.
+    // The resumed Turn ends: the message settles with it and never runs as its own Run.
     state.phase = "idle";
     delete state.activeRunId;
     reservation.reservation.release();
-    endTurn();
-    await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce());
+    endTurn("processed");
     await inbox.settled();
-    expect(steer).not.toHaveBeenCalled();
+    expect(prompt).not.toHaveBeenCalled();
     expect(inbox.getState(queued.messageId)?.status).toBe("succeeded");
     recovery.stop();
     inbox.stop();

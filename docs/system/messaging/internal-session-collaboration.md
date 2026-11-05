@@ -41,11 +41,11 @@ existing Session in the same Agent and conversation scope. Both accept an option
 reuse the same ID and identical semantic input after an uncertain result. `accepted` means the target accepted the
 message into its bounded FIFO, not that the task completed. On a Local Computer, a message whose target Session is
 running a Turn on a steer-capable runtime is steered into that Turn instead of waiting for it to end. Runtime acceptance
-is not delivery: the durable record stays `running` until that Turn's Run settles. It becomes `succeeded` when the Run
-completed; returns to the FIFO when the provider reports that it never started the input (Claude Code `command_lifecycle`),
-so the message is delivered again as its own Run; and fails permanently without replay when the provider may have started
-it but the Run failed or was cancelled. Codex and Pi report no per-input start, so their acknowledged steer counts as
-possibly started. A restart while the record is `running` recovers it like any interrupted Session message Run.
+is not delivery: the durable record stays `running` until that Turn ends. It becomes `succeeded` when the Turn completed;
+returns to the FIFO when the provider reports that it never started the input (Claude Code `command_lifecycle`), so the
+message is delivered again as its own Run; and otherwise follows the Turn, as described in
+[Session messages steered into an IM Turn](#session-messages-steered-into-an-im-turn). Codex and Pi report no per-input
+start, so their acknowledged steer counts as possibly started.
 Steering applies only while the target is busy with a Turn the inbox does not own, such as an IM Turn: each target
 Session has one serial inbox drain, and that drain awaits its own Session message Run until the Run settles and releases
 admission, so a message that arrives while the target runs another Session message waits in the FIFO and then starts as
@@ -140,9 +140,10 @@ Server tells the Session that created it (`created_by_session_id`):
   terminal record still marked `pending` (for example after a crash between the two writes) hands its report over
   again, and the child is never rerun. Terminal records written before the marker existed carry no marker and are
   not backfilled. The Server-backed Runtime durability adapter does not store the marker. A steered message follows
-  its steer receipt: `interrupted` takes this same terminal path (reason `session_message_steer_interrupted`, never
-  replayed), `processed` succeeds, and `not_started` returns to the FIFO with no report. Eligibility is unchanged, so
-  a message steered into a visible Session's IM Turn produces no notice.
+  the Turn it joined: when that Turn ends without completing and has no further retry, the message takes this same
+  terminal path (reason `session_message_steer_interrupted`), a completed Turn makes it succeed, and a message the
+  provider never started returns to the FIFO with no report. Eligibility is unchanged, so a message steered into a
+  visible Session's IM Turn produces no notice.
 - Cloud: the Runner's `session:message:settled` frame carries the failure `reason` (for example `turn_timeout`) on a
   collaboration-v3 channel. Every non-completed outcome (`failed`, `cancelled`, `unknown`) produces a notice. The
   Server makes up to three delivery attempts, 30 seconds apart. The notice's source authority is the settling
@@ -228,5 +229,31 @@ failure: a crash or power loss, a restart or upgrade interruption, `turn_timeout
 starts with the continuation notice and the original message; non-recoverable failures stay terminal and the five-attempt
 inbox retry is gone. The creator receives the notice only when the one retry fails too. After a daemon restart, each
 interrupted Session's message runs its retry once the Server has prepared the Session again, before the Session's queued
-messages. A message steered into a Run that ended `interrupted` is still terminal: the steer receipt does not say why the
-joined Run ended. See [Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work).
+messages. See [Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work).
+
+### Session messages steered into an IM Turn
+
+On a Local Computer a Session message is steered into the Session's IM Turn whenever the runtime can take it, including
+that Turn's retry and the Turn resumed after a crash. What happens next depends on how the Turn was interrupted:
+
+- **Timeout or model HTTP 429, retried in place.** Messages already steered into the Turn join the same retry, in their
+  original order among the Turn's IM steers. Each message stays `running`, spends its one retry durably before the retry
+  starts, and gets the Turn's result. It is not queued again. The list is kept in memory, not in the Turn's retry file.
+- **Crash or restart.** The Turn is resumed with the continuation notice, without its Session messages. Messages already
+  steered before the crash, then queued messages, are steered into the resumed Turn in order once it is running. A message
+  that was already steered carries the continuation notice, so the Agent knows it may have handled it already. Until then
+  they wait in the FIFO, re-checking about once per second. If the resumed Turn ends first, they run as their own Runs, in
+  order, as they do when the runtime cannot steer. If the Turn cannot be resumed, the existing fallback applies: the
+  waiting messages fail with a creator notice.
+- **A message steered into a retry or a resumed Turn gets no further retry.** If that Turn fails, the message fails with
+  one notice. So does a message whose one retry could not be recorded, and a message whose in-place retry was interrupted
+  by a crash.
+- **A failure that is not recoverable** fails the message without a retry.
+
+A message stays queued and waits for the Turn to end when the runtime cannot steer, when the Turn already carries 16
+Session messages, or when a visible Session has no IM outbox context.
+
+The accepted cost is possible repeats. After a crash the resumed Turn may already have the steered message in its history,
+and the message is delivered again; the continuation notice tells the Agent, but cannot prevent every repeat. A message
+steered just before a crash, whose `running` state was not yet written, is delivered again without the notice. Steering
+into a child's Session message Run, and Cloud, are not covered ([#1303](https://github.com/first-tree-ai/opentag/issues/1303)).

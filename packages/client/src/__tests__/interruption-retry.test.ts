@@ -71,7 +71,7 @@ describe("interruption classification and continuation", () => {
     const texts = input.items.map((item) => (item.type === "text" ? item.text : ""));
     expect(texts[0]).toContain("because the turn reached its maximum run duration");
     expect(texts).toContain("hello");
-    expect(texts.at(-1)).toContain("Messages that arrived during the interrupted turn");
+    expect(texts.at(-2)).toContain("Messages that arrived during the interrupted turn");
     expect(texts.at(-1)).toContain("and also this");
   });
 });
@@ -131,29 +131,6 @@ describe("TurnRetryStore steer capture", () => {
 });
 
 describe("AgentTurnRunner automatic retry", () => {
-  it("resolves whenSettled for a running Turn after it ends, and at once for an unknown Turn", async () => {
-    const h = runnerHarness();
-    h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
-    await expect(h.runner.whenSettled("unknown")).resolves.toBeUndefined();
-    let finish: () => void = () => undefined;
-    h.prompt.mockImplementation(
-      () =>
-        new Promise<AgentRunResult>((resolve) => {
-          finish = () => resolve({ runId: "turn-1", status: "completed", output: [] });
-        }),
-    );
-    h.runner.start(owner(h.request));
-    let settled = false;
-    const waiting = h.runner.whenSettled("turn-1").then(() => {
-      settled = true;
-    });
-    await vi.waitFor(() => expect(h.prompt).toHaveBeenCalledOnce());
-    expect(settled).toBe(false);
-    finish();
-    await waiting;
-    expect(settled).toBe(true);
-  });
-
   it("retries a timed-out Turn once in place with the continuation notice and reports the retry", async () => {
     const h = runnerHarness();
     h.request.runtime.budget = { maxDurationMs: 20 };
@@ -840,10 +817,8 @@ describe("InterruptedWorkRecovery", () => {
       steers: [],
     });
     expect(f.recovery.pending(request.sessionId, turn)).toBe(false);
-    // Queued Session messages are released by the retried Turn's end, not by its resume.
-    expect(f.inbox.sessionPrepared).not.toHaveBeenCalled();
-    f.settle();
-    await vi.waitFor(() => expect(f.inbox.sessionPrepared).toHaveBeenCalledWith(request.sessionId));
+    // Waiting Session messages are released by the resume, to be steered into the resumed Turn.
+    expect(f.inbox.sessionPrepared).toHaveBeenCalledWith(request.sessionId);
 
     const childFrame = f.sent[0] as SessionRecoverRequest;
     f.recovery.handleResult({
@@ -1005,7 +980,6 @@ function recoveryFixture() {
       failAwaitingPreparation: vi.fn(async () => undefined),
       sessionPrepared: vi.fn(),
     },
-    settle: undefined as unknown as () => void,
     custody: { resume: vi.fn(() => true) },
     reconciler: { setRecovery: vi.fn(), clearRecovery: vi.fn(() => true) },
     setState: (state: RuntimeConnectionState) => listener(state),
@@ -1046,10 +1020,6 @@ function recoveryFixture() {
         records.delete(sessionId);
       },
     },
-    turnSettled: () =>
-      new Promise<void>((resolve) => {
-        fixture.settle = resolve;
-      }),
   });
   return fixture;
 }

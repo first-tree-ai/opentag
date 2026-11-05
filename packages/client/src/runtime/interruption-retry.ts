@@ -5,6 +5,7 @@ import {
   DirectImMessageDeliveryRequestSchema,
   type RuntimeImSteerRequest,
   RuntimeImSteerRequestSchema,
+  type SessionMessageDeliveryRequestV3,
 } from "@opentag/shared";
 import {
   ensurePrivateDirectory,
@@ -76,6 +77,11 @@ export function buildContinuationNotice(interruption: Interruption, attempt = 1)
     "Before continuing, check your history and the work already done in this conversation, including replies already sent, then continue the original request.",
     "The original request follows; it may duplicate a message already in your history. Do not repeat replies or side effects that already happened.",
   ].join(" ");
+}
+
+/** The inbox's key for a Session message. */
+export function sessionMessageKey(message: SessionMessageDeliveryRequestV3): string {
+  return `${message.targetSessionId}:${message.messageId}`;
 }
 
 /** Durable input of one accepted IM Turn, kept until the Turn is recorded so it can be retried. */

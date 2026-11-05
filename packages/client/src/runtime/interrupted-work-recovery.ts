@@ -45,8 +45,6 @@ export interface InterruptedWorkRecoveryOptions {
   reconciler: Pick<SessionReconciler, "clearRecovery" | "setRecovery">;
   retries: Pick<TurnRetryStore, "list" | "remove" | "write">;
   scheduler?: RuntimeRetryScheduler;
-  /** Resolves once a resumed Turn's Run has ended; queued Session messages wait for it. */
-  turnSettled(turnId: string): Promise<void>;
 }
 
 /**
@@ -131,8 +129,8 @@ export class InterruptedWorkRecovery implements InterruptedTurnResumer {
     }
     this.#turns.delete(sessionId);
     this.#settle(sessionId);
-    // Queued Session messages run after the retried Turn, never steered into it.
-    void this.#options.turnSettled(turn.turnId).then(() => this.#options.inbox.sessionPrepared(sessionId));
+    // Waiting Session messages join the resumed Turn as soon as it can take them.
+    this.#options.inbox.sessionPrepared(sessionId);
     return true;
   }
 
@@ -149,8 +147,8 @@ export class InterruptedWorkRecovery implements InterruptedTurnResumer {
   }
 
   /**
-   * A ready reconcile prepared the Session. Its waiting Session messages may run now; a Session whose
-   * Turn is being resumed instead releases them when that Turn ends (see `resume`).
+   * A ready reconcile prepared the Session. Its waiting Session messages may run now, unless its Turn
+   * has not been resumed yet: they then wait for `resume`.
    */
   sessionPrepared(sessionId: string): void {
     if (this.#turns.has(sessionId)) return;

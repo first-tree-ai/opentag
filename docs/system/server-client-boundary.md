@@ -89,7 +89,8 @@ no error card and sends no notice for it.
 The retry continues the same Session with a continuation notice as the first
 input item — `[OpenTag] Your previous turn was interrupted at <time> because
 <reason> (automatic retry 1/1). Before continuing, check your history …` — then
-the original input and, for an IM Turn, the messages steered into it. Duplicates
+the original input and, for an IM Turn, the messages steered into it, in their
+original order. Duplicates
 are acceptable: the Provider may or may not have persisted the interrupted turn.
 
 - Timeout and 429 retry in place, in the same daemon (a 429 after about 30
@@ -140,8 +141,9 @@ are acceptable: the Provider may or may not have persisted the interrupted turn.
   (for example the Session ended), a missing capability, or running out of
   attempts falls back: the IM Turn gets its `unknown / turn_state_unknown`
   recovery report and waiting Session messages fail with a creator notice.
-- Session messages waiting for that preparation are not failures. They run in
-  order after the retried Turn has ended; they are never steered into it.
+- Session messages waiting for that preparation are not failures. Once the
+  Turn is resumed they are steered into it in order; see
+  [Session messages steered into an IM Turn](messaging/internal-session-collaboration.md#session-messages-steered-into-an-im-turn).
 - Manual `opentag upgrade` and `opentag daemon restart` still stop the daemon
   without draining; automatic upgrades wait for protected work, which includes
   pending retries.

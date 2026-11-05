@@ -863,9 +863,17 @@ export async function createClientRuntime(
     logger: moduleLogger("session-message-outcome"),
     persistence: options.durabilityStore ?? new FileRuntimeDurabilityStore(options.home),
   });
+  let runner: AgentTurnRunner;
   const sessionMessageInbox = new SessionMessageInbox({
     admission,
     cliCommand: options.cliCommand ?? "opentag",
+    /* v8 ignore start -- late-bound adapter; the AgentTurnRunner methods have their own tests. */
+    joinableRuns: {
+      reserve: (message, runId) => runner.reserveSessionMessage(message, runId),
+      release: (message, runId) => runner.releaseSessionMessage(message, runId),
+      steered: (message, runId, receipt) => runner.sessionMessageSteered(message, runId, receipt),
+    },
+    /* v8 ignore stop */
     credentialEnvironment,
     imCredentialGrantVersion: connection.capabilityVersion.bind(connection, RUNTIME_CAPABILITY.imCredentialGrant),
     metrics: durabilityMetrics,
@@ -891,7 +899,6 @@ export async function createClientRuntime(
     /* v8 ignore next -- forwards to TurnRetryStore.remove, covered by interruption-retry tests. */
     onRecorded: (sessionId, turnId) => turnRetries.remove(sessionId, turnId),
   });
-  let runner: AgentTurnRunner;
   const preflight = createClientRuntimePreflight({
     providers,
     workspace,
@@ -929,6 +936,11 @@ export async function createClientRuntime(
     agentErrorReporter: options.agentErrorReporter,
     retries: turnRetries,
     restartRetryAvailable,
+    sessionMessages: {
+      input: (message, processedAt) => sessionMessageInbox.joinedRunInput(message, processedAt),
+      spendRetry: (message, interruption) => sessionMessageInbox.spendJoinedRetry(message, interruption),
+      settle: (message, outcome) => sessionMessageInbox.settleJoined(message, outcome),
+    },
   });
   interruptedWork = new InterruptedWorkRecovery({
     bindingStore,
@@ -938,8 +950,6 @@ export async function createClientRuntime(
     logger: moduleLogger("interrupted-work-recovery"),
     reconciler,
     retries: turnRetries,
-    /* v8 ignore next -- late-bound adapter; AgentTurnRunner.whenSettled is covered by interruption-retry tests. */
-    turnSettled: (turnId) => runner.whenSettled(turnId),
   });
   reconciler.setResumer(interruptedWork);
   await interruptedWork.start();
@@ -1412,9 +1422,11 @@ export function createClientRuntimeHandlers(
     onReconcileResultSendFailed: (request, result) => recovery.cancel(request, result),
     onReconciled: (request, result) => {
       const replay = recovery.afterReconciled(request, result);
-      // Session messages that waited for this Session's preparation (e.g. after a restart) may run. A
-      // resumed retry (`running`) releases them only once it ends, so they are never steered into it.
-      if (request.desired === "ready" && result.status === "ready") prepared?.sessionPrepared(request.sessionId);
+      // Session messages that waited for this Session's preparation (e.g. after a restart) may run, or,
+      // while a resumed Turn is `running`, be steered into it.
+      if (request.desired === "ready" && (result.status === "ready" || result.status === "running")) {
+        prepared?.sessionPrepared(request.sessionId);
+      }
       if (request.desired === "ready" && result.status === "rejected") {
         prepared?.reconcileRejected(request.sessionId, result.reason ?? "session_recovery_rejected");
       }

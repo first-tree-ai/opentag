@@ -155,6 +155,11 @@ export interface DurableWorkRecord<T = unknown> {
    * existed, which are deliberately not backfilled.
    */
   readonly outcomeReport?: "pending" | "published";
+  /**
+   * Session-message only: the recoverable interruption that the record's one automatic retry
+   * continues from. Its presence makes the next Run start with the continuation notice.
+   */
+  readonly interruption?: { readonly reason: string; readonly at: string };
   readonly payload: T;
   readonly status: DurableWorkStatus;
   readonly updatedAt: number;

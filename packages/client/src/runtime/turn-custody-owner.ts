@@ -13,6 +13,7 @@ import {
 } from "@opentag/shared";
 import { AdmissionController, type AdmissionReservation } from "./admission-controller.js";
 import type { DeliveryDecision } from "./client-runtime.js";
+import { type Interruption, type TurnRetryStore, turnRetryRecord } from "./interruption-retry.js";
 import { SessionBindingConflictError, type SessionBindingStore } from "./session-binding-store.js";
 import type { SessionReconciler } from "./session-reconciler.js";
 
@@ -26,7 +27,12 @@ export interface TurnCustodyOwnerOptions {
   now?: () => number;
   preflight?(request: DirectImMessageDeliveryRequest): Promise<InputRejectReason | undefined>;
   reconciler: SessionReconciler;
-  start?(owner: LiveTurnOwner): Promise<void> | void;
+  /** Durable input of accepted Turns for their one automatic retry; absent disables retries. */
+  retries?: Pick<TurnRetryStore, "remove" | "write">;
+  start?(
+    owner: LiveTurnOwner,
+    options?: { continuation?: Interruption; steers?: readonly RuntimeImSteerRequest[] },
+  ): Promise<void> | void;
   steer?(request: RuntimeImSteerRequest): Promise<RuntimeImSteerResult>;
 }
 
@@ -69,6 +75,7 @@ export class TurnCustodyOwner {
   readonly #preflight?: TurnCustodyOwnerOptions["preflight"];
   readonly #start?: TurnCustodyOwnerOptions["start"];
   readonly #steer?: TurnCustodyOwnerOptions["steer"];
+  readonly #retries?: TurnCustodyOwnerOptions["retries"];
   readonly #requests = new Map<string, RememberedRequest>();
   readonly #deliveries = new Map<string, OwnedDelivery>();
   readonly #turns = new Map<string, OwnedDelivery>();
@@ -87,6 +94,7 @@ export class TurnCustodyOwner {
     this.#preflight = options.preflight;
     this.#start = options.start;
     this.#steer = options.steer;
+    this.#retries = options.retries;
     if (!Number.isSafeInteger(this.#maxRememberedRequests) || this.#maxRememberedRequests < 1) {
       throw new Error("maxRememberedRequests must be a positive safe integer");
     }
@@ -203,11 +211,41 @@ export class TurnCustodyOwner {
     const owner = this.#requireTurn(turnId);
     await this.#reconciler.withAgentLock(owner.request.agentId, async () => {
       await this.#bindingStore.recordResult(owner.request.agentId, owner.request.sessionId, turnId, resultHash);
+      await this.#retries?.remove(owner.request.sessionId, turnId).catch(() => undefined);
       owner.reservation.release();
       this.#reconciler.clearActivity(owner.request.sessionId, turnId);
       this.#deliveries.delete(owner.request.deliveryId);
       this.#turns.delete(turnId);
     });
+  }
+
+  /**
+   * Restart the one automatic retry of an accepted Turn that a daemon restart interrupted. The
+   * caller holds the Agent lock and has prepared the Session; the Turn keeps its delivery, Turn
+   * identity and durable custody, so its eventual report settles the original delivery.
+   */
+  resume(
+    request: DirectImMessageDeliveryRequest,
+    turnId: string,
+    options: { continuation: Interruption; steers?: readonly RuntimeImSteerRequest[] },
+  ): boolean {
+    if (this.#turns.has(turnId) || this.#deliveries.has(request.deliveryId)) return false;
+    const admission = this.admission.reserve(request.sessionId, request.agentId, { acceptedWork: true });
+    if (!admission.accepted) return false;
+    const owner = {
+      inputHash: computeDirectInputHash(request),
+      request,
+      reservation: admission.reservation,
+      turnId,
+      started: true,
+      decision: Promise.resolve({ result: accepted(request, turnId) }),
+    } as OwnedDelivery;
+    this.#deliveries.set(request.deliveryId, owner);
+    this.#turns.set(turnId, owner);
+    owner.reservation.markActive();
+    this.#reconciler.setActivity(request.sessionId, { phase: "running", deliveryId: request.deliveryId, turnId });
+    void Promise.resolve(this.#start?.(owner, options)).catch(() => undefined);
+    return true;
   }
 
   getTurn(turnId: string): LiveTurnOwner | undefined {
@@ -243,6 +281,10 @@ export class TurnCustodyOwner {
       if (custody.status === "existing" && custody.unresolvedTurn.turnId !== owner.turnId) {
         this.#discard(owner);
         return { result: rejected(owner.request, "session_recovery_required") };
+      }
+      if (custody.status === "committed" && this.#retries) {
+        // Without this record the Turn simply has no automatic retry; acceptance does not depend on it.
+        await this.#retries.write(turnRetryRecord(owner.request, owner.turnId)).catch(() => undefined);
       }
       this.#reconciler.setActivity(owner.request.sessionId, {
         phase: "running",

@@ -1,0 +1,251 @@
+import { readdir } from "node:fs/promises";
+import { resolve } from "node:path";
+import {
+  type DirectImMessageDeliveryRequest,
+  DirectImMessageDeliveryRequestSchema,
+  type RuntimeImSteerRequest,
+  RuntimeImSteerRequestSchema,
+} from "@opentag/shared";
+import {
+  ensurePrivateDirectory,
+  RuntimeStorageError,
+  readDurableJson,
+  removeDurableFile,
+  validatePrivateDirectory,
+  writeDurableJson,
+} from "../storage/durable-file.js";
+import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
+import { deriveRuntimeKey } from "./runtime-paths.js";
+
+/**
+ * The recoverable interruption classes. Everything else is a non-recoverable failure and is
+ * reported as before, without an automatic retry.
+ *
+ * - `daemon_crash`: the daemon process died mid-Run (crash, kill, power loss); found on restart.
+ * - `client_shutdown`: an orderly daemon stop (restart, upgrade) cancelled the Run.
+ * - `turn_timeout`: the Run reached its maximum duration.
+ * - `provider_rate_limited`: the model API answered HTTP 429.
+ */
+export type InterruptionReason = "daemon_crash" | "client_shutdown" | "turn_timeout" | "provider_rate_limited";
+
+const REASONS = new Set<InterruptionReason>([
+  "daemon_crash",
+  "client_shutdown",
+  "turn_timeout",
+  "provider_rate_limited",
+]);
+
+/** At most one automatic retry per accepted message. */
+export const MAX_AUTOMATIC_RETRIES = 1;
+/** A rate-limited Run waits this long before its automatic retry. */
+export const RATE_LIMIT_RETRY_DELAY_MS = 30_000;
+
+export interface Interruption {
+  reason: InterruptionReason;
+  /** ISO time the interruption was observed; for a crash, the time it was detected on restart. */
+  at: string;
+}
+
+/** Maps a Run failure reason to a recoverable class, or undefined when it must not be retried. */
+export function recoverableFailure(reason: string | undefined): InterruptionReason | undefined {
+  return reason !== undefined && REASONS.has(reason as InterruptionReason) ? (reason as InterruptionReason) : undefined;
+}
+
+function describeInterruption(reason: InterruptionReason): string {
+  switch (reason) {
+    case "daemon_crash":
+      return "the OpenTag daemon stopped unexpectedly (process crash or power loss)";
+    case "client_shutdown":
+      return "the OpenTag daemon was restarted or upgraded";
+    case "turn_timeout":
+      return "the turn reached its maximum run duration";
+    case "provider_rate_limited":
+      return "the model API rate-limited the request (HTTP 429)";
+  }
+}
+
+/**
+ * The continuation notice placed before the original input of an automatic retry. The Provider
+ * may or may not have persisted the interrupted turn, so the original input always follows and
+ * may duplicate history.
+ */
+export function buildContinuationNotice(interruption: Interruption, attempt = 1): string {
+  const when = interruption.reason === "daemon_crash" ? `at or before ${interruption.at}` : `at ${interruption.at}`;
+  return [
+    `[OpenTag] Your previous turn was interrupted ${when} because ${describeInterruption(interruption.reason)} (automatic retry ${attempt}/${MAX_AUTOMATIC_RETRIES}).`,
+    "Before continuing, check your history and the work already done in this conversation, including replies already sent, then continue the original request.",
+    "The original request follows; it may duplicate a message already in your history. Do not repeat replies or side effects that already happened.",
+  ].join(" ");
+}
+
+/** Durable input of one accepted IM Turn, kept until the Turn is recorded so it can be retried. */
+export interface TurnRetryRecord {
+  schemaVersion: 1;
+  agentId: string;
+  sessionId: string;
+  deliveryId: string;
+  turnId: string;
+  request: DirectImMessageDeliveryRequest;
+  /** Messages steered into this Turn, re-included on retry. */
+  steers: RuntimeImSteerRequest[];
+  /** Automatic retries already started for this Turn. */
+  retries: number;
+  /** Set when a recoverable interruption was recorded but the retry has not started yet. */
+  interruption?: Interruption;
+}
+
+const MAX_RECORDED_STEERS = 16;
+
+/**
+ * One small private file per Session (a Session has at most one unresolved Turn). Written when a
+ * Turn is accepted, removed when its result is recorded, and listed on startup to find Turns that a
+ * restart interrupted.
+ */
+export class TurnRetryStore {
+  readonly #root: string;
+  readonly #directory: string;
+  readonly #tails = new Map<string, Promise<void>>();
+
+  constructor(home: string) {
+    this.#root = resolveOpenTagHomeLayout(home).runtime;
+    this.#directory = resolve(this.#root, "turn-retries");
+  }
+
+  async list(): Promise<TurnRetryRecord[]> {
+    if (!(await validatePrivateDirectory(this.#root, this.#directory))) return [];
+    const records: TurnRetryRecord[] = [];
+    for (const name of await readdir(this.#directory)) {
+      if (!name.endsWith(".json") || name.startsWith(".")) continue;
+      const record = await readDurableJson(resolve(this.#directory, name), parseTurnRetryRecord).catch(() => undefined);
+      if (record) records.push(record);
+    }
+    return records;
+  }
+
+  read(sessionId: string): Promise<TurnRetryRecord | undefined> {
+    return this.#withLock(sessionId, () => this.#read(sessionId));
+  }
+
+  write(record: TurnRetryRecord): Promise<void> {
+    return this.#withLock(record.sessionId, async () => {
+      await ensurePrivateDirectory(this.#root, this.#directory);
+      await writeDurableJson(this.#path(record.sessionId), record);
+    });
+  }
+
+  /** Applies `change` to the Session's record for this Turn; no-op when it does not exist. */
+  update(
+    sessionId: string,
+    turnId: string,
+    change: (record: TurnRetryRecord) => TurnRetryRecord,
+  ): Promise<TurnRetryRecord | undefined> {
+    return this.#withLock(sessionId, async () => {
+      const current = await this.#read(sessionId);
+      if (!current || current.turnId !== turnId) return undefined;
+      const next = change(current);
+      await writeDurableJson(this.#path(sessionId), next);
+      return next;
+    });
+  }
+
+  appendSteer(request: RuntimeImSteerRequest): Promise<void> {
+    return this.update(request.sessionId, request.expectedTurnId, (record) =>
+      record.steers.length >= MAX_RECORDED_STEERS || record.steers.some((s) => s.deliveryId === request.deliveryId)
+        ? record
+        : { ...record, steers: [...record.steers, request] },
+    ).then(() => undefined);
+  }
+
+  remove(sessionId: string, turnId?: string): Promise<void> {
+    return this.#withLock(sessionId, async () => {
+      const current = await this.#read(sessionId).catch(() => undefined);
+      if (turnId !== undefined && current && current.turnId !== turnId) return;
+      try {
+        await removeDurableFile(this.#path(sessionId));
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    });
+  }
+
+  async #read(sessionId: string): Promise<TurnRetryRecord | undefined> {
+    if (!(await validatePrivateDirectory(this.#root, this.#directory))) return undefined;
+    return readDurableJson(this.#path(sessionId), parseTurnRetryRecord);
+  }
+
+  #path(sessionId: string): string {
+    return resolve(this.#directory, `${deriveRuntimeKey("session", sessionId)}.json`);
+  }
+
+  async #withLock<T>(sessionId: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.#tails.get(sessionId) ?? Promise.resolve();
+    let release!: () => void;
+    const tail = new Promise<void>((done) => {
+      release = done;
+    });
+    this.#tails.set(sessionId, tail);
+    await previous;
+    try {
+      return await task();
+    } finally {
+      release();
+      if (this.#tails.get(sessionId) === tail) this.#tails.delete(sessionId);
+    }
+  }
+}
+
+export function parseTurnRetryRecord(value: unknown): TurnRetryRecord {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new RuntimeStorageError("invalid", "Turn retry record is invalid");
+  }
+  const candidate = value as Record<string, unknown>;
+  const request = DirectImMessageDeliveryRequestSchema.parse(candidate.request);
+  const steers = Array.isArray(candidate.steers)
+    ? candidate.steers.slice(0, MAX_RECORDED_STEERS).flatMap((steer) => {
+        // A steer that no longer parses is dropped; it never makes the Turn's own input unreadable.
+        const parsed = RuntimeImSteerRequestSchema.safeParse(steer);
+        return parsed.success ? [parsed.data] : [];
+      })
+    : [];
+  const interruption = candidate.interruption as Record<string, unknown> | undefined;
+  if (
+    candidate.schemaVersion !== 1 ||
+    candidate.agentId !== request.agentId ||
+    candidate.sessionId !== request.sessionId ||
+    candidate.deliveryId !== request.deliveryId ||
+    typeof candidate.turnId !== "string" ||
+    candidate.turnId.length === 0 ||
+    !Number.isSafeInteger(candidate.retries) ||
+    (candidate.retries as number) < 0 ||
+    (interruption !== undefined &&
+      (!REASONS.has(interruption.reason as InterruptionReason) || typeof interruption.at !== "string"))
+  ) {
+    throw new RuntimeStorageError("invalid", "Turn retry record is invalid");
+  }
+  return {
+    schemaVersion: 1,
+    agentId: request.agentId,
+    sessionId: request.sessionId,
+    deliveryId: request.deliveryId,
+    turnId: candidate.turnId,
+    request,
+    steers,
+    retries: candidate.retries as number,
+    ...(interruption
+      ? { interruption: { reason: interruption.reason as InterruptionReason, at: interruption.at as string } }
+      : {}),
+  };
+}
+
+export function turnRetryRecord(request: DirectImMessageDeliveryRequest, turnId: string): TurnRetryRecord {
+  return {
+    schemaVersion: 1,
+    agentId: request.agentId,
+    sessionId: request.sessionId,
+    deliveryId: request.deliveryId,
+    turnId,
+    request,
+    steers: [],
+    retries: 0,
+  };
+}

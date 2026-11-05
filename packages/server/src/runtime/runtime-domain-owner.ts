@@ -24,6 +24,8 @@ import {
   type SessionMessageOutcomeResult,
   type SessionReconcileRequest,
   type SessionReconcileResult,
+  type SessionRecoverRequest,
+  type SessionRecoverResult,
   type TurnReportRequest,
   type TurnReportResult,
 } from "@opentag/shared";
@@ -118,6 +120,15 @@ export interface RuntimeDomainOwnerOptions {
     frame: SessionMessageOutcomeReport,
     context: RuntimeBusinessContext,
   ): Promise<SessionMessageOutcomeResult["status"]>;
+  /**
+   * `runtime.sessionRecovery` v1 request from the exact current connection: re-prepare a Session
+   * whose accepted work the Client is about to retry. Called only after the instance and
+   * capability checks. It must not wait for the reconcile it schedules.
+   */
+  onSessionRecover?(
+    frame: SessionRecoverRequest,
+    context: RuntimeBusinessContext,
+  ): Promise<Pick<SessionRecoverResult, "status" | "reason">>;
   onImCredentialGrant?(
     request: RuntimeImCredentialGrantRequest,
     context: RuntimeBusinessContext & { imCredentialGrantVersion: 1 | 2 },
@@ -249,7 +260,12 @@ export class RuntimeDomainOwner {
   readonly #options: Required<Pick<RuntimeDomainOwnerOptions, "maxPendingRequests" | "requestTimeoutMs">> &
     Pick<
       RuntimeDomainOwnerOptions,
-      "onImCredentialGrant" | "onSessionMessageOutcome" | "onTrace" | "onTurnActivity" | "prepareReconcile"
+      | "onImCredentialGrant"
+      | "onSessionMessageOutcome"
+      | "onSessionRecover"
+      | "onTrace"
+      | "onTurnActivity"
+      | "prepareReconcile"
     >;
   readonly #pending = new Map<string, PendingRequest>();
   readonly #startingDeliveries = new Map<string, StartingDelivery>();
@@ -269,6 +285,7 @@ export class RuntimeDomainOwner {
       maxPendingRequests: options.maxPendingRequests ?? 1024,
       onTrace: options.onTrace,
       onSessionMessageOutcome: options.onSessionMessageOutcome,
+      onSessionRecover: options.onSessionRecover,
       onTurnActivity: options.onTurnActivity,
       onImCredentialGrant: options.onImCredentialGrant,
       prepareReconcile: options.prepareReconcile,
@@ -744,7 +761,8 @@ export class RuntimeDomainOwner {
     frame: DomainBusinessFrame,
     context: RuntimeBusinessContext,
   ): Promise<DomainBusinessResult | undefined> {
-    if (frame.type === "session:message:outcome") return this.#handleSessionMessageOutcome(frame, context);
+    // Connection-scoped requests answer a stale connection themselves.
+    if (isConnectionScoped(frame)) return this.#handleConnectionScoped(frame, context);
     if (this.#registry.currentInstanceId(context.computerId) !== context.instanceId) {
       if (frame.type === "turn:report") {
         return {
@@ -817,6 +835,29 @@ export class RuntimeDomainOwner {
       return sessionOutcomeResult(frame, "unsupported_capability");
     }
     return sessionOutcomeResult(frame, await this.#options.onSessionMessageOutcome(frame, context));
+  }
+
+  #handleConnectionScoped(
+    frame: SessionMessageOutcomeReport | SessionRecoverRequest,
+    context: RuntimeBusinessContext,
+  ): Promise<SessionMessageOutcomeResult | SessionRecoverResult> {
+    return frame.type === "session:recover"
+      ? this.#handleSessionRecover(frame, context)
+      : this.#handleSessionMessageOutcome(frame, context);
+  }
+
+  async #handleSessionRecover(
+    frame: SessionRecoverRequest,
+    context: RuntimeBusinessContext,
+  ): Promise<SessionRecoverResult> {
+    if (this.#registry.currentInstanceId(context.computerId) !== context.instanceId) {
+      return sessionRecoverResult(frame, "rejected", "stale_connection");
+    }
+    if (context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.sessionRecovery] !== 1 || !this.#options.onSessionRecover) {
+      return sessionRecoverResult(frame, "unsupported_capability");
+    }
+    const decision = await this.#options.onSessionRecover(frame, context);
+    return sessionRecoverResult(frame, decision.status, decision.reason);
   }
 
   #handleActivity(
@@ -1365,7 +1406,26 @@ type DomainBusinessResult =
   | TurnReportResult
   | TurnActivityResult
   | RuntimeImCredentialGrantResult
-  | SessionMessageOutcomeResult;
+  | SessionMessageOutcomeResult
+  | SessionRecoverResult;
+
+function isConnectionScoped(frame: DomainBusinessFrame): frame is SessionMessageOutcomeReport | SessionRecoverRequest {
+  return frame.type === "session:message:outcome" || frame.type === "session:recover";
+}
+
+function sessionRecoverResult(
+  frame: SessionRecoverRequest,
+  status: SessionRecoverResult["status"],
+  reason?: string,
+): SessionRecoverResult {
+  return {
+    type: "session:recover:result",
+    requestId: frame.requestId,
+    sessionId: frame.sessionId,
+    status,
+    ...(reason ? { reason } : {}),
+  };
+}
 
 function sessionOutcomeResult(
   frame: SessionMessageOutcomeReport,
@@ -1376,9 +1436,10 @@ function sessionOutcomeResult(
 
 function businessFailureResult(
   frame: unknown,
-): RuntimeImCredentialGrantResult | SessionMessageOutcomeResult | undefined {
+): RuntimeImCredentialGrantResult | SessionMessageOutcomeResult | SessionRecoverResult | undefined {
   const parsed = ClientRuntimeBusinessFrameSchema.safeParse(frame);
   if (!parsed.success) return undefined;
+  if (parsed.data.type === "session:recover") return sessionRecoverResult(parsed.data, "retry");
   // A processing failure proves nothing about the notice: the Client keeps the report and resends.
   if (parsed.data.type === "session:message:outcome") return sessionOutcomeResult(parsed.data, "retry");
   if (parsed.data.type === "im:credential") {
@@ -1404,6 +1465,7 @@ function domainLaneKey(frame: ClientRuntimeBusinessFrame): string {
   if (frame.type === "session:message:deliver:result") {
     return `session-message:${frame.targetSessionId}:${frame.messageId}`;
   }
+  if (frame.type === "session:recover") return `session-recover:${frame.sessionId}`;
   if (frame.type === "session:message:outcome") {
     return `session-message-outcome:${frame.targetSessionId}:${frame.messageId}`;
   }

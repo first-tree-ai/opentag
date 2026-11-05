@@ -365,7 +365,6 @@ describe("SessionMessageInbox", () => {
       maxRememberedMessages: 2,
       onFailure: (failure) => failures.push(failure),
       reconciler: inboxReconciler(),
-      retryPolicy: { maxAttempts: 5, maxAgeMs: 10_000 },
       runtimeManager: {
         ensureRuntime: vi.fn(async () => {
           throw terminalError;
@@ -396,7 +395,7 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
   });
 
-  it("logs credential preparation failures before retrying visible work", async () => {
+  it("logs credential preparation failures and fails visible work without an automatic retry", async () => {
     const logger = { warn: vi.fn() };
     const credentials = {
       cleanup: vi.fn(async () => undefined),
@@ -411,7 +410,6 @@ describe("SessionMessageInbox", () => {
       sessionCollaborationVersion: () => 3,
       logger,
       reconciler: inboxReconciler(),
-      retryPolicy: { maxAttempts: 1, maxAgeMs: 10_000 },
       runtimeManager: { ensureRuntime: vi.fn(), sessionKind: vi.fn(() => "visible" as const) },
     });
 
@@ -420,7 +418,7 @@ describe("SessionMessageInbox", () => {
     await inbox.settled();
     expect(credentials.prepare).toHaveBeenCalledOnce();
     expect(credentials.cleanup).not.toHaveBeenCalled();
-    expect(inbox.getState(request.messageId)?.status).toBe("dead-letter");
+    expect(inbox.getState(request.messageId)?.status).toBe("failed");
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ code: "SESSION_MESSAGE_OUTBOX_PREPARATION_FAILED", messageId: request.messageId }),
       "Session message execution preparation failed",
@@ -428,7 +426,7 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
   });
 
-  it("dead-letters a non-completed prompt result", async () => {
+  it("fails a non-recoverable prompt result without an automatic retry", async () => {
     const onRunOutcome = vi.fn();
     const inbox = new SessionMessageInbox({
       admission: new AdmissionController(),
@@ -437,7 +435,6 @@ describe("SessionMessageInbox", () => {
       onRunOutcome,
       sessionCollaborationVersion: () => 3,
       reconciler: inboxReconciler(),
-      retryPolicy: { maxAttempts: 1, maxAgeMs: 10_000 },
       runtimeManager: {
         ensureRuntime: vi.fn(
           async () =>
@@ -453,7 +450,7 @@ describe("SessionMessageInbox", () => {
 
     await expect(inbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
     await inbox.settled();
-    expect(inbox.getState(request.messageId)?.status).toBe("dead-letter");
+    expect(inbox.getState(request.messageId)?.status).toBe("failed");
     expect(onRunOutcome).toHaveBeenCalledOnce();
     expect(onRunOutcome).toHaveBeenCalledWith({
       messageId: request.messageId,
@@ -466,7 +463,7 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
   });
 
-  it("treats a Run timeout as terminal, never reruns the message, and reports timed_out", async () => {
+  it("retries a timed-out Run once with a continuation notice, then reports timed_out", async () => {
     let fireTimeout: () => void = () => undefined;
     const timeoutScheduler: RuntimeRetryScheduler = {
       schedule(_delay, task) {
@@ -474,10 +471,16 @@ describe("SessionMessageInbox", () => {
         return { cancel: () => undefined };
       },
     };
-    const retryScheduler = { schedule: vi.fn(() => ({ cancel: () => undefined })) };
+    const retries: Array<{ delay: number; task: () => void }> = [];
+    const retryScheduler = {
+      schedule: vi.fn((delay: number, task: () => void) => {
+        retries.push({ delay, task });
+        return { cancel: () => undefined };
+      }),
+    };
     const onRunOutcome = vi.fn();
     const prompt = vi.fn(
-      (input: { signal?: AbortSignal }) =>
+      (input: { signal?: AbortSignal; input: { items: Array<{ text: string }> } }) =>
         new Promise((_resolve, reject) => {
           input.signal?.addEventListener("abort", () => reject(input.signal?.reason), { once: true });
           queueMicrotask(() => fireTimeout());
@@ -503,17 +506,75 @@ describe("SessionMessageInbox", () => {
     await expect(inbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
     await inbox.settled();
     expect(prompt).toHaveBeenCalledOnce();
-    expect(retryScheduler.schedule).not.toHaveBeenCalled();
+    expect(inbox.getState(request.messageId)).toMatchObject({
+      status: "retryable",
+      attempts: 1,
+      interruption: { reason: "turn_timeout" },
+    });
+    expect(onRunOutcome).not.toHaveBeenCalled();
+    expect(retries).toHaveLength(1);
+    expect(retries[0]?.delay).toBe(0);
+    retries[0]?.task();
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(2));
+    await inbox.settled();
+    const retryText = prompt.mock.calls[1]?.[0].input.items[0]?.text ?? "";
+    expect(retryText).toContain("[OpenTag] Your previous turn was interrupted at");
+    expect(retryText).toContain("reached its maximum run duration (automatic retry 1/1)");
+    expect(prompt.mock.calls[1]?.[0].input.items.at(-1)?.text).toBe(request.content.text);
+    expect(retries).toHaveLength(1);
     expect(inbox.getState(request.messageId)).toMatchObject({
       status: "failed",
       lastError: { code: "turn_timeout", retryability: "never" },
     });
+    expect(onRunOutcome).toHaveBeenCalledOnce();
     expect(onRunOutcome).toHaveBeenCalledWith(
       expect.objectContaining({ messageId: request.messageId, outcome: "timed_out", reason: "turn_timeout" }),
     );
     // A redelivery of the same message is answered from memory and never reruns it.
     expect((await inbox.accept(request)).status).toBe("rejected");
-    expect(prompt).toHaveBeenCalledOnce();
+    expect(prompt).toHaveBeenCalledTimes(2);
+    inbox.stop();
+  });
+
+  it("retries a rate-limited Run once after a delay; a second 429 is reported", async () => {
+    const retries: Array<{ delay: number; task: () => void }> = [];
+    const onRunOutcome = vi.fn();
+    const prompt = vi.fn(async () => ({
+      runId: "run",
+      status: "failed" as const,
+      output: [],
+      error: { code: "provider_rate_limited", message: "429" },
+    }));
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      onRunOutcome,
+      persistence: new MemoryRuntimeDurabilityStore(),
+      sessionCollaborationVersion: () => 4,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+      scheduler: {
+        schedule: (delay, task) => {
+          retries.push({ delay, task });
+          return { cancel: () => undefined };
+        },
+      },
+    });
+    const request = delivery();
+    await inbox.accept(request);
+    await inbox.settled();
+    expect(retries.map((retry) => retry.delay)).toEqual([30_000]);
+    retries[0]?.task();
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(2));
+    await inbox.settled();
+    expect(inbox.getState(request.messageId)?.status).toBe("failed");
+    expect(onRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ outcome: "failed", reason: "provider_rate_limited" }),
+    );
     inbox.stop();
   });
 
@@ -535,7 +596,6 @@ describe("SessionMessageInbox", () => {
         onRunOutcome,
         sessionCollaborationVersion: () => 4,
         reconciler: inboxReconciler(),
-        retryPolicy: { maxAttempts: 1, maxAgeMs: 10_000 },
         runtimeManager: {
           ensureRuntime: vi.fn(
             async () =>
@@ -550,7 +610,7 @@ describe("SessionMessageInbox", () => {
       const request = delivery();
       await inbox.accept(request);
       await inbox.settled();
-      expect(inbox.getState(request.messageId)?.status).toBe("dead-letter");
+      expect(inbox.getState(request.messageId)?.status).toBe("failed");
       await vi.waitFor(() =>
         expect(warn).toHaveBeenCalledWith(
           expect.objectContaining({ code: "SESSION_MESSAGE_OUTCOME_REPORT_FAILED", messageId: request.messageId }),
@@ -619,25 +679,12 @@ describe("SessionMessageInbox", () => {
       return { inbox, prompt, reporter, sent };
     }
 
-    it.each([
-      ["failed", "timed_out", "turn_timeout"],
-      ["dead-letter", "failed", "provider_failed"],
-    ] as const)(
+    it.each([["failed", "failed", "provider_failed"]] as const)(
       "recovers exactly one report for a %s record committed before the outcome write",
       async (status, outcome, reason) => {
         const store = new PausableStore();
         store.pauseOutcomeWrites = true;
-        let fireTimeout: () => void = () => undefined;
-        const prompt =
-          status === "failed"
-            ? vi.fn(
-                (input: { signal?: AbortSignal }) =>
-                  new Promise((_resolve, reject) => {
-                    input.signal?.addEventListener("abort", () => reject(input.signal?.reason), { once: true });
-                    queueMicrotask(() => fireTimeout());
-                  }),
-              )
-            : vi.fn(async () => ({ status: "failed", error: { message: "provider rejected input" } }));
+        const prompt = vi.fn(async () => ({ status: "failed", error: { message: "provider rejected input" } }));
         const first = v4Connection();
         const firstReporter = new SessionMessageOutcomeReporter({
           connection: first.connection,
@@ -650,7 +697,6 @@ describe("SessionMessageInbox", () => {
           imCredentialGrantVersion: () => 2,
           onRunOutcome: firstReporter.report.bind(firstReporter),
           persistence: store,
-          retryPolicy: { maxAttempts: 1, maxAgeMs: 10_000 },
           sessionCollaborationVersion: () => 4,
           reconciler: inboxReconciler(),
           runtimeManager: {
@@ -658,12 +704,6 @@ describe("SessionMessageInbox", () => {
             sessionKind: vi.fn(() => "internal" as const),
           },
           scheduler: idleScheduler,
-          timeoutScheduler: {
-            schedule(_delay, task) {
-              fireTimeout = task;
-              return { cancel: () => undefined };
-            },
-          },
         });
         const request = delivery();
         await expect(firstInbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
@@ -799,23 +839,33 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
   });
 
-  it("reconciles succeeded, failed, expired, and running persisted records", async () => {
-    let now = 10_000;
+  it("reconciles succeeded, failed, old, and interrupted persisted records", async () => {
     const store = new MemoryRuntimeDurabilityStore();
     const succeeded = delivery({ text: "succeeded" });
     const failed = delivery({ text: "failed" });
-    const expired = delivery({ text: "expired" });
+    const old = delivery({ text: "old" });
     const running = delivery({ text: "running" });
+    const retried = delivery({ text: "retried" });
+    const stopped = delivery({ text: "stopped" });
     await Promise.all([
       store.write(recordFor(succeeded, "succeeded")),
       store.write(recordFor(failed, "failed", { attempts: 1, lastError: failureFor(failed, "runtime_failed") })),
-      store.write(recordFor(expired, "accepted", { acceptedAt: 1, attempts: 0 })),
+      // Waiting is never a failure: a long-accepted message still runs once.
+      store.write(recordFor(old, "accepted", { acceptedAt: 1, attempts: 0 })),
+      // Crash mid-Run: no reason recorded.
       store.write(recordFor(running, "running")),
+      // The one automatic retry was already spent when the daemon stopped again.
+      store.write(recordFor(retried, "running", { attempts: 1 })),
+      // An orderly stop recorded its reason.
+      store.write(
+        recordFor(stopped, "running", { interruption: { reason: "client_shutdown", at: "2026-11-05T01:02:03.000Z" } }),
+      ),
     ]);
     const runtime = {
       waitForIdle: vi.fn(async () => undefined),
       prompt: vi.fn(async ({ runId }: { runId: string }) => ({ runId, status: "completed", output: [] })),
     };
+    const onRunOutcome = vi.fn();
     const inbox = new SessionMessageInbox({
       admission: new AdmissionController(),
       credentialEnvironment: credentialEnvironment(),
@@ -823,10 +873,10 @@ describe("SessionMessageInbox", () => {
       sessionCollaborationVersion: () => 3,
       logger: { warn: vi.fn() },
       maxQueuedPerSession: 8,
-      now: () => now,
+      now: () => Date.parse("2026-11-05T02:00:00.000Z"),
+      onRunOutcome,
       persistence: store,
       reconciler: inboxReconciler(),
-      retryPolicy: { maxAttempts: 5, maxAgeMs: 100 },
       runtimeManager: {
         ensureRuntime: vi.fn(async () => runtime as never),
         sessionKind: vi.fn(() => "internal" as const),
@@ -837,11 +887,129 @@ describe("SessionMessageInbox", () => {
     await inbox.settled();
     expect(inbox.getState(succeeded.messageId)?.status).toBe("succeeded");
     expect(inbox.getState(failed.messageId)?.status).toBe("failed");
-    expect(inbox.getState(expired.messageId)?.status).toBe("dead-letter");
-    expect(inbox.getState(running.messageId)?.status).toBe("succeeded");
-    expect(runtime.prompt).toHaveBeenCalledOnce();
-    now += 1_000;
+    expect(inbox.getState(old.messageId)?.status).toBe("succeeded");
+    expect(inbox.getState(running.messageId)).toMatchObject({
+      status: "succeeded",
+      attempts: 1,
+      interruption: { reason: "daemon_crash" },
+    });
+    expect(inbox.getState(stopped.messageId)?.status).toBe("succeeded");
+    expect(inbox.getState(retried.messageId)).toMatchObject({
+      status: "failed",
+      lastError: { code: "run_interrupted" },
+    });
+    expect(onRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: retried.messageId, outcome: "failed", reason: "run_interrupted" }),
+    );
+    expect(runtime.prompt).toHaveBeenCalledTimes(3);
+    const inputs = runtime.prompt.mock.calls.map(
+      (call) => (call[0] as unknown as { input: { items: Array<{ text: string }> } }).input.items,
+    );
+    const crashed = inputs.find((items) => items.at(-1)?.text === "running");
+    expect(crashed?.[0]?.text).toContain(
+      "at or before 2026-11-05T02:00:00.000Z because the OpenTag daemon stopped unexpectedly",
+    );
+    const restarted = inputs.find((items) => items.at(-1)?.text === "stopped");
+    expect(restarted?.[0]?.text).toContain(
+      "at 2026-11-05T01:02:03.000Z because the OpenTag daemon was restarted or upgraded",
+    );
+    const fresh = inputs.find((items) => items.at(-1)?.text === "old");
+    expect(fresh?.[0]?.text).not.toContain("[OpenTag] Your previous turn");
     inbox.stop();
+  });
+
+  it("waits for Session preparation instead of failing, then runs or fails on request", async () => {
+    const store = new MemoryRuntimeDurabilityStore();
+    const first = delivery({ text: "first" });
+    const second = delivery({ text: "second" });
+    await store.write(recordFor(first, "running"));
+    await store.write(recordFor(second, "accepted"));
+    const prepared = new Set<string>();
+    const runtime = {
+      waitForIdle: vi.fn(async () => undefined),
+      prompt: vi.fn(async ({ runId }: { runId: string }) => ({ runId, status: "completed", output: [] })),
+    };
+    const onRunOutcome = vi.fn();
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      sessionCollaborationVersion: () => 4,
+      onRunOutcome,
+      persistence: store,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => runtime as never),
+        isPrepared: (sessionId) => prepared.has(sessionId),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+    });
+    await inbox.ready();
+    await inbox.settled();
+    expect(runtime.prompt).not.toHaveBeenCalled();
+    expect(inbox.getState(first.messageId)?.status).toBe("retryable");
+    expect(
+      inbox
+        .sessionsAwaitingPreparation()
+        .map((entry) => entry.sessionId)
+        .sort(),
+    ).toEqual([first.targetSessionId, second.targetSessionId].sort());
+    expect(inbox.pendingCount).toBe(2);
+
+    prepared.add(first.targetSessionId);
+    inbox.sessionPrepared(first.targetSessionId);
+    await vi.waitFor(() => expect(inbox.getState(first.messageId)?.status).toBe("succeeded"));
+
+    await inbox.failAwaitingPreparation(second.targetSessionId, "session_ended");
+    expect(inbox.getState(second.messageId)).toMatchObject({ status: "failed", lastError: { code: "session_ended" } });
+    expect(onRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: second.messageId, outcome: "failed", reason: "session_ended" }),
+    );
+    expect(inbox.sessionsAwaitingPreparation()).toEqual([]);
+    expect(inbox.pendingCount).toBe(0);
+    inbox.stop();
+  });
+
+  it("keeps an orderly stop's Run running with its reason for the restarted daemon", async () => {
+    const store = new MemoryRuntimeDurabilityStore();
+    let started: () => void = () => undefined;
+    const running = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const prompt = vi.fn(
+      (input: { signal?: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          input.signal?.addEventListener("abort", () => reject(input.signal?.reason), { once: true });
+          started();
+        }),
+    );
+    const onRunOutcome = vi.fn();
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      sessionCollaborationVersion: () => 4,
+      onRunOutcome,
+      persistence: store,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+    });
+    const request = delivery();
+    await inbox.accept(request);
+    await running;
+    inbox.stop();
+    await inbox.settled();
+    expect(onRunOutcome).not.toHaveBeenCalled();
+    expect(await store.list("session-message")).toEqual([
+      expect.objectContaining({
+        status: "running",
+        attempts: 0,
+        interruption: expect.objectContaining({ reason: "client_shutdown" }),
+      }),
+    ]);
   });
 
   it("bounds hydrated recovery and logs when the queue is full", async () => {
@@ -896,7 +1064,7 @@ describe("SessionMessageInbox", () => {
     const runtime = {
       waitForIdle: vi.fn(async () => undefined),
       prompt: vi.fn(async () => {
-        throw new Error("provider unavailable");
+        throw Object.assign(new Error("rate limited"), { code: "provider_rate_limited" });
       }),
     };
     const inbox = new SessionMessageInbox({
@@ -953,7 +1121,6 @@ describe("SessionMessageInbox", () => {
       maxRememberedMessages: 1,
       onFailure: (failure) => expect(failure).toMatchObject({ code: "provider_failed", message: "x".repeat(256) }),
       reconciler: inboxReconciler(),
-      retryPolicy: { maxAttempts: 1, maxAgeMs: 10_000 },
       runtimeManager: {
         ensureRuntime: vi.fn(
           async () =>
@@ -974,7 +1141,7 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
   });
 
-  it("persists running work, retries with an injected scheduler, and dead-letters after bounded attempts", async () => {
+  it("persists running work, retries a 429 once with an injected scheduler, then fails", async () => {
     let now = 1_000;
     const scheduled: Array<() => void> = [];
     const scheduler: RuntimeRetryScheduler = {
@@ -989,7 +1156,7 @@ describe("SessionMessageInbox", () => {
     const runtime = {
       waitForIdle: vi.fn(async () => undefined),
       prompt: vi.fn(async () => {
-        throw new Error("provider unavailable");
+        throw Object.assign(new Error("rate limited"), { code: "provider_rate_limited" });
       }),
     };
     const inbox = new SessionMessageInbox({
@@ -1001,7 +1168,6 @@ describe("SessionMessageInbox", () => {
       metrics,
       now: () => now,
       persistence: store,
-      retryPolicy: { baseDelayMs: 1, maxDelayMs: 1, maxAttempts: 2, maxAgeMs: 100 },
       scheduler,
       reconciler: inboxReconciler(),
       runtimeManager: {
@@ -1038,9 +1204,9 @@ describe("SessionMessageInbox", () => {
     scheduled.shift()?.();
     await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledTimes(2));
     await inbox.settled();
-    expect(inbox.getState(request.messageId)?.status).toBe("dead-letter");
+    expect(inbox.getState(request.messageId)?.status).toBe("failed");
     expect(inbox.pendingCount).toBe(0);
-    expect(inbox.metricsSnapshot()).toMatchObject({ retries: 1, deadLetters: 1 });
+    expect(inbox.metricsSnapshot()).toMatchObject({ retries: 1, deadLetters: 0 });
     await vi.waitFor(() => expect(executeUpdate).toHaveBeenCalledWith("0.0.3"));
     updater.stop();
     now += 1_000;

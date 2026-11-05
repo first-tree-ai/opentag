@@ -13,6 +13,14 @@ import type { AgentInput, AgentRuntime, AgentSteerOutcome, AgentSteerReceipt } f
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import type { AdmissionController } from "./admission-controller.js";
 import { ImCredentialEnvironmentError } from "./im-credential-environment-manager.js";
+import {
+  buildContinuationNotice,
+  type Interruption,
+  type InterruptionReason,
+  MAX_AUTOMATIC_RETRIES,
+  RATE_LIMIT_RETRY_DELAY_MS,
+  recoverableFailure,
+} from "./interruption-retry.js";
 import type { ProviderCliTurnPlanPrepareInput } from "./provider-cli/turn-plan-manager.js";
 import { providerLaunchConfiguration } from "./provider-launch-configuration.js";
 import { buildProviderOutboxInstructions } from "./provider-outbox-instructions.js";
@@ -21,17 +29,13 @@ import type {
   RuntimeCredentialEnvironmentManager,
 } from "./runtime-credential-environment-manager.js";
 import {
-  DEFAULT_RUNTIME_RETRY_POLICY,
   type DurableFailure,
   type DurableWorkRecord,
   defaultRuntimeRetryScheduler,
   durableFailureFromUnknown,
   type RuntimeDurabilityMetrics,
   type RuntimeDurabilityStore,
-  type RuntimeRetryPolicy,
   type RuntimeRetryScheduler,
-  retryDelay,
-  retryExhausted,
 } from "./runtime-durability.js";
 import {
   buildScheduleStartNotification,
@@ -80,7 +84,8 @@ export interface SessionMessageInboxOptions {
    */
   onRunOutcome?(outcome: SessionMessageRunOutcomeEvent): void | Promise<void>;
   persistence?: RuntimeDurabilityStore;
-  retryPolicy?: Partial<RuntimeRetryPolicy>;
+  /** Delay before the automatic retry of a rate-limited Run. */
+  rateLimitRetryDelayMs?: number;
   scheduler?: RuntimeRetryScheduler;
   timeoutScheduler?: RuntimeRetryScheduler;
   /**
@@ -95,7 +100,7 @@ export interface SessionMessageInboxOptions {
     "checkSessionMessageDelivery" | "clearActivity" | "setActivity" | "withAgentLock"
   >;
   runtimeManager: Pick<SessionRuntimeManager, "ensureRuntime" | "sessionKind"> &
-    Partial<Pick<SessionRuntimeManager, "runtime">>;
+    Partial<Pick<SessionRuntimeManager, "isPrepared" | "runtime">>;
   /** How often a message waiting behind a busy Session re-checks whether it can steer into the running Turn. */
   steerRetryMs?: number;
 }
@@ -127,7 +132,7 @@ export class SessionMessageInbox {
   readonly #onFailure?: SessionMessageInboxOptions["onFailure"];
   readonly #onRunOutcome?: SessionMessageInboxOptions["onRunOutcome"];
   readonly #persistence?: RuntimeDurabilityStore;
-  readonly #retryPolicy: RuntimeRetryPolicy;
+  readonly #rateLimitRetryDelayMs: number;
   readonly #scheduler: RuntimeRetryScheduler;
   readonly #timeoutScheduler: RuntimeRetryScheduler;
   readonly #sessionCollaborationVersion: SessionMessageInboxOptions["sessionCollaborationVersion"];
@@ -136,6 +141,8 @@ export class SessionMessageInbox {
   readonly #steerRetryMs: number;
   readonly #queues = new Map<string, QueuedMessage[]>();
   readonly #drains = new Map<string, Promise<void>>();
+  /** Sessions whose queued messages wait for the Server to prepare them (e.g. after a restart). */
+  readonly #awaitingPreparation = new Set<string>();
   readonly #records = new Map<string, DurableWorkRecord<SessionMessageDeliveryRequestV3>>();
   readonly #remembered = new Map<string, RememberedMessage>();
   readonly #abort = new AbortController();
@@ -160,7 +167,7 @@ export class SessionMessageInbox {
     this.#onFailure = options.onFailure;
     this.#onRunOutcome = options.onRunOutcome;
     this.#persistence = options.persistence;
-    this.#retryPolicy = normalizeRetryPolicy(options.retryPolicy);
+    this.#rateLimitRetryDelayMs = options.rateLimitRetryDelayMs ?? RATE_LIMIT_RETRY_DELAY_MS;
     this.#scheduler = options.scheduler ?? defaultRuntimeRetryScheduler;
     this.#timeoutScheduler = options.timeoutScheduler ?? defaultRuntimeRetryScheduler;
     this.#sessionCollaborationVersion = options.sessionCollaborationVersion;
@@ -311,8 +318,55 @@ export class SessionMessageInbox {
     await Promise.allSettled([...this.#drains.values(), ...this.#steerSettlements]);
   }
 
+  /**
+   * Sessions with accepted messages that cannot run until the Server prepares the Session, with
+   * the identity a `session:recover` request needs.
+   */
+  sessionsAwaitingPreparation(): Array<{ sessionId: string; agentId: string; placementGeneration: number }> {
+    const sessions: Array<{ sessionId: string; agentId: string; placementGeneration: number }> = [];
+    for (const sessionId of this.#awaitingPreparation) {
+      const next = this.#queues.get(sessionId)?.[0];
+      if (next)
+        sessions.push({
+          sessionId,
+          agentId: next.request.agentId,
+          placementGeneration: next.request.placementGeneration,
+        });
+    }
+    return sessions;
+  }
+
+  /** The Session was prepared: its waiting messages may run now. */
+  sessionPrepared(sessionId: string): void {
+    if (!this.#awaitingPreparation.delete(sessionId)) return;
+    this.#startDrain(sessionId);
+  }
+
+  /**
+   * The Server refused to prepare the Session (for example it ended): every message waiting for it
+   * fails terminally with `reason`, and its creator is notified as for any failed Run.
+   */
+  async failAwaitingPreparation(sessionId: string, reason: string): Promise<void> {
+    if (!this.#awaitingPreparation.delete(sessionId)) return;
+    const queue = this.#queues.get(sessionId) ?? [];
+    this.#queues.delete(sessionId);
+    this.#queuedTotal -= queue.length;
+    for (const next of queue) {
+      const record = this.#records.get(`${next.request.targetSessionId}:${next.request.messageId}`);
+      if (!record) continue;
+      await this.#failTerminally(record, next.hash, "runtime", {
+        code: reason,
+        category: "unavailable",
+        retryability: "never",
+        phase: "transport",
+        requestId: record.payload.requestId,
+        message: "The Session could not be prepared for this message",
+      });
+    }
+  }
+
   #startDrain(sessionId: string): void {
-    if (this.#drains.has(sessionId) || this.#abort.signal.aborted) return;
+    if (this.#drains.has(sessionId) || this.#abort.signal.aborted || this.#awaitingPreparation.has(sessionId)) return;
     const drain = this.#drain(sessionId).finally(() => {
       if (this.#drains.get(sessionId) === drain) this.#drains.delete(sessionId);
       if ((this.#queues.get(sessionId)?.length ?? 0) > 0) this.#startDrain(sessionId);
@@ -327,6 +381,12 @@ export class SessionMessageInbox {
       const next = queue?.[0];
       if (!next) {
         this.#queues.delete(sessionId);
+        return;
+      }
+      // Waiting for the Server to prepare the Session is not a failure: after a restart nothing has
+      // prepared it yet. The message runs once a ready reconcile arrives.
+      if (this.#runtimeManager.isPrepared && !this.#runtimeManager.isPrepared(sessionId)) {
+        this.#awaitingPreparation.add(sessionId);
         return;
       }
       let reservation = this.#admission.reserve(sessionId, next.request.agentId, { acceptedWork: true });
@@ -519,20 +579,19 @@ export class SessionMessageInbox {
          * time, never the claim or enqueue time. It is prompt input only: the durable record,
          * the semantic hash, and the runtime configuration never carry a current-time fact.
          */
-        input: buildSessionMessageInput(
-          next.request,
-          this.#cliCommand,
-          sessionKind === "visible"
-            ? { sessionKind, outboxContext: requireOutboxContext(outboxContext) }
-            : { sessionKind },
-          new Date(this.#now()),
+        input: withContinuation(
+          buildSessionMessageInput(
+            next.request,
+            this.#cliCommand,
+            turnContext(sessionKind, outboxContext),
+            new Date(this.#now()),
+          ),
+          current?.interruption,
         ),
         signal: ensureRunSignal(),
         ...sessionMessageLaunchConfiguration(prepared, runtime),
       });
-      if (result.status !== "completed") {
-        throw new Error(result.error?.message ?? `Session message Run ended with status ${result.status}`);
-      }
+      if (result.status !== "completed") throw runFailure(result);
       if (current && !this.#abort.signal.aborted) {
         await this.#transition(current, "succeeded");
         this.#remember(key, { hash: next.hash, status: "succeeded" });
@@ -686,16 +745,30 @@ export class SessionMessageInbox {
       // backfilled; the Run is never rerun either way.
       return record.outcomeReport === "pending" ? record : undefined;
     }
-    if (retryExhausted(this.#retryPolicy, record, this.#now())) {
-      record = await this.#transition(record, "dead-letter", {
-        nextAttemptAt: undefined,
-        ...this.#pendingOutcomeReport(),
-      });
-      this.#remember(key, { hash, status: "dead-letter", reason: "provider_unavailable" });
-      return record;
-    }
     if (record.status === "running") {
-      record = { ...record, status: "retryable", nextAttemptAt: this.#now(), updatedAt: this.#now() };
+      // The daemon stopped while this message's Run was in flight: a crash leaves no reason behind,
+      // an orderly stop records `client_shutdown`. It gets the message's one automatic retry.
+      const interruption: Interruption = {
+        reason: recoverableFailure(record.interruption?.reason) ?? "daemon_crash",
+        at: record.interruption?.at ?? new Date(this.#now()).toISOString(),
+      };
+      if (record.attempts >= MAX_AUTOMATIC_RETRIES) {
+        const failure = interruptedFailure(record.payload.requestId, interruption.reason);
+        record = await this.#transition({ ...record, attempts: record.attempts + 1, lastError: failure }, "failed", {
+          nextAttemptAt: undefined,
+          ...this.#pendingOutcomeReport(),
+        });
+        this.#remember(key, { hash, status: "failed", reason: "provider_unavailable" });
+        return record;
+      }
+      record = {
+        ...record,
+        attempts: record.attempts + 1,
+        interruption,
+        status: "retryable",
+        nextAttemptAt: this.#now(),
+        updatedAt: this.#now(),
+      };
       await this.#persist(record);
     }
     this.#remember(key, { hash, status: "retryable" });
@@ -743,53 +816,66 @@ export class SessionMessageInbox {
       error,
       phase === "credential" ? "credential_unavailable" : phase === "prompt" ? "provider_failed" : "runtime_failed",
     );
-    /*
-     * A Run that used its whole budget is terminal: rerunning the same message from scratch
-     * would repeat the work and likely time out again. The Session keeps its provider context, so
-     * the creator decides whether to continue it with a follow-up message.
-     */
     const failure: DurableFailure = timedOut
       ? { ...reported, code: SESSION_MESSAGE_TURN_TIMEOUT_CODE, retryability: "never" }
       : reported;
     this.#emitFailure(failure);
-    const attempts = record.attempts + 1;
     const now = this.#now();
-    const candidate = { ...record, attempts, lastError: failure, updatedAt: now };
-    // The terminal status and the creator-notice intent commit in ONE record write.
-    const terminalFields = { nextAttemptAt: undefined, ...this.#pendingOutcomeReport() };
-    if (failure.retryability === "never") {
-      const terminal = await this.#transition(candidate, "failed", terminalFields).catch(() => undefined);
-      this.#remember(record.key, { hash, status: "failed", reason: "provider_unavailable" });
-      this.#logger.warn(
-        { code: failure.code, messageId: record.payload.messageId, phase, status: "failed" },
-        "Session message failed permanently",
-      );
-      await this.#publishRunOutcome(terminal ?? candidate, timedOut ? "timed_out" : "failed", failure.code);
+    if (this.#abort.signal.aborted) {
+      // An orderly daemon stop: keep the record `running` with the reason, so the restarted daemon
+      // runs the message's one automatic retry (or reports it when the retry is already spent).
+      const interruption: Interruption = { reason: "client_shutdown", at: new Date(now).toISOString() };
+      await this.#persist({ ...record, interruption, updatedAt: now }).catch(() => undefined);
       return;
     }
-    if (retryExhausted(this.#retryPolicy, candidate, now)) {
-      const terminal = await this.#transition(candidate, "dead-letter", terminalFields).catch(() => undefined);
-      this.#remember(record.key, { hash, status: "dead-letter", reason: "provider_unavailable" });
-      this.#logger.warn(
-        { code: failure.code, messageId: record.payload.messageId, phase, status: "dead-letter" },
-        "Session message moved to dead letter",
-      );
-      await this.#publishRunOutcome(terminal ?? candidate, "failed", failure.code);
+    const reason = timedOut ? "turn_timeout" : recoverableFailure(failure.code);
+    if (reason && record.attempts < MAX_AUTOMATIC_RETRIES) {
+      const interruption: Interruption = { reason, at: new Date(now).toISOString() };
+      const delay = reason === "provider_rate_limited" ? this.#rateLimitRetryDelayMs : 0;
+      let retryable: DurableWorkRecord<SessionMessageDeliveryRequestV3>;
+      try {
+        retryable = await this.#transition(
+          { ...record, attempts: record.attempts + 1, lastError: failure, interruption, updatedAt: now },
+          "retryable",
+          { nextAttemptAt: now + delay },
+        );
+      } catch {
+        this.#logger.warn(
+          { code: "SESSION_MESSAGE_PERSISTENCE_FAILED", messageId: record.payload.messageId, status: "retryable" },
+          "Session message retry state could not be persisted",
+        );
+        return;
+      }
+      this.#remember(record.key, { hash, status: "retryable" });
+      this.#scheduleRetry(retryable, hash);
       return;
     }
-    const nextAttemptAt = now + retryDelay(this.#retryPolicy, attempts);
-    let retryable: DurableWorkRecord<SessionMessageDeliveryRequestV3>;
-    try {
-      retryable = await this.#transition(candidate, "retryable", { nextAttemptAt });
-    } catch {
-      this.#logger.warn(
-        { code: "SESSION_MESSAGE_PERSISTENCE_FAILED", messageId: record.payload.messageId, status: "retryable" },
-        "Session message retry state could not be persisted",
-      );
-      return;
-    }
-    this.#remember(record.key, { hash, status: "retryable" });
-    this.#scheduleRetry(retryable, hash);
+    await this.#failTerminally(record, hash, phase, failure, timedOut);
+  }
+
+  /**
+   * A failure that is not recoverable, or the failure of the one automatic retry: terminal, and
+   * the creator gets a Run outcome notice. The terminal status and the notice intent commit in one
+   * record write.
+   */
+  async #failTerminally(
+    record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
+    hash: string,
+    phase: string,
+    failure: DurableFailure,
+    timedOut = false,
+  ): Promise<void> {
+    const candidate = { ...record, attempts: record.attempts + 1, lastError: failure, updatedAt: this.#now() };
+    const terminal = await this.#transition(candidate, "failed", {
+      nextAttemptAt: undefined,
+      ...this.#pendingOutcomeReport(),
+    }).catch(() => undefined);
+    this.#remember(record.key, { hash, status: "failed", reason: "provider_unavailable" });
+    this.#logger.warn(
+      { code: failure.code, messageId: record.payload.messageId, phase, status: "failed" },
+      "Session message failed permanently",
+    );
+    await this.#publishRunOutcome(terminal ?? candidate, timedOut ? "timed_out" : "failed", failure.code);
   }
 
   #pendingOutcomeReport(): Pick<DurableWorkRecord, "outcomeReport"> {
@@ -885,6 +971,41 @@ function terminalRunOutcome(record: DurableWorkRecord<SessionMessageDeliveryRequ
   return { outcome: code === SESSION_MESSAGE_TURN_TIMEOUT_CODE ? "timed_out" : "failed", code };
 }
 
+function interruptedFailure(requestId: string, reason: InterruptionReason): DurableFailure {
+  return {
+    code: reason === "daemon_crash" ? "run_interrupted" : reason,
+    category: "unavailable",
+    retryability: "never",
+    phase: "provider",
+    requestId,
+    message: "The automatic retry of this Session message was interrupted as well",
+  };
+}
+
+function turnContext(
+  sessionKind: "visible" | "internal",
+  outboxContext: RuntimeImOutboxContext | undefined,
+): SessionMessageTurnContext {
+  return sessionKind === "visible"
+    ? { sessionKind, outboxContext: requireOutboxContext(outboxContext) }
+    : { sessionKind: "internal" };
+}
+
+/** A non-completed Run as an error that keeps the provider's code (e.g. `provider_rate_limited`). */
+function runFailure(result: { status: string; error?: { code?: string; message?: string } }): Error {
+  const error = new Error(result.error?.message ?? `Session message Run ended with status ${result.status}`);
+  return result.error?.code ? Object.assign(error, { code: result.error.code }) : error;
+}
+
+/** Prefix the continuation notice when this Run is the automatic retry of an interrupted Run. */
+function withContinuation(input: AgentInput, interruption: DurableWorkRecord["interruption"]): AgentInput {
+  const reason = recoverableFailure(interruption?.reason);
+  if (!interruption || !reason) return input;
+  return {
+    items: [{ type: "text", text: buildContinuationNotice({ reason, at: interruption.at }) }, ...input.items],
+  };
+}
+
 function steerInterruptedFailure(requestId: string): DurableFailure {
   return {
     code: "session_message_steer_interrupted",
@@ -922,15 +1043,6 @@ function retryableAuthorityReason(reason: InputRejectReason): boolean {
     reason === "stale_configuration" ||
     reason === "session_recovery_required"
   );
-}
-
-function normalizeRetryPolicy(overrides: Partial<RuntimeRetryPolicy> | undefined): RuntimeRetryPolicy {
-  const policy = { ...DEFAULT_RUNTIME_RETRY_POLICY, ...overrides };
-  for (const [name, value] of Object.entries(policy)) {
-    if (!Number.isSafeInteger(value) || value < 1)
-      throw new Error(`Runtime retry ${name} must be a positive safe integer`);
-  }
-  return policy;
 }
 
 export type SessionMessageTurnContext =

@@ -38,6 +38,7 @@ import {
   MAX_AUTOMATIC_RETRIES,
   RATE_LIMIT_RETRY_DELAY_MS,
   recoverableFailure,
+  type TurnRetryRecord,
   type TurnRetryStore,
 } from "./interruption-retry.js";
 import {
@@ -111,7 +112,7 @@ export interface AgentTurnRunnerOptions {
    * one automatic retry in place, and an orderly shutdown leaves the Turn unresolved for the
    * restarted daemon instead of reporting it cancelled.
    */
-  readonly retries?: Pick<TurnRetryStore, "appendSteer" | "read" | "update">;
+  readonly retries?: Pick<TurnRetryStore, "appendSteer" | "update">;
   /** Whether a Turn interrupted by shutdown can be retried after restart (`runtime.sessionRecovery`). */
   readonly restartRetryAvailable?: () => boolean;
 }
@@ -156,6 +157,8 @@ interface RunningTurn {
   runtime?: AgentRuntime;
   expiresAt?: string;
   continuation?: Interruption;
+  /** Negotiation is cleared on disconnect, and shutdown disconnects first: sample it at start. */
+  readonly restartRetry: boolean;
   steers: readonly RuntimeImSteerRequest[];
 }
 
@@ -187,7 +190,7 @@ export class AgentTurnRunner {
   readonly #turnPlan: AgentTurnRunnerOptions["turnPlan"];
   readonly #outgoingReplies: AgentTurnRunnerOptions["outgoingReplies"];
   readonly #agentErrorReporter: AgentTurnErrorReporter;
-  readonly #retries: AgentTurnRunnerOptions["retries"];
+  readonly #retries: NonNullable<AgentTurnRunnerOptions["retries"]>;
   readonly #restartRetryAvailable: () => boolean;
   readonly #turns = new Map<string, RunningTurn>();
   #stopped = false;
@@ -213,7 +216,7 @@ export class AgentTurnRunner {
     // Defaulted rather than optional so the failure path calls it unconditionally: a composition that
     // wants no tracker gets a runner that reports into nothing, not a second branch to get wrong.
     this.#agentErrorReporter = options.agentErrorReporter ?? (() => undefined);
-    this.#retries = options.retries;
+    this.#retries = options.retries ?? NO_TURN_RETRIES;
     this.#restartRetryAvailable = options.restartRetryAvailable ?? (() => false);
   }
 
@@ -238,6 +241,7 @@ export class AgentTurnRunner {
       phase: "starting",
       promise: Promise.resolve(),
       ...(options.continuation ? { continuation: options.continuation } : {}),
+      restartRetry: this.#restartRetryAvailable(),
       steers: options.steers ?? [],
     };
     turn.promise = this.#run(turn, abort.signal)
@@ -296,7 +300,7 @@ export class AgentTurnRunner {
       return steerResult(request, "deferred", "steer_state_unknown");
     }
     // Best effort: a retry re-includes steered input so it is not lost with the interrupted Turn.
-    await this.#retries?.appendSteer(request).catch(() => undefined);
+    await this.#retries.appendSteer(request);
     return steerResult(request, "steered");
   }
 
@@ -497,10 +501,10 @@ export class AgentTurnRunner {
       const ready = next && next !== "deferred" && (await this.#retryDue(next, shutdownSignal));
       if (next === "deferred" || ready === false) {
         this.#logger.info({ ...fields, reason: attempt.completion.errorReason }, "Turn left for retry after restart");
-        await trace.finish().catch(() => undefined);
+        await trace.finish();
         return undefined;
       }
-      if (!next || !(await this.#claimRetry(turn.owner))) {
+      if (!next || !(await this.#claimRetry(turn))) {
         return { completion: attempt.completion, ...(planInput ? { turnPlanInput: planInput } : {}) };
       }
       this.#logger.info({ ...fields, reason: next.reason }, "Turn automatic retry started");
@@ -638,14 +642,14 @@ export class AgentTurnRunner {
     completion: TurnCompletion,
     shutdownSignal: AbortSignal,
   ): Promise<Interruption | "deferred" | undefined> {
-    if (!this.#retries || completion.outcome === "completed") return undefined;
+    if (completion.outcome === "completed") return undefined;
     const reason = recoverableFailure(completion.errorReason);
     if (!reason) return undefined;
     // An expired message deadline would abort the retry before it starts.
     const deadline = turn.owner.request.deadlineAt ? Date.parse(turn.owner.request.deadlineAt) : undefined;
     if (reason === "turn_timeout" && deadline !== undefined && deadline <= this.#now()) return undefined;
     const restart = reason === "client_shutdown" || shutdownSignal.aborted;
-    if (restart && !this.#restartRetryAvailable()) return undefined;
+    if (restart && !turn.restartRetry) return undefined;
     const interruption: Interruption = { reason, at: new Date(this.#now()).toISOString() };
     let record: Awaited<ReturnType<TurnRetryStore["update"]>>;
     try {
@@ -660,19 +664,13 @@ export class AgentTurnRunner {
   }
 
   /** Durably spend the Turn's one automatic retry before it starts; false leaves the failure reported. */
-  async #claimRetry(owner: LiveTurnOwner): Promise<boolean> {
-    try {
-      const record = await this.#retries?.update(owner.request.sessionId, owner.turnId, (current) => {
-        const { interruption: _interruption, ...rest } = current;
-        return { ...rest, retries: current.retries + 1 };
-      });
-      if (!record) return false;
-      const turn = this.#turns.get(owner.turnId);
-      if (turn) turn.steers = record.steers;
-      return true;
-    } catch {
-      return false;
-    }
+  async #claimRetry(turn: RunningTurn): Promise<boolean> {
+    const spent = await this.#retries
+      .update(turn.owner.request.sessionId, turn.owner.turnId, spendRetry)
+      .catch(() => undefined);
+    if (!spent) return false;
+    turn.steers = spent.steers;
+    return true;
   }
 
   /**
@@ -953,9 +951,22 @@ export function buildRetryAgentInput(
   };
 }
 
-/** Resolves true after the delay, or false as soon as the signal aborts. */
+/** Without durable Turn input no automatic retry is possible. */
+const NO_TURN_RETRIES: NonNullable<AgentTurnRunnerOptions["retries"]> = {
+  appendSteer: async () => undefined,
+  update: async () => undefined,
+};
+
+function spendRetry(record: TurnRetryRecord): TurnRetryRecord {
+  const { interruption: _interruption, ...rest } = record;
+  return { ...rest, retries: record.retries + 1 };
+}
+
+/**
+ * Resolves true after the delay, or false as soon as the signal aborts. Callers pass a signal that
+ * is not aborted yet: an in-process retry is never chosen after shutdown began.
+ */
 function waitUnlessAborted(delayMs: number, signal: AbortSignal): Promise<boolean> {
-  if (signal.aborted) return Promise.resolve(false);
   return new Promise((resolve) => {
     const timer = setTimeout(() => {
       signal.removeEventListener("abort", onAbort);

@@ -148,12 +148,16 @@ export class TurnRetryStore {
     });
   }
 
+  /** Best effort: never rejects, because a steer must not fail for its retry bookkeeping. */
   appendSteer(request: RuntimeImSteerRequest): Promise<void> {
     return this.update(request.sessionId, request.expectedTurnId, (record) =>
       record.steers.length >= MAX_RECORDED_STEERS || record.steers.some((s) => s.deliveryId === request.deliveryId)
         ? record
         : { ...record, steers: [...record.steers, request] },
-    ).then(() => undefined);
+    ).then(
+      () => undefined,
+      () => undefined,
+    );
   }
 
   remove(sessionId: string, turnId?: string): Promise<void> {

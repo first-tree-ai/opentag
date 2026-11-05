@@ -190,8 +190,74 @@ describe("AgentTurnRunner automatic retry", () => {
     }
   });
 
+  it("reports the original failure when the retry state cannot be written", async () => {
+    for (const failing of ["interruption", "claim", "removed"] as const) {
+      const h = runnerHarness();
+      h.request.runtime.budget = { maxDurationMs: 20 };
+      h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
+      let writes = 0;
+      const update = h.retries.update;
+      h.retries.update = async (...args: Parameters<typeof update>) => {
+        writes += 1;
+        if ((failing === "interruption" && writes === 1) || (failing === "claim" && writes === 2)) {
+          throw new Error("disk full");
+        }
+        if (failing === "removed" && writes === 2) return undefined;
+        return update(...args);
+      };
+      h.prompt.mockImplementation(abortedOnSignal);
+      h.runner.start(owner(h.request));
+      await h.runner.settled();
+      expect(h.prompt).toHaveBeenCalledOnce();
+      expect(h.create).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ outcome: "failed", errorReason: "turn_timeout" }),
+        3,
+      );
+    }
+  });
+
+  it("does not retry a timeout once the message deadline has passed", async () => {
+    const h = runnerHarness();
+    h.request.runtime.budget = { maxDurationMs: 20 };
+    h.request.deadlineAt = new Date(Date.now() + 15).toISOString();
+    h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
+    h.prompt.mockImplementation(abortedOnSignal);
+    h.runner.start(owner(h.request));
+    await h.runner.settled();
+    expect(h.prompt).toHaveBeenCalledOnce();
+    expect(h.create).toHaveBeenCalledOnce();
+  });
+
+  it("leaves a rate-limited Turn for the restarted daemon when the daemon stops during the wait", async () => {
+    for (const stopBeforeWait of [false, true]) {
+      const h = runnerHarness({ restartRetry: true });
+      h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
+      h.prompt.mockImplementation(async () => {
+        if (stopBeforeWait) h.runner.stop();
+        return {
+          runId: "turn-1",
+          status: "failed",
+          output: [],
+          error: { code: "provider_rate_limited", message: "429" },
+        };
+      });
+      h.runner.start(owner(h.request));
+      await vi.waitFor(() => expect(h.records.get(h.request.sessionId)?.interruption).toBeDefined());
+      h.runner.stop();
+      await h.runner.settled();
+      expect(h.prompt).toHaveBeenCalledOnce();
+      expect(h.create).not.toHaveBeenCalled();
+      expect(h.records.get(h.request.sessionId)).toMatchObject({
+        retries: 0,
+        interruption: { reason: stopBeforeWait ? "client_shutdown" : "provider_rate_limited" },
+      });
+    }
+  });
+
   it("leaves a Turn interrupted by an orderly stop for the restarted daemon", async () => {
-    const h = runnerHarness({ restartRetry: true });
+    // Shutdown disconnects (clearing negotiation) before the Turn settles: the start-time answer counts.
+    let negotiated = true;
+    const h = runnerHarness({ restartRetry: () => negotiated });
     h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
     let started: () => void = () => undefined;
     const running = new Promise<void>((resolve) => {
@@ -203,6 +269,7 @@ describe("AgentTurnRunner automatic retry", () => {
     });
     h.runner.start(owner(h.request));
     await running;
+    negotiated = false;
     h.runner.stop();
     await h.runner.settled();
     expect(h.create).not.toHaveBeenCalled();
@@ -453,11 +520,10 @@ function recoveryFixture() {
   return fixture;
 }
 
-function runnerHarness(options: { restartRetry?: boolean } = {}) {
+function runnerHarness(options: { restartRetry?: boolean | (() => boolean) } = {}) {
   const request = delivery();
   const records = new Map<string, TurnRetryRecord>();
   const retries = {
-    read: async (sessionId: string) => records.get(sessionId),
     update: async (sessionId: string, turnId: string, change: (record: TurnRetryRecord) => TurnRetryRecord) => {
       const current = records.get(sessionId);
       if (!current || current.turnId !== turnId) return undefined;
@@ -501,9 +567,10 @@ function runnerHarness(options: { restartRetry?: boolean } = {}) {
     },
     logger: recordingLogger(logs),
     retries,
-    restartRetryAvailable: () => options.restartRetry ?? false,
+    restartRetryAvailable:
+      typeof options.restartRetry === "function" ? options.restartRetry : () => options.restartRetry === true,
   });
-  return { request, records, runner, prompt, create, markReporting, submit, updateUnresolved };
+  return { request, records, retries, runner, prompt, create, markReporting, submit, updateUnresolved };
 }
 
 function promptItems(prompt: { mock: { calls: unknown[][] } }, call: number): Array<{ text: string }> {

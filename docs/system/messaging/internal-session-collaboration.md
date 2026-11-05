@@ -123,8 +123,13 @@ existing thread scope. Internal targets never receive provider credentials or ou
 `accepted` and `session list` describe delivery only. When an internal Session's Run ends without completing, the
 Server tells the Session that created it (`created_by_session_id`):
 
-- Local: a Run that reaches its maximum duration fails terminally with `turn_timeout` and is never rerun from scratch.
-  Other permanent failures and exhausted retries are also terminal. The daemon then reports the outcome with
+- Local: a message gets at most one automatic retry, and only after a recoverable interruption — a daemon crash or
+  restart while its Run was in flight, `turn_timeout`, or a model HTTP 429 — as described in
+  [Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work). The retried Run
+  starts with the continuation notice and the original message. Every other failure, and a failure of the retry, is
+  terminal (a timed-out retry reports `turn_timeout`; a retry interrupted by another crash reports `run_interrupted`).
+  After a restart, accepted messages wait without failing until the Server prepares their Session; if the Server
+  refuses (for example the Session ended), they fail with that reason. The daemon then reports the outcome with
   `session:message:outcome`. Reports are kept in a local durable file and resent until the Server gives a final
   answer or one day passes. The terminal inbox record and an `outcomeReport: pending` marker are written in one
   record write; the marker becomes `published` once the report is durable in the reporter's file. On startup a

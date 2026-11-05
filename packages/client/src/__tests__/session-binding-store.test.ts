@@ -557,10 +557,10 @@ describe("SessionBindingStore", () => {
       resumer,
     });
     restarted.setRecovery("session-1", turn);
-    // A stopped reconcile (the Server's accepted recovery) never prepares or resumes.
+    // A stopped reconcile (the Server's accepted recovery) never prepares or resumes; it defers as live work.
     await expect(
       restarted.reconcile({ ...fixture.reconcile, requestId: randomUUID(), desired: "stopped", runtime: undefined }),
-    ).resolves.toMatchObject({ status: "recovery_required", turn });
+    ).resolves.toMatchObject({ status: "busy", reason: "active_turn" });
     expect(resumer.resume).not.toHaveBeenCalled();
 
     const result = await restarted.reconcile({ ...fixture.reconcile, requestId: randomUUID() });
@@ -583,10 +583,13 @@ describe("SessionBindingStore", () => {
     await fixture.store.recordAccepted(request, computeDirectInputHash(request), "turn-81");
     const turn = { deliveryId: request.deliveryId, turnId: "turn-81" };
     for (const resumeResult of [false, "changed"] as const) {
+      let abandoned = false;
       const resumer = {
-        pending: vi.fn(() => true),
-        resume: vi.fn(() => resumeResult === false && false),
-        abandon: vi.fn(),
+        pending: vi.fn(() => !abandoned),
+        resume: vi.fn(() => false),
+        abandon: vi.fn(() => {
+          abandoned = true;
+        }),
       };
       const restarted = new SessionReconciler({
         installationId: fixture.computerId,

@@ -882,6 +882,8 @@
   "SessionPlacementSchema",
   "SessionReconcileRequestSchema",
   "SessionReconcileResultSchema",
+  "SessionRecoverRequestSchema",
+  "SessionRecoverResultSchema",
   "SessionSchema",
   "SetMCPAuthorizationRequestSchema",
   "SetSelfMCPCredentialRequestSchema",

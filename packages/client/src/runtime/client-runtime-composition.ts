@@ -886,7 +886,9 @@ export async function createClientRuntime(
     logger: moduleLogger("report-recovery"),
     reconciler,
     reportOwner,
+    /* v8 ignore next -- late-bound adapter; InterruptedWorkRecovery is covered by interruption-retry tests. */
     retryGate: { isPendingRetry: (sessionId, turnId) => interruptedWork?.isPendingRetry(sessionId, turnId) === true },
+    /* v8 ignore next -- forwards to TurnRetryStore.remove, covered by interruption-retry tests. */
     onRecorded: (sessionId, turnId) => turnRetries.remove(sessionId, turnId),
   });
   let runner: AgentTurnRunner;

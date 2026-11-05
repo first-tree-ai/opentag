@@ -52,6 +52,59 @@ reports can then be reconciled after reconnect or Server restart without
 starting a second Turn. Placement generation and connection-instance checks
 fence every acceptance and report.
 
+### Automatic retry of accepted work
+
+Automatic retry of accepted work belongs to the Local Client daemon; the Server
+never redelivers accepted input and only records the outcome the Client reports.
+The Client retries only recoverable interruptions — a daemon crash or power
+loss, an orderly restart or upgrade, a Run timeout (`turn_timeout`), and a model
+HTTP 429 (`provider_rate_limited`) — and at most once per message. Every other
+failure, and a failure of the one retry, is reported as before: an IM Turn gets
+its terminal report and error card, an internal Session's creator gets its
+[Run outcome notice](messaging/internal-session-collaboration.md#run-outcome-notices).
+While the retry is pending or running nothing is reported, so the Server shows
+no error card and sends no notice for it.
+
+The retry continues the same Session with a continuation notice as the first
+input item — `[OpenTag] Your previous turn was interrupted at <time> because
+<reason> (automatic retry 1/1). Before continuing, check your history …` — then
+the original input and, for an IM Turn, the messages steered into it. Duplicates
+are acceptable: the Provider may or may not have persisted the interrupted turn.
+
+- Timeout and 429 retry in place, in the same daemon (a 429 after about 30
+  seconds). An IM Turn keeps its delivery and Turn identity, so the retry's
+  report settles the original delivery.
+- An orderly stop (`opentag daemon restart`, upgrade) does not report
+  `cancelled / client_shutdown` while the retry is still available; it records
+  the interruption durably and leaves the Turn unresolved. A crash leaves no
+  record of its own: an unresolved Turn found on restart is a crash.
+- On startup the daemon spends the retry durably before anything runs, so a
+  second interruption is reported, never retried again. The IM Turn's original
+  input lives in a per-Session file under `data/runtime/turn-retries/`, written
+  at acceptance and removed when the Turn's result is recorded; a Session
+  message's interruption is kept on its durable inbox record.
+- Only the Server can prepare a Session for the new connection (current
+  snapshot and a fresh Session CLI proof), so after connecting the daemon sends
+  `session:recover` for each Session with interrupted or waiting work (see
+  [Session recovery](runtime/runtime-protocol.md#session-recovery)). The Server
+  moves the IM Turn's report ownership to the new connection and sends a ready
+  reconcile; the daemon prepares the Session around its unresolved Turn and
+  starts the retry. Before and during the retry the Session answers the
+  Server's accepted-recovery reconcile with `busy / active_turn`, which defers
+  recovery without a diagnostic and is never a report.
+- Session messages waiting for that preparation are not failures; they run in
+  order after the retried Turn. If the Server refuses recovery (for example the
+  Session ended) or does not support it, the IM Turn falls back to its
+  `unknown / turn_state_unknown` recovery report and waiting Session messages
+  fail with a creator notice.
+- Manual `opentag upgrade` and `opentag daemon restart` still stop the daemon
+  without draining; automatic upgrades wait for protected work, which includes
+  pending retries.
+
+Cloud is unchanged: accepted Cloud custody is never replayed automatically (see
+[Cloud Runner execution](cloud/cloud-runner-execution.md)); the Cloud model proxy
+retries model 429 responses within a model call.
+
 Computer repair commits installation replacement, old credential revocation,
 new credential issuance, and connect-code consumption in one transaction. The
 Server then waits at most one second for connection cleanup. A cleanup failure

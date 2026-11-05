@@ -289,9 +289,10 @@ export class SessionReconciler {
   ): Promise<SessionReconcileResult | undefined> {
     const recovery = this.#recoveries.get(request.sessionId);
     if (!recovery || resumeTurn) return undefined;
-    if (request.desired !== "ready" || !this.#resumer?.pending(request.sessionId, recovery)) {
-      return { ...this.#result(request, "recovery_required", "unresolved_turn"), turn: recovery };
-    }
+    const pending = this.#resumer?.pending(request.sessionId, recovery) === true;
+    // A Turn waiting for its automatic retry is live work, not a Turn that needs recovery reporting.
+    if (pending && request.desired !== "ready") return this.#result(request, "busy", "active_turn");
+    if (!pending) return { ...this.#result(request, "recovery_required", "unresolved_turn"), turn: recovery };
     const result = await this.#reconcileLocked(request, recovery).catch((error: unknown) => {
       this.#resumer?.abandon(request.sessionId, recovery, "preparation_failed");
       throw error;

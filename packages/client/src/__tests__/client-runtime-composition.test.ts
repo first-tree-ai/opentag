@@ -1193,6 +1193,18 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       handlers.onReconcileResultSendFailed({} as never, {} as never, new Error("send")),
     ).resolves.toBeUndefined();
     await expect(handlers.onReconciled({} as never, {} as never)).resolves.toBeUndefined();
+    const inbox = { sessionPrepared: vi.fn() };
+    const withInbox = createClientRuntimeHandlers(custody as never, reportOwner as never, recovery as never, inbox);
+    for (const [desired, status] of [
+      ["ready", "ready"],
+      ["ready", "running"],
+      ["ready", "recovery_required"],
+      ["stopped", "stopped"],
+    ] as const) {
+      await withInbox.onReconciled({ desired, sessionId: `${desired}-${status}` } as never, { status } as never);
+    }
+    // Only a Session that is ready (or running its resumed Turn) releases waiting Session messages.
+    expect(inbox.sessionPrepared.mock.calls).toEqual([["ready-ready"], ["ready-running"]]);
 
     const request = delivery(snapshot());
     const verifyAgent = vi.fn(async () => undefined);

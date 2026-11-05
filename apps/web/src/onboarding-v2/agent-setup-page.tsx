@@ -834,7 +834,9 @@ function AgentSetupPageContent({
           </div>
         </header>
       )}
-      <Main className={`otv2-frame mx-auto flex w-full flex-1 flex-col gap-6 ${embedded ? "" : "p-6"}`}>
+      <Main
+        className={`otv2-frame mx-auto flex w-full flex-1 flex-col gap-6 ${snapshot?.stage === "ready" ? "otv2-frame--complete" : ""} ${embedded ? "" : "p-6"}`}
+      >
         <SetupPhaseView
           slackApi={adapter.slackSetup}
           agentId={agentId}
@@ -1065,7 +1067,6 @@ function AgentSetupSnapshotView({
       {stage === "ready" ? (
         <div className="otv2-messaging-settings" data-ui="agent-setup-ready">
           <DoneStep
-            presentation="settings"
             action={onOpenAgent ? { label: m.onboarding_v2_open_agent(), onClick: onOpenAgent } : undefined}
             completion={report}
             handoff={completionHandoff(agentId, snapshot.messaging, readMessagingBinding, Boolean(report))}

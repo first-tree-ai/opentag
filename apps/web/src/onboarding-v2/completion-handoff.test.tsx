@@ -1,6 +1,6 @@
 import type { AgentSetupMessagingState, ImBindingAdminDetail } from "@opentag/shared/browser";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentSetupPage } from "./agent-setup-page.js";
 import { SETUP_AGENT_ID, setupAgent } from "./agent-setup-test-fixtures.js";
@@ -86,7 +86,6 @@ describe("completion Bot handoff", () => {
       <DoneStep
         name="internal-handle"
         provider="slack"
-        presentation="settings"
         action={{ label: "View agent", onClick: onOpenAgent }}
         handoff={completionHandoff(SETUP_AGENT_ID, READY, readBinding, false)}
       />,
@@ -101,7 +100,9 @@ describe("completion Bot handoff", () => {
     expect(readBinding).toHaveBeenCalledExactlyOnceWith(SETUP_AGENT_ID);
     expect(writeText).not.toHaveBeenCalled();
     expect(onOpenAgent).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: "View agent" }).className).toContain("ui-button--secondary");
+    const actions = within(screen.getByRole("group", { name: "Next steps" }));
+    expect(actions.getByRole("link", { name: "Open Bot in Slack" })).toBe(link);
+    expect(actions.getByRole("button", { name: "View agent" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "View agent" }));
     expect(onOpenAgent).toHaveBeenCalledOnce();
   });
@@ -169,6 +170,122 @@ describe("completion Bot handoff", () => {
       expect(screen.queryByRole("link")).toBeNull();
     },
   );
+
+  it("keeps exact Agent navigation available while the Bot identity is loading or unavailable", async () => {
+    let resolve: (value: ImBindingAdminDetail | undefined) => void = () => undefined;
+    const readBinding = vi.fn(
+      () =>
+        new Promise<ImBindingAdminDetail | undefined>((done) => {
+          resolve = done;
+        }),
+    );
+    const onOpenAgent = vi.fn();
+    render(
+      <DoneStep
+        name="my-agent"
+        provider="slack"
+        action={{ label: "View agent", onClick: onOpenAgent }}
+        handoff={completionHandoff(SETUP_AGENT_ID, READY, readBinding, false)}
+      />,
+    );
+    expect(screen.getByRole("heading", { name: "my-agent is ready." })).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toBe("Finding the connected Bot…");
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.queryByText("Connected")).toBeNull();
+    const actions = within(screen.getByRole("group", { name: "Next steps" }));
+    fireEvent.click(actions.getByRole("button", { name: "View agent" }));
+    expect(onOpenAgent).toHaveBeenCalledOnce();
+    await waitFor(() => expect(readBinding).toHaveBeenCalledOnce());
+    await act(async () => resolve(undefined));
+    expect(screen.getByRole("status").textContent).toContain("details could not be loaded");
+    expect(actions.getByRole("button", { name: "View agent" }).hasAttribute("disabled")).toBe(false);
+  });
+
+  it.each([null, "", "   "])(
+    "keeps a verified entry without inventing a name or search when displayName is missing: %j",
+    async (displayName) => {
+      render(
+        <CompletionHandoff
+          agentId={SETUP_AGENT_ID}
+          messaging={READY}
+          readBinding={async () => binding({ bot: { displayName, avatarUrl: null } })}
+        />,
+      );
+      const link = await screen.findByRole("link", { name: "Open Bot in Slack" });
+      expect(link.getAttribute("href")).toBe("https://slack.com/app_redirect?app=A_DEMO&team=T_DEMO");
+      expect(screen.getByText("Bot")).toBeTruthy();
+      expect(screen.queryByText(/details could not be loaded|Search for/)).toBeNull();
+      expect(screen.queryByRole("button", { name: "Copy Bot name" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Can’t open the Bot?" })).toBeNull();
+      expect(screen.getByText("Connected")).toBeTruthy();
+    },
+  );
+
+  it("keeps a nameless unknown-brand binding connected without guessing a link or a search identity", async () => {
+    render(
+      <CompletionHandoff
+        agentId={SETUP_AGENT_ID}
+        messaging={{ ...READY, provider: "feishu" }}
+        readBinding={async () => ({ ...feishuBinding("unknown"), bot: { displayName: null, avatarUrl: null } })}
+      />,
+    );
+    expect(await screen.findByText("Bot")).toBeTruthy();
+    expect(screen.getByText("Connected")).toBeTruthy();
+    expect(screen.getByText(/Bot name is unavailable/)).toBeTruthy();
+    expect(screen.queryByText(/details could not be loaded|Search for/)).toBeNull();
+    expect(screen.queryByRole("link")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Copy Bot name" })).toBeNull();
+  });
+
+  it("retains complete long Agent and Bot names and the search-only action beside management", async () => {
+    const name = "项目交付与客户反馈归纳助理".repeat(5);
+    const agentName = "agent-with-a-long-but-complete-identity";
+    const writeText = stubClipboard();
+    render(
+      <DoneStep
+        name={agentName}
+        provider="feishu"
+        action={{ label: "View agent", onClick: vi.fn() }}
+        handoff={completionHandoff(
+          SETUP_AGENT_ID,
+          { ...READY, provider: "feishu" },
+          async () => ({ ...feishuBinding("lark"), bot: { displayName: name, avatarUrl: null } }),
+          false,
+        )}
+      />,
+    );
+    expect(screen.getByRole("heading", { name: `${agentName} is ready.` })).toBeTruthy();
+    expect(await screen.findByText(name)).toBeTruthy();
+    const actions = within(screen.getByRole("group", { name: "Next steps" }));
+    fireEvent.click(actions.getByRole("button", { name: "Copy Bot name" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(name));
+    expect(actions.getByRole("button", { name: "View agent" })).toBeTruthy();
+    expect(screen.queryByRole("link")).toBeNull();
+  });
+
+  it.each([
+    { state: "ready", label: "Finish re-board", disabled: false },
+    { state: "pending", label: "Finishing…", disabled: true },
+    { state: "failed", label: "Try again", disabled: false },
+  ] as const)("preserves explicit re-board completion in the $state state", ({ state, label, disabled }) => {
+    const onFinish = vi.fn();
+    const readBinding = vi.fn();
+    render(
+      <DoneStep
+        name="my-agent"
+        provider="slack"
+        completion={{ state, onFinish }}
+        handoff={completionHandoff(SETUP_AGENT_ID, READY, readBinding, true)}
+      />,
+    );
+    const finish = within(screen.getByRole("group", { name: "Next steps" })).getByRole("button", { name: label });
+    expect(finish.hasAttribute("disabled")).toBe(disabled);
+    expect(onFinish).not.toHaveBeenCalled();
+    fireEvent.click(finish);
+    expect(onFinish).toHaveBeenCalledTimes(disabled ? 0 : 1);
+    expect(readBinding).not.toHaveBeenCalled();
+    expect(screen.queryByRole("link")).toBeNull();
+  });
 
   it("retires late identity reads and immediately hides the old link on a generation change", async () => {
     let resolveOld: (value: ImBindingAdminDetail) => void = () => undefined;

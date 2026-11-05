@@ -170,9 +170,21 @@ connected Bot conversation using the current binding's provider identity. Slack 
 redirect; a confirmed Feishu workspace uses the documented Bot AppLink. Lark and unknown workspace
 brands use the actual Bot name with search and copy guidance; locale never selects a link domain.
 Direct entries also offer a short, collapsible search/name-copy fallback.
+The completed step uses a compact, open composition: the completed progress rail loses its
+top rules and filled markers, followed by the Agent-ready heading, one Bot identity row and
+one action group. There is no surrounding configuration card or detached footer. The identity
+row pairs the provider mark with the full Bot name and provider label; Connected appears only
+after the current identity has loaded. Long Agent and Bot names wrap without truncation.
+Conversation entry and secondary management share the action group, stacking on narrow screens;
+the short help disclosure follows it. Explicit re-board completion keeps its own finish,
+pending and retry action in this same composition, without mounting the conversation handoff.
 Identity is read through the existing Account-authorized binding configuration API only after readiness;
 an Agent, provider, binding or credential-generation mismatch never exposes the previous Bot's entry.
-Unavailable identity says to check the Agent's messaging settings and keeps management navigation usable.
+Loading identity says that the Bot is being located. A missing display name keeps the verified
+binding's Connected status and supported entry, using a generic Bot label without inventing a
+name or offering name search/copy. When neither a supported link nor a real name is available,
+the page says that the name is unavailable and points to messaging settings. Failed or mismatched
+binding reads use the identity-unavailable message. Management remains usable in all these states.
 **View agent** (**查看 Agent** in Chinese) remains a secondary action opening the exact Agent overview.
 Global navigation provides the return to the Agent list; completion does not duplicate it or redirect automatically.
 

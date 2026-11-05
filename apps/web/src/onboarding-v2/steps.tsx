@@ -27,7 +27,12 @@ const CARD =
 
 export function StepRail({ steps }: { steps: FlowState["steps"] }) {
   return (
-    <nav aria-label={m.onboarding_v2_setup_progress()} className="w-full" data-ui="onboarding-v2-rail">
+    <nav
+      aria-label={m.onboarding_v2_setup_progress()}
+      className="otv2-rail w-full"
+      data-complete={steps.length > 0 && steps.every((step) => step.status === "complete")}
+      data-ui="onboarding-v2-rail"
+    >
       <ol className="flex gap-2 m-0 p-0 list-none">
         {steps.map((step, index) => (
           <li
@@ -389,65 +394,43 @@ export function DoneStep({
   handoff,
   name,
   provider,
-  presentation = "default",
 }: {
   action?: { label: string; onClick: () => void };
   completion?: { onFinish: () => void; state: "failed" | "pending" | "ready" };
-  handoff?: ReactNode;
+  handoff?: (managementAction: ReactNode) => ReactNode;
   name: string;
   provider?: ImProvider;
-  presentation?: "default" | "settings";
 }) {
   const finishAction =
     completion || action ? (
       <CompletionAction completion={completion} action={action} secondary={Boolean(handoff)} />
     ) : null;
 
-  if (presentation === "settings") {
-    return (
-      <section className="otv2-connection-done" data-ui="onboarding-v2-step-done">
-        <header className={`${HEADER} otv2-messaging-heading`}>
-          <Text as="h1" headingSize="section" variant="heading">
-            {m.onboarding_v2_done_title({ name })}
-          </Text>
-        </header>
-        <div className="otv2-connection-card">
-          <div className="otv2-connection-card__body">
-            <div className="otv2-connection-card__identity">
-              {provider ? (
-                <span className="otv2-connection-card__provider">
-                  <ProviderIcon className="size-6" provider={provider} />
-                  <strong>{messagingProviderLabel(provider)}</strong>
-                </span>
-              ) : (
-                <Icon name="check" aria-hidden="true" />
-              )}
-              <StatusIndicator label={m.im_connected()} tone="success" />
-            </div>
-            {handoff}
-          </div>
-          {finishAction ? (
-            <div className="otv2-connection-card__footer otv2-connection-card__footer--finish">{finishAction}</div>
-          ) : null}
-        </div>
-      </section>
-    );
-  }
   return (
-    <section className="flex flex-col items-center gap-6 text-center" data-ui="onboarding-v2-step-done">
-      <span
-        aria-hidden="true"
-        className="inline-flex size-10 items-center justify-center rounded-full bg-kumo-tint text-kumo-brand"
-      >
-        <Icon name="check" />
-      </span>
+    <section className="otv2-completion" data-ui="onboarding-v2-step-done">
       <header className={HEADER}>
-        <Text as="h1" size="lg" variant="heading">
+        <Text as="h1" headingSize="page" variant="heading">
           {m.onboarding_v2_done_title({ name })}
         </Text>
       </header>
-      {handoff}
-      {finishAction}
+      {handoff ? (
+        handoff(finishAction)
+      ) : (
+        <div className="otv2-completion__body">
+          <div className="otv2-completion__identity">
+            <span className="otv2-completion__mark" aria-hidden="true">
+              {provider ? <ProviderIcon className="size-6" provider={provider} /> : <Icon name="check" />}
+            </span>
+            <strong className="otv2-completion__name">{provider ? messagingProviderLabel(provider) : name}</strong>
+            <StatusIndicator label={m.im_connected()} tone="success" />
+          </div>
+          {finishAction ? (
+            <fieldset className="otv2-completion__actions" aria-label={m.onboarding_v2_completion_actions()}>
+              {finishAction}
+            </fieldset>
+          ) : null}
+        </div>
+      )}
     </section>
   );
 }
@@ -463,7 +446,7 @@ function CompletionAction({
 }) {
   if (!completion)
     return action ? (
-      <Button variant={secondary ? "secondary" : "primary"} onClick={action.onClick}>
+      <Button variant={secondary ? "ghost" : "primary"} onClick={action.onClick}>
         {action.label}
       </Button>
     ) : null;

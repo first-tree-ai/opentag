@@ -1,10 +1,11 @@
-import type { AgentSetupMessagingState, ImBindingAdminDetail } from "@opentag/shared/browser";
-import { useEffect, useState } from "react";
+import type { AgentSetupMessagingState, ImBindingAdminDetail, ImProvider } from "@opentag/shared/browser";
+import { type ReactNode, useEffect, useState } from "react";
 import { spaceScriptBoundary } from "../i18n/format.js";
 import { messagingProviderLabel } from "../im/provider-label.js";
 import { slackBotConversationUrl } from "../im/slack-app-manifest.js";
 import * as m from "../paraglide/messages.js";
-import { Button, buttonClassName, Collapsible, Icon } from "../ui/design-system.js";
+import { Button, buttonClassName, Collapsible, Icon, StatusIndicator } from "../ui/design-system.js";
+import { ProviderIcon } from "../ui/provider-icon.js";
 import type { AgentSetupAdapter } from "./setup-adapter.js";
 
 type ReadyMessaging = Extract<AgentSetupMessagingState, { kind: "ready" }>;
@@ -21,7 +22,14 @@ export function completionHandoff(
   reviewing: boolean,
 ) {
   if (messaging.kind !== "ready" || reviewing) return undefined;
-  return <CompletionHandoff agentId={agentId} messaging={messaging} readBinding={readBinding} />;
+  return (managementAction: ReactNode) => (
+    <CompletionHandoff
+      agentId={agentId}
+      messaging={messaging}
+      readBinding={readBinding}
+      managementAction={managementAction}
+    />
+  );
 }
 
 function useCompletionBinding(
@@ -77,51 +85,84 @@ export function CompletionHandoff({
   agentId,
   messaging,
   readBinding,
+  managementAction,
 }: {
   agentId: string;
   messaging: ReadyMessaging;
   readBinding: AgentSetupAdapter["readMessagingBinding"];
+  managementAction?: ReactNode;
 }) {
-  const { binding, status } = useCompletionBinding(agentId, messaging, readBinding);
+  const read = useCompletionBinding(agentId, messaging, readBinding);
+  const { binding } = read;
   const provider = messagingProviderLabel(messaging.provider);
   const botName = binding?.bot.displayName?.trim();
   const href = conversationUrl(binding);
   return (
-    <div className="grid min-w-0 gap-5" data-ui="setup-completion-handoff">
-      <div className="grid min-w-0 justify-items-start gap-3">
-        {botName ? <strong className="max-w-full break-words text-sm">{botName}</strong> : null}
-        {href ? (
-          <a className={buttonClassName()} href={href} target="_blank" rel="noreferrer">
-            {spaceScriptBoundary(m.onboarding_v2_handoff_open({ provider }))}
-            <Icon name="external-link" />
-          </a>
-        ) : !botName ? (
-          <p className="text-sm text-kumo-subtle" role="status">
-            {status === "loading" ? m.onboarding_v2_handoff_loading() : m.onboarding_v2_handoff_unavailable()}
-          </p>
-        ) : null}
-        {botName ? <BotSearch key={botName} name={botName} provider={provider} collapsed={Boolean(href)} /> : null}
-      </div>
+    <div className="otv2-completion__body" data-ui="setup-completion-handoff">
+      <CompletionBotIdentity provider={messaging.provider} read={read} />
+      {!href && botName ? <p className="otv2-completion__notice">{searchCopy(botName, provider)}</p> : null}
+      {binding && !href && !botName ? (
+        <p className="otv2-completion__notice">{m.onboarding_v2_handoff_name_unavailable()}</p>
+      ) : null}
+      {href || botName || managementAction ? (
+        <fieldset className="otv2-completion__actions" aria-label={m.onboarding_v2_completion_actions()}>
+          {href ? (
+            <a className={buttonClassName()} href={href} target="_blank" rel="noreferrer">
+              {spaceScriptBoundary(m.onboarding_v2_handoff_open({ provider }))}
+              <Icon name="external-link" />
+            </a>
+          ) : botName ? (
+            <CopyText key={botName} value={botName} label={m.onboarding_v2_handoff_copy_name()} primary />
+          ) : null}
+          {managementAction}
+        </fieldset>
+      ) : null}
+      {href && botName ? <BotSearch key={botName} name={botName} provider={provider} /> : null}
     </div>
   );
 }
 
-function BotSearch({ name, provider, collapsed }: { name: string; provider: string; collapsed: boolean }) {
-  const content = (
-    <div className="grid justify-items-start gap-3">
-      <p className="text-sm text-kumo-subtle">
-        {spaceScriptBoundary(m.onboarding_v2_handoff_search({ name, provider }))}
-      </p>
-      <CopyText value={name} label={m.onboarding_v2_handoff_copy_name()} primary={!collapsed} />
+function CompletionBotIdentity({ provider, read }: { provider: ImProvider; read: BindingRead }) {
+  const { binding, status } = read;
+  return (
+    <div className="otv2-completion__identity">
+      <span className="otv2-completion__mark" aria-hidden="true">
+        <ProviderIcon className="size-6" provider={provider} />
+      </span>
+      <div className="otv2-completion__details">
+        {binding ? (
+          <strong className="otv2-completion__name">
+            {binding.bot.displayName?.trim() || m.onboarding_v2_handoff_bot()}
+          </strong>
+        ) : (
+          <p className="otv2-completion__notice" role="status">
+            {status === "loading" ? m.onboarding_v2_handoff_loading() : m.onboarding_v2_handoff_unavailable()}
+          </p>
+        )}
+        <span className="otv2-completion__provider">{messagingProviderLabel(provider)}</span>
+      </div>
+      {binding ? <StatusIndicator label={m.im_connected()} tone="success" /> : null}
     </div>
   );
-  if (!collapsed) return content;
+}
+
+function searchCopy(name: string, provider: string) {
+  return spaceScriptBoundary(m.onboarding_v2_handoff_search({ name, provider }));
+}
+
+function BotSearch({ name, provider }: { name: string; provider: string }) {
   return (
-    <Collapsible.Root>
-      <Collapsible.Trigger render={<Button variant="ghost" />}>
+    <Collapsible.Root className="otv2-completion__help">
+      <Collapsible.Trigger render={<Button variant="ghost" className="otv2-completion__help-trigger" />}>
         {m.onboarding_v2_handoff_open_help()}
+        <Icon name="chevron-down" />
       </Collapsible.Trigger>
-      <Collapsible.Panel className="pt-3">{content}</Collapsible.Panel>
+      <Collapsible.Panel>
+        <div className="otv2-completion__help-content">
+          <p className="otv2-completion__notice">{searchCopy(name, provider)}</p>
+          <CopyText value={name} label={m.onboarding_v2_handoff_copy_name()} />
+        </div>
+      </Collapsible.Panel>
     </Collapsible.Root>
   );
 }
@@ -137,7 +178,7 @@ function CopyText({ value, label, primary = false }: { value: string; label: str
     }
   }
   return (
-    <div className="grid justify-items-start gap-2">
+    <div className="otv2-completion__copy">
       <Button variant={primary ? "primary" : "secondary"} onClick={() => void copy()}>
         {label}
       </Button>

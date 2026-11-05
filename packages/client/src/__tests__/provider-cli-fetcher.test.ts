@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   createProviderCliFetcher,
   defaultProviderCliFetcher,
@@ -17,12 +17,15 @@ interface RecordedCall {
   readonly redirect: string;
 }
 
-function fakeTransport(script: (url: string) => Response): { fetchImpl: typeof fetch; calls: RecordedCall[] } {
+function fakeTransport(script: (url: string, signal?: AbortSignal | null) => Response | Promise<Response>): {
+  fetchImpl: typeof fetch;
+  calls: RecordedCall[];
+} {
   const calls: RecordedCall[] = [];
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
     calls.push({ url, redirect: init?.redirect ?? "" });
-    return script(url);
+    return script(url, init?.signal);
   }) as typeof fetch;
   return { fetchImpl, calls };
 }
@@ -135,7 +138,7 @@ describe("createProviderCliFetcher", () => {
   });
 
   it("maps non-OK responses to install_incomplete", async () => {
-    const { fetchImpl } = fakeTransport(() => new Response(null, { status: 500 }));
+    const { fetchImpl } = fakeTransport(() => new Response(null, { status: 404 }));
     await expect(createProviderCliFetcher(fetchImpl)(OPTIONS)).rejects.toMatchObject({ code: "install_incomplete" });
   });
 
@@ -225,5 +228,161 @@ describe("ProviderCliFetcher cancellation", () => {
     const error = await download.catch((caught: unknown) => caught);
     expect(error).toBe(reason);
     expect(error).not.toBeInstanceOf(ProviderCliInstallError);
+  });
+});
+
+describe("artifact download recovery", () => {
+  it("restarts from the reviewed URL instead of reusing a failed redirect target", async () => {
+    const { fetchImpl, calls } = fakeTransport((url) => {
+      if (url === OPTIONS.url) return new Response(null, { status: 302, headers: { location: "/cdn" } });
+      return calls.length === 2 ? new Response(null, { status: 504 }) : new Response("ok");
+    });
+    const outcome = createProviderCliFetcher(fetchImpl)({ ...OPTIONS, timeoutMs: 120_000 });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(new TextDecoder().decode(await outcome)).toBe("ok");
+    expect(calls.map((call) => call.url)).toEqual([
+      OPTIONS.url,
+      "https://releases.example.test/cdn",
+      OPTIONS.url,
+      "https://releases.example.test/cdn",
+    ]);
+  });
+
+  it("aborts a request waiting for headers at the shared deadline", async () => {
+    const fetchImpl = vi.fn(
+      (_url, init) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+        }),
+    ) as typeof fetch;
+    const outcome = createProviderCliFetcher(fetchImpl)(OPTIONS).catch((error) => error);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(await outcome).toMatchObject({ code: "install_incomplete", message: expect.stringContaining("timed out") });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => vi.useRealTimers());
+
+  it.each([408, 429, 500, 502, 503, 504])(
+    "recovers HTTP %s after backoff and cancels the failed body",
+    async (status) => {
+      const cancel = vi.fn();
+      const { fetchImpl, calls } = fakeTransport(() =>
+        calls.length === 1 ? new Response(new ReadableStream({ cancel }), { status }) : new Response("verified later"),
+      );
+      const download = createProviderCliFetcher(fetchImpl)({ ...OPTIONS, timeoutMs: 120_000 });
+      await vi.advanceTimersByTimeAsync(4_999);
+      expect(calls).toHaveLength(1);
+      expect(cancel).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(new TextDecoder().decode(await download)).toBe("verified later");
+      expect(calls).toHaveLength(2);
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
+  it("exhausts four attempts at 0, 5, 15 and 35 seconds", async () => {
+    const times: number[] = [];
+    const { fetchImpl, calls } = fakeTransport(() => {
+      times.push(Date.now());
+      return new Response(null, { status: 504 });
+    });
+    const started = Date.now();
+    const outcome = createProviderCliFetcher(fetchImpl)({ ...OPTIONS, timeoutMs: 120_000 }).catch((error) => error);
+    await vi.advanceTimersByTimeAsync(35_000);
+    expect(await outcome).toMatchObject({ code: "install_incomplete", message: expect.stringContaining("HTTP 504") });
+    expect(calls).toHaveLength(4);
+    expect(times.map((time) => time - started)).toEqual([0, 5_000, 15_000, 35_000]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([400, 401, 403, 404, 501])("does not retry permanent HTTP %s", async (status) => {
+    const cancel = vi.fn();
+    const { fetchImpl, calls } = fakeTransport(() => new Response(new ReadableStream({ cancel }), { status }));
+    await expect(createProviderCliFetcher(fetchImpl)(OPTIONS)).rejects.toMatchObject({ code: "install_incomplete" });
+    expect(calls).toHaveLength(1);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each(["ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "UND_ERR_SOCKET"])(
+    "recovers transient transport %s",
+    async (code) => {
+      const { fetchImpl, calls } = fakeTransport(() => {
+        if (calls.length === 1)
+          throw new TypeError("fetch failed", { cause: Object.assign(new Error(code), { code }) });
+        return new Response("ok");
+      });
+      const download = createProviderCliFetcher(fetchImpl)({ ...OPTIONS, timeoutMs: 120_000 });
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(new TextDecoder().decode(await download)).toBe("ok");
+      expect(calls).toHaveLength(2);
+    },
+  );
+
+  it.each(["CERT_HAS_EXPIRED", "ENOTFOUND", "UNKNOWN"])("does not retry transport %s", async (code) => {
+    const { fetchImpl, calls } = fakeTransport(() => {
+      throw Object.assign(new Error(code), { code });
+    });
+    await expect(createProviderCliFetcher(fetchImpl)(OPTIONS)).rejects.toMatchObject({ code: "install_incomplete" });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("cancels retry waits immediately with the caller's exact reason", async () => {
+    const { fetchImpl, calls } = fakeTransport(() => new Response(null, { status: 504 }));
+    const controller = new AbortController();
+    const reason = new Error("shutdown");
+    const outcome = createProviderCliFetcher(fetchImpl)({ ...OPTIONS, signal: controller.signal }).catch(
+      (error) => error,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    controller.abort(reason);
+    expect(await outcome).toBe(reason);
+    await vi.advanceTimersByTimeAsync(35_000);
+    expect(calls).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("does not start a retry at or after the overall deadline", async () => {
+    const { fetchImpl, calls } = fakeTransport(() => new Response(null, { status: 504 }));
+    const outcome = createProviderCliFetcher(fetchImpl)(OPTIONS).catch((error) => error);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(await outcome).toMatchObject({ code: "install_incomplete", message: expect.stringContaining("timed out") });
+    expect(calls).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("shares one deadline across attempts, redirects and a stalled body", async () => {
+    const signals: Array<AbortSignal | null | undefined> = [];
+    const cancel = vi.fn();
+    const { fetchImpl, calls } = fakeTransport(async (_url, signal) => {
+      signals.push(signal);
+      await new Promise((resolve) => setTimeout(resolve, 2_000));
+      if (calls.length === 1) return new Response(null, { status: 504 });
+      if (calls.length === 2) return new Response(null, { status: 302, headers: { location: "/cdn" } });
+      return new Response(new ReadableStream({ cancel }));
+    });
+    const outcome = createProviderCliFetcher(fetchImpl)({ ...OPTIONS, timeoutMs: 12_000 }).catch((error) => error);
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(await outcome).toMatchObject({ code: "install_incomplete", message: expect.stringContaining("timed out") });
+    expect(calls).toHaveLength(3);
+    expect(new Set(signals).size).toBe(1);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("keeps size violations terminal and cancels the response", async () => {
+    const cancel = vi.fn();
+    const { fetchImpl, calls } = fakeTransport(
+      () =>
+        new Response(new ReadableStream({ cancel }), {
+          headers: { "content-length": "2048" },
+        }),
+    );
+    await expect(createProviderCliFetcher(fetchImpl)(OPTIONS)).rejects.toMatchObject({ code: "integrity_failed" });
+    expect(calls).toHaveLength(1);
+    expect(cancel).toHaveBeenCalledOnce();
   });
 });

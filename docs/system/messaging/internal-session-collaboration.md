@@ -249,12 +249,16 @@ the Turn was interrupted:
   in order once it is running. A message that was already steered carries the continuation notice, without a specific
   cause, so the Agent knows it may have handled it already. Until then they wait in the FIFO, re-checking about once per
   second. If the resumed Turn ends first, they run as their own Runs, in order, as they do when the runtime cannot steer.
-  If the Turn cannot be resumed, the existing fallback applies: the waiting messages fail with a creator notice.
+  If the Turn cannot be resumed, the existing fallback applies: the waiting messages fail.
 - **A Turn with no retry left.** A message steered into a Turn whose retry is spent gets no further retry: if that Turn
-  fails with an ordinary error, the message fails with one notice. A process interruption still resumes it.
+  fails with an ordinary error, the message fails. A process interruption still resumes it.
 - **A fast interruption loop.** The Turn and each message that was `running` count interruptions separately, and each stops
   when its own fuse trips.
 - **A failure that is not recoverable** fails the message without a retry.
+
+A failed message is reported to the Server once, as `session_message_steer_interrupted` or `run_interrupted`, but no creator
+notice follows: notices are only for internal targets (see [Run outcome notices](#run-outcome-notices)), and an IM Turn
+runs on a visible Session. So the sender of a message steered into an IM Turn is not told that it failed.
 
 A message stays queued and waits for the Turn to end when the runtime cannot steer or refuses the steer, when the Turn
 already carries 16 Session messages, or when a visible Session has no IM outbox context.

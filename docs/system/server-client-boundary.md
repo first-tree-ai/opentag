@@ -151,7 +151,8 @@ are acceptable: the Provider may or may not have persisted the interrupted turn.
   when the reconcile does not arrive. A refused reconcile, a refused request
   (for example the Session ended), a missing capability, or running out of
   attempts falls back: the IM Turn gets its `unknown / turn_state_unknown`
-  recovery report and waiting Session messages fail with a creator notice.
+  recovery report and waiting Session messages fail (with a creator notice
+  when the target is an internal Session).
 - Session messages waiting for that preparation are not failures. Once the
   Turn is resumed they are steered into it in order; see
   [Session messages steered into an IM Turn](messaging/internal-session-collaboration.md#session-messages-steered-into-an-im-turn).

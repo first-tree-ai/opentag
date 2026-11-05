@@ -65,6 +65,12 @@ import { type PostgresRuntimeCustodyStore, writeTerminalReport } from "./runtime
 
 const BOUNDED_CODE = /^IM_DELIVERY_[A-Z0-9_]{1,100}$/;
 
+const EXPECTED_CLOUD_WAIT_CODES = new Set([
+  "IM_DELIVERY_CLOUD_ENVIRONMENT_STARTING",
+  "IM_DELIVERY_CLOUD_TURN_RUNNING",
+  "IM_DELIVERY_CLOUD_REPORTING",
+]);
+
 /** Reconcile statuses that are expected waiting states, not operator-facing failures. */
 export const EXPECTED_RECOVERY_CODES = new Set([
   "IM_DELIVERY_RECOVERY_BUSY",
@@ -99,7 +105,8 @@ function logDispatchRetryScheduled(
   code: string,
   retryDelayMs: number,
 ): void {
-  logger?.warn(
+  const level = EXPECTED_CLOUD_WAIT_CODES.has(code) ? "debug" : "warn";
+  logger?.[level](
     {
       module: "im-delivery",
       operation: "im.delivery.dispatch",
@@ -137,8 +144,12 @@ export interface DeliveryFailureOptions {
 }
 
 function shouldEmitFailureDiagnostic(code: string, previousErrorCode: DeliveryAttempt["previousErrorCode"]): boolean {
-  if (EXPECTED_DEFERRED_CODES.has(code)) return false;
+  if (EXPECTED_DEFERRED_CODES.has(code) || EXPECTED_CLOUD_WAIT_CODES.has(code)) return false;
   return (previousErrorCode ? canonicalFailureCode(previousErrorCode) : undefined) !== code;
+}
+
+function retryOutcome(code: string): "deferred" | "failed" {
+  return EXPECTED_CLOUD_WAIT_CODES.has(code) ? "deferred" : "failed";
 }
 
 /**
@@ -154,7 +165,7 @@ export async function recordDeliveryFailure(
   options: DeliveryFailureOptions = {},
 ): Promise<void> {
   const bounded = BOUNDED_CODE.test(code) ? code : "IM_DELIVERY_FAILED";
-  setActiveSpanAttributes(outcomeAttrs("failed", bounded));
+  setActiveSpanAttributes(outcomeAttrs(retryOutcome(bounded), bounded));
   const streak = bounded === OPERATION_TIMEOUT_CODE ? operationTimeoutStreak(attempt.previousErrorCode) + 1 : 0;
   if (streak > 0 && options.allowTerminal !== false && operationTimeoutExhausted(streak)) {
     if (await settleExhaustedRun(deps, attempt)) return;

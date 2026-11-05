@@ -2,25 +2,20 @@ import { Link } from "@tanstack/react-router";
 import type { ReactNode } from "react";
 import * as m from "../../paraglide/messages.js";
 import { Button, Icon, Popover } from "../../ui/design-system.js";
+import { AgentConversationEntry } from "./agent-conversation-entry.js";
 import type { AgentDetailView } from "./agent-model.js";
 import {
   type AgentDependencyStatus,
-  agentActivityDetail,
   agentComputerStatus,
   agentMessagingStatus,
   agentRuntimeIssue,
-  messagingChannelLabel,
+  messagingBotLabel,
   platformLabel,
   runtimeProviderName,
 } from "./agent-presentation.js";
 
-/**
- * What the Agent is doing, when there is something to say, then its two dependencies with two lines
- * each, using the existing healthy layout's space in every state.
- */
+/** The Computer and Messaging dependencies, with their existing identity and recovery semantics. */
 export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
-  // The same running-Task line the Agent list row shows, from the same activity data.
-  const activity = agentActivityDetail(agent);
   const computer = agentRuntimeIssue(agent) ?? agentComputerStatus(agent);
   const binding = agent.messaging.kind === "ready" ? agent.messaging.value : undefined;
   const provider = runtimeProviderName(agent.runtimeProvider);
@@ -31,7 +26,7 @@ export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
     : agent.computer
       ? `${agent.computer.displayName} · ${platformLabel(agent.computer.platform)} · ${provider}`
       : provider;
-  const messagingIdentity = binding ? messagingChannelLabel(agent, binding) : "";
+  const messagingIdentity = binding ? messagingBotLabel(binding) : "";
   return (
     <section
       className="@container/agent-status grid ui-surface bg-kumo-base p-6 max-[640px]:p-5 ring ring-kumo-line"
@@ -39,19 +34,6 @@ export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
       data-ui="agent-status-overview"
     >
       <ul className="grid h-full list-none divide-y divide-kumo-line">
-        {activity ? (
-          // What the Agent is doing comes first, as its own row, so it never reads as a fact about
-          // the Computer or the channel below it.
-          <li
-            className="flex min-w-0 items-center justify-between gap-4 py-5 text-sm first:pt-0 last:pb-0"
-            data-ui="agent-status-work"
-          >
-            <strong className="min-w-0 truncate font-semibold text-kumo-strong">{m.agents_status_work()}</strong>
-            <span className="whitespace-nowrap font-medium text-kumo-default" data-ui="agent-status-activity">
-              {activity}
-            </span>
-          </li>
-        ) : null}
         <AgentStatusRow
           agent={agent}
           dependency="computer"
@@ -87,7 +69,9 @@ export function AgentStatusCard({ agent }: { agent: AgentDetailView }) {
           identity={<span className="truncate">{messagingIdentity}</span>}
           name={m.agents_status_message_channel()}
           status={agentMessagingStatus(agent)}
-        />
+        >
+          <AgentConversationEntry agent={agent} />
+        </AgentStatusRow>
       </ul>
     </section>
   );
@@ -100,6 +84,7 @@ function AgentStatusRow({
   identity,
   name,
   status,
+  children,
 }: {
   agent: AgentDetailView;
   dependency: "computer" | "message-channel";
@@ -107,6 +92,7 @@ function AgentStatusRow({
   identity: ReactNode;
   name: string;
   status: AgentDependencyStatus & { guidance?: string };
+  children?: ReactNode;
 }) {
   // The 44px target uses 1px of existing space on either side of the original 42px two-line block.
   // In a narrow card the status wraps under the row name instead of squeezing it, so the block grows.
@@ -184,6 +170,7 @@ function AgentStatusRow({
           </Popover.Content>
         </Popover>
       )}
+      {children}
     </li>
   );
 }

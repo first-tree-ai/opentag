@@ -249,6 +249,26 @@ request; hidden tabs do not poll. The Account identity list negotiates this reso
 existing read path. New status reads replace the per-Agent Computer, binding and handoff fanout.
 Other ordinary live resources keep their existing cadence and cache policy.
 
+The Agent overview's Messaging row identifies the connected Bot by its stored provider name for
+both Feishu and Slack. If that name is unknown, it shows only the provider. The overview header
+does not present the internal Agent handle as an IM address; the Agent's own name and identity
+remain unchanged. The settings index and legacy capability pages retain their existing identity
+presentation.
+
+A healthy overview keeps a lightweight **Open in Feishu/Slack** action in its Messaging row for
+returning users. It uses the existing provider handoff contract: Slack's App/Team redirect and
+the Feishu Bot AppLink only for a confirmed Feishu brand. Unknown and Lark brands never inherit a
+guessed route. A confirmed Lark identity keeps the Lark brand in both languages. Short Bot-name search and copying help stays collapsed by default; clipboard
+failure explains manual copying, and missing identity points to Messaging settings. Opening a
+provider URL does not establish its native private-conversation destination or message delivery.
+
+The entry reads existing setup and binding configuration resources to match the exact Agent,
+provider, binding and credential generation. These identity reads are event-driven, with no new
+setup polling or preparation POST. Target changes retire in-flight results and Agent writes
+invalidate their shared cache prefix. A failed identity read affects only this entry: the existing
+batch status remains authoritative, and an unavailable Agent retains its single repair action
+without presenting use as a repair. No Web chat, new API, permissions or automatic message is added.
+
 The Server reads Agent ownership, owned Computers, and binding/installation scope with at most three
 batch SELECTs in one short read-only Repeatable Read transaction. A missing or foreign ID refuses
 the whole batch as 404. A changed live connection fence retries the whole snapshot once, then
@@ -259,7 +279,13 @@ status, add a Refreshing status hold, or start a preparation POST on entry. Norm
 request deduplication and error presentation remain. Offline overrides other dependencies. First
 credential initialization is neutral for at most 15 seconds; completed failures, stale reports and
 check timeouts name the problem. Rechecks retain the last complete result at the Server. The
-Agent's Work row still describes running Tasks separately from availability.
+Overview name area shows the canonical overall verdict once, below the Agent name. A ready, working Agent adds
+the existing running-Task count or elapsed detail; idle and unknown activity never add Waiting. Initializing and
+problem verdicts keep the Server's priority and wording. Paused status, the receiving explanation and the existing
+Resume control stay in the name area without a duplicate lifecycle banner. The right-hand card contains only
+Computer and Messaging identity, connection facts, existing recovery, and the healthy Bot use entry; it has no Work
+row. The Bot action and closed fallback share a wrapping line, preserving 44px targets and natural growth when help
+opens. Shared legacy headers, lists and their existing presentation rules are unchanged.
 
 Dependency rows use the causal status reason. Computer, runtime and initializing verdicts
 leave messaging unconfirmed and offer no messaging repair; they do not establish a separate

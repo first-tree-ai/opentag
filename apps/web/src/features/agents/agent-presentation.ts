@@ -24,13 +24,18 @@ type AgentCardStatus = {
   tone: StatusTone;
 };
 
-export function agentCardStatus(agent: AgentListItem): AgentCardStatus {
+type AgentCardStatusSource = Pick<
+  AgentListItem,
+  "status" | "availability" | "activity" | "serverStatus" | "evidenceConfirmed"
+>;
+
+export function agentCardStatus(agent: AgentCardStatusSource): AgentCardStatus {
   const status = serverStatusPresentation(agent) ?? agentAvailabilityCardStatus(agent);
   const detail = agentActivityDetail(agent);
   return detail ? { ...status, detail } : status;
 }
 
-function agentAvailabilityCardStatus(agent: AgentListItem): AgentCardStatus {
+function agentAvailabilityCardStatus(agent: AgentCardStatusSource): AgentCardStatus {
   if (agent.status === "suspended" || agent.availability.state === "suspended") {
     return { label: m.agents_card_status_paused(), tone: "neutral" };
   }
@@ -73,7 +78,7 @@ export function agentActivityDetail(agent: Pick<AgentListItem, "activity">): str
   return undefined;
 }
 
-function blockedAgentCardStatus(agent: AgentListItem): AgentCardStatus {
+function blockedAgentCardStatus(agent: AgentCardStatusSource): AgentCardStatus {
   if (agent.availability.reason === "computer_not_bound") {
     return { label: m.agents_card_status_no_computer(), tone: "neutral" };
   }
@@ -98,7 +103,7 @@ function blockedAgentCardStatus(agent: AgentListItem): AgentCardStatus {
   return { label: m.agents_card_status_messaging_connection_failed(), tone: "warning" };
 }
 
-function runtimeAgentCardStatus(agent: AgentListItem): AgentCardStatus {
+function runtimeAgentCardStatus(agent: AgentCardStatusSource): AgentCardStatus {
   const { provider, status } = agent.availability.dependencies.runtime;
   const providerName = runtimeProviderName(provider);
   if (status === "checking") {
@@ -296,10 +301,13 @@ export function sharedConversationDestination(provider: ImBindingSummary["provid
   );
 }
 
-/**
- * Feishu gives each Agent its own bot, so the handle addresses it. Slack uses the bound Bot identity,
- * so the verified Bot name is used and no per-Agent handle is synthesized.
- */
+/** The overview names the connected Bot; an internal Agent handle is not a verified IM address. */
+export function messagingBotLabel(binding: ImBindingSummary): string {
+  const provider = messagingProviderLabel(binding.provider);
+  return binding.bot.displayName ? `${provider} · ${binding.bot.displayName}` : provider;
+}
+
+/** Settings-index summary, kept separate from the overview's Bot identity. */
 export function messagingChannelLabel(agent: AgentDetailView, binding: ImBindingSummary): string {
   const provider = messagingProviderLabel(binding.provider);
   if (binding.provider === "feishu") return `${provider} · @${agent.name}`;

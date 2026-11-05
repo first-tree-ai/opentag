@@ -1,4 +1,9 @@
-import { type AgentUsageWindowDays, type CloudUsageWindowDays, UsageTimezoneSchema } from "@opentag/shared/browser";
+import {
+  type AgentUsageWindowDays,
+  type CloudUsageWindowDays,
+  type ImBindingSummary,
+  UsageTimezoneSchema,
+} from "@opentag/shared/browser";
 
 /**
  * Resolves the browser's IANA timezone identifier for daily usage bucketing, falling back to `"UTC"`
@@ -46,6 +51,16 @@ export const queryKeys = {
       ["agents", agentId, "runtime-options", computerId, provider, model] as const,
     config: (agentId: string) => ["agents", agentId, "config"] as const,
     imBinding: (agentId: string) => ["agents", agentId, "imBinding"] as const,
+    conversationEntry: (agentId: string, binding: ImBindingSummary | undefined, updatedAt: string) =>
+      [
+        "agents",
+        agentId,
+        "conversation-entry",
+        binding?.id,
+        binding?.provider,
+        binding?.lastValidatedAt,
+        updatedAt,
+      ] as const,
     feishuSetupAttempt: (agentId: string) => ["agents", agentId, "feishuSetupAttempt"] as const,
     imBindingHandoff: (agentId: string) => ["agents", agentId, "imBindingHandoff"] as const,
     usage: (agentId: string, windowDays: AgentUsageWindowDays, timezone = viewerTimezone()) =>

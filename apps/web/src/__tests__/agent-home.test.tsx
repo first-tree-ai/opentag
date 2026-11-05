@@ -26,8 +26,8 @@ describe("OpenTag Web App Shell", () => {
     expect(within(status).getByText("Computer")).toBeTruthy();
     expect(within(status).getByText("Messaging")).toBeTruthy();
     expect(within(status).getByText("Ada's Mac")).toBeTruthy();
-    expect(within(status).getByText("Lark · @reviewer")).toBeTruthy();
-    expect(screen.queryByRole("link", { name: "Lark · @reviewer" })).toBeNull();
+    expect(within(status).getByText("Lark · Reviewer")).toBeTruthy();
+    expect(screen.queryByRole("link", { name: "Lark · Reviewer" })).toBeNull();
     const header = screen.getByRole("heading", { name: "Reviewer" }).closest("header");
     expect(
       within(header as HTMLElement)
@@ -181,7 +181,7 @@ describe("OpenTag Web App Shell", () => {
     expect(screen.queryByRole("heading", { name: "Reviewer" })).toBeNull();
   });
 
-  it("shows tasks without adding an activity badge to the detail header or exposing conversation content", async () => {
+  it("shows readiness and working detail beneath the Agent name without exposing conversation content", async () => {
     installApi({
       bound: true,
       agentActivity: { state: "working", startedAt: "2026-08-24T09:00:00.000Z" },
@@ -192,6 +192,8 @@ describe("OpenTag Web App Shell", () => {
     const header = (await screen.findByRole("heading", { level: 1, name: "Reviewer" })).closest("header");
     if (!header) throw new Error("Agent detail header missing");
     expect(within(header).queryByText("Working")).toBeNull();
+    expect(within(header).getByText("Ready")).toBeTruthy();
+    expect(within(header).getByText(/Working now · started/)).toBeTruthy();
     expect(await screen.findByRole("link", { name: "Investigate the failed deployment" })).toBeTruthy();
     expect(document.body.textContent).not.toContain("Private conversation content");
   });

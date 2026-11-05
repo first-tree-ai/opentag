@@ -1,7 +1,16 @@
-import type { ImBindingSummary } from "@opentag/shared/browser";
+import type { ImBindingIdentity, ImBindingSummary } from "@opentag/shared/browser";
 import { getLocale } from "../i18n/locale.js";
 
 type MessagingProvider = ImBindingSummary["provider"];
+
+/** An explicit handoff names the confirmed destination brand, rather than choosing its URL by locale. */
+export function botConversationProviderLabel(identity: ImBindingIdentity): string {
+  if (identity.provider === "feishu" && identity.teamBrand === "lark") return "Lark";
+  if (identity.provider === "feishu" && identity.teamBrand === "feishu") {
+    return getLocale() === "zh" ? "飞书" : "Feishu";
+  }
+  return messagingProviderLabel(identity.provider);
+}
 
 /**
  * What a messaging channel is called, in the reader's locale.

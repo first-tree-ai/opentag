@@ -58,11 +58,16 @@ the Tokens column supplies the unit. Cached input is a subset of input and is ex
 below the table rather than repeated as an exclusion on the row.
 
 Overview keeps Usage and dependency status above Schedules, followed by the Agent-scoped Tasks list.
-The detail header presents the Agent identity without an availability or activity badge beside the name, and a long
-name stops at two lines (the full name stays in the heading text and its title) so the header does not push the
-page down; Settings stays aligned with the top of the name;
-dependency status and lifecycle notices remain in the page content.
+The Overview header keeps a light 14px, regular-weight status line below the Agent identity, using the existing
+status dot without a filled badge or card. The canonical roster verdict stays authoritative, including Initializing
+and problem precedence. Only a ready Agent that is working adds its existing task-count or elapsed detail; idle and
+unknown activity add nothing, including Waiting. A paused Agent keeps its receiving explanation and existing Resume
+control in the name area, without a separate lifecycle banner. Other shared-header callers retain their existing
+presentation. A long name stops at two lines (the full name stays in the heading text and its title). Settings aligns
+with the top of the name on wide content and moves to its own row below the name-area status below a 24rem header
+container width. The title keeps the full available identity width; status and Resume wrap naturally.
 The Overview status card keeps its healthy two-section, two-line composition in every dependency state.
+It contains only Computer and Messaging dependencies, without a Work row or duplicate Agent-level status.
 Computer summarizes the connection and the selected runtime Provider, with an existing runtime status replacing
 Online when attention is needed. The identity line always includes the Agent's selected Provider after the
 Computer name and platform; this is not the Computer's list of installed Providers. At narrow card widths the
@@ -72,7 +77,9 @@ omitted. Full identities are included in the accessible row name and the row's t
 and no further guidance is plain text, not a control: a popover that only repeated the row gave keyboard users a
 stop with nothing behind it. Existing state values and localized status wording remain unchanged. Recovery uses the
 status row itself, rather than an additional action or explanation line. Each row keeps at least two line boxes
-even when an identity is absent; details and recovery never add a reserved third line.
+even when an identity is absent; details and recovery never add a reserved third line. The healthy Messaging use
+action and its collapsed fallback share one flex-wrapping operation line with 44px targets; expanded help grows
+naturally and reserves no closed height.
 For paused Agents, runtime failures open the existing local recovery guidance in a popover; they do not
 link to setup, which accepts only active Agents.
 Schedules retain their card layout. Tasks preserve server paging and Load more; the full Tasks page

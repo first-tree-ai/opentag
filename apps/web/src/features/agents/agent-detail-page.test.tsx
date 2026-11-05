@@ -3,13 +3,20 @@
  * diagnostics destination. Opening the page never releases or discards an environment.
  */
 
-import type { AccountComputerSummary, AgentDetail, CloudAvailability, MeResponse } from "@opentag/shared/browser";
-import { screen, waitFor } from "@testing-library/react";
+import type {
+  AccountComputerSummary,
+  AgentDetail,
+  CloudAvailability,
+  ImBindingSummary,
+  MeResponse,
+} from "@opentag/shared/browser";
+import { screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderInRouter } from "../../__tests__/support/router.js";
 import { browserApi } from "../../api.js";
 import { AccountContext } from "../session/session-context.js";
 import { AgentDetailPage } from "./agent-detail-page.js";
+import { LegacyAgentCapabilityPage } from "./legacy-redirects.js";
 
 const AGENT_ID = "3f1d3a2c-1f2e-4a1b-9c3d-5e6f70819a2b";
 const ACCOUNT_ID = "0b9c8d7e-6f50-4a1b-8c2d-3e4f50617283";
@@ -94,6 +101,66 @@ async function renderAgentHome() {
   );
 }
 
+describe("Agent overview messaging identity", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each([
+    ["feishu", "Team assistant", "Lark · Team assistant"],
+    ["feishu", null, "Lark"],
+    ["slack", "Team assistant", "Slack · Team assistant"],
+    ["slack", null, "Slack"],
+  ] as const)("uses the connected %s Bot name %s without inventing an address", async (provider, name, label) => {
+    stubCloudAgent();
+    const binding: ImBindingSummary = {
+      id: "44444444-4444-4444-8444-444444444444",
+      agentId: AGENT_ID,
+      provider,
+      bindingState: "active",
+      bot: { displayName: name, avatarUrl: null },
+      receiveMode: "mention_only",
+      lastInboundAt: null,
+      lastValidatedAt: TIME,
+      lastRuntimeObservationAt: TIME,
+    };
+    vi.mocked(browserApi.imBinding).mockResolvedValue(binding);
+
+    await renderAgentHome();
+
+    const heading = await screen.findByRole("heading", { name: "Reviewer" });
+    const status = await screen.findByRole("region", { name: "Agent status" });
+    await waitFor(() => {
+      const row = status.querySelector('[data-ui="agent-status-message-channel"]');
+      expect(within(row as HTMLElement).getByText(label)).toBeTruthy();
+      expect(row?.textContent).not.toContain("@reviewer");
+    });
+    expect(heading.closest("header")?.textContent).not.toContain("@reviewer");
+    expect(heading.textContent).toBe(agent.displayName);
+    expect(screen.getByRole("link", { name: "Settings" }).getAttribute("href")).toBe(`/agents/${AGENT_ID}/settings`);
+  });
+
+  it("keeps the unbound overview usable without suggesting an internal handle is a Bot address", async () => {
+    stubCloudAgent();
+    await renderAgentHome();
+
+    const heading = await screen.findByRole("heading", { name: "Reviewer" });
+    expect(heading.closest("header")?.textContent).not.toContain("@reviewer");
+    const status = await screen.findByRole("region", { name: "Agent status" });
+    expect(within(status).getByRole("link", { name: /Continue setup|Connect messaging app/ })).toBeTruthy();
+  });
+
+  it("preserves the legacy capability header outside the overview", async () => {
+    stubCloudAgent();
+    await renderInRouter(
+      <AccountContext value={{ me, endSession: vi.fn(), refreshMe: vi.fn().mockResolvedValue(me), reloadMe: vi.fn() }}>
+        <LegacyAgentCapabilityPage agentId={AGENT_ID} capability="skills" />
+      </AccountContext>,
+    );
+
+    const heading = await screen.findByRole("heading", { name: "Reviewer" });
+    expect(heading.closest("header")?.textContent).toContain("@reviewer");
+  });
+});
+
 describe("Agent home for a Cloud-bound Agent", () => {
   afterEach(() => vi.restoreAllMocks());
 
@@ -164,16 +231,14 @@ describe("Agent home status card", () => {
     });
   }
 
-  it("shows the running-Task line the Agent list shows, as its own first row", async () => {
+  it("keeps work out of the dependency card and suppresses activity while not ready", async () => {
     stubActivity({ state: "working", startedAt: TIME, runningTaskCount: 2 });
     await renderAgentHome();
     const status = await screen.findByRole("region", { name: "Agent status" });
-    await waitFor(() =>
-      expect(status.querySelector('[data-ui="agent-status-activity"]')?.textContent).toBe("2 tasks running"),
-    );
     const rows = [...status.querySelectorAll("li")].map((row) => row.getAttribute("data-ui"));
-    expect(rows[0]).toBe("agent-status-work");
-    expect(status.querySelector('[data-ui="agent-status-work"]')?.textContent).toContain("Work");
+    expect(rows).toEqual(["agent-status-computer", "agent-status-message-channel"]);
+    expect(status.querySelector('[data-ui="agent-status-work"]')).toBeNull();
+    expect(document.querySelector('[data-ui="agent-overview-activity"]')).toBeNull();
   });
 
   it("adds no row for an idle Agent that is not ready, as the list row says nothing then", async () => {

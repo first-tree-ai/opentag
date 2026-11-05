@@ -1932,6 +1932,7 @@ function MessagingHandoff({
 }) {
   const [unbindAsked, setUnbindAsked] = useState(false);
   const unbindButtonRef = useRef<HTMLButtonElement>(null);
+  const needsAttention = messaging.progress?.phase === "needs_attention";
   const unbind = snapshot.actions.find(
     (action): action is Extract<AgentSetupAction, { kind: "unbind-messaging" }> =>
       action.kind === "unbind-messaging" &&
@@ -1946,8 +1947,8 @@ function MessagingHandoff({
           <strong>{providerTitle(messaging.provider)}</strong>
         </span>
         <p className={WAITING_LINE} role="status">
-          <span aria-hidden="true" className="otv2-pending-spinner" />
-          {m.onboarding_v2_messaging_confirming()}
+          {needsAttention ? null : <span aria-hidden="true" className="otv2-pending-spinner" />}
+          {needsAttention ? m.onboarding_v2_setup_messaging_needs_attention() : m.onboarding_v2_messaging_confirming()}
         </p>
         {messaging.progress ? (
           <p className={HINT}>{messagingHandoffCopy(messaging.progress, messaging.provider)}</p>

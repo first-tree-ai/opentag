@@ -163,6 +163,12 @@ workspace styling. The steps say only what the rows and controls do not:
   reader is usually on the phone that would scan it, so the same authorization link opens in Lark instead, and the
   instruction and waiting line say to confirm in Lark rather than to scan.
 
+Messaging handoff distinguishes pending work from a reported problem. A
+`needs_attention` progress observation shows **Needs attention** without a waiting
+animation; preparing or checking observations keep the pending status. The reason
+and existing recovery action remain visible. This presentation does not establish
+that the Provider CLI, credentials or messaging connection are ready.
+
 The completion screen stays visible until the user navigates away. Its primary action opens the
 connected Bot conversation using the current binding's provider identity. Slack reuses its App/Team
 redirect; a confirmed Feishu workspace uses the documented Bot AppLink. Lark and unknown workspace

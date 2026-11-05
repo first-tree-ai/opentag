@@ -404,20 +404,26 @@ describe("AgentSetupPage messaging recovery", () => {
   });
 
   it.each([
-    [{ phase: "preparing_cli" }, "Confirming the computer can connect to Slack…"],
-    [{ phase: "checking_credentials" }, "Checking credentials"],
-    [{ phase: "needs_attention" }, "Repair the Slack connection in your Agent on this computer, then check again."],
+    [{ phase: "preparing_cli" }, "Confirming the computer can connect to Slack…", true],
+    [{ phase: "checking_credentials" }, "Checking credentials", true],
+    [
+      { phase: "needs_attention" },
+      "Repair the Slack connection in your Agent on this computer, then check again.",
+      false,
+    ],
     [
       { phase: "needs_attention", reason: "upgrade_required" },
       "Repair the Slack connection in your Agent on this computer, then check again.",
+      false,
     ],
     [
       { phase: "needs_attention", reason: "credential_rejected" },
       "Reauthorize this messaging app. The current credential was rejected.",
+      false,
     ],
-  ] satisfies readonly (readonly [ProviderCliHandoffProgress, string])[])(
+  ] satisfies readonly (readonly [ProviderCliHandoffProgress, string, boolean])[])(
     "narrates the handoff progress %j",
-    async (progress, copy) => {
+    async (progress, copy, pending) => {
       const memory = createMemorySetupAdapter({
         agent: setupAgent(),
         messaging: { kind: "bound", provider: "slack" },
@@ -433,6 +439,12 @@ describe("AgentSetupPage messaging recovery", () => {
 
       expect(screen.getByText(copy)).toBeTruthy();
       expect(screen.queryByText(/Open the Bot’s DM in Slack/)).toBeNull();
+      const handoff = document.querySelector('[data-ui="agent-setup-messaging"]') as HTMLElement;
+      const status = within(handoff).getByRole("status");
+      expect(status.textContent).toBe(
+        pending ? "Authorization saved. Checking whether the Agent is ready…" : "Needs attention",
+      );
+      expect(Boolean(status.querySelector(".otv2-pending-spinner"))).toBe(pending);
     },
   );
 

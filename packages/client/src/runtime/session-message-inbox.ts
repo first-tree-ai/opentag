@@ -537,13 +537,19 @@ export class SessionMessageInbox {
     }
   }
 
-  /** Joining a Run with no further retry uses the message's own: durable before the provider has it. */
+  /** Joining a Run with no further retry uses the message's own, written before the provider has it. */
   async #spendRetryForJoin(
     record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
   ): Promise<DurableWorkRecord<SessionMessageDeliveryRequestV3>> {
     if (record.attempts >= MAX_AUTOMATIC_RETRIES) return record;
     const spent = { ...record, attempts: record.attempts + 1, updatedAt: this.#now() };
-    await this.#persist(spent);
+    // The message is steered regardless. At worst another crash gives it one more retry (PM decision, #1301).
+    await this.#persist(spent).catch(() => {
+      this.#logger.warn(
+        { code: "SESSION_MESSAGE_RETRY_SPEND_FAILED", messageId: record.payload.messageId },
+        "Session message retry could not be recorded before joining a retry or resumed Turn",
+      );
+    });
     return spent;
   }
 

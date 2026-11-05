@@ -249,14 +249,14 @@ that Turn's retry and the Turn resumed after a crash. What happens next depends 
 - **A message steered into a retry or a resumed Turn gets no further retry.** Its one retry is spent durably before the
   steer, so if that Turn fails or the daemon crashes during it, the message fails with one notice and does not run again.
   The notice reports what ended that Turn: `run_interrupted` after a crash, `client_shutdown` after an orderly stop. If the
-  write fails, the message is not steered and stays queued. If the runtime then refuses the steer, the retry is given back,
-  and the message cannot run until that write succeeds. In a retry in place, a message that was already in the Turn fails
+  write fails, the message is still steered, with a warning; at worst another crash gives it one more retry, a cost the PM
+  accepted ([#1301](https://github.com/first-tree-ai/opentag/issues/1301#issuecomment-6651237819)). If the runtime refuses
+  the steer, the retry is given back, and the message cannot run until that write succeeds. In a retry in place, a message that was already in the Turn fails
   the same way when its retry cannot be recorded, and when a crash or a stop interrupts that retry.
 - **A failure that is not recoverable** fails the message without a retry.
 
 A message stays queued and waits for the Turn to end when the runtime cannot steer or refuses the steer, when the Turn
-already carries 16 Session messages, when a visible Session has no IM outbox context, or when its spent retry cannot be
-written.
+already carries 16 Session messages, or when a visible Session has no IM outbox context.
 
 The accepted cost is possible repeats. After a crash the resumed Turn may already have the steered message in its history,
 and the message is delivered again; the continuation notice tells the Agent, but cannot prevent every repeat. A message

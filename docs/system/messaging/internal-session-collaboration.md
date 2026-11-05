@@ -189,7 +189,9 @@ Safety rules:
   and concurrent reports converge on one `session_messages` row; an accepted notice is never delivered again.
 - A notice never goes back to its own sender, so notices cannot bounce between two Sessions. If a Session's Run fails while
   handling a notice, that Session's creator is notified instead, so failed notices only climb the creation tree and end at the
-  visible root. A message a Session sent to itself goes the same way.
+  visible root. A message a Session sent to itself goes the same way. The header alone does not make a message a notice, so a
+  message that quotes one keeps its sender: a notice's ID must derive from the Session and message it names, and that Session
+  must have sent it. A Session that computes such an ID on purpose only loses the notice about its own message.
 
 No schema change is involved: notices reuse `session_messages` and the existing closure activity projection.
 

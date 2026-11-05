@@ -1,16 +1,15 @@
 import { createHash } from "node:crypto";
-import {
-  type AgentScheduleLastDispatch,
-  type CloudModelOptions,
-  type ImConversationKind,
-  type InternalSessionRuntimeOverrides,
-  SESSION_RUN_OUTCOME_NOTICE_HEADER,
-  type Session,
-  type SessionCliListItem,
-  type SessionCliListQuery,
-  type SessionCliListResponse,
-  type SessionKind,
-  type SessionPlacement,
+import type {
+  AgentScheduleLastDispatch,
+  CloudModelOptions,
+  ImConversationKind,
+  InternalSessionRuntimeOverrides,
+  Session,
+  SessionCliListItem,
+  SessionCliListQuery,
+  SessionCliListResponse,
+  SessionKind,
+  SessionPlacement,
 } from "@opentag/shared";
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
@@ -27,6 +26,7 @@ import {
 } from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import type { CloudModelCatalog } from "../sandboxes/cloud-model-catalog.js";
+import { isRunOutcomeNotice } from "./session-run-outcome-notice.js";
 
 type SessionRow = typeof sessions.$inferSelect;
 type PlacementRow = typeof sessionPlacements.$inferSelect;
@@ -552,16 +552,14 @@ export class SessionService {
   }
 
   /**
-   * Unlocked eligibility read for an internal Session's Run outcome notice. The reported message
-   * must be a stored SessionMessage addressed to that Session, and the Session must be an active
-   * internal child with a creator. The facts only select the notice route; the subsequent
-   * `authorizeAndRecordMessage` re-proves every authority under the normal lock order.
-   */
-  /**
    * Who hears that a message's Run did not complete: its sender, whatever kind of Session the target
    * is. A message with no other sender (scheduled, or sent to itself) and a notice that itself failed
    * go to an internal target's creator instead, so notices can only climb the creation tree from
    * there and never bounce between two Sessions.
+   *
+   * An unlocked eligibility read: the reported message must be stored and addressed to that active
+   * Session. The facts only select the notice route; the subsequent `authorizeAndRecordMessage`
+   * re-proves every authority under the normal lock order.
    */
   async resolveRunOutcomeNotice(input: {
     childSessionId: string;
@@ -571,7 +569,7 @@ export class SessionService {
       .select({
         creatorSessionId: sessions.createdBySessionId,
         installationId: computers.currentInstallationId,
-        isNotice: sql<boolean>`starts_with(${sessionMessages.content}, ${SESSION_RUN_OUTCOME_NOTICE_HEADER})`,
+        content: sessionMessages.content,
         kind: sessions.kind,
         sourceSessionId: sessionMessages.sourceSessionId,
       })
@@ -588,7 +586,12 @@ export class SessionService {
       )
       .limit(1);
     if (!row) return undefined;
-    const sender = !row.isNotice && row.sourceSessionId !== input.childSessionId ? row.sourceSessionId : null;
+    const isNotice = isRunOutcomeNotice({
+      id: input.messageId,
+      sourceSessionId: row.sourceSessionId,
+      content: row.content,
+    });
+    const sender = !isNotice && row.sourceSessionId !== input.childSessionId ? row.sourceSessionId : null;
     const recipientSessionId = sender ?? (row.kind === "internal" ? row.creatorSessionId : null);
     return recipientSessionId ? { recipientSessionId, installationId: row.installationId } : undefined;
   }

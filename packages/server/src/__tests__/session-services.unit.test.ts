@@ -37,6 +37,7 @@ import type { ImProviderAdapter } from "../services/im-bindings/index.js";
 import { ProviderAdapterResolutionError } from "../services/im-bindings/provider-adapter-resolver.js";
 import { SessionCliProofService } from "../services/sessions/session-cli-proof-service.js";
 import { SessionCollaborationService } from "../services/sessions/session-collaboration-service.js";
+import { renderRunOutcomeNotice, runOutcomeNoticeMessageId } from "../services/sessions/session-run-outcome-notice.js";
 import {
   type SessionMessageAttempt,
   SessionService,
@@ -342,11 +343,58 @@ describe("SessionService with the unit database", () => {
     await expect(resolve(child.session.id, fromSibling.message.id)).resolves.toEqual(toRecipient(sibling.session.id));
 
     // A failed notice climbs to the creator, never back to the Session the notice was about.
-    const failedNotice = await send(sibling, child.session.id, `${SESSION_RUN_OUTCOME_NOTICE_HEADER}\nSession: x`);
-    await expect(resolve(child.session.id, failedNotice.message.id)).resolves.toEqual(toRecipient(creator.session.id));
+    const noticeFrom = async (source: typeof sibling, targetSessionId: string, reported: string) => {
+      const content = renderRunOutcomeNotice({
+        childSessionId: source.session.id,
+        messageId: reported,
+        outcome: "failed",
+        reason: "provider_failed",
+      });
+      return (
+        await service.authorizeAndRecordMessage({
+          messageId: runOutcomeNoticeMessageId(source.session.id, reported),
+          sourceSessionId: source.session.id,
+          sourceInstallationId: fixture.installationId,
+          sourceComputerId: fixture.computerId,
+          sourceConnectionInstanceId: fixture.instanceId,
+          sourcePlacementGeneration: source.placement.generation,
+          targetSessionId,
+          content,
+        })
+      ).message;
+    };
+    const failedNotice = await noticeFrom(sibling, child.session.id, randomUUID());
+    await expect(resolve(child.session.id, failedNotice.id)).resolves.toEqual(toRecipient(creator.session.id));
     // At a visible target it stops.
-    const failedAtTop = await send(child, creator.session.id, `${SESSION_RUN_OUTCOME_NOTICE_HEADER}\nSession: x`);
-    await expect(resolve(creator.session.id, failedAtTop.message.id)).resolves.toBeUndefined();
+    const failedAtTop = await noticeFrom(child, creator.session.id, randomUUID());
+    await expect(resolve(creator.session.id, failedAtTop.id)).resolves.toBeUndefined();
+
+    // Ordinary content that looks like a notice keeps its sender: the header proves nothing, whether it
+    // is a bare prefix or a whole quoted notice under the message's own id.
+    const bareHeader = await send(sibling, child.session.id, `${SESSION_RUN_OUTCOME_NOTICE_HEADER}\nplease look`);
+    await expect(resolve(child.session.id, bareHeader.message.id)).resolves.toEqual(toRecipient(sibling.session.id));
+    const quoted = await send(sibling, child.session.id, failedNotice.content);
+    await expect(resolve(child.session.id, quoted.message.id)).resolves.toEqual(toRecipient(sibling.session.id));
+    const quotedAtTop = await send(child, creator.session.id, failedAtTop.content);
+    await expect(resolve(creator.session.id, quotedAtTop.message.id)).resolves.toEqual(toRecipient(child.session.id));
+    // An id that matches the Session the content names does not pass when another Session sent it.
+    const reported = randomUUID();
+    const borrowed = await service.authorizeAndRecordMessage({
+      messageId: runOutcomeNoticeMessageId(child.session.id, reported),
+      sourceSessionId: sibling.session.id,
+      sourceInstallationId: fixture.installationId,
+      sourceComputerId: fixture.computerId,
+      sourceConnectionInstanceId: fixture.instanceId,
+      sourcePlacementGeneration: sibling.placement.generation,
+      targetSessionId: child.session.id,
+      content: renderRunOutcomeNotice({
+        childSessionId: child.session.id,
+        messageId: reported,
+        outcome: "failed",
+        reason: "provider_failed",
+      }),
+    });
+    await expect(resolve(child.session.id, borrowed.message.id)).resolves.toEqual(toRecipient(sibling.session.id));
 
     // No sender but the target itself, or none at all (scheduled): its creator, or nobody at a visible target.
     const toItself = await send(child, child.session.id, "to itself").catch(() => undefined);

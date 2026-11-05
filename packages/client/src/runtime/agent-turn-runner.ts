@@ -125,7 +125,7 @@ export interface AgentTurnRunnerOptions {
     /** The message's input for a retry, built once the retry's credentials are prepared. */
     input(message: SessionMessageDeliveryRequestV3, processedAt: Date): AgentInput;
     /** Durably spend the message's one retry; false means it cannot join this one and must fail. */
-    spendRetry(message: SessionMessageDeliveryRequestV3, interruption: Interruption): Promise<boolean>;
+    spendRetry(message: SessionMessageDeliveryRequestV3): Promise<boolean>;
     /** Resolves once the message's outcome is durable. */
     settle(message: SessionMessageDeliveryRequestV3, outcome: AgentSteerOutcome): Promise<void>;
   };
@@ -604,7 +604,7 @@ export class AgentTurnRunner {
         await trace.finish();
         return undefined;
       }
-      if (!next || !(await this.#claimRetry(turn, next))) {
+      if (!next || !(await this.#claimRetry(turn))) {
         return { completion: attempt.completion, ...(planInput ? { turnPlanInput: planInput } : {}) };
       }
       this.#logger.info({ ...fields, reason: next.reason }, "Turn automatic retry started");
@@ -757,9 +757,11 @@ export class AgentTurnRunner {
     const interruption: Interruption = { reason, at: new Date(this.#now()).toISOString() };
     let record: Awaited<ReturnType<TurnRetryStore["update"]>>;
     try {
-      record = await this.#retries.update(turn.owner.request.sessionId, turn.owner.turnId, (current) =>
-        current.retries >= MAX_AUTOMATIC_RETRIES ? current : { ...current, interruption },
-      );
+      // Recorded even with no retry left: it says what ended this attempt, for the Turn's joined messages.
+      record = await this.#retries.update(turn.owner.request.sessionId, turn.owner.turnId, (current) => ({
+        ...current,
+        interruption,
+      }));
     } catch {
       return undefined;
     }
@@ -768,7 +770,7 @@ export class AgentTurnRunner {
   }
 
   /** Durably spend the Turn's one automatic retry before it starts; false leaves the failure reported. */
-  async #claimRetry(turn: RunningTurn, interruption: Interruption): Promise<boolean> {
+  async #claimRetry(turn: RunningTurn): Promise<boolean> {
     const { sessionId } = turn.owner.request;
     // No new steer joins once the attempt ended, but one in flight may still be acknowledged: its
     // capture and receipt must be durable before the retry input is read.
@@ -784,7 +786,7 @@ export class AgentTurnRunner {
     if (!spent) return false;
     const steers = spent.steers.length === 0 ? [] : await this.#acknowledgedImSteers(turn, spent);
     if (!steers) return false;
-    const messages = await this.#sessionMessagesForRetry(turn, interruption);
+    const messages = await this.#sessionMessagesForRetry(turn);
     const arrival = (input: SteeredInput) => turn.arrivals.get(steeredInputId(input)) ?? 0;
     turn.steers = [...steers, ...messages].sort((left, right) => arrival(left) - arrival(right));
     turn.retrying = true;
@@ -823,13 +825,10 @@ export class AgentTurnRunner {
    * The Session messages this retry carries. Each spends its own retry durably first, so a crash
    * during this retry fails the message instead of running it again; one that cannot fails now.
    */
-  async #sessionMessagesForRetry(
-    turn: RunningTurn,
-    interruption: Interruption,
-  ): Promise<SessionMessageDeliveryRequestV3[]> {
+  async #sessionMessagesForRetry(turn: RunningTurn): Promise<SessionMessageDeliveryRequestV3[]> {
     const carried: SessionMessageDeliveryRequestV3[] = [];
     for (const { message } of turn.joined.values()) {
-      if (await this.#sessionMessages.spendRetry(message, interruption)) carried.push(message);
+      if (await this.#sessionMessages.spendRetry(message)) carried.push(message);
       else await this.#sessionMessages.settle(message, "interrupted");
     }
     turn.joined = new Map();

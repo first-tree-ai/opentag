@@ -852,7 +852,9 @@ describe("InterruptedWorkRecovery", () => {
     f.records.set(request.sessionId, turnRetryRecord(request, "turn-1"));
     f.unresolved.set(request.sessionId, { turnId: "turn-1", deliveryId: request.deliveryId, phase: "running" });
     await f.recovery.start();
-    expect(f.records.get(request.sessionId)).toMatchObject({ retries: 1, interruption: { reason: "daemon_crash" } });
+    // The reason goes to the resumed Turn's notice; on disk it would be taken for what ended that Turn.
+    expect(f.records.get(request.sessionId)).toMatchObject({ retries: 1 });
+    expect(f.records.get(request.sessionId)?.interruption).toBeUndefined();
     expect(f.reconciler.setRecovery).toHaveBeenCalledWith(request.sessionId, {
       deliveryId: request.deliveryId,
       turnId: "turn-1",
@@ -981,14 +983,19 @@ describe("InterruptedWorkRecovery", () => {
     f.unresolved.set(spent.sessionId, { turnId: "turn-spent", deliveryId: spent.deliveryId, phase: "running" });
     await f.recovery.start();
     f.version = 1;
-    expect(f.records.get(stopped.sessionId)).toMatchObject({
-      retries: 1,
-      interruption: { reason: "client_shutdown", at: "T" },
-    });
+    expect(f.records.get(stopped.sessionId)).toMatchObject({ retries: 1 });
+    expect(f.records.get(stopped.sessionId)?.interruption).toBeUndefined();
     expect(f.recovery.isPendingRetry(stopped.sessionId, "turn-stopped")).toBe(true);
     expect(f.recovery.isPendingRetry(spent.sessionId, "turn-spent")).toBe(false);
     expect(f.records.has(recorded.sessionId)).toBe(false);
     expect(f.reconciler.setRecovery).toHaveBeenCalledOnce();
+    // The recorded reason still reaches the resumed Turn's notice.
+    f.recovery.resume(stopped.sessionId, { deliveryId: stopped.deliveryId, turnId: "turn-stopped" });
+    expect(f.custody.resume).toHaveBeenCalledWith(
+      stopped,
+      "turn-stopped",
+      expect.objectContaining({ continuation: { reason: "client_shutdown", at: "T" } }),
+    );
   });
 
   it("falls back to failure reporting when the Server cannot recover or never answers", async () => {

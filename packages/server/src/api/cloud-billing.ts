@@ -75,10 +75,12 @@ export function registerCloudBillingRoutes(
   });
   app.get(CLOUD_USAGE_PATH, { preHandler }, async (request, reply) => {
     reply.header("cache-control", "no-store");
-    const { windowDays } = parseRequest(CloudUsageQuerySchema, request.query);
+    const { windowDays, timezone } = parseRequest(CloudUsageQuerySchema, request.query);
     const accountId = request.authContext?.me.user.id;
     if (!accountId) throw new Error("Missing authenticated Account");
-    return CloudUsageSummarySchema.parse(usage ? await usage.read(accountId, windowDays) : { enabled: false });
+    return CloudUsageSummarySchema.parse(
+      usage ? await usage.read(accountId, windowDays, timezone) : { enabled: false },
+    );
   });
   app.post(CLOUD_BILLING_CHECKOUT_PATH, { preHandler }, async (request, reply) => {
     reply.header("cache-control", "no-store");

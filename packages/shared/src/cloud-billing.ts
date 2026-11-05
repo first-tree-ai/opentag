@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { UsageTimezoneSchema } from "./agent.js";
 
 export const CLOUD_BILLING_PATH = "/api/v1/cloud/billing";
 export const CLOUD_BILLING_CHECKOUT_PATH = `${CLOUD_BILLING_PATH}/checkout`;
@@ -40,6 +41,7 @@ export type CloudUsageWindowDays = z.infer<typeof CloudUsageWindowDaysSchema>;
 export const CloudUsageQuerySchema = z
   .object({
     windowDays: z.coerce.number().pipe(CloudUsageWindowDaysSchema).default(30),
+    timezone: UsageTimezoneSchema,
   })
   .strict();
 export const CloudUsageSummarySchema = z.discriminatedUnion("enabled", [
@@ -55,7 +57,7 @@ export const CloudUsageSummarySchema = z.discriminatedUnion("enabled", [
       inputTokens: money,
       outputTokens: money,
       tokens: money,
-      daily: z.array(z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), tokens: money }).strict()).max(91),
+      daily: z.array(z.object({ date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/), tokens: money }).strict()).max(92),
     })
     .strict()
     .refine(

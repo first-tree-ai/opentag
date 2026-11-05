@@ -217,11 +217,23 @@ answers `outcome` (and may omit the token) only to Clients that sent
 `reportOutcome`, so older Clients keep their strict response shape; a newer
 Client retries once without the optional fields when an older Server rejects them
 as unknown keys, which happens before redemption. Older Clients always send a new
-installation ID and therefore still create a new Computer on rerun. A local
-identity file that is gone (reinstall) also yields a new Computer; the previous
-one stays offline. Repair-mode codes keep their targeted behavior.
+installation ID and therefore still create a new Computer on rerun. Repair-mode
+codes keep their targeted behavior.
 
-The committed repair clears the current instance. Registration, heartbeat,
+The local installation ID is the only identity of a Computer. While it is intact, a
+rerun repairs the original Computer, subject to the Account conflict above. When it
+is lost (deleted home, reinstall), a create-code rerun creates a new Computer and the
+previous one stays where it is, offline, in its own Account. This holds across
+Accounts too: another Account's code on a machine with no local identity creates a
+new Computer in that Account, reveals nothing, and raises no conflict. The Server
+does not try to recognize the physical machine: no hardware identifier is reliably
+unique (cloned images share them), so a match could hand one machine's Computer to
+another, while a duplicate is visible and removable. Offline cards show when each
+Computer was last online so that same-named Computers can be told apart.
+
+The committed repair clears the current instance but keeps `last_seen_at`, so the
+computer list keeps saying when the computer was last online until the repaired
+daemon reports in. Registration, heartbeat,
 and queued Runtime business frames independently validate the active credential;
 delivery and approval authority also require the current instance and connection.
 Closing the old socket is cleanup, rather than the authority that revokes it.

@@ -895,7 +895,8 @@ describe("SessionMessageInbox", () => {
     expect(inbox.getState(running.messageId)).toMatchObject({
       status: "succeeded",
       attempts: 1,
-      interruption: { reason: "daemon_crash" },
+      // Used for the retry's notice, then cleared: only what ends a Run is left on the record.
+      interruption: undefined,
     });
     expect(inbox.getState(stopped.messageId)?.status).toBe("succeeded");
     expect(inbox.getState(retried.messageId)).toMatchObject({

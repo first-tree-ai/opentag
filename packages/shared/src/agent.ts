@@ -148,6 +148,33 @@ export const AgentUsageWindowDaysSchema = z.union([
   z.literal(AGENT_USAGE_WINDOW_OPTIONS[3]),
 ]);
 
+const IANA_TIMEZONE_PATTERN = /^[A-Za-z][A-Za-z0-9_+-]*(?:\/[A-Za-z0-9_+-]+)*$/;
+
+function isValidIanaTimezone(value: string): boolean {
+  if (!IANA_TIMEZONE_PATTERN.test(value)) return false;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export const UsageTimezoneSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(100)
+  .refine(isValidIanaTimezone, { message: "Expected a valid IANA timezone identifier" })
+  .default("UTC");
+
+export const AgentUsageQuerySchema = z
+  .object({
+    days: z.coerce.number().pipe(AgentUsageWindowDaysSchema).default(AGENT_USAGE_WINDOW_DAYS),
+    timezone: UsageTimezoneSchema,
+  })
+  .strict();
+
 export const AgentListActivitySchema = z.discriminatedUnion("state", [
   z.object({ state: z.literal("idle") }).strict(),
   z.object({ state: z.literal("unknown") }).strict(),
@@ -374,6 +401,7 @@ export type AgentDetail = z.infer<typeof AgentDetailSchema>;
 export type AgentListActivity = z.infer<typeof AgentListActivitySchema>;
 export type AgentUsageSummary = z.infer<typeof AgentUsageSummarySchema>;
 export type AgentUsageWindowDays = z.infer<typeof AgentUsageWindowDaysSchema>;
+export type AgentUsageQuery = z.infer<typeof AgentUsageQuerySchema>;
 export type AgentUsageDetail = z.infer<typeof AgentUsageDetailSchema>;
 export type AgentListItem = z.infer<typeof AgentListItemSchema>;
 export type AgentAdminConfig = z.infer<typeof AgentAdminConfigSchema>;

@@ -1,4 +1,18 @@
-import type { AgentUsageWindowDays } from "@opentag/shared/browser";
+import { type AgentUsageWindowDays, type CloudUsageWindowDays, UsageTimezoneSchema } from "@opentag/shared/browser";
+
+/**
+ * Resolves the browser's IANA timezone identifier for daily usage bucketing, falling back to `"UTC"`
+ * when `Intl` is unavailable or returns an unparseable value.
+ */
+export function viewerTimezone(): string {
+  try {
+    const resolved = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    const parsed = UsageTimezoneSchema.safeParse(resolved);
+    return parsed.success ? parsed.data : "UTC";
+  } catch {
+    return "UTC";
+  }
+}
 
 /**
  * Every cache key the application reads, in one place so that the writes which invalidate them can
@@ -17,6 +31,8 @@ export const queryKeys = {
   computers: () => ["computers"] as const,
   cloudAvailability: () => ["cloudAvailability"] as const,
   cloudModelOptions: () => ["cloudModelOptions"] as const,
+  cloudUsage: (windowDays: CloudUsageWindowDays, timezone = viewerTimezone()) =>
+    ["cloud-usage", windowDays, timezone] as const,
   computerConnectCode: (connectCodeId: string) => ["computerConnectCodes", connectCodeId] as const,
   agentSetup: (agentId: string) => ["agentSetup", agentId] as const,
   /** Every Setup snapshot read, for a write that must retire whichever one is still in flight. */
@@ -32,7 +48,8 @@ export const queryKeys = {
     imBinding: (agentId: string) => ["agents", agentId, "imBinding"] as const,
     feishuSetupAttempt: (agentId: string) => ["agents", agentId, "feishuSetupAttempt"] as const,
     imBindingHandoff: (agentId: string) => ["agents", agentId, "imBindingHandoff"] as const,
-    usage: (agentId: string, windowDays: AgentUsageWindowDays) => ["agents", agentId, "usage", windowDays] as const,
+    usage: (agentId: string, windowDays: AgentUsageWindowDays, timezone = viewerTimezone()) =>
+      ["agents", agentId, "usage", windowDays, timezone] as const,
     progressNotice: (agentId: string) => ["agents", agentId, "progress-notice"] as const,
     workspaceRecovery: (agentId: string) => ["agents", agentId, "workspace-recovery"] as const,
     schedules: (agentId: string) => ["agents", agentId, "schedules"] as const,

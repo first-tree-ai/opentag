@@ -115,7 +115,10 @@ are acceptable: the Provider may or may not have persisted the interrupted turn.
   that is, the ones the Server settled with this Turn. When a Turn has captured
   steers and its Session binding is unreadable or no longer holds the Turn, the
   receipts are unknown, so no retry runs and the original failure is reported
-  rather than completing without acknowledged input. A Session message's
+  rather than completing without acknowledged input. An in-place retry first
+  waits briefly for steers still in flight, so one acknowledged as the Run ends
+  is not lost; if one does not settle in time, the failure is reported the same
+  way. A Session message's
   interruption is kept on its durable inbox record, updated in place so the
   inbox order survives a restart; the Server-backed durability adapter does not
   store it, so a recovered Run there is retried as a crash.

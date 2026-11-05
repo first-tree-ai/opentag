@@ -236,6 +236,81 @@ describe("AgentTurnRunner automatic retry", () => {
     expect(h.create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ outcome: "completed" }), 3);
   });
 
+  it.each(["provider steer", "receipt write"] as const)(
+    "replays a steer still acknowledging its %s when the Run times out",
+    async (slow) => {
+      const h = runnerHarness();
+      h.request.runtime.budget = { maxDurationMs: 250 };
+      h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
+      h.retries.appendSteer = async (steer) => {
+        const record = h.records.get(h.request.sessionId) as TurnRetryRecord;
+        h.records.set(h.request.sessionId, { ...record, steers: [...record.steers, steer as RuntimeImSteerRequest] });
+        return "appended";
+      };
+      // The steer stays in flight past the Run's end, until the retry starts or a grace period passes.
+      let release: () => void = () => undefined;
+      const inFlight = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const hold = async () => {
+        await inFlight;
+      };
+      if (slow === "provider steer") h.runtime.steer.mockImplementationOnce(hold);
+      else {
+        const record = h.recordSteer.getMockImplementation() as (steer: RuntimeImSteerRequest) => Promise<void>;
+        h.recordSteer.mockImplementationOnce(async (steer) => {
+          await hold();
+          await record(steer);
+        });
+      }
+      h.prompt
+        .mockImplementationOnce((input) => {
+          h.emit({ type: "run_started", runId: "turn-1" });
+          return abortedOnSignal(input).finally(() => setTimeout(release, 30));
+        })
+        .mockImplementationOnce(async () => {
+          release();
+          return { runId: "turn-1", status: "completed", output: [] };
+        });
+      h.runner.start(owner(h.request));
+      await vi.waitFor(() =>
+        expect(h.updateUnresolved).toHaveBeenCalledWith(expect.anything(), expect.anything(), "turn-1", "running"),
+      );
+      const answer = h.runner.steer(steerRequest(h.request, "more"));
+      await h.runner.settled();
+      await expect(answer).resolves.toMatchObject({ status: "steered" });
+      expect(h.prompt).toHaveBeenCalledTimes(2);
+      expect(promptItems(h.prompt, 1).at(-1)?.text).toContain("more");
+    },
+  );
+
+  it("reports the failure when an in-flight steer never settles", async () => {
+    vi.useFakeTimers();
+    const h = runnerHarness();
+    h.request.runtime.budget = { maxDurationMs: 100 };
+    h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
+    h.runtime.steer.mockImplementationOnce(() => new Promise<undefined>(() => undefined));
+    h.prompt.mockImplementationOnce((input) => {
+      h.emit({ type: "run_started", runId: "turn-1" });
+      return abortedOnSignal(input);
+    });
+    h.runner.start(owner(h.request));
+    await vi.advanceTimersByTimeAsync(0);
+    void h.runner.steer(steerRequest(h.request, "more"));
+    await vi.advanceTimersByTimeAsync(100 + 9_999);
+    expect(h.create).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await h.runner.settled();
+    expect(h.prompt).toHaveBeenCalledOnce();
+    expect(h.create).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ outcome: "failed", errorReason: "turn_timeout" }),
+      3,
+    );
+    expect(h.logs).toContainEqual(
+      expect.objectContaining({ fields: expect.objectContaining({ code: "TURN_RETRY_STEER_UNSETTLED" }) }),
+    );
+  });
+
   it("reports the failure when the one retry also times out", async () => {
     const h = runnerHarness();
     h.request.runtime.budget = { maxDurationMs: 20 };

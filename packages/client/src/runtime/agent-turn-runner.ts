@@ -148,6 +148,9 @@ export interface AgentTurnFailure {
 /** Never throws and never awaited: a tracker that is slow or broken must not hold a turn open. */
 export type AgentTurnErrorReporter = (failure: AgentTurnFailure) => void;
 
+/** How long an automatic retry waits for steers still in flight before it gives up. */
+const STEER_SETTLE_TIMEOUT_MS = 10_000;
+
 interface RunningTurn {
   readonly abort: AbortController;
   readonly approvals: Map<string, string>;
@@ -160,6 +163,8 @@ interface RunningTurn {
   continuation?: Interruption;
   /** Negotiation is cleared on disconnect, and shutdown disconnects first: sample it at start. */
   readonly restartRetry: boolean;
+  /** Steers not yet answered; each one settles and never rejects. */
+  steering: Set<Promise<RuntimeImSteerResult>>;
   steers: readonly RuntimeImSteerRequest[];
 }
 
@@ -243,6 +248,7 @@ export class AgentTurnRunner {
       promise: Promise.resolve(),
       ...(options.continuation ? { continuation: options.continuation } : {}),
       restartRetry: this.#restartRetryAvailable(),
+      steering: new Set(),
       steers: options.steers ?? [],
     };
     turn.promise = this.#run(turn, abort.signal)
@@ -285,6 +291,18 @@ export class AgentTurnRunner {
       return steerResult(request, "deferred", "turn_not_running");
     }
 
+    const steering = this.#steerRunningTurn(turn, runtime, request, semanticHash);
+    turn.steering.add(steering);
+    void steering.finally(() => turn.steering.delete(steering));
+    return steering;
+  }
+
+  async #steerRunningTurn(
+    turn: RunningTurn,
+    runtime: AgentRuntime,
+    request: RuntimeImSteerRequest,
+    semanticHash: string,
+  ): Promise<RuntimeImSteerResult> {
     // Every acknowledged steer must be in the Turn's retry input, so capture it before steering. A
     // full input or a storage failure leaves the message with the Server to deliver after this Turn.
     const capture = await this.#retries.appendSteer(request).catch(() => "failed" as const);
@@ -297,7 +315,7 @@ export class AgentTurnRunner {
       await runtime.steer({
         expectedRunId: request.expectedTurnId,
         // Steer input assembles at the moment of the steer, so it carries its own UTC sample.
-        input: buildAgentInput(request, undefined, owner.request.runtime, new Date(this.#now())),
+        input: buildAgentInput(request, undefined, turn.owner.request.runtime, new Date(this.#now())),
       });
       await this.#bindingStore.recordSteer(request, semanticHash);
     } catch {
@@ -672,6 +690,15 @@ export class AgentTurnRunner {
   /** Durably spend the Turn's one automatic retry before it starts; false leaves the failure reported. */
   async #claimRetry(turn: RunningTurn): Promise<boolean> {
     const { agentId, sessionId } = turn.owner.request;
+    // No new steer joins once the attempt ended, but one in flight may still be acknowledged: its
+    // capture and receipt must be durable before the retry input is read.
+    if (!(await this.#steersSettled(turn))) {
+      this.#logger.warn(
+        { code: "TURN_RETRY_STEER_UNSETTLED", sessionId, turnId: turn.owner.turnId },
+        "Turn automatic retry refused: a steer is still in flight",
+      );
+      return false;
+    }
     const spent = await this.#retries.update(sessionId, turn.owner.turnId, spendRetry).catch(() => undefined);
     if (!spent) return false;
     if (spent.steers.length === 0) return true;
@@ -688,6 +715,19 @@ export class AgentTurnRunner {
     }
     turn.steers = acknowledgedSteers(spent.steers, binding);
     return true;
+  }
+
+  async #steersSettled(turn: RunningTurn): Promise<boolean> {
+    if (turn.steering.size === 0) return true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), STEER_SETTLE_TIMEOUT_MS);
+    });
+    try {
+      return await Promise.race([Promise.all(turn.steering).then(() => true), expired]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /**

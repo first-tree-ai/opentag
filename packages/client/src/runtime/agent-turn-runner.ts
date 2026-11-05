@@ -39,9 +39,10 @@ import {
   acknowledgedSteers,
   buildContinuationNotice,
   type Interruption,
-  MAX_AUTOMATIC_RETRIES,
   MAX_RECORDED_STEERS,
+  nextRetry,
   RATE_LIMIT_RETRY_DELAY_MS,
+  type RetryCount,
   recoverableFailure,
   type TurnRetryRecord,
   type TurnRetryStore,
@@ -124,8 +125,6 @@ export interface AgentTurnRunnerOptions {
   readonly sessionMessages?: {
     /** The message's input for a retry, built once the retry's credentials are prepared. */
     input(message: SessionMessageDeliveryRequestV3, processedAt: Date): AgentInput;
-    /** Durably spend the message's one retry; false means it cannot join this one and must fail. */
-    spendRetry(message: SessionMessageDeliveryRequestV3): Promise<boolean>;
     /** Resolves once the message's outcome is durable. */
     settle(message: SessionMessageDeliveryRequestV3, outcome: AgentSteerOutcome): Promise<void>;
   };
@@ -189,8 +188,6 @@ interface RunningTurn {
   arrivals: Map<string, number>;
   /** Set once the Turn's outcome is decided; a message acknowledged later follows its own receipt. */
   finalized: boolean;
-  /** Whether the current attempt is a retry or a resumed Turn, so no further retry can carry a message. */
-  retrying: boolean;
   /** Messages an earlier attempt held, replayed in the current attempt's input. */
   steers: readonly SteeredInput[];
 }
@@ -282,7 +279,6 @@ export class AgentTurnRunner {
       joining: new Map(),
       arrivals: new Map(),
       finalized: false,
-      retrying: options.continuation !== undefined,
       steers: options.steers ?? [],
     };
     turn.promise = this.#run(turn, abort.signal)
@@ -361,17 +357,14 @@ export class AgentTurnRunner {
   }
 
   /**
-   * Hold a place in this running Turn for a Session message about to be steered into it. `refused`
-   * leaves the message queued: the Turn is not running here, or it holds as many as it can carry.
+   * Hold a place in this running Turn for a Session message about to be steered into it. False leaves
+   * the message queued: the Turn is not running here, or it holds as many as it can carry.
    */
-  reserveSessionMessage(
-    message: SessionMessageDeliveryRequestV3,
-    turnId: string,
-  ): "refused" | "first_attempt" | "retry" {
+  reserveSessionMessage(message: SessionMessageDeliveryRequestV3, turnId: string): boolean {
     const turn = this.#turns.get(turnId);
-    if (!turn || turn.phase !== "running" || turn.owner.request.sessionId !== message.targetSessionId) return "refused";
+    if (!turn || turn.phase !== "running" || turn.owner.request.sessionId !== message.targetSessionId) return false;
     const held = turn.steers.filter((steer) => steer.type === "session:message:deliver").length;
-    if (held + turn.joined.size + turn.joining.size >= MAX_RECORDED_STEERS) return "refused";
+    if (held + turn.joined.size + turn.joining.size >= MAX_RECORDED_STEERS) return false;
     turn.arrivals.set(steeredInputId(message), turn.arrivals.size);
     let done!: () => void;
     const steering = new Promise<void>((resolve) => {
@@ -382,7 +375,7 @@ export class AgentTurnRunner {
     });
     turn.steering.add(steering);
     turn.joining.set(message.messageId, done);
-    return turn.retrying ? "retry" : "first_attempt";
+    return true;
   }
 
   /** The reserved message was steered: an in-place retry of this Turn now carries it. */
@@ -598,7 +591,8 @@ export class AgentTurnRunner {
       const attempt = await this.#attempt(turn, shutdownSignal, trace, interruption);
       planInput = attempt.turnPlanInput ?? planInput;
       const next = await this.#nextRetry(turn, attempt.completion, shutdownSignal);
-      const ready = next && next !== "deferred" && (await this.#retryDue(next, shutdownSignal));
+      // An in-place retry only follows a 429, which waits first; false when an orderly stop interrupts it.
+      const ready = next && next !== "deferred" && (await waitUnlessAborted(RATE_LIMIT_RETRY_DELAY_MS, shutdownSignal));
       if (next === "deferred" || ready === false) {
         this.#logger.info({ ...fields, reason: attempt.completion.errorReason }, "Turn left for retry after restart");
         await trace.finish();
@@ -610,12 +604,6 @@ export class AgentTurnRunner {
       this.#logger.info({ ...fields, reason: next.reason }, "Turn automatic retry started");
       interruption = next;
     }
-  }
-
-  /** A rate-limited retry waits first; false when an orderly stop interrupts the wait. */
-  #retryDue(next: Interruption, shutdownSignal: AbortSignal): Promise<boolean> {
-    if (next.reason !== "provider_rate_limited") return Promise.resolve(true);
-    return waitUnlessAborted(RATE_LIMIT_RETRY_DELAY_MS, shutdownSignal);
   }
 
   /** One provider attempt of the Turn; a retry runs it again with the continuation notice. */
@@ -740,7 +728,7 @@ export class AgentTurnRunner {
   }
 
   /**
-   * Decide whether a finished attempt gets the Turn's one automatic retry. Returns the recorded
+   * Decide what follows a finished attempt. Returns the recorded
    * interruption for an in-process retry, `deferred` when an orderly shutdown leaves the retry to
    * the restarted daemon, or undefined when the outcome is reported as is.
    */
@@ -757,7 +745,6 @@ export class AgentTurnRunner {
     const interruption: Interruption = { reason, at: new Date(this.#now()).toISOString() };
     let record: Awaited<ReturnType<TurnRetryStore["update"]>>;
     try {
-      // Recorded even with no retry left: it says what ended this attempt, for the Turn's joined messages.
       record = await this.#retries.update(turn.owner.request.sessionId, turn.owner.turnId, (current) => ({
         ...current,
         interruption,
@@ -765,8 +752,10 @@ export class AgentTurnRunner {
     } catch {
       return undefined;
     }
-    if (!record || record.retries >= MAX_AUTOMATIC_RETRIES) return undefined;
-    return restart ? "deferred" : interruption;
+    if (!record) return undefined;
+    // The restarted daemon counts a process interruption and decides whether the Turn resumes.
+    if (restart) return "deferred";
+    return nextRetry(retryCount(record), this.#now()).exhausted ? undefined : interruption;
   }
 
   /** Durably spend the Turn's one automatic retry before it starts; false leaves the failure reported. */
@@ -782,14 +771,21 @@ export class AgentTurnRunner {
       return false;
     }
     await this.#returnUnstartedSessionMessages(turn);
-    const spent = await this.#retries.update(sessionId, turn.owner.turnId, spendRetry).catch(() => undefined);
+    const spent = await this.#retries
+      .update(sessionId, turn.owner.turnId, (record) => spendRetry(record, this.#now()))
+      .catch(() => undefined);
     if (!spent) return false;
     const steers = spent.steers.length === 0 ? [] : await this.#acknowledgedImSteers(turn, spent);
     if (!steers) return false;
-    const messages = await this.#sessionMessagesForRetry(turn);
+    // Session messages share this Turn's count: every retry carries the ones an earlier attempt held
+    // and the ones that joined this attempt. They are not counted themselves.
+    const messages = [
+      ...turn.steers.filter((steer) => steer.type === "session:message:deliver"),
+      ...[...turn.joined.values()].map(({ message }) => message),
+    ];
+    turn.joined = new Map();
     const arrival = (input: SteeredInput) => turn.arrivals.get(steeredInputId(input)) ?? 0;
     turn.steers = [...steers, ...messages].sort((left, right) => arrival(left) - arrival(right));
-    turn.retrying = true;
     return true;
   }
 
@@ -819,20 +815,6 @@ export class AgentTurnRunner {
       turn.joined.delete(id);
       await this.#sessionMessages.settle(message, "not_started");
     }
-  }
-
-  /**
-   * The Session messages this retry carries. Each spends its own retry durably first, so a crash
-   * during this retry fails the message instead of running it again; one that cannot fails now.
-   */
-  async #sessionMessagesForRetry(turn: RunningTurn): Promise<SessionMessageDeliveryRequestV3[]> {
-    const carried: SessionMessageDeliveryRequestV3[] = [];
-    for (const { message } of turn.joined.values()) {
-      if (await this.#sessionMessages.spendRetry(message)) carried.push(message);
-      else await this.#sessionMessages.settle(message, "interrupted");
-    }
-    turn.joined = new Map();
-    return carried;
   }
 
   /** Every Session message that joined the Turn ends with it. */
@@ -1161,7 +1143,6 @@ const NO_SESSION_MESSAGES: NonNullable<AgentTurnRunnerOptions["sessionMessages"]
   input: () => {
     throw new Error("A Session message joined the Turn without an owner to build its input");
   },
-  spendRetry: async () => false,
   settle: async () => undefined,
 };
 
@@ -1172,9 +1153,17 @@ const NO_TURN_RETRIES: NonNullable<AgentTurnRunnerOptions["retries"]> = {
   update: async () => undefined,
 };
 
-function spendRetry(record: TurnRetryRecord): TurnRetryRecord {
+function retryCount(record: TurnRetryRecord): RetryCount {
+  return {
+    count: record.retries,
+    ...(record.retryStartedAt !== undefined ? { startedAt: record.retryStartedAt } : {}),
+  };
+}
+
+/** Only called once `nextRetry` said a retry is left, so this one starts now. */
+function spendRetry(record: TurnRetryRecord, now: number): TurnRetryRecord {
   const { interruption: _interruption, ...rest } = record;
-  return { ...rest, retries: record.retries + 1 };
+  return { ...rest, retries: nextRetry(retryCount(record), now).count, retryStartedAt: now };
 }
 
 /**

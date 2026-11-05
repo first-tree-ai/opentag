@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { SessionReconcileRequest, TurnReportRequest } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AdmissionController } from "../runtime/admission-controller.js";
+import { MAX_AUTOMATIC_RETRIES } from "../runtime/interruption-retry.js";
 import { MvpTurnReportRecovery } from "../runtime/mvp-turn-report-recovery.js";
 import {
   type DurableWorkKind,
@@ -705,7 +706,7 @@ describe("Real-scheduler Client durable-work contract", () => {
       );
       await inbox.settled();
       expect(persistence.edges).toContain("accepted -> running");
-      if (outcome === "retry-failed") expect(prompt).toHaveBeenCalledTimes(2);
+      if (outcome === "retry-failed") expect(prompt).toHaveBeenCalledTimes(1 + MAX_AUTOMATIC_RETRIES);
       if (outcome === "retry")
         expect(persistence.edges).toEqual(
           expect.arrayContaining(["running -> retryable", "retryable -> accepted", "running -> succeeded"]),

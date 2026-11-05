@@ -17,28 +17,24 @@ import {
 } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 import { deriveRuntimeKey } from "./runtime-paths.js";
-import type { SessionBindingStore } from "./session-binding-store.js";
 
 /**
- * The recoverable interruption classes. Everything else is a non-recoverable failure and is
- * reported as before, without an automatic retry.
+ * The interruptions that get an automatic retry. Reaching the Run's duration limit (`turn_timeout`) and
+ * every other failure are reported, without a retry.
  *
- * - `daemon_crash`: the daemon process died mid-Run (crash, kill, power loss); found on restart.
+ * - `daemon_crash`: the daemon stopped with the work in flight, found on restart (usually a crash or
+ *   power loss; a Session message steered into a Turn records nothing itself, so also a stop).
  * - `client_shutdown`: an orderly daemon stop (restart, upgrade) cancelled the Run.
- * - `turn_timeout`: the Run reached its maximum duration.
  * - `provider_rate_limited`: the model API answered HTTP 429.
  */
-export type InterruptionReason = "daemon_crash" | "client_shutdown" | "turn_timeout" | "provider_rate_limited";
+export type InterruptionReason = "daemon_crash" | "client_shutdown" | "provider_rate_limited";
 
-const REASONS = new Set<InterruptionReason>([
-  "daemon_crash",
-  "client_shutdown",
-  "turn_timeout",
-  "provider_rate_limited",
-]);
+const REASONS = new Set<InterruptionReason>(["daemon_crash", "client_shutdown", "provider_rate_limited"]);
 
-/** At most one automatic retry per accepted message. */
-export const MAX_AUTOMATIC_RETRIES = 1;
+/** At most this many automatic retries in a row. */
+export const MAX_AUTOMATIC_RETRIES = 2;
+/** A retry that ran at least this long resets the count. */
+export const RETRY_RESET_AFTER_MS = 5 * 60_000;
 /** A rate-limited Run waits this long before its automatic retry. */
 export const RATE_LIMIT_RETRY_DELAY_MS = 30_000;
 
@@ -46,6 +42,25 @@ export interface Interruption {
   reason: InterruptionReason;
   /** ISO time the interruption was observed; for a crash, the time it was detected on restart. */
   at: string;
+}
+
+/** The durable retry count of a Turn or of a Session message running on its own. */
+export interface RetryCount {
+  count: number;
+  /** When the latest retry started, in epoch milliseconds. */
+  startedAt?: number;
+}
+
+/**
+ * The count after an interruption at `now`. `exhausted` means no retry is left. It is recorded as one
+ * past the limit, so a later restart cannot revive work whose failure is already being reported.
+ */
+export function nextRetry(previous: RetryCount, now: number): RetryCount & { exhausted: boolean } {
+  if (previous.count > MAX_AUTOMATIC_RETRIES) return { ...previous, exhausted: true };
+  const ranLong = previous.startedAt !== undefined && now - previous.startedAt >= RETRY_RESET_AFTER_MS;
+  const count = ranLong ? 0 : previous.count;
+  if (count >= MAX_AUTOMATIC_RETRIES) return { ...previous, count: MAX_AUTOMATIC_RETRIES + 1, exhausted: true };
+  return { count: count + 1, startedAt: now, exhausted: false };
 }
 
 /** Maps a Run failure reason to a recoverable class, or undefined when it must not be retried. */
@@ -56,25 +71,23 @@ export function recoverableFailure(reason: string | undefined): InterruptionReas
 function describeInterruption(reason: InterruptionReason): string {
   switch (reason) {
     case "daemon_crash":
-      return "the OpenTag daemon stopped unexpectedly (process crash or power loss)";
+      return "the OpenTag daemon stopped (crash, power loss, restart, or upgrade)";
     case "client_shutdown":
       return "the OpenTag daemon was restarted or upgraded";
-    case "turn_timeout":
-      return "the turn reached its maximum run duration";
     case "provider_rate_limited":
       return "the model API rate-limited the request (HTTP 429)";
   }
 }
 
 /**
- * The continuation notice placed before the original input of an automatic retry. The Provider
+ * The continuation notice placed before the original input of a resumed or retried Run. The Provider
  * may or may not have persisted the interrupted turn, so the original input always follows and
  * may duplicate history.
  */
-export function buildContinuationNotice(interruption: Interruption, attempt = 1): string {
+export function buildContinuationNotice(interruption: Interruption): string {
   const when = interruption.reason === "daemon_crash" ? `at or before ${interruption.at}` : `at ${interruption.at}`;
   return [
-    `[OpenTag] Your previous turn was interrupted ${when} because ${describeInterruption(interruption.reason)} (automatic retry ${attempt}/${MAX_AUTOMATIC_RETRIES}).`,
+    `[OpenTag] Your previous turn was interrupted ${when} because ${describeInterruption(interruption.reason)} (automatic retry).`,
     "Before continuing, check your history and the work already done in this conversation, including replies already sent, then continue the original request.",
     "The original request follows; it may duplicate a message already in your history. Do not repeat replies or side effects that already happened.",
   ].join(" ");
@@ -95,8 +108,10 @@ export interface TurnRetryRecord {
   request: DirectImMessageDeliveryRequest;
   /** Messages steered into this Turn, re-included on retry. */
   steers: RuntimeImSteerRequest[];
-  /** Automatic retries already started for this Turn. */
+  /** Automatic retries in a row, for process interruptions and model 429 alike. */
   retries: number;
+  /** When the latest retry started, in epoch milliseconds; a long enough retry resets the count. */
+  retryStartedAt?: number;
   /** What ended the Turn's latest attempt; cleared when an attempt starts, so it never names an older one. */
   interruption?: Interruption;
 }
@@ -117,22 +132,6 @@ export class TurnRetryStore {
   constructor(home: string) {
     this.#root = resolveOpenTagHomeLayout(home).runtime;
     this.#directory = resolve(this.#root, "turn-retries");
-  }
-
-  /**
-   * What cut off each Session's unresolved Turn, for the Session messages that joined it. A record the
-   * binding does not hold as its unresolved Turn is left over from an earlier Turn and says nothing.
-   */
-  async interruptions(bindings: Pick<SessionBindingStore, "read">): Promise<ReadonlyMap<string, Interruption>> {
-    const interruptions = new Map<string, Interruption>();
-    for (const record of await this.list()) {
-      if (!record.interruption) continue;
-      const turn = (await bindings.read(record.agentId, record.sessionId).catch(() => undefined))?.unresolvedTurn;
-      if (turn?.turnId === record.turnId && turn.deliveryId === record.deliveryId) {
-        interruptions.set(record.sessionId, record.interruption);
-      }
-    }
-    return interruptions;
   }
 
   async list(): Promise<TurnRetryRecord[]> {
@@ -262,6 +261,9 @@ export function parseTurnRetryRecord(value: unknown): TurnRetryRecord {
   ) {
     throw new RuntimeStorageError("invalid", "Turn retry record is invalid");
   }
+  const retryStartedAt = Number.isSafeInteger(candidate.retryStartedAt)
+    ? (candidate.retryStartedAt as number)
+    : undefined;
   return {
     schemaVersion: 1,
     agentId: request.agentId,
@@ -271,6 +273,7 @@ export function parseTurnRetryRecord(value: unknown): TurnRetryRecord {
     request,
     steers,
     retries: candidate.retries as number,
+    ...(retryStartedAt !== undefined ? { retryStartedAt } : {}),
     ...(interruption
       ? { interruption: { reason: interruption.reason as InterruptionReason, at: interruption.at as string } }
       : {}),

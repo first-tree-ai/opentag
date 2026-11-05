@@ -97,6 +97,26 @@ it("moves the accepted Turn to the new connection and prepares the Session with 
   expect(await h.custody.recordTurn(report, h.context)).toBe("recorded");
 });
 
+it("takes the same accepted Turn over again after another restart, and accepts its report", async () => {
+  const h = await restarted();
+  expect(await h.service.recover(h.frame, h.context)).toEqual({ status: "scheduled" });
+  await h.service.settled();
+  expect(await h.owner()).toBe(h.context.instanceId);
+
+  // The resumed Turn was interrupted too: another restart recovers it under a newer connection.
+  const instanceId = randomUUID();
+  await h.client.database
+    .update(computers)
+    .set({ currentInstanceId: instanceId })
+    .where(eq(computers.id, h.context.computerId));
+  const context = { ...h.context, instanceId };
+  expect(await h.service.recover({ ...h.frame, requestId: randomUUID() }, context)).toEqual({ status: "scheduled" });
+  await h.service.settled();
+  expect(await h.owner()).toBe(instanceId);
+  expect(h.requestReconcile).toHaveBeenCalledTimes(2);
+  expect(await h.custody.recordTurn(turnReport(h.f, "completed"), context)).toBe("recorded");
+});
+
 it.each(["turn", "generation", "agent", "ended", "suspended-placement"] as const)(
   "refuses recovery with a mismatched %s and leaves custody untouched",
   async (mismatch) => {

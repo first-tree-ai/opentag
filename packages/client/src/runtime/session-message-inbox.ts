@@ -17,8 +17,9 @@ import {
   buildContinuationNotice,
   type Interruption,
   type InterruptionReason,
-  MAX_AUTOMATIC_RETRIES,
+  nextRetry,
   RATE_LIMIT_RETRY_DELAY_MS,
+  type RetryCount,
   recoverableFailure,
   sessionMessageKey,
 } from "./interruption-retry.js";
@@ -63,11 +64,8 @@ interface RememberedMessage {
  * that Run's in-place retry and settled through `SessionMessageInbox.settleJoined`.
  */
 export interface JoinableRuns {
-  /**
-   * Hold the message's place in the Run. `retry` means the Run is already a retry or a resumed Turn:
-   * it has no further retry to carry the message, so joining it spends the message's own.
-   */
-  reserve(message: SessionMessageDeliveryRequestV3, runId: string): "refused" | "first_attempt" | "retry";
+  /** Hold the message's place in the Run; false leaves it queued. */
+  reserve(message: SessionMessageDeliveryRequestV3, runId: string): boolean;
   release(message: SessionMessageDeliveryRequestV3, runId: string): void;
   steered(message: SessionMessageDeliveryRequestV3, runId: string, receipt: AgentSteerReceipt): void;
 }
@@ -120,8 +118,6 @@ export interface SessionMessageInboxOptions {
   steerRetryMs?: number;
   /** Without one, a steered message follows its steer receipt alone. */
   joinableRuns?: JoinableRuns;
-  /** Each Session's recorded Turn interruption, read at startup to name what cut off its joined messages. */
-  turnInterruptions?: () => Promise<ReadonlyMap<string, Interruption>>;
 }
 
 export interface SessionMessageRunOutcomeEvent {
@@ -159,9 +155,6 @@ export class SessionMessageInbox {
   readonly #runtimeManager: SessionMessageInboxOptions["runtimeManager"];
   readonly #steerRetryMs: number;
   readonly #joinableRuns: JoinableRuns | undefined;
-  readonly #turnInterruptions: SessionMessageInboxOptions["turnInterruptions"];
-  /** Refused steers whose spent retry could not yet be given back; written before they go further. */
-  readonly #refunds = new Map<string, DurableWorkRecord<SessionMessageDeliveryRequestV3>>();
   /** Messages in a joinable Run: how to settle each one when that Run ends. */
   readonly #joined = new Map<string, (outcome: AgentSteerOutcome) => Promise<void>>();
   readonly #queues = new Map<string, QueuedMessage[]>();
@@ -200,7 +193,6 @@ export class SessionMessageInbox {
     this.#runtimeManager = options.runtimeManager;
     this.#steerRetryMs = positive(options.steerRetryMs ?? 1_000, "steerRetryMs");
     this.#joinableRuns = options.joinableRuns;
-    this.#turnInterruptions = options.turnInterruptions;
     this.#readyPromise = this.#hydrate();
   }
 
@@ -450,18 +442,14 @@ export class SessionMessageInbox {
    * stays `running` until the joined Run settles and the runtime reports what became of the input.
    */
   async #steerIntoRunningTurn(sessionId: string, next: QueuedMessage): Promise<boolean> {
-    if (!(await this.#refundSettled(next))) return false;
     const target = this.#steerTarget(sessionId);
     if (!target) return false;
     const { runId } = target;
-    const place = this.#joinableRuns?.reserve(next.request, runId) ?? "first_attempt";
-    if (place === "refused") return false;
+    if (this.#joinableRuns && !this.#joinableRuns.reserve(next.request, runId)) return false;
     const key = sessionMessageKey(next.request);
-    const accepted = this.#records.get(key);
-    let record = accepted;
+    let record = this.#records.get(key);
     let receipt: AgentSteerReceipt;
     try {
-      if (place === "retry" && record) record = await this.#spendRetryForJoin(record);
       receipt = await target.runtime.steer({
         expectedRunId: runId,
         // A message redelivered after an interruption says so: the Agent may have handled it already.
@@ -471,14 +459,10 @@ export class SessionMessageInbox {
         ),
       });
     } catch {
-      // Not handed over: the message stays queued, with the retry it had back on disk before it runs.
-      if (accepted && record !== accepted) {
-        await this.#persist(accepted).catch(() => this.#refunds.set(key, accepted));
-      }
       this.#joinableRuns?.release(next.request, runId);
       return false;
     }
-    if (record) record = await this.#recordSteered(record);
+    if (record) record = await this.#recordSteered(record, runId);
     this.#remember(key, { hash: next.hash, status: "accepted" });
     if (this.#joinableRuns) {
       if (record) this.#joinRun(record, next.hash);
@@ -487,20 +471,6 @@ export class SessionMessageInbox {
       this.#trackSteered(record, next.hash, receipt.outcome);
     }
     return true;
-  }
-
-  /** Whether the message holds no spent retry to give back: it is not steered again until then. */
-  async #refundSettled(next: QueuedMessage): Promise<boolean> {
-    const key = sessionMessageKey(next.request);
-    const refund = this.#refunds.get(key);
-    if (!refund) return true;
-    try {
-      await this.#persist(refund);
-      this.#refunds.delete(key);
-      return true;
-    } catch {
-      return false;
-    }
   }
 
   /** The Session's running Run, when its runtime can take input now and its target is known. */
@@ -523,10 +493,17 @@ export class SessionMessageInbox {
 
   async #recordSteered(
     record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
+    runId: string,
   ): Promise<DurableWorkRecord<SessionMessageDeliveryRequestV3>> {
     try {
       // A restart before the joined Run settles recovers a `running` record like any interrupted Run.
-      return await this.#transition(record, "running", { interruption: undefined });
+      // It shares the Run's retry count from here; if that Run ends first it runs on its own, afresh.
+      return await this.#transition(record, "running", {
+        attempts: 0,
+        interruption: undefined,
+        joinedRunId: runId,
+        retryStartedAt: undefined,
+      });
     } catch {
       // The record stays `accepted` on disk, so a restart redelivers it; this process still settles it.
       this.#logger.warn(
@@ -535,22 +512,6 @@ export class SessionMessageInbox {
       );
       return record;
     }
-  }
-
-  /** Joining a Run with no further retry uses the message's own, written before the provider has it. */
-  async #spendRetryForJoin(
-    record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
-  ): Promise<DurableWorkRecord<SessionMessageDeliveryRequestV3>> {
-    if (record.attempts >= MAX_AUTOMATIC_RETRIES) return record;
-    const spent = { ...record, attempts: record.attempts + 1, updatedAt: this.#now() };
-    // The message is steered regardless. At worst another crash gives it one more retry (PM decision, #1301).
-    await this.#persist(spent).catch(() => {
-      this.#logger.warn(
-        { code: "SESSION_MESSAGE_RETRY_SPEND_FAILED", messageId: record.payload.messageId },
-        "Session message retry could not be recorded before joining a retry or resumed Turn",
-      );
-    });
-    return spent;
   }
 
   /** What the Session's live execution needs to name this message's target, if it can. */
@@ -568,18 +529,25 @@ export class SessionMessageInbox {
   }
 
   /**
-   * Durably spend the message's one automatic retry for the in-place retry of the Run it joined, so
-   * a crash during that retry reports it instead of running it again. False when it has none left.
+   * A Turn's retries ran out at startup: the messages steered into it share its count, so they fail with
+   * it instead of running again.
    */
-  async spendJoinedRetry(message: SessionMessageDeliveryRequestV3): Promise<boolean> {
-    const record = this.#records.get(sessionMessageKey(message));
-    if (record && record.attempts >= MAX_AUTOMATIC_RETRIES) return false;
-    if (!record) return true;
-    try {
-      await this.#persist({ ...record, attempts: record.attempts + 1, updatedAt: this.#now() });
-      return true;
-    } catch {
-      return false;
+  async failJoinedRun(runId: string): Promise<void> {
+    for (const record of [...this.#records.values()]) {
+      if (record.joinedRunId !== runId || record.status !== "retryable") continue;
+      const sessionId = record.payload.targetSessionId;
+      const queue = this.#queues.get(sessionId) ?? [];
+      const position = queue.findIndex((next) => next.request.messageId === record.payload.messageId);
+      if (position < 0) continue;
+      const [next] = queue.splice(position, 1);
+      this.#queuedTotal -= 1;
+      if (queue.length === 0) this.#queues.delete(sessionId);
+      await this.#failTerminally(
+        record,
+        (next as QueuedMessage).hash,
+        "runtime",
+        interruptedFailure(record.payload.requestId, "daemon_crash"),
+      );
     }
   }
 
@@ -638,7 +606,7 @@ export class SessionMessageInbox {
     const status = outcome === "processed" ? "succeeded" : "accepted";
     let next = record;
     try {
-      next = await this.#transition(record, status);
+      next = await this.#transition(record, status, { joinedRunId: undefined });
     } catch {
       this.#logger.warn(
         { code: "SESSION_MESSAGE_STEER_PERSISTENCE_FAILED", messageId, outcome },
@@ -656,9 +624,7 @@ export class SessionMessageInbox {
   ): Promise<void> {
     const runId = `session-message-${next.request.messageId}`;
     const key = `${next.request.targetSessionId}:${next.request.messageId}`;
-    // A retry still to be given back is given back by the `running` write below, before the Run starts.
-    let current = this.#refunds.get(key) ?? this.#records.get(key);
-    this.#refunds.delete(key);
+    let current = this.#records.get(key);
     let credentialPrepared = false;
     let preparedExecutionId: string | undefined;
     let turnPlanInput: ProviderCliTurnPlanPrepareInput | undefined;
@@ -682,7 +648,9 @@ export class SessionMessageInbox {
     try {
       // The interruption this Run retries is for its notice only; what ends this Run is recorded anew.
       const continuation = current?.interruption;
-      if (current) current = await this.#transition(current, "running", { interruption: undefined });
+      if (current) {
+        current = await this.#transition(current, "running", { interruption: undefined, joinedRunId: undefined });
+      }
       await this.#reconciler.withAgentLock(next.request.agentId, async () => {
         this.#reconciler.setActivity(sessionId, {
           phase: "running",
@@ -851,11 +819,9 @@ export class SessionMessageInbox {
   async #hydrate(): Promise<void> {
     if (!this.#persistence) return;
     const records = await this.#persistence.list<SessionMessageDeliveryRequestV3>("session-message");
-    // A joined message's own record does not say why its Run stopped; the Turn's does. Without it, a crash.
-    const interruptions = await this.#turnInterruptions?.().catch(() => undefined);
     const unpublished: DurableWorkRecord<SessionMessageDeliveryRequestV3>[] = [];
     for (const stored of records) {
-      const pending = await this.#hydrateRecord(stored, interruptions);
+      const pending = await this.#hydrateRecord(stored);
       if (pending) unpublished.push(pending);
     }
     for (const record of unpublished) {
@@ -867,7 +833,6 @@ export class SessionMessageInbox {
   /** Restore one durable record; returns it when its terminal outcome still needs a report. */
   async #hydrateRecord(
     stored: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
-    interruptions: ReadonlyMap<string, Interruption> | undefined,
   ): Promise<DurableWorkRecord<SessionMessageDeliveryRequestV3> | undefined> {
     const request = SessionMessageDeliveryRequestV3Schema.safeParse(stored.payload);
     if (!request.success) return undefined;
@@ -892,16 +857,17 @@ export class SessionMessageInbox {
       return record.outcomeReport === "pending" ? record : undefined;
     }
     if (record.status === "running") {
-      // The daemon stopped while this message's Run was in flight: a crash leaves no reason behind,
-      // an orderly stop records `client_shutdown`. It gets the message's one automatic retry.
-      const known = record.interruption ?? interruptions?.get(record.payload.targetSessionId);
+      // The daemon stopped while this message's Run was in flight: a crash leaves no reason behind, an
+      // orderly stop of its own Run records `client_shutdown`.
       const interruption: Interruption = {
-        reason: recoverableFailure(known?.reason) ?? "daemon_crash",
-        at: known?.at ?? new Date(this.#now()).toISOString(),
+        reason: recoverableFailure(record.interruption?.reason) ?? "daemon_crash",
+        at: record.interruption?.at ?? new Date(this.#now()).toISOString(),
       };
-      if (record.attempts >= MAX_AUTOMATIC_RETRIES) {
+      // A message steered into a Turn shares that Turn's count, so it is not counted here.
+      const retry = record.joinedRunId ? undefined : nextRetry(messageRetryCount(record), this.#now());
+      if (retry?.exhausted) {
         const failure = interruptedFailure(record.payload.requestId, interruption.reason);
-        record = await this.#transition({ ...record, attempts: record.attempts + 1, lastError: failure }, "failed", {
+        record = await this.#transition({ ...record, attempts: retry.count, lastError: failure }, "failed", {
           nextAttemptAt: undefined,
           ...this.#pendingOutcomeReport(),
         });
@@ -910,7 +876,7 @@ export class SessionMessageInbox {
       }
       record = {
         ...record,
-        attempts: record.attempts + 1,
+        ...(retry ? messageRetryFields(retry) : {}),
         interruption,
         status: "retryable",
         nextAttemptAt: this.#now(),
@@ -969,20 +935,20 @@ export class SessionMessageInbox {
     this.#emitFailure(failure);
     const now = this.#now();
     if (this.#abort.signal.aborted) {
-      // An orderly daemon stop: keep the record `running` with the reason, so the restarted daemon
-      // runs the message's one automatic retry (or reports it when the retry is already spent).
+      // An orderly daemon stop: keep the record `running` with the reason, for the restarted daemon.
       const interruption: Interruption = { reason: "client_shutdown", at: new Date(now).toISOString() };
       await this.#persist({ ...record, interruption, updatedAt: now }).catch(() => undefined);
       return;
     }
-    const reason = timedOut ? "turn_timeout" : recoverableFailure(failure.code);
-    if (reason && record.attempts < MAX_AUTOMATIC_RETRIES) {
+    const reason = timedOut ? undefined : recoverableFailure(failure.code);
+    const retry = reason && nextRetry(messageRetryCount(record), now);
+    if (reason && retry && !retry.exhausted) {
       const interruption: Interruption = { reason, at: new Date(now).toISOString() };
       const delay = reason === "provider_rate_limited" ? this.#rateLimitRetryDelayMs : 0;
       let retryable: DurableWorkRecord<SessionMessageDeliveryRequestV3>;
       try {
         retryable = await this.#transition(
-          { ...record, attempts: record.attempts + 1, lastError: failure, interruption, updatedAt: now },
+          { ...record, ...messageRetryFields(retry), lastError: failure, interruption, updatedAt: now },
           "retryable",
           { nextAttemptAt: now + delay },
         );
@@ -1116,6 +1082,17 @@ function terminalRunOutcome(record: DurableWorkRecord<SessionMessageDeliveryRequ
 } {
   const code = record.lastError?.code ?? "retry_exhausted";
   return { outcome: code === SESSION_MESSAGE_TURN_TIMEOUT_CODE ? "timed_out" : "failed", code };
+}
+
+function messageRetryCount(record: DurableWorkRecord<SessionMessageDeliveryRequestV3>): RetryCount {
+  return {
+    count: record.attempts,
+    ...(record.retryStartedAt !== undefined ? { startedAt: record.retryStartedAt } : {}),
+  };
+}
+
+function messageRetryFields(retry: RetryCount): { attempts: number; retryStartedAt?: number } {
+  return { attempts: retry.count, ...(retry.startedAt !== undefined ? { retryStartedAt: retry.startedAt } : {}) };
 }
 
 function interruptedFailure(requestId: string, reason: InterruptionReason): DurableFailure {

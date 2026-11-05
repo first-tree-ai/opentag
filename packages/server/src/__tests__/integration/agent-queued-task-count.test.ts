@@ -86,7 +86,11 @@ async function fixture(receiveMode: "mention_only" | "all_message") {
   assert(binding);
   const bindingId = binding.id;
 
-  const inbox = new ImMessageInbox(client.database, { now: () => NOW });
+  let inboxNow = NOW;
+  const inbox = new ImMessageInbox(client.database, { now: () => inboxNow });
+  const receivedAt = (at: Date) => {
+    inboxNow = at;
+  };
   let sequence = 0;
   const send = async (message: Send) => {
     sequence += 1;
@@ -166,7 +170,7 @@ async function fixture(receiveMode: "mention_only" | "all_message") {
       queuedTaskCount: activity.queuedTaskCount ?? 0,
     };
   };
-  return { bindingId, send, accept, reportOn, deliveriesOf, read, inbox };
+  return { bindingId, send, accept, reportOn, deliveriesOf, read, inbox, receivedAt };
 }
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
@@ -428,3 +432,28 @@ it("writes the direct retention the ambient rule infers continuity from", async 
     await f.inbox.close();
   }
 }, 30_000);
+
+// Work waiting behind an offline Computer is what this count exists to show, so a recency window on the read
+// must not drop any of these. Direct messages wait for seven days from when the Server received them.
+it.each([
+  { name: "for 13 hours", receivedAgoMs: 13 * 60 * 60 * 1_000, occurredAgoMs: 13 * 60 * 60 * 1_000 },
+  {
+    name: "for almost the whole direct window",
+    receivedAgoMs: 167 * 60 * 60 * 1_000,
+    occurredAgoMs: 167 * 60 * 60 * 1_000,
+  },
+  { name: "after the provider delivered it nine days late", receivedAgoMs: 0, occurredAgoMs: 216 * 60 * 60 * 1_000 },
+])(
+  "still counts a direct message waiting $name",
+  async ({ receivedAgoMs, occurredAgoMs }) => {
+    const f = await fixture("mention_only");
+    try {
+      f.receivedAt(new Date(NOW.getTime() - receivedAgoMs));
+      await f.send({ id: "a", occurredAt: new Date(NOW.getTime() - occurredAgoMs) });
+      expect(await f.read()).toEqual({ statuses: ["queued"], queuedTaskCount: 1 });
+    } finally {
+      await f.inbox.close();
+    }
+  },
+  30_000,
+);

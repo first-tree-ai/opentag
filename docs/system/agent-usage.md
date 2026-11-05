@@ -120,18 +120,24 @@ The two running reads use `im_message_deliveries_unreported_accepted_idx` — pa
 reported_at is null` — as their access path. Without it the reads join every Session of a binding to reach an answer,
 which is proportional to the Agent's history rather than to the Turns actually outstanding.
 
-The queued read takes separate statements inside the same snapshot. It first reads the listed Agents' live channel and
-thread Sessions through `sessions_active_channel_unique` and `sessions_active_thread_unique`, so Internal Sessions are
-not read when these indexes are chosen. It then reads those Sessions' pending and unreported deliveries with
-`session_id = any(...)`; the ids travel as one array parameter, since one bind parameter per id stops at the protocol's
-limit. A third statement qualifies any pending `ambient` deliveries; it only runs when there are some. The Task and its
-counts are assembled in Server memory. The planner picks the second statement's index. It may go through
-`im_message_deliveries_pending_idx` and filter, and then it reads other Accounts' pending rows.
+The queued read is one statement in the same snapshot. It reads the listed Agents' live channel and thread Sessions
+through `sessions_active_channel_unique` and `sessions_active_thread_unique`, so Internal Sessions are not read when
+these indexes are chosen, and probes each Session's waiting deliveries through `im_message_deliveries_overflow_idx`,
+whose leading columns reach them directly, however long the Session's history is. The planner may instead hash the
+Sessions against `im_message_deliveries_pending_idx`, which reads other Accounts' pending rows. Running Sessions come
+from `im_message_deliveries_unreported_accepted_idx`, which is also read across Accounts but holds only outstanding Turns.
+
+The read has no recency window. Why: a direct message waits seven days from when the Server received it, so a shorter
+window hides exactly the backlog behind an offline Computer this count exists to show. `received_at`, which sets that
+deadline, has no usable index, and `occurred_at` is the provider's clock, so a late event can be older than any window.
+At thousands of Sessions a window also saves nothing that matters: reaching recent messages reads the binding's whole
+message index.
 
 There is no hard limit on an Account's Agents or an Agent's Sessions. Channel and thread Sessions stay live until their
 binding is disabled or their Agent is transferred, and nothing deletes them, so this read grows with the conversations
 the listed Agents have taken part in. In `all_message` mode every new thread in a group adds a Session. That is accepted
-at current scale: thousands of Sessions per Account stay far inside the 500 ms single-query budget. [Issue
+at current scale: thousands of Sessions per Account stay far inside the 500 ms single-query budget, though the candidate
+Sessions keep growing with conversation history. [Issue
 #1319](https://github.com/first-tree-ai/opentag/issues/1319) tracks the delivery key and index that would replace the
 read, and when to add them.
 

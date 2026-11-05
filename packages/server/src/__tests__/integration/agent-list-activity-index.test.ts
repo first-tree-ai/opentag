@@ -85,10 +85,7 @@ describe("Agent list unreported-accepted index", () => {
         runningTaskCount: 1,
       });
 
-      // The queued read asks about the same deliveries Session by Session, so it is not one of these two.
-      const unreported = queries.filter(
-        (entry) => entry.query.includes('"reported_at" is null') && !entry.query.includes("= any("),
-      );
+      const unreported = queries.filter((entry) => entry.query.includes('"reported_at" is null'));
       expect(unreported.length).toBeGreaterThan(0);
       await client.sql.unsafe("set enable_seqscan = off");
       for (const statement of unreported) {
@@ -101,7 +98,7 @@ describe("Agent list unreported-accepted index", () => {
     }
   }, 60_000);
 
-  it("reads the queued count from the listed Agents' live Sessions, then their deliveries", async () => {
+  it("reads the queued count from the listed Agents' live Sessions, in one statement", async () => {
     const client = createDatabaseClient(testDatabase.databaseUrl);
     const queries: { query: string; params: unknown[] }[] = [];
     try {
@@ -168,25 +165,22 @@ describe("Agent list unreported-accepted index", () => {
         state: "idle",
         queuedTaskCount: 1,
       });
-      const liveSessionReads = queries.filter((entry) => entry.query.includes(`"kind" = 'channel'`));
-      const pendingReads = queries.filter((entry) => entry.query.includes("= any($1::uuid[])"));
-      expect(liveSessionReads).toHaveLength(1);
-      expect(pendingReads).toHaveLength(1);
+      const queuedReads = queries.filter((entry) => entry.query.includes("live as materialized"));
+      expect(queuedReads).toHaveLength(1);
 
-      // Both steps run under the default planner. The first reads the live Sessions through their partial
-      // indexes and no Internal Session; the array parameter carries every one of them to the second.
-      const [liveRead] = liveSessionReads;
-      if (!liveRead) throw new Error("Live Session read missing");
+      // Under the default planner the read reaches the live Sessions through their partial indexes and reads
+      // no Internal Session.
+      const [queuedRead] = queuedReads;
+      if (!queuedRead) throw new Error("Queued read missing");
       const [explained] = await client.sql.unsafe(
-        `explain (analyze, format json) ${liveRead.query}`,
-        liveRead.params as never[],
+        `explain (analyze, format json) ${queuedRead.query}`,
+        queuedRead.params as never[],
       );
       const plan = explained?.["QUERY PLAN"];
       // The listed Account's other fixture Agents add at most a few live Sessions.
       expect(rowsRead(plan?.[0]?.Plan as PlanNode, "sessions")).toBeLessThan(IDLE_SESSIONS + 10);
       expect(JSON.stringify(plan)).toContain("sessions_active_channel_unique");
       expect(JSON.stringify(plan)).toContain("sessions_active_thread_unique");
-      expect(String(pendingReads[0]?.params[0]).split(",").length).toBeGreaterThan(IDLE_SESSIONS);
 
       // The neighbour's backlog is one Session, so it is one queued Task however deep it is.
       expect((await noisy.agents.listForAccount(neighbour.id)).agents[0]?.activity).toEqual({

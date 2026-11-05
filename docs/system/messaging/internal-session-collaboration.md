@@ -241,7 +241,8 @@ are not retried, and the five-attempt inbox retry is gone. The retried Run start
 original message. A retry after a model HTTP 429 stays in place: the Run keeps holding the Session through the backoff, so
 no other work overtakes it. The creator receives the notice only when the message finally fails, so the superior hears about
 a timeout directly. After a daemon restart, each interrupted Session's message runs once the Server has prepared the Session
-again, before the Session's queued messages. See
+again, before the Session's queued messages. A replay of a message the inbox still holds, including one waiting for its retry,
+is answered `accepted` and changes nothing. See
 [Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work).
 
 ### Session messages steered into an IM Turn

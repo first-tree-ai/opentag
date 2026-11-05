@@ -439,6 +439,41 @@ describe("the retry of a Session message Run", () => {
     expect(inbox.getState(second.messageId)?.status).toBe("succeeded");
   });
 
+  it("answers a replay during the backoff without queueing the message or resetting its count", async () => {
+    const { attempts, runtime, steers } = harness();
+    const inbox = makeInbox(runtime, { rateLimitRetryDelayMs: 200 });
+    const first = conversation().message("first");
+    await inbox.accept(first);
+    (await started(attempts, 1)).finish(rateLimited);
+    await vi.waitFor(() => expect(inbox.getState(first.messageId)?.status).toBe("retryable"));
+    await expect(inbox.accept({ ...first, requestId: randomUUID() })).resolves.toMatchObject({ status: "accepted" });
+    expect(inbox.queuedCount).toBe(0);
+    expect(inbox.getState(first.messageId)).toMatchObject({ status: "retryable", attempts: 1 });
+    const retry = await started(attempts, 2);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(steers).toHaveLength(0);
+    retry.finish();
+    await inbox.settled();
+    expect(attempts).toHaveLength(2);
+    expect(inbox.getState(first.messageId)?.status).toBe("succeeded");
+  });
+
+  it("answers a replay after a restart without resetting the count of the message it recovered", async () => {
+    const first = conversation().message("first");
+    const persistence = new MemoryRuntimeDurabilityStore();
+    await persistence.write(record(first, "running", { attempts: 1 }));
+    const { attempts, runtime } = harness();
+    const inbox = makeInbox(runtime, { persistence });
+    await inbox.ready();
+    const resumed = await started(attempts, 1);
+    await expect(inbox.accept({ ...first, requestId: randomUUID() })).resolves.toMatchObject({ status: "accepted" });
+    expect(inbox.getState(first.messageId)?.attempts).toBe(2);
+    expect(inbox.queuedCount).toBe(0);
+    resumed.finish();
+    await inbox.settled();
+    expect(attempts).toHaveLength(1);
+  });
+
   it("fails every message with the Run when the shared count runs out", async () => {
     const { attempts, runtime, steers } = harness();
     const outcomes: SessionMessageRunOutcomeEvent[] = [];

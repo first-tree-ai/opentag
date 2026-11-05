@@ -260,7 +260,11 @@ export class SessionMessageInbox {
     if (remembered.status === "rejected" || remembered.status === "dead-letter" || remembered.status === "failed") {
       return deliveryResult(request, "rejected", remembered.reason ?? "provider_unavailable");
     }
-    return remembered.status === "retryable" ? undefined : deliveryResult(request, "accepted");
+    // A refusal leaves no record, so its replay is evaluated again. A record means the inbox still holds the
+    // message: a replay while it waits for a retry must not queue it again or reset its count.
+    return remembered.status === "retryable" && !this.#records.has(key)
+      ? undefined
+      : deliveryResult(request, "accepted");
   }
 
   #acceptanceReason(request: SessionMessageDeliveryRequestV3): InputRejectReason | undefined {

@@ -66,16 +66,24 @@ Delivery responsibility is two-stage, split at the Client's acceptance:
 What the Client does today with accepted work that does not complete on a
 Local Computer:
 
-- An IM Turn is never rerun. A daemon shutdown reports it `cancelled /
-  client_shutdown`; a Turn found unresolved after a restart reports `unknown /
-  turn_state_unknown`; a Run past its budget reports `failed / turn_timeout`.
-  All of these carry `executionEffects: may_have_occurred`, and the Server
-  shows the person an [error card](messaging/im-feedback.md).
+- An IM Turn is never rerun, and the Server shows the person an
+  [error card](messaging/im-feedback.md) for its terminal report. A daemon
+  shutdown reports it `cancelled / client_shutdown` with `executionEffects:
+  may_have_occurred`. A Turn found unresolved after a restart reports `unknown /
+  turn_state_unknown` with `may_have_occurred` when it was starting or running,
+  and `failed / provider_start_failed` with `not_started` when it never reached
+  the Provider. A timeout reports `failed / turn_timeout`: with
+  `may_have_occurred` once the Provider has started, and with `not_started` when
+  the request was already past its deadline before the Provider started (see
+  [IM delivery claim queries](messaging/im-delivery-claim.md)).
 - A Session message follows the inbox retry policy: a failure not classified
   `never` retries with backoff up to five attempts within 15 minutes, and a
-  message whose Run was in flight at a restart runs again. `turn_timeout` and an
-  interrupted steer are terminal and produce a
-  [Run outcome notice](messaging/internal-session-collaboration.md#run-outcome-notices).
+  message whose Run was in flight at a restart runs again unless that budget is
+  already exhausted, in which case it is dead-lettered. `turn_timeout` and an
+  interrupted steer are terminal. Each terminal failure, including a
+  dead-letter, produces a
+  [Run outcome notice](messaging/internal-session-collaboration.md#run-outcome-notices)
+  for an internal Session's creator.
 
 ### Automatic retry of accepted work
 

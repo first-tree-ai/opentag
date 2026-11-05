@@ -45,9 +45,13 @@ is not delivery: the durable record stays `running` until that Turn's Run settle
 completed; returns to the FIFO when the provider reports that it never started the input (Claude Code `command_lifecycle`),
 so the message is delivered again as its own Run; and fails permanently without replay when the provider may have started
 it but the Run failed or was cancelled. Codex and Pi report no per-input start, so their acknowledged steer counts as
-possibly started. A restart while the record is `running` recovers it like any interrupted Session message Run. A message
-that arrives while the target runs another Session message, or whose runtime cannot steer, still waits in the FIFO. The
-Cloud Session message path is unchanged.
+possibly started. A restart while the record is `running` recovers it like any interrupted Session message Run.
+Steering applies only while the target is busy with a Turn the inbox does not own, such as an IM Turn: each target
+Session has one serial inbox drain, and that drain awaits its own Session message Run until the Run settles and releases
+admission, so a message that arrives while the target runs another Session message waits in the FIFO and then starts as
+its own Run. A message also waits, re-checking about once per second, while the busy runtime is not yet `running` with an
+active Run, cannot steer, or (for a visible Session) has no IM outbox context. The Cloud Runner path never steers a
+Session message: it queues behind the active Turn.
 
 Within each existing create/send transaction, authorization locks the source Agent, binding,
 Sessions in ID order (`FOR NO KEY UPDATE`), placements in Session ID order, then Computers in ID order.
@@ -194,9 +198,14 @@ horizontal replicas require an explicit cross-instance owner-routing design befo
 > **Planned — not yet implemented.** Tracking: #1303
 
 A parent Session may send a message to its child at any time, and the message is steered into the child's running Turn
-instead of waiting for that Turn to end. This extends steering to a child that is running a Session-message Run (normally
-the parent's task), which today waits in the FIFO, and to Cloud Sessions. The child still reports completion, failure, or
-timeout to the parent, and the parent decides what to do next.
+instead of waiting for that Turn to end. Two cases are not covered today and are what remains:
+
+- On a Local Computer, a child running a Session message Run (normally the parent's task) does not take steered input,
+  because the target's serial inbox drain is blocked on that Run; the next message waits in the FIFO.
+- On Cloud, no Session message is steered; it waits for the active Turn to end.
+
+The existing steer outcome rules (`processed`, `not_started`, `interrupted`) apply unchanged. The child still reports
+completion, failure, or timeout to the parent, and the parent decides what to do next.
 
 ## Stopping a parent stops its children
 

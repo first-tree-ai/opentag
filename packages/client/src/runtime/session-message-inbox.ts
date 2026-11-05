@@ -45,6 +45,7 @@ import {
   formatScheduleLocalTime,
   normalizeScheduleTaskPreview,
 } from "./scheduled-message-input.js";
+import { SessionMessageRun, sessionMessageOfRun, sessionMessageRunId } from "./session-message-run.js";
 import type { SessionReconciler } from "./session-reconciler.js";
 import type { SessionRuntimeManager } from "./session-runtime-manager.js";
 
@@ -167,6 +168,9 @@ export class SessionMessageInbox {
   readonly #retryTimers = new Map<string, { cancel(): void }>();
   /** Steered messages waiting for the Run they joined to settle. */
   readonly #steerSettlements = new Set<Promise<void>>();
+  /** This inbox's own Runs, which messages steer into like any joinable Run. */
+  readonly #messageRuns = new Map<string, SessionMessageRun>();
+  readonly #runningMessages = new Set<Promise<void>>();
   readonly #readyPromise: Promise<void>;
   #queuedTotal = 0;
 
@@ -274,12 +278,10 @@ export class SessionMessageInbox {
     key: string,
     hash: string,
   ): Promise<SessionMessageDeliveryResult> {
-    const queue = this.#queues.get(request.targetSessionId) ?? [];
-    if (queue.length >= this.#maxQueuedPerSession || this.#queuedTotal >= this.#maxQueuedTotal) {
+    const queued = this.#queues.get(request.targetSessionId)?.length ?? 0;
+    if (queued >= this.#maxQueuedPerSession || this.#queuedTotal >= this.#maxQueuedTotal) {
       return deliveryResult(request, "rejected", "client_busy");
     }
-    queue.push({ request, hash });
-    this.#queues.set(request.targetSessionId, queue);
     this.#queuedTotal += 1;
     try {
       await this.#persist({
@@ -292,7 +294,6 @@ export class SessionMessageInbox {
         updatedAt: this.#now(),
       });
     } catch {
-      queue.pop();
       this.#queuedTotal -= 1;
       this.#records.delete(key);
       this.#remember(key, { hash, status: "rejected", reason: "provider_unavailable" });
@@ -302,6 +303,10 @@ export class SessionMessageInbox {
       );
       return deliveryResult(request, "rejected", "provider_unavailable");
     }
+    // Queued only once durable: a drain already running takes it at once, and needs its record to track it.
+    const queue = this.#queues.get(request.targetSessionId) ?? [];
+    queue.push({ request, hash });
+    this.#queues.set(request.targetSessionId, queue);
     this.#remember(key, { hash, status: "accepted" });
     this.#startDrain(request.targetSessionId);
     return deliveryResult(request, "accepted");
@@ -334,7 +339,10 @@ export class SessionMessageInbox {
   }
 
   async settled(): Promise<void> {
-    await Promise.allSettled([...this.#drains.values(), ...this.#steerSettlements]);
+    // A drain does not wait for the Run it starts, and either can lead to more work.
+    while (this.#drains.size + this.#runningMessages.size + this.#steerSettlements.size > 0) {
+      await Promise.allSettled([...this.#drains.values(), ...this.#runningMessages, ...this.#steerSettlements]);
+    }
   }
 
   /**
@@ -408,19 +416,39 @@ export class SessionMessageInbox {
         this.#awaitingPreparation.add(sessionId);
         return;
       }
-      let reservation = this.#admission.reserve(sessionId, next.request.agentId, { acceptedWork: true });
-      while (!reservation.accepted) {
-        // A busy Session usually has a running Turn: the message joins it instead of waiting for it to end.
-        if (await this.#steerIntoRunningTurn(sessionId, next)) break;
-        await this.#waitForReleaseOrSteerRetry();
-        reservation = this.#admission.reserve(sessionId, next.request.agentId, { acceptedWork: true });
+      const reservation = this.#admission.reserve(sessionId, next.request.agentId, { acceptedWork: true });
+      if (reservation.accepted) {
+        this.#dequeue(sessionId, next);
+        reservation.reservation.markActive();
+        // The drain goes on while the Run is in flight, so the next message can steer into it.
+        void this.#runMessage(sessionId, next, reservation.reservation).catch(() => undefined);
+        continue;
       }
-      queue?.shift();
-      this.#queuedTotal -= 1;
-      if (!reservation.accepted) continue;
-      reservation.reservation.markActive();
-      await this.#runMessage(sessionId, next, reservation.reservation);
+      // A busy Session usually has a running Run: the message joins it instead of waiting for it to end.
+      if (await this.#steerIntoRunningTurn(sessionId, next)) this.#dequeue(sessionId, next);
+      else await this.#waitForReleaseOrSteerRetry();
     }
+  }
+
+  #dequeue(sessionId: string, message: QueuedMessage): void {
+    const queue = this.#queues.get(sessionId);
+    const position = queue?.indexOf(message) ?? -1;
+    if (position < 0) return;
+    queue?.splice(position, 1);
+    this.#queuedTotal -= 1;
+  }
+
+  /** Held while a Run is working, for `settled`; a Run waiting out a retry's backoff lets go of it. */
+  #markRunBusy(): () => void {
+    let done!: () => void;
+    const busy = new Promise<void>((resolve) => {
+      done = () => {
+        this.#runningMessages.delete(busy);
+        resolve();
+      };
+    });
+    this.#runningMessages.add(busy);
+    return done;
   }
 
   async #waitForReleaseOrSteerRetry(): Promise<void> {
@@ -445,7 +473,8 @@ export class SessionMessageInbox {
     const target = this.#steerTarget(sessionId);
     if (!target) return false;
     const { runId } = target;
-    if (this.#joinableRuns && !this.#joinableRuns.reserve(next.request, runId)) return false;
+    const joinable = this.#messageRuns.get(runId) ?? this.#joinableRuns;
+    if (joinable && !joinable.reserve(next.request, runId)) return false;
     const key = sessionMessageKey(next.request);
     let record = this.#records.get(key);
     let receipt: AgentSteerReceipt;
@@ -459,14 +488,14 @@ export class SessionMessageInbox {
         ),
       });
     } catch {
-      this.#joinableRuns?.release(next.request, runId);
+      joinable?.release(next.request, runId);
       return false;
     }
     if (record) record = await this.#recordSteered(record, runId);
     this.#remember(key, { hash: next.hash, status: "accepted" });
-    if (this.#joinableRuns) {
+    if (joinable) {
       if (record) this.#joinRun(record, next.hash);
-      this.#joinableRuns.steered(next.request, runId, receipt);
+      joinable.steered(next.request, runId, receipt);
     } else if (record) {
       this.#trackSteered(record, next.hash, receipt.outcome);
     }
@@ -617,12 +646,46 @@ export class SessionMessageInbox {
     if (outcome === "not_started") this.#enqueue(next.payload, hash);
   }
 
+  /**
+   * One Run, with its automatic retries in place. The Session stays held through a retry's backoff, so
+   * the next message steers into the retry rather than starting ahead of it.
+   */
   async #runMessage(
     sessionId: string,
     next: QueuedMessage,
     reservation: { release(): void; markActive(): void },
   ): Promise<void> {
-    const runId = `session-message-${next.request.messageId}`;
+    const run = new SessionMessageRun(sessionMessageRunId(next.request.messageId), (message, outcome) =>
+      this.settleJoined(message, outcome),
+    );
+    this.#messageRuns.set(run.id, run);
+    let notBusy = this.#markRunBusy();
+    try {
+      let attempt = await this.#attemptRun(sessionId, next, run);
+      while (typeof attempt === "object") {
+        notBusy();
+        await this.#waitForRetry(attempt.retry);
+        notBusy = this.#markRunBusy();
+        if (this.#abort.signal.aborted) return;
+        await this.#readyForRetry(attempt.retry);
+        run.startRetry();
+        attempt = await this.#attemptRun(sessionId, next, run);
+      }
+      // After a stop, the `running` records of these messages are recovered on the next start instead.
+      if (!this.#abort.signal.aborted) await run.settle(attempt === "completed");
+    } finally {
+      this.#messageRuns.delete(run.id);
+      await this.#reconciler.withAgentLock(next.request.agentId, async () => reservation.release());
+      notBusy();
+    }
+  }
+
+  async #attemptRun(
+    sessionId: string,
+    next: QueuedMessage,
+    run: SessionMessageRun,
+  ): Promise<"completed" | "ended" | { retry: DurableWorkRecord<SessionMessageDeliveryRequestV3> }> {
+    const runId = run.id;
     const key = `${next.request.targetSessionId}:${next.request.messageId}`;
     let current = this.#records.get(key);
     let credentialPrepared = false;
@@ -633,6 +696,7 @@ export class SessionMessageInbox {
     let timer: { cancel(): void } | undefined;
     let runSignal: AbortSignal | undefined;
     let executionSignal: AbortSignal | undefined;
+    let outcome: "completed" | "ended" | { retry: DurableWorkRecord<SessionMessageDeliveryRequestV3> } = "ended";
     const ensureRunSignal = (): AbortSignal => {
       if (runSignal) return runSignal;
       timer = this.#timeoutScheduler.schedule(
@@ -681,6 +745,7 @@ export class SessionMessageInbox {
       await runtime.waitForIdle();
       phase = "prompt";
       ensureRunSignal().throwIfAborted();
+      const context = turnContext(sessionKind, outboxContext);
       const result = await runtime.prompt({
         runId,
         allowedUnixSockets,
@@ -690,14 +755,14 @@ export class SessionMessageInbox {
          * time, never the claim or enqueue time. It is prompt input only: the durable record,
          * the semantic hash, and the runtime configuration never carry a current-time fact.
          */
-        input: withContinuation(
-          buildSessionMessageInput(
-            next.request,
-            this.#cliCommand,
-            turnContext(sessionKind, outboxContext),
-            new Date(this.#now()),
+        input: withCarriedMessages(
+          withContinuation(
+            buildSessionMessageInput(next.request, this.#cliCommand, context, new Date(this.#now())),
+            continuation,
           ),
-          continuation,
+          run.carried.map((message) =>
+            buildSessionMessageInput(message, this.#cliCommand, context, new Date(this.#now())),
+          ),
         ),
         signal: ensureRunSignal(),
         ...sessionMessageLaunchConfiguration(prepared, runtime),
@@ -707,11 +772,12 @@ export class SessionMessageInbox {
         await this.#transition(current, "succeeded");
         this.#remember(key, { hash: next.hash, status: "succeeded" });
       }
+      outcome = "completed";
     } catch (error) {
       // Only the Run budget timer counts as a timeout; daemon stop and revocation keep their
       // existing recovery semantics.
       const timedOut = timeout.signal.aborted && !this.#abort.signal.aborted && executionSignal?.aborted !== true;
-      if (current) await this.#handleFailure(current, next.hash, phase, error, timedOut);
+      if (current) outcome = await this.#attemptFailed(current, next.hash, run, phase, error, timedOut);
     } finally {
       timer?.cancel();
       await this.#cleanupTurnPlan(turnPlanInput);
@@ -720,9 +786,23 @@ export class SessionMessageInbox {
       }
       await this.#reconciler.withAgentLock(next.request.agentId, async () => {
         this.#reconciler.clearActivity(sessionId, runId);
-        reservation.release();
       });
     }
+    return outcome;
+  }
+
+  async #attemptFailed(
+    record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
+    hash: string,
+    run: SessionMessageRun,
+    phase: string,
+    error: unknown,
+    timedOut: boolean,
+  ): Promise<"ended" | { retry: DurableWorkRecord<SessionMessageDeliveryRequestV3> }> {
+    // On a stop the restarted daemon recovers the messages, so nothing here waits for them.
+    const steersSettled = this.#abort.signal.aborted || (await run.endAttempt());
+    const retry = await this.#handleFailure(record, hash, phase, error, timedOut, steersSettled);
+    return retry ? { retry } : "ended";
   }
 
   #requirePreparedOutbox(
@@ -820,9 +900,19 @@ export class SessionMessageInbox {
     if (!this.#persistence) return;
     const records = await this.#persistence.list<SessionMessageDeliveryRequestV3>("session-message");
     const unpublished: DurableWorkRecord<SessionMessageDeliveryRequestV3>[] = [];
+    const waiting: Array<{ record: DurableWorkRecord<SessionMessageDeliveryRequestV3>; hash: string }> = [];
     for (const stored of records) {
-      const pending = await this.#hydrateRecord(stored);
+      const pending = await this.#hydrateRecord(stored, waiting);
       if (pending) unpublished.push(pending);
+    }
+    // Only now, with every record restored: a message fails with the Run it joined instead of running.
+    for (const { record, hash } of waiting) {
+      if (this.#joinedRunFailed(record)) {
+        const reason = recoverableFailure(record.interruption?.reason) ?? "daemon_crash";
+        await this.#failTerminally(record, hash, "runtime", interruptedFailure(record.payload.requestId, reason));
+      } else {
+        this.#enqueue(record.payload, hash);
+      }
     }
     for (const record of unpublished) {
       const { outcome, code } = terminalRunOutcome(record);
@@ -830,9 +920,20 @@ export class SessionMessageInbox {
     }
   }
 
-  /** Restore one durable record; returns it when its terminal outcome still needs a report. */
+  #joinedRunFailed(record: DurableWorkRecord<SessionMessageDeliveryRequestV3>): boolean {
+    const runMessageId = record.joinedRunId && sessionMessageOfRun(record.joinedRunId);
+    if (!runMessageId) return false;
+    const status = this.#records.get(`${record.payload.targetSessionId}:${runMessageId}`)?.status;
+    return status === "failed" || status === "dead-letter";
+  }
+
+  /**
+   * Restore one durable record; returns it when its terminal outcome still needs a report. A record
+   * that can still run goes on `waiting`, in the durable FIFO order.
+   */
   async #hydrateRecord(
     stored: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
+    waiting: Array<{ record: DurableWorkRecord<SessionMessageDeliveryRequestV3>; hash: string }>,
   ): Promise<DurableWorkRecord<SessionMessageDeliveryRequestV3> | undefined> {
     const request = SessionMessageDeliveryRequestV3Schema.safeParse(stored.payload);
     if (!request.success) return undefined;
@@ -885,7 +986,7 @@ export class SessionMessageInbox {
       await this.#persist(record);
     }
     this.#remember(key, { hash, status: "retryable" });
-    this.#enqueue(record.payload, hash);
+    waiting.push({ record, hash });
     return undefined;
   }
 
@@ -899,7 +1000,11 @@ export class SessionMessageInbox {
       );
       return;
     }
-    queue.push({ request, hash });
+    // A message coming back from a Run keeps its place ahead of those accepted after it.
+    const acceptedAt = (messageId: string) => this.#records.get(`${request.targetSessionId}:${messageId}`)?.acceptedAt;
+    const accepted = acceptedAt(request.messageId) ?? Number.POSITIVE_INFINITY;
+    const later = queue.findIndex((candidate) => (acceptedAt(candidate.request.messageId) ?? 0) > accepted);
+    queue.splice(later < 0 ? queue.length : later, 0, { request, hash });
     this.#queues.set(request.targetSessionId, queue);
     this.#queuedTotal += 1;
     this.#startDrain(request.targetSessionId);
@@ -922,7 +1027,8 @@ export class SessionMessageInbox {
     phase: string,
     error: unknown,
     timedOut = false,
-  ): Promise<void> {
+    mayRetry = true,
+  ): Promise<DurableWorkRecord<SessionMessageDeliveryRequestV3> | undefined> {
     const reported = durableFailureFromUnknown(
       record.payload.requestId,
       phase,
@@ -938,9 +1044,9 @@ export class SessionMessageInbox {
       // An orderly daemon stop: keep the record `running` with the reason, for the restarted daemon.
       const interruption: Interruption = { reason: "client_shutdown", at: new Date(now).toISOString() };
       await this.#persist({ ...record, interruption, updatedAt: now }).catch(() => undefined);
-      return;
+      return undefined;
     }
-    const reason = timedOut ? undefined : recoverableFailure(failure.code);
+    const reason = timedOut || !mayRetry ? undefined : recoverableFailure(failure.code);
     const retry = reason && nextRetry(messageRetryCount(record), now);
     if (reason && retry && !retry.exhausted) {
       const interruption: Interruption = { reason, at: new Date(now).toISOString() };
@@ -957,13 +1063,13 @@ export class SessionMessageInbox {
           { code: "SESSION_MESSAGE_PERSISTENCE_FAILED", messageId: record.payload.messageId, status: "retryable" },
           "Session message retry state could not be persisted",
         );
-        return;
+        return undefined;
       }
       this.#remember(record.key, { hash, status: "retryable" });
-      this.#scheduleRetry(retryable, hash);
-      return;
+      return retryable;
     }
     await this.#failTerminally(record, hash, phase, failure, timedOut);
+    return undefined;
   }
 
   /**
@@ -1045,19 +1151,27 @@ export class SessionMessageInbox {
     }
   }
 
-  #scheduleRetry(record: DurableWorkRecord<SessionMessageDeliveryRequestV3>, hash: string): void {
-    if (this.#abort.signal.aborted || this.#retryTimers.has(record.key)) return;
+  /** Waits out the retry's backoff; a stop ends the wait and leaves the record for the next start. */
+  #waitForRetry(record: DurableWorkRecord<SessionMessageDeliveryRequestV3>): Promise<void> {
+    if (this.#abort.signal.aborted) return Promise.resolve();
     const delay = Math.max(0, (record.nextAttemptAt ?? this.#now()) - this.#now());
-    const timer = this.#scheduler.schedule(delay, () => {
-      this.#retryTimers.delete(record.key);
-      if (this.#abort.signal.aborted) return;
-      const current = this.#records.get(record.key);
-      if (current?.status !== "retryable") return;
-      void this.#transition(current, "accepted")
-        .then(() => this.#enqueue(current.payload, hash))
-        .catch(() => undefined);
+    return new Promise((resolve) => {
+      const timer = this.#scheduler.schedule(delay, () => {
+        this.#retryTimers.delete(record.key);
+        resolve();
+      });
+      this.#retryTimers.set(record.key, {
+        cancel() {
+          timer.cancel();
+          resolve();
+        },
+      });
     });
-    this.#retryTimers.set(record.key, timer);
+  }
+
+  /** A failed write costs nothing here: the attempt writes `running` next and fails if it cannot. */
+  async #readyForRetry(record: DurableWorkRecord<SessionMessageDeliveryRequestV3>): Promise<void> {
+    await this.#transition(record, "accepted").catch(() => undefined);
   }
 
   async #persist(record: DurableWorkRecord<SessionMessageDeliveryRequestV3>): Promise<void> {
@@ -1127,6 +1241,21 @@ function withContinuation(input: AgentInput, interruption: DurableWorkRecord["in
   if (!interruption || !reason) return input;
   return {
     items: [{ type: "text", text: buildContinuationNotice({ reason, at: interruption.at }) }, ...input.items],
+  };
+}
+
+/** The messages an earlier attempt of this Run held follow the Run's own input, in order. */
+function withCarriedMessages(input: AgentInput, carried: readonly AgentInput[]): AgentInput {
+  if (carried.length === 0) return input;
+  return {
+    items: [
+      ...input.items,
+      {
+        type: "text",
+        text: "Messages that arrived during the interrupted turn, in order (they may also be in your history):",
+      },
+      ...carried.flatMap((message) => message.items),
+    ],
   };
 }
 

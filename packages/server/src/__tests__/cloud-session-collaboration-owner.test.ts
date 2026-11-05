@@ -2295,6 +2295,32 @@ describe("CloudSessionCollaborationOwner", () => {
     expect(message?.lastOutcome).toBe("unknown");
   });
 
+  it("reports a Runner client_busy refusal as unreachable with that cause", async () => {
+    const fixture = await seedCloudSession();
+    const messageId = randomUUID();
+    await insertMessage(messageId, fixture);
+    const stack = makeStack(fixture);
+    await attachRunner(stack, fixture, {
+      onFrame: (frame) => {
+        if (frame.type !== "session:message:run") return;
+        const connection = stack.fence.connectionForSandbox(fixture.sandboxId);
+        if (!connection) return;
+        void stack.owner.handleReceived(connection, {
+          messageId: frame.message.messageId,
+          reason: "client_busy",
+          requestId: frame.requestId,
+          status: "rejected",
+          type: "session:message:received",
+        });
+      },
+    });
+
+    await expect(stack.owner.deliver(await deliveryInput(fixture, messageId), allowAdmission)).resolves.toEqual({
+      status: "unreachable",
+      code: "client_busy",
+    });
+  });
+
   it("correlates a same-input retry by its new request identity and settles against it", async () => {
     const fixture = await seedCloudSession();
     const messageId = randomUUID();

@@ -60,10 +60,16 @@ the same Session after the daemon is back, its input begins with
 
 ## Steered Session messages
 
-1. While a visible Session's IM Turn is working, send it a Session message, then kill and restart the daemon.
-2. Expected: the Turn continues, and the message is steered into it again with the notice that it may already have been
+1. Leave `OPENTAG_RUNTIME_CREDENTIAL_MODE` unset (the default Local credential mode). While a visible Session's IM Turn
+   is working, send it a Session message. Expected: the message steers into that same Turn before it ends, using the
+   existing channel or thread outbox target; it does not wait to start a separate callback Run. Cover both channel and
+   thread Sessions with Feishu and Slack.
+2. Kill and restart the daemon while the steered message is in the Turn.
+3. Expected: the Turn continues, and the message is steered into it again with the notice that it may already have been
    handled. If that Turn fails, the message fails with it and does not run again; no creator notice follows, because the
    target is a visible Session.
+4. Repeat with explicit `proxy` credential mode and verify the same steer and outbox target. A Server that does not
+   negotiate credential grant v2 must refuse visible callback delivery; missing context never invents a target.
 
 ## Not retried
 

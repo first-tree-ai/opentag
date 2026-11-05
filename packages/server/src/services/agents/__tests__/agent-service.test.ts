@@ -21,7 +21,6 @@ import { CloudCallStore } from "../../cloud-call-store.js";
 import { CloudUsageService } from "../../cloud-usage.js";
 import { EffectiveRuntimeSnapshotAssembler } from "../../runtime-config/effective-runtime-snapshot-assembler.js";
 import { DEFAULT_AGENT_RUNTIME_CONFIG } from "../../runtime-config/index.js";
-import { TaskService } from "../../tasks/index.js";
 import { AGENT_USAGE_EXCEPTION_BATCH_SIZE } from "../agent-usage.js";
 import { AGENT_ACTIVITY_READ_LIMIT, AGENT_ACTIVITY_RECOVERY_WINDOW_HOURS, AgentService } from "../index.js";
 
@@ -792,77 +791,90 @@ describe("AgentService", () => {
     expect(listed.agents[0]?.activity).toEqual({ state: "idle" });
   });
 
-  describe("where the count differs from the Task list by design", () => {
-    const taskStatuses = async (accountId: string) =>
-      (await new TaskService(unitDatabase.database, { now: () => NOW }).list(accountId, { limit: 10 })).tasks.map(
-        (task) => task.status,
-      );
+  it("reads a running Session with a pending follow-up as running, not queued", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id, "running-queue-agent");
+    const binding = await createBinding(created.id);
+    const channel = await createSession(binding.id);
+    await createSessionDelivery(channel, { state: "accepted" });
+    await createSessionDelivery(channel, { state: "pending" });
+    // A request waiting in another conversation is queued, and both counts are reported together.
+    await createSessionDelivery(await createSession(binding.id), { state: "pending" });
 
-    it("counts a pending follow-up in a running Session, which the list reads as running", async () => {
-      const { bootstrap, computer, service } = await fixture();
-      const created = await createAgent(service, bootstrap.userId, computer.id, "running-queue-agent");
-      const channel = await createSession((await createBinding(created.id)).id);
-      await createSessionDelivery(channel, { state: "accepted" });
-      await createSessionDelivery(channel, { state: "pending" });
-
-      expect(await taskStatuses(bootstrap.userId)).toEqual(["running"]);
-      expect((await service.listForAccount(bootstrap.userId)).agents[0]?.activity).toEqual({
-        state: "working",
-        startedAt: NOW.toISOString(),
-        runningTaskCount: 1,
-        queuedTaskCount: 1,
-      });
-    });
-
-    it("counts each Session of a private chat, which the list reads as one Task", async () => {
-      const { bootstrap, computer, service } = await fixture();
-      const created = await createAgent(service, bootstrap.userId, computer.id, "private-queue-agent");
-      const binding = await createBinding(created.id);
-      const privateSessions = await unitDatabase.database
-        .insert(sessions)
-        .values([
-          { imBindingId: binding.id, channelId: "private", conversationKind: "dm", kind: "channel", createdAt: NOW },
-          {
-            imBindingId: binding.id,
-            channelId: "private",
-            conversationKind: "dm",
-            kind: "thread",
-            threadKey: "private-thread",
-            createdAt: NOW,
-          },
-        ])
-        .returning();
-      for (const session of privateSessions) await createSessionDelivery(session, { state: "pending" });
-
-      expect(await taskStatuses(bootstrap.userId)).toEqual(["queued"]);
-      expect((await service.listForAccount(bootstrap.userId)).agents[0]?.activity).toEqual({
-        state: "idle",
-        queuedTaskCount: 2,
-      });
-    });
-
-    it("leaves out an unaddressed follow-up in a finished Task, which the list reads as queued", async () => {
-      const { bootstrap, computer, service } = await fixture();
-      const created = await createAgent(service, bootstrap.userId, computer.id, "follow-up-queue-agent");
-      const thread = await createSession((await createBinding(created.id)).id, undefined, { kind: "thread" });
-      await createSessionDelivery(thread, { state: "accepted" });
-      await unitDatabase.database
-        .update(imMessageDeliveries)
-        .set({ reportedAt: NOW, turnReport: report(), resultHash: "a".repeat(64) })
-        .where(eq(imMessageDeliveries.sessionId, thread.id));
-      await createSessionDelivery(thread, { state: "pending", attention: "ambient" });
-
-      expect(await taskStatuses(bootstrap.userId)).toEqual(["queued"]);
-      expect((await service.listForAccount(bootstrap.userId)).agents[0]?.activity).toEqual({ state: "idle" });
+    expect((await service.listForAccount(bootstrap.userId)).agents[0]?.activity).toEqual({
+      state: "working",
+      startedAt: NOW.toISOString(),
+      runningTaskCount: 1,
+      queuedTaskCount: 1,
     });
   });
 
-  it("does not count queued Tasks of an inactive binding", async () => {
+  it("reads a private chat as one Task across its Sessions", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id, "private-queue-agent");
+    const binding = await createBinding(created.id);
+    const [channel, thread] = await unitDatabase.database
+      .insert(sessions)
+      .values([
+        { imBindingId: binding.id, channelId: "private", conversationKind: "dm", kind: "channel", createdAt: NOW },
+        {
+          imBindingId: binding.id,
+          channelId: "private",
+          conversationKind: "dm",
+          kind: "thread",
+          threadKey: "private-thread",
+          createdAt: NOW,
+        },
+      ])
+      .returning();
+    if (!channel || !thread) throw new Error("Private chat fixture was not created");
+    await createSessionDelivery(channel, { state: "pending" });
+    await createSessionDelivery(thread, { state: "pending" });
+    expect((await service.listForAccount(bootstrap.userId)).agents[0]?.activity).toEqual({
+      state: "idle",
+      queuedTaskCount: 1,
+    });
+
+    // A Turn running in either Session makes the whole private chat running.
+    await createSessionDelivery(thread, { state: "accepted" });
+    expect((await service.listForAccount(bootstrap.userId)).agents[0]?.activity).toEqual({
+      state: "working",
+      startedAt: NOW.toISOString(),
+      runningTaskCount: 1,
+    });
+  });
+
+  it("counts an overheard message in a Session somebody addressed, as the Task list does", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const created = await createAgent(service, bootstrap.userId, computer.id, "follow-up-queue-agent");
+    const thread = await createSession((await createBinding(created.id)).id, undefined, { kind: "thread" });
+    await createSessionDelivery(thread, { state: "accepted" });
+    await unitDatabase.database
+      .update(imMessageDeliveries)
+      .set({ reportedAt: NOW, turnReport: report(), resultHash: "a".repeat(64) })
+      .where(eq(imMessageDeliveries.sessionId, thread.id));
+    await createSessionDelivery(thread, { state: "pending", attention: "ambient" });
+
+    expect((await service.listForAccount(bootstrap.userId)).agents[0]?.activity).toEqual({
+      state: "idle",
+      queuedTaskCount: 1,
+    });
+  });
+
+  it("counts queued Tasks until the binding is disabled", async () => {
     const { bootstrap, computer, service } = await fixture();
     const created = await createAgent(service, bootstrap.userId, computer.id, "disabled-queue-agent");
     const binding = await createBinding(created.id);
     const session = await createSession(binding.id);
     await createSessionDelivery(session, { state: "pending" });
+    expect((await service.listForAccount(bootstrap.userId)).agents[0]?.activity).toEqual({
+      state: "idle",
+      queuedTaskCount: 1,
+    });
+    await unitDatabase.database
+      .update(imBindings)
+      .set({ status: "reauthorization_required" })
+      .where(eq(imBindings.id, binding.id));
     expect((await service.listForAccount(bootstrap.userId)).agents[0]?.activity).toEqual({
       state: "idle",
       queuedTaskCount: 1,

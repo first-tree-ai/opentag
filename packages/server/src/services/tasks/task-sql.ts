@@ -162,7 +162,7 @@ function threadRootAddressed(sessionAlias: string): SQL {
  * outside `isExecution`, whose negated comparison is null for it (every writer that expires a
  * delivery records a reason).
  */
-function liveDeliveryExists(sessionAlias: string, attention: "direct" | "ambient"): SQL {
+export function liveDeliveryExists(sessionAlias: string, attention: "direct" | "ambient"): SQL {
   const s = sql.raw(sessionAlias);
   const probe = (bounds: SQL) => sql`exists (
     select 1

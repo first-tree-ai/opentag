@@ -5,6 +5,8 @@ import { imMessageDeliveries, imMessages } from "../../db/schema/index.js";
 
 export const IM_QUEUE_WARNING_COUNT = 10;
 export const IM_QUEUE_CAPACITY = 99;
+/** How long an overheard message waits, unless it continues a direct request. */
+export const AMBIENT_TTL_MS = 24 * 60 * 60 * 1000;
 export const IM_DUPLICATE_PENDING_REASON = "duplicate_pending";
 
 export async function repeatsPendingInput(

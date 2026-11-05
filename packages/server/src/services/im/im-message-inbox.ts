@@ -15,11 +15,15 @@ import { imAttrs, outcomeAttrs, setActiveSpanAttributes, withSpan } from "../../
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import { SessionService } from "../sessions/index.js";
 import { createImFeedbackTarget } from "./im-feedback-store.js";
-import { IM_DUPLICATE_PENDING_REASON, IM_QUEUE_CAPACITY, repeatsPendingInput } from "./im-queue-policy.js";
+import {
+  AMBIENT_TTL_MS,
+  IM_DUPLICATE_PENDING_REASON,
+  IM_QUEUE_CAPACITY,
+  repeatsPendingInput,
+} from "./im-queue-policy.js";
 import { threadRootExternalId } from "./provider-thread-context.js";
 
 const DIRECT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const AMBIENT_TTL_MS = 24 * 60 * 60 * 1000;
 const TASK_TITLE_GENERATION_TIMEOUT_MS = 3_000;
 
 type DeliveryAttention = "direct" | "ambient";

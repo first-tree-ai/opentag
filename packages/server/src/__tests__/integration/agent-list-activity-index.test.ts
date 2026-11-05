@@ -85,7 +85,10 @@ describe("Agent list unreported-accepted index", () => {
         runningTaskCount: 1,
       });
 
-      const unreported = queries.filter((entry) => entry.query.includes('"reported_at" is null'));
+      // The queued read asks about the same deliveries Session by Session, so it is not one of these two.
+      const unreported = queries.filter(
+        (entry) => entry.query.includes('"reported_at" is null') && !entry.query.includes("= any("),
+      );
       expect(unreported.length).toBeGreaterThan(0);
       await client.sql.unsafe("set enable_seqscan = off");
       for (const statement of unreported) {
@@ -98,7 +101,7 @@ describe("Agent list unreported-accepted index", () => {
     }
   }, 60_000);
 
-  it("reads the queued count in two steps from the listed Agents' live Sessions", async () => {
+  it("reads the queued count from the listed Agents' live Sessions, then their deliveries", async () => {
     const client = createDatabaseClient(testDatabase.databaseUrl);
     const queries: { query: string; params: unknown[] }[] = [];
     try {

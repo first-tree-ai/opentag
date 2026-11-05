@@ -17,6 +17,7 @@ import {
 } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 import { deriveRuntimeKey } from "./runtime-paths.js";
+import type { SessionBindingStore } from "./session-binding-store.js";
 
 /**
  * The recoverable interruption classes. Everything else is a non-recoverable failure and is
@@ -96,7 +97,7 @@ export interface TurnRetryRecord {
   steers: RuntimeImSteerRequest[];
   /** Automatic retries already started for this Turn. */
   retries: number;
-  /** Set when a recoverable interruption was recorded but the retry has not started yet. */
+  /** What ended the Turn's latest attempt; cleared when an attempt starts, so it never names an older one. */
   interruption?: Interruption;
 }
 
@@ -118,11 +119,18 @@ export class TurnRetryStore {
     this.#directory = resolve(this.#root, "turn-retries");
   }
 
-  /** The recorded interruption of each Session's Turn: what its joined Session messages were cut off by. */
-  async interruptions(): Promise<ReadonlyMap<string, Interruption>> {
+  /**
+   * What cut off each Session's unresolved Turn, for the Session messages that joined it. A record the
+   * binding does not hold as its unresolved Turn is left over from an earlier Turn and says nothing.
+   */
+  async interruptions(bindings: Pick<SessionBindingStore, "read">): Promise<ReadonlyMap<string, Interruption>> {
     const interruptions = new Map<string, Interruption>();
     for (const record of await this.list()) {
-      if (record.interruption) interruptions.set(record.sessionId, record.interruption);
+      if (!record.interruption) continue;
+      const turn = (await bindings.read(record.agentId, record.sessionId).catch(() => undefined))?.unresolvedTurn;
+      if (turn?.turnId === record.turnId && turn.deliveryId === record.deliveryId) {
+        interruptions.set(record.sessionId, record.interruption);
+      }
     }
     return interruptions;
   }

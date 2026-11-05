@@ -211,7 +211,8 @@ export class InterruptedWorkRecovery implements InterruptedTurnResumer {
       at: new Date(this.#now()).toISOString(),
     };
     // Spend the retry before anything runs: a second interruption is reported, never retried again.
-    const spent: TurnRetryRecord = { ...record, retries: record.retries + 1, interruption };
+    const { interruption: _ended, ...attempt } = record;
+    const spent: TurnRetryRecord = { ...attempt, retries: record.retries + 1 };
     try {
       await this.#options.retries.write(spent);
     } catch {

@@ -160,6 +160,8 @@ export class SessionMessageInbox {
   readonly #steerRetryMs: number;
   readonly #joinableRuns: JoinableRuns | undefined;
   readonly #turnInterruptions: SessionMessageInboxOptions["turnInterruptions"];
+  /** Refused steers whose spent retry could not yet be given back; written before they go further. */
+  readonly #refunds = new Map<string, DurableWorkRecord<SessionMessageDeliveryRequestV3>>();
   /** Messages in a joinable Run: how to settle each one when that Run ends. */
   readonly #joined = new Map<string, (outcome: AgentSteerOutcome) => Promise<void>>();
   readonly #queues = new Map<string, QueuedMessage[]>();
@@ -448,6 +450,7 @@ export class SessionMessageInbox {
    * stays `running` until the joined Run settles and the runtime reports what became of the input.
    */
   async #steerIntoRunningTurn(sessionId: string, next: QueuedMessage): Promise<boolean> {
+    if (!(await this.#refundSettled(next))) return false;
     const target = this.#steerTarget(sessionId);
     if (!target) return false;
     const { runId } = target;
@@ -468,8 +471,10 @@ export class SessionMessageInbox {
         ),
       });
     } catch {
-      // Not handed over: the message stays queued, with the retry it had.
-      if (accepted && record !== accepted) await this.#persist(accepted).catch(() => undefined);
+      // Not handed over: the message stays queued, with the retry it had back on disk before it runs.
+      if (accepted && record !== accepted) {
+        await this.#persist(accepted).catch(() => this.#refunds.set(key, accepted));
+      }
       this.#joinableRuns?.release(next.request, runId);
       return false;
     }
@@ -482,6 +487,20 @@ export class SessionMessageInbox {
       this.#trackSteered(record, next.hash, receipt.outcome);
     }
     return true;
+  }
+
+  /** Whether the message holds no spent retry to give back: it is not steered again until then. */
+  async #refundSettled(next: QueuedMessage): Promise<boolean> {
+    const key = sessionMessageKey(next.request);
+    const refund = this.#refunds.get(key);
+    if (!refund) return true;
+    try {
+      await this.#persist(refund);
+      this.#refunds.delete(key);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /** The Session's running Run, when its runtime can take input now and its target is known. */
@@ -507,7 +526,7 @@ export class SessionMessageInbox {
   ): Promise<DurableWorkRecord<SessionMessageDeliveryRequestV3>> {
     try {
       // A restart before the joined Run settles recovers a `running` record like any interrupted Run.
-      return await this.#transition(record, "running");
+      return await this.#transition(record, "running", { interruption: undefined });
     } catch {
       // The record stays `accepted` on disk, so a restart redelivers it; this process still settles it.
       this.#logger.warn(
@@ -546,12 +565,12 @@ export class SessionMessageInbox {
    * Durably spend the message's one automatic retry for the in-place retry of the Run it joined, so
    * a crash during that retry reports it instead of running it again. False when it has none left.
    */
-  async spendJoinedRetry(message: SessionMessageDeliveryRequestV3, interruption: Interruption): Promise<boolean> {
+  async spendJoinedRetry(message: SessionMessageDeliveryRequestV3): Promise<boolean> {
     const record = this.#records.get(sessionMessageKey(message));
     if (record && record.attempts >= MAX_AUTOMATIC_RETRIES) return false;
     if (!record) return true;
     try {
-      await this.#persist({ ...record, attempts: record.attempts + 1, interruption, updatedAt: this.#now() });
+      await this.#persist({ ...record, attempts: record.attempts + 1, updatedAt: this.#now() });
       return true;
     } catch {
       return false;
@@ -631,7 +650,9 @@ export class SessionMessageInbox {
   ): Promise<void> {
     const runId = `session-message-${next.request.messageId}`;
     const key = `${next.request.targetSessionId}:${next.request.messageId}`;
-    let current = this.#records.get(key);
+    // A retry still to be given back is given back by the `running` write below, before the Run starts.
+    let current = this.#refunds.get(key) ?? this.#records.get(key);
+    this.#refunds.delete(key);
     let credentialPrepared = false;
     let preparedExecutionId: string | undefined;
     let turnPlanInput: ProviderCliTurnPlanPrepareInput | undefined;
@@ -653,7 +674,9 @@ export class SessionMessageInbox {
       return runSignal;
     };
     try {
-      if (current) current = await this.#transition(current, "running");
+      // The interruption this Run retries is for its notice only; what ends this Run is recorded anew.
+      const continuation = current?.interruption;
+      if (current) current = await this.#transition(current, "running", { interruption: undefined });
       await this.#reconciler.withAgentLock(next.request.agentId, async () => {
         this.#reconciler.setActivity(sessionId, {
           phase: "running",
@@ -700,7 +723,7 @@ export class SessionMessageInbox {
             turnContext(sessionKind, outboxContext),
             new Date(this.#now()),
           ),
-          current?.interruption,
+          continuation,
         ),
         signal: ensureRunSignal(),
         ...sessionMessageLaunchConfiguration(prepared, runtime),

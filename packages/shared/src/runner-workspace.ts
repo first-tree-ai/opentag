@@ -3,7 +3,7 @@ import { z } from "zod";
 /** Latest-state persistence, negotiated independently of delivery and credential transport. */
 export const RUNNER_WORKSPACE_VERSION = 1 as const;
 export const RUNNER_WORKSPACE_PATH = "/api/v1/sandbox-runner/workspace" as const;
-export const RUNNER_WORKSPACE_ARCHIVE_MAX_BYTES = 128 * 1024 * 1024;
+export const RUNNER_WORKSPACE_ARCHIVE_MAX_BYTES = 512 * 1024 * 1024;
 export const RUNNER_WORKSPACE_TIMEOUT_MS = 120_000;
 
 /** GCS generations are opaque decimal strings; conversion to Number loses precision. */

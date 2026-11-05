@@ -163,7 +163,7 @@ describe("Agent list status through background refreshes", () => {
 });
 
 describe("Agent list activity", () => {
-  it("shows each Agent's running Task count, and Waiting only beside Ready", async () => {
+  it("shows each Agent's running Task count, and nothing beside an idle Ready", async () => {
     const working: AgentListItem = {
       ...readyAgent,
       activity: { state: "working", startedAt: new Date().toISOString(), runningTaskCount: 2 },
@@ -179,7 +179,8 @@ describe("Agent list activity", () => {
     expect(row("Open Helper")).not.toContain("Waiting");
 
     rerender(<AgentList agents={[readyAgent, offline]} />);
-    expect(row("Open Reviewer")).toContain("Waiting");
+    expect(row("Open Reviewer")).toContain("Ready");
+    expect(row("Open Reviewer")).not.toContain("Waiting");
   });
 });
 

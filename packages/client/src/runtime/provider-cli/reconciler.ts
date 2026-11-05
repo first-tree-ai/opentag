@@ -369,9 +369,9 @@ export class ProviderCliReconciler {
     const selectionAtStart = this.#readySelection.get(provider);
     const inspection = await this.#inspectProvider(provider);
     if (this.#closed || this.#signal?.aborted) return;
+    if (this.#passiveOverlappedRepair(provider, targets, repairAtStart, selectionAtStart)) return;
     const readiness: ImCliReadinessStatus = inspection?.readiness ?? "unavailable";
     if (published && this.#imCliPublished.has(provider)) this.#publishImCli(provider, readiness);
-    if (this.#passiveOverlappedRepair(provider, targets, repairAtStart, selectionAtStart)) return;
     await this.#publishPassiveInspection(provider, inspection, targets, repairAtStart, selectionAtStart);
   }
 

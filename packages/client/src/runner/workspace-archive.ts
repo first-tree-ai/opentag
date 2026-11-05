@@ -38,8 +38,8 @@ export interface WorkspaceArchiveInfo {
   readonly md5: string;
 }
 
-export const WORKSPACE_ARCHIVE_MAX_BYTES = 128 * 1024 * 1024;
-export const WORKSPACE_MAX_BYTES = 256 * 1024 * 1024;
+export const WORKSPACE_ARCHIVE_MAX_BYTES = 512 * 1024 * 1024;
+export const WORKSPACE_MAX_BYTES = 512 * 1024 * 1024;
 export const WORKSPACE_MAX_ENTRIES = 50_000;
 
 export interface WorkspaceArchiveStats {

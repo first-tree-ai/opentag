@@ -359,13 +359,12 @@ export class ProviderCliReconcileOwner {
     const instanceId = this.#registry.currentInstanceId(input.computerId);
     const installationId = this.#registry.installationId(input.computerId);
     if (!instanceId || !installationId) throw new Error("The Computer runtime is not connected");
-    if (this.#selfCheckingComputer(input.computerId)) {
+    const selfChecking = this.#selfCheckingComputer(input.computerId);
+    if (selfChecking) {
       await this.#requestSelfCheck(input.computerId, instanceId);
-      await this.#retryActiveRequirements({ ...input, installationId, instanceId });
-      return;
     }
-    await this.#preparation.prepare({ ...input, installationId, instanceId }, (signal) =>
-      this.#retryActiveRequirements(
+    await this.#preparation.prepare({ ...input, installationId, instanceId }, async (signal) => {
+      const retried = await this.#retryActiveRequirements(
         {
           agentId: input.agentId,
           computerId: input.computerId,
@@ -373,8 +372,9 @@ export class ProviderCliReconcileOwner {
           instanceId,
         },
         signal,
-      ),
-    );
+      );
+      return retried || selfChecking;
+    });
   }
 
   async onAgentPlacementChanged(input: {
@@ -787,6 +787,9 @@ export class ProviderCliReconcileOwner {
     }
     if (frame.type === "provider-cli:prewarm:result") {
       this.#preparation.complete(context.computerId, context.instanceId, frame);
+      if (frame.providers !== undefined && this.#selfCheckingComputer(context.computerId)) {
+        await this.#requestSelfCheck(context.computerId, context.instanceId);
+      }
       return undefined;
     }
     const current = this.#requests.get(requestKey(context.computerId, frame.integrationId));

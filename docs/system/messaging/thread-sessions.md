@@ -9,6 +9,13 @@ openTag keeps one long-lived Channel Session per Agent, Integration, and IM chan
 
 The Agent receives the provider-native message reference and per-target `direct` or `ambient` attention in managed context. Attention states only whether the message itself addresses the Agent: `direct` is a DM or an @-mention, `ambient` is everything else. It is independent of receive mode, Session creation, direct continuity, and credential availability. The reply rule for each attention is described in the [Agent collaboration model](../../product/agent-collaboration.md).
 
+## Channel Session idle compaction
+
+> **Planned — not yet implemented.** Tracking: #1302
+
+When a Channel Session has been idle for more than 8 hours, its provider context is compacted automatically instead of a
+new conversation being started. The Session identity, workspace, and native conversation stay the same.
+
 ## Lazy Thread continuity
 
 A Thread Session is materialized only after a real inbound provider event carries a normalized thread key. Routing then depends on the Agent's receive mode:

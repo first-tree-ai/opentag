@@ -7,7 +7,10 @@ import { queryKeys } from "../query/keys.js";
 import { agentId, installApi, resetWebAppState } from "./support/app-fixtures.js";
 
 describe("OpenTag Web App Shell", () => {
-  beforeEach(resetWebAppState);
+  beforeEach(() => {
+    resetWebAppState();
+    vi.spyOn(browserApi, "contextTreeAvailability").mockResolvedValue({ status: "ready", readOnly: false });
+  });
   afterEach(() => vi.restoreAllMocks());
 
   it("opens the Agent's Context Tree from its own navigation entry, outside Settings", async () => {
@@ -55,7 +58,7 @@ describe("OpenTag Web App Shell", () => {
     window.history.replaceState({}, "", `/agents/${agentId}/context-tree`);
     render(<App />);
     fireEvent.click(await screen.findByRole("button", { name: "Connect an existing tree" }));
-    const input = screen.getByRole("textbox", { name: "GitHub repository link" });
+    const input = await screen.findByRole("textbox", { name: "GitHub repository link" });
     fireEvent.change(input, { target: { value: "https://github.com/example/preserved-draft" } });
     const read = vi.spyOn(browserApi, "agentConfig").mockRejectedValue(new Error("Transient refresh failure"));
     await act(async () => {

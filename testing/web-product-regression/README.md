@@ -22,13 +22,6 @@ The product behaviours a regression run of the openTag Web product checks, one r
 The sweep and the connect harness run locally and are not part of this repository; their scenarios are described here
 so the cases stay readable without them.
 
-Known issues that a run may see and should not report again:
-
-- For a **paused** Agent, `GET /api/v1/agents/:id/im-binding` and `.../im-binding/handoff` answer 404 ("The Agent
-  was not found") on every refresh of the Agent list, the Agent page, and its settings. The console logs "Failed to
-  load resource", and the Agent's messaging status reads as unavailable. Tracked in #1233. An Agent with no binding
-  gets 204, not 404, so report any other 404 from these reads.
-
 When a change fixes a product issue, add or update at least one row here, and its automated check, in the same pull
 request. Keep one row per behaviour, not one per screenshot or width.
 
@@ -111,6 +104,7 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | ST-19 | Unreported usage | Usage for an Agent where some Tasks reported no usage | A muted line under the totals ("1 个任务未上报用量"), not a warning banner | Edge | unit: `__tests__/agent-usage.test.tsx`, `features/agent-usage.test.tsx` |
 | ST-20 | Connector failure names the next step | Connector with an unreachable or blocked address, a service without account sign-in, a rejected key, an unfinished authorization, an unreachable service | One short line per cause with its next step; the row offers Edit address, Update key, or Retry to match; upstream details stay private | Core | unit: `features/mcp/mcp-feedback.test.ts`, `features/mcp/mcp-list-recovery.test.tsx`; smoke: `mcp-recovery-smoke.spec.ts` |
 | ST-21 | Shipped Skills read for people | Skills list, reader, and catalog for a Skill openTag ships | A short localized summary, not the SKILL.md description written for the Agent | Edge | unit: `features/skills/skill-summary.test.ts` |
+| ST-22 | Paused messaging stays readable | Pause an owned Agent; open messaging with a saved Lark or Slack binding, a stopped binding, then no binding | Stored state, details, and connection failure reasons stay readable; an unbound Agent stays unbound; messaging writes stay disabled with their action labels and no false busy state; reads issue no messaging mutation | Core | smoke: `paused-settings-smoke.spec.ts` (Chinese, all four widths; stopped binding at 390px); unit: `__tests__/agent-messaging.test.tsx`, `im/slack-custom-app.test.tsx`; [Server and browser evidence](../verification/paused-messaging-settings.md) |
 
 ## Computers and the connect command
 

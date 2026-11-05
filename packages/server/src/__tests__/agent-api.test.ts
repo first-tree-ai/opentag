@@ -4,6 +4,7 @@ import {
   agentByIdPath,
   agentComputerRebindPath,
   agentConfigPath,
+  agentContextTreePath,
   agentReactivatePath,
   agentSuspendPath,
   agentUsagePath,
@@ -13,6 +14,7 @@ import {
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../app.js";
+import { ContextTreeOperationService } from "../services/agents/context-tree-operation-service.js";
 import type { AgentService } from "../services/agents/index.js";
 import { AgentServiceError } from "../services/agents/index.js";
 import type { UserAuthService } from "../services/auth/index.js";
@@ -407,4 +409,34 @@ describe("Agent HTTP API", () => {
     expect(response.statusCode).toBe(500);
     expect(response.json()).toMatchObject({ error: { code: "INTERNAL_ERROR", category: "transient" } });
   });
+});
+
+it("serves authenticated, uncached Context Tree availability with Account-scoped Agent ownership", async () => {
+  const service = agentService();
+  const availability = vi.fn(async () => ({ status: "failed" as const, code: "github_not_configured" as const }));
+  const contextTree = new ContextTreeOperationService(
+    { getConfigById: service.getConfigById, updateContextTreeSelection: vi.fn() },
+    { currentInstanceId: () => "peer", supportsCapability: () => true },
+    { availability, computerKind: async () => "local", run: vi.fn() },
+  );
+  const app = createApp({
+    authService: authService(),
+    agentService: service as unknown as AgentService,
+    contextTreeOperationService: contextTree,
+  });
+  apps.push(app);
+  const response = await app.inject({ method: "GET", url: agentContextTreePath(agentId), headers: authorization });
+  expect(response.statusCode).toBe(200);
+  expect(response.headers["cache-control"]).toBe("no-store");
+  expect(response.json()).toEqual({ status: "failed", code: "github_not_configured" });
+  expect(service.getConfigById).toHaveBeenCalledWith(userId, agentId);
+  expect(availability).toHaveBeenCalledWith(userId, agentId);
+  service.getConfigById.mockRejectedValueOnce(
+    new AgentServiceError("RESOURCE_NOT_FOUND", "deterministic", "Agent not found", 404),
+  );
+  expect(
+    (await app.inject({ method: "GET", url: agentContextTreePath(agentId), headers: authorization })).statusCode,
+  ).toBe(404);
+  expect(availability).toHaveBeenCalledOnce();
+  expect((await app.inject({ method: "GET", url: agentContextTreePath(agentId) })).statusCode).toBe(401);
 });

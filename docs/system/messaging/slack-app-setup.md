@@ -234,6 +234,18 @@ The App/Team pair cannot be claimed by another Agent. Create another App in the 
 remain the Agent's existing `mention_only` / `all_message` property, including other Bots' messages. Ambient Turns may
 remain silent; existing self-message filtering and event deduplication are unchanged.
 
+### Paused settings reads
+
+The current Account owner can read a paused Agent's existing Slack configuration, identity closure, and handoff
+observations. Account authority, Agent metadata, binding configuration, and stored credential inspection share a
+read-only Repeatable Read snapshot. Public responses retain sanitized configuration and never return saved secrets.
+Paused observation reads do not initiate CLI preparation, credential refresh, OAuth, or Slack API calls.
+
+Configuration writes, automatic setup, OAuth admission and ticket redemption retain their active-Agent and current
+Account checks. `currentBinding` captures an OAuth mutation's expected binding; it remains active-only. A readable
+configuration or its `allowedIntent` projection does not grant write authority. Deleted Agents, other Accounts,
+and revoked sessions remain rejected. The Web disables messaging changes while paused and explains why.
+
 ### Distributed openTag App
 
 The current Web offers the first-party OAuth recovery entry when the Server has OAuth configured and the existing

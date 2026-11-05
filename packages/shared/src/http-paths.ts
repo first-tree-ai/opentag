@@ -84,7 +84,6 @@ export const SANDBOX_RUNNER_WEBSOCKET_PATH = `${API_V1_PREFIX}/sandbox-runners/w
 export const ACCOUNT_COMPUTER_CONNECT_CODE_TEMPLATE = `${ACCOUNT_COMPUTER_CONNECT_CODES_PATH}/:connectCodeId`;
 export const ACCOUNT_SETUP_COMPLETE_PATH = `${API_V1_PREFIX}/me/setup/complete`;
 export const ACCOUNT_SETUP_RESET_PATH = `${API_V1_PREFIX}/me/setup/reset`;
-export const INTERNAL_NAVIGATION_VISIBILITY_PATH = `${API_V1_PREFIX}/internal/navigation-visibility`;
 export const ACCOUNT_TASKS_PATH = `${API_V1_PREFIX}/sessions`;
 export const TASK_BY_ID_TEMPLATE = `${ACCOUNT_TASKS_PATH}/:sessionId`;
 export const TASK_CANCEL_TEMPLATE = `${TASK_BY_ID_TEMPLATE}/cancel`;
@@ -207,7 +206,6 @@ export const HTTP_PATHS = {
   sandboxRunnerWebSocket: SANDBOX_RUNNER_WEBSOCKET_PATH,
   accountSetupComplete: ACCOUNT_SETUP_COMPLETE_PATH,
   accountSetupReset: ACCOUNT_SETUP_RESET_PATH,
-  internalNavigationVisibility: INTERNAL_NAVIGATION_VISIBILITY_PATH,
   accountTasks: ACCOUNT_TASKS_PATH,
   agentById: AGENT_BY_ID_TEMPLATE,
   agentAvatar: AGENT_AVATAR_TEMPLATE,

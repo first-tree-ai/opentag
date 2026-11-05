@@ -71,6 +71,7 @@ export default defineConfig({
         "src/providers/pi/runtime-policy.ts",
         "src/providers/process-owner.ts",
         "src/runtime/agent-turn-runner.ts",
+        "src/runtime/provider-launch-configuration.ts",
         "src/runtime/client-runtime-composition.ts",
         "src/runtime/runtime-durability.ts",
         "src/runtime/agent-runtime-provider-registry.ts",

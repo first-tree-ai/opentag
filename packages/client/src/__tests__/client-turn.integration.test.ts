@@ -512,6 +512,46 @@ describe("Agent Runtime Client Turn vertical", () => {
     expect(JSON.parse(launched?.mcpConfig ?? "{}")).toEqual({ mcpServers: {} });
     expect(launched?.args ?? []).not.toContainEqual(expect.stringMatching(/^mcp__g[a-f0-9]{10}$/));
   });
+
+  it("refreshes Claude MCP grants after snapshot changes and isolates newly created Sessions", async () => {
+    const gateway = { url: "https://server.example.test/api/v1/mcp", token: "otmg_initial_fixture" };
+    const fixture = await runtimeFixture(Promise.resolve(), Promise.resolve(), "claude-code", undefined, gateway);
+    const namespaces: string[] = [];
+    try {
+      for (const [index, sessionId] of ["session-1", "session-1", "session-2"].entries()) {
+        gateway.token = `otmg_fixture_${index}`;
+        const runtime = snapshot(index + 1, "claude-code");
+        await expect(
+          fixture.reconciler.reconcile({
+            ...fixture.reconcileRequest,
+            requestId: randomUUID(),
+            sessionId,
+            runtime,
+          }),
+        ).resolves.toMatchObject({ status: "ready" });
+        const accepted = await fixture.custody.accept({
+          ...delivery(runtime, `delivery-${index}`, "local fixture"),
+          sessionId,
+        });
+        await accepted.onAcceptedSent?.();
+        const report = await fixture.waitForReport(index);
+        expect(report.outcome).toBe("completed");
+        await fixture.record(report);
+        await vi.waitFor(() => expect(fixture.custody.admission.snapshot().client).toBe(0));
+        const launched = fixture.claudeProcesses[index];
+        const config = JSON.parse(launched?.mcpConfig ?? "{}");
+        const name = Object.keys(config.mcpServers)[0] as string;
+        namespaces.push(name);
+        expect(config.mcpServers[name].headers.Authorization).toBe(`Bearer ${gateway.token}`);
+        expect(launched?.args.join(" ")).not.toContain("otmg_");
+        expect(JSON.stringify(await fixture.store.read("agent-1", sessionId))).not.toContain("otmg_");
+      }
+      expect(new Set(namespaces).size).toBe(3);
+      expect(JSON.stringify(fixture.logs)).not.toContain("otmg_");
+    } finally {
+      await fixture.runtimeManager.close();
+    }
+  });
 });
 
 async function runtimeFixture(

@@ -22,7 +22,7 @@ test("pins come from existing Node/pnpm/CLI coordinates and do not use latest", 
   assert.equal(RUNNER_PINS.git.source, "node-image");
   assert.equal(RUNNER_PINS.git.probe, "git version 2.39.5");
   assert.equal(runnerResourceLimits().cpus, "1");
-  assert.equal(runnerResourceLimits().memoryBytes, 1_073_741_824);
+  assert.equal(runnerResourceLimits().memoryBytes, 2_147_483_648);
 });
 
 test("a Node pin without its reviewed digest fails before any build", () => {

@@ -161,11 +161,19 @@ overwrite or automatic empty fallback is allowed.
 
 ## Resource and rollout limits
 
-The fixed configuration remains 1 vCPU / 1 GiB. Archive processing streams rather than buffering
+New Instances use 1 vCPU / 2 GiB. Instances created at 1 GiB remain valid until they are replaced,
+because OpenTag never patches a running Instance. Archive processing streams rather than buffering
 the whole payload. Safety limits are 512 MiB compressed, 512 MiB expanded, and 50,000 entries;
 exceeding a limit fails saving/restoring explicitly. The workspace and temporary archive files both
 consume the Instance's memory-backed filesystem, so these limits are not a guarantee against workload
-OOM: a workspace near the limit plus its archive can approach the Instance's full 1 GiB.
+OOM: an incompressible workspace near the limit plus its archive uses about 1 GiB before the
+Runner's own memory.
+
+The move from 1 GiB followed staging measurements on 2026-11-05 at 1 GiB, with the archive code
+uploading directly to object storage and no Agent running: 256 MiB of incompressible content peaked
+at 925 MiB, and 480 MiB ran out of memory while packing. The 120-second limit covers transfers, not
+packing, so a save can stall without an error. Whether the limits are safe at 2 GiB has not been
+measured.
 The Cloud system prompt explains these limits and directs disposable dependency caches/build output
 outside the saved workspace; those files must be recreated on subsequent Turns.
 Relative workspace symlinks are supported. Hard links (including internal hard links), unsafe

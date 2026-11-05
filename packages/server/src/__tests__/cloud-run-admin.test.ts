@@ -73,7 +73,7 @@ function instanceBody(overrides: Record<string, unknown> = {}) {
         image: CONFIG.image,
         sandboxLauncher: true,
         args: ["opentag-runner", "serve"],
-        resources: { limits: { cpu: "1", memory: "1Gi" } },
+        resources: { limits: { cpu: "1", memory: "2Gi" } },
         ports: [{ containerPort: 8080 }],
       },
     ],
@@ -139,7 +139,7 @@ describe("CloudRunAdmin create", () => {
     }
   });
 
-  it("creates the pinned 1CPU/1GiB sandbox-launcher instance with Direct VPC and hardened surface", async () => {
+  it("creates the pinned 1CPU/2GiB sandbox-launcher instance with Direct VPC and hardened surface", async () => {
     const { calls, fetchImpl } = fakeFetch((call) => {
       if (call.method === "POST")
         return { status: 200, body: { name: "projects/opentag-test/locations/us-west1/operations/op-1" } };
@@ -173,7 +173,7 @@ describe("CloudRunAdmin create", () => {
       image: CONFIG.image,
       sandboxLauncher: true,
       args: ["opentag-runner", "serve"],
-      resources: { limits: { cpu: "1", memory: "1Gi" }, cpuIdle: false },
+      resources: { limits: { cpu: "1", memory: "2Gi" }, cpuIdle: false },
       ports: [{ containerPort: 8080 }],
     });
     const env = Object.fromEntries(
@@ -408,12 +408,34 @@ describe("CloudRunAdmin create", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("accepts 2 GiB and existing 1 GiB Instances but rejects other memory limits", async () => {
+    const [container] = instanceBody().containers as Record<string, unknown>[];
+    const verify = async (memory: string) => {
+      const { fetchImpl } = fakeFetch(() => ({
+        status: 200,
+        body: instanceBody({
+          containers: [{ ...container, resources: { limits: { cpu: "1", memory } } }],
+        }),
+      }));
+      const api = admin(fetchImpl);
+      const view = await api.getInstance(instanceBody().name);
+      if (!view) throw new Error("Missing test Instance");
+      return () => api.verifyInstance(view, IDENTITY);
+    };
+    for (const memory of ["2Gi", "2048Mi", "1Gi", "1024Mi"]) {
+      expect(await verify(memory)).not.toThrow();
+    }
+    for (const memory of ["512Mi", "4Gi"]) {
+      expect(await verify(memory)).toThrow(CloudRunAdminError);
+    }
+  });
+
   it("permits ownership verification for cleanup but rejects unsafe execution policy", async () => {
     const [container] = instanceBody().containers as Record<string, unknown>[];
     for (const override of [
       { command: ["/bin/sh"] },
       { volumeMounts: [{ name: "unexpected", mountPath: "/opt/opentag" }] },
-      { resources: { limits: { cpu: "1", memory: "1Gi" }, cpuIdle: true } },
+      { resources: { limits: { cpu: "1", memory: "2Gi" }, cpuIdle: true } },
     ]) {
       const { fetchImpl } = fakeFetch(() => ({
         status: 200,

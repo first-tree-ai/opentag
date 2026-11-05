@@ -46,8 +46,8 @@ test("guard outlives the real accept budget, starts through the entrypoint, and 
       assert.ok(keepaliveMs >= REAL_ACCEPT_TIMEOUT_MS, "keepalive covers the entire accept budget");
       for (const [flag, value] of [
         ["--cpus", "1"],
-        ["--memory", "1g"],
-        ["--memory-swap", "1g"],
+        ["--memory", "2g"],
+        ["--memory-swap", "2g"],
         ["--platform", "linux/amd64"],
       ]) {
         assert.equal(args[args.indexOf(flag) + 1], value);

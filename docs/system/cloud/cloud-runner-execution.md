@@ -7,7 +7,7 @@ description: "Cloud Run Instances and native Sandboxes for Agent Sessions: lifec
 
 E3 connects an existing Agent Session's Sandbox identity to a real Cloud Run Instance and the
 Cloud Run native Sandbox CLI. It is opt-in and disabled by default. Each allocation uses **one
-Instance, one native Sandbox, one vCPU and 1 GiB**. The Runner remains part of Client and uses the
+Instance, one native Sandbox, one vCPU and 2 GiB**. The Runner remains part of Client and uses the
 CLI release version. E3 adds no database migration or table.
 
 ## Boundaries

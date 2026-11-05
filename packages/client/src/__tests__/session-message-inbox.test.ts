@@ -1096,6 +1096,8 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
     await inbox.settled();
     expect(onRunOutcome).not.toHaveBeenCalled();
+    // A stopped inbox still counts it, so waiting for protected work on a stopped Client never ends.
+    expect(inbox.pendingCount).toBe(1);
     expect(await store.list("session-message")).toEqual([
       expect.objectContaining({
         status: "running",
@@ -1103,6 +1105,97 @@ describe("SessionMessageInbox", () => {
         interruption: expect.objectContaining({ reason: "client_shutdown" }),
       }),
     ]);
+  });
+
+  it("resumes a child Run interrupted by an automatic upgrade once, with no failure reported", async () => {
+    const store = new MemoryRuntimeDurabilityStore();
+    let started: () => void = () => undefined;
+    const running = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const onRunOutcome = vi.fn();
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      sessionCollaborationVersion: () => 4,
+      onRunOutcome,
+      persistence: store,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(
+          async () =>
+            ({
+              waitForIdle: vi.fn(async () => undefined),
+              prompt: vi.fn(
+                (input: { signal?: AbortSignal }) =>
+                  new Promise((_resolve, reject) => {
+                    input.signal?.addEventListener("abort", () => reject(input.signal?.reason), { once: true });
+                    started();
+                  }),
+              ),
+            }) as never,
+        ),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+    });
+    await inbox.accept(delivery({ text: "long child work" }));
+    await running;
+
+    let updaterState: UpdaterStateSnapshot | undefined;
+    await new Promise<void>((resolve) => {
+      const updater = new UpdateManager({
+        channel: "staging",
+        currentVersion: "0.0.2",
+        canInterruptWork: () => true,
+        protectedWork: () => ({ total: inbox.pendingCount }),
+        executeUpdate: async () => undefined,
+        onHandoff: () => {
+          inbox.stop();
+          updater.stop();
+          resolve();
+        },
+        loadState: async () => updaterState,
+        saveState: async (state) => {
+          updaterState = structuredClone(state);
+        },
+      });
+      updater.observe({ channel: "staging", version: "0.0.3" });
+    });
+    await inbox.settled();
+    expect(onRunOutcome).not.toHaveBeenCalled();
+
+    const inputs: Array<Array<{ text: string }>> = [];
+    const restartedOutcomes = vi.fn();
+    const restarted = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      sessionCollaborationVersion: () => 4,
+      onRunOutcome: restartedOutcomes,
+      persistence: store,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(
+          async () =>
+            ({
+              waitForIdle: vi.fn(async () => undefined),
+              prompt: vi.fn(async (input: { runId: string; input: { items: Array<{ text: string }> } }) => {
+                inputs.push(input.input.items);
+                return { runId: input.runId, status: "completed", output: [] };
+              }),
+            }) as never,
+        ),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+    });
+    await restarted.ready();
+    await vi.waitFor(() => expect(inputs).toHaveLength(1));
+    await restarted.settled();
+    expect(inputs[0]?.[0]?.text).toContain("the OpenTag daemon was restarted or upgraded");
+    expect(inputs[0]?.at(-1)?.text).toBe("long child work");
+    expect(restartedOutcomes).not.toHaveBeenCalled();
+    restarted.stop();
   });
 
   it("keeps the durable FIFO when an orderly stop updates the running message (file store)", async () => {

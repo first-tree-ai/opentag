@@ -1502,6 +1502,45 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     expect(reconcilerClose).toHaveBeenCalledOnce();
   });
 
+  it("holds an upgrade only for a registered connection to a Server without Session recovery", () => {
+    let version: number | undefined;
+    let state = "registered";
+    const runtimeFor = (connection: unknown) =>
+      new ComposedClientRuntime(
+        {} as never,
+        {
+          admission: {},
+          bindingStore: {},
+          custody: {},
+          credentialEnvironment: {},
+          reconciler: {},
+          sessionMessageInbox: {},
+          reportOwner: {},
+          runner: {},
+          runtimeManager: {},
+          workspace: {},
+          refreshCapability: async () => undefined,
+          capabilityRefreshIntervalMs: 10,
+          capabilityAbort: new AbortController(),
+          connection,
+        } as never,
+      );
+    const runtime = runtimeFor({
+      get state() {
+        return state;
+      },
+      capabilityVersion: (capability: string) =>
+        capability === RUNTIME_CAPABILITY.sessionRecovery ? version : undefined,
+      subscribeBusinessFrames: () => () => undefined,
+    });
+    expect(runtime.canInterruptWorkForUpgrade()).toBe(false);
+    version = 1;
+    expect(runtime.canInterruptWorkForUpgrade()).toBe(true);
+    version = undefined;
+    for (state of ["connecting", "stopped"]) expect(runtime.canInterruptWorkForUpgrade()).toBe(true);
+    expect(runtimeFor(undefined).canInterruptWorkForUpgrade()).toBe(true);
+  });
+
   it("aggregates protected work from every authoritative owner", () => {
     const admission = { pause: vi.fn(), resume: vi.fn() };
     const runtime = new ComposedClientRuntime(

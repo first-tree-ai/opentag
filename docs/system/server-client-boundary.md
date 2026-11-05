@@ -159,9 +159,23 @@ are acceptable: the Provider may or may not have persisted the interrupted turn.
 - Session messages waiting for that preparation are not failures. Once the
   Turn is resumed they are steered into it in order; see
   [Session messages steered into an IM Turn](messaging/internal-session-collaboration.md#session-messages-steered-into-an-im-turn).
+- An automatic upgrade does not wait for running Sessions. It installs the new
+  version while they keep running and new work keeps arriving, so a failed
+  install costs them nothing. It then closes admission and stops the daemon
+  through the orderly stop above. That stop still finishes its durable writes
+  (interruption records, inbox records, Turn reports and Session message outcome
+  reports); a report not yet sent is replayed after the restart. Background
+  processes a Run started are lost with it.
+- An automatic upgrade waits only while the Client is registered with a Server
+  that did not negotiate `runtime.sessionRecovery`, that is, one older than this
+  retry. Then it closes admission and waits for protected work, and new input is
+  refused with `client_busy` until the wait ends or that changes. An IM delivery
+  stays pending on the Server and arrives later; a scheduled message is recorded
+  as `unreachable`. A Client that is not registered does not wait: while
+  disconnected nothing can be delivered, and a Client the Server rejected for its
+  version can finish its work only after upgrading.
 - Manual `opentag upgrade` and `opentag daemon restart` still stop the daemon
-  without draining; automatic upgrades wait for protected work, which includes
-  pending retries.
+  without waiting.
 
 Cloud is unchanged: accepted Cloud custody is never replayed automatically (see
 [Cloud Runner execution](cloud/cloud-runner-execution.md)); the Cloud model proxy

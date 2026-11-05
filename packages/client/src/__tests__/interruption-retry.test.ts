@@ -31,6 +31,7 @@ import { SessionReconciler } from "../runtime/session-reconciler.js";
 import type { SessionRuntimeManager } from "../runtime/session-runtime-manager.js";
 import { type LiveTurnOwner, TurnCustodyOwner } from "../runtime/turn-custody-owner.js";
 import type { TurnReportOwner } from "../runtime/turn-report-owner.js";
+import { UpdateManager, type UpdaterStateSnapshot } from "../runtime/update-manager.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
 
 const homes: string[] = [];
@@ -604,6 +605,76 @@ describe("AgentTurnRunner automatic retry", () => {
     expect(items[0]?.text).toContain("interrupted at or before T");
     expect(h.updateUnresolved).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), "turn-1", "starting");
     expect(h.create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ outcome: "completed" }), 3);
+  });
+});
+
+describe("an automatic upgrade interrupting an IM Turn", () => {
+  it("stops the running Turn without a report, and the restarted daemon resumes it with the upgrade notice", async () => {
+    const h = runnerHarness({ restartRetry: true });
+    h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
+    let started: () => void = () => undefined;
+    const running = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    h.prompt.mockImplementation((input) => {
+      started();
+      return abortedOnSignal(input);
+    });
+    h.runner.start(owner(h.request));
+    await running;
+
+    let state: UpdaterStateSnapshot | undefined;
+    const handedOff = new Promise<void>((resolve) => {
+      const updater = new UpdateManager({
+        channel: "staging",
+        currentVersion: "0.0.2",
+        canInterruptWork: () => true,
+        protectedWork: () => ({ total: h.runner.activeCount }),
+        executeUpdate: async () => undefined,
+        onHandoff: () => {
+          h.runner.stop();
+          updater.stop();
+          resolve();
+        },
+        loadState: async () => state,
+        saveState: async (next) => {
+          state = structuredClone(next);
+        },
+      });
+      updater.observe({ channel: "staging", version: "0.0.3" });
+    });
+    await handedOff;
+    await h.runner.settled();
+    expect(state?.state).toBe("installed");
+    expect(h.create).not.toHaveBeenCalled();
+    expect(h.markReporting).not.toHaveBeenCalled();
+    const interrupted = h.records.get(h.request.sessionId);
+    expect(interrupted).toMatchObject({ retries: 0, interruption: { reason: "client_shutdown" } });
+
+    const restarted = recoveryFixture();
+    restarted.records.set(h.request.sessionId, interrupted as TurnRetryRecord);
+    restarted.unresolved.set(h.request.sessionId, {
+      turnId: "turn-1",
+      deliveryId: h.request.deliveryId,
+      phase: "running",
+    });
+    await restarted.recovery.start();
+    restarted.version = 1;
+    restarted.setState("registered");
+    const frame = restarted.sent[0] as SessionRecoverRequest;
+    restarted.recovery.handleResult({
+      type: "session:recover:result",
+      requestId: frame.requestId,
+      sessionId: h.request.sessionId,
+      status: "scheduled",
+    });
+    const turn = { deliveryId: h.request.deliveryId, turnId: "turn-1" };
+    expect(restarted.recovery.resume(h.request.sessionId, turn)).toBe(true);
+    expect(restarted.custody.resume).toHaveBeenCalledExactlyOnceWith(h.request, "turn-1", {
+      continuation: expect.objectContaining({ reason: "client_shutdown" }),
+      steers: [],
+    });
+    restarted.recovery.stop();
   });
 });
 

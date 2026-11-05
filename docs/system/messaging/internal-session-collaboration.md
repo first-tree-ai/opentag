@@ -149,8 +149,8 @@ An older grant without outbox context still leaves visible Session messages queu
 `accepted` and `session list` describe delivery only. When an internal Session's Run ends without completing, the
 Server tells the Session that created it (`created_by_session_id`):
 
-- Local: a message whose Run a daemon crash or restart interrupts, or that hits a model HTTP 429, gets at most 2 automatic
-  retries, as described in
+- Local: a message whose Run a daemon crash, restart or upgrade interrupts, or that hits a model HTTP 429, gets at most 2
+  automatic retries, as described in
   [Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work). The retried Run
   starts with the continuation notice and the original message. Every other failure, including `turn_timeout`, is terminal
   without a retry, and so is running out of retries (`provider_rate_limited`, or `run_interrupted` after a crash).

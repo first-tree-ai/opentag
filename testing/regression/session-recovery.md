@@ -30,6 +30,15 @@ the same Session after the daemon is back, its input begins with
 2. Expected: no "cancelled" outcome is reported and no error card appears; after the restart the Session continues
    with reason "the OpenTag daemon was restarted or upgraded".
 
+## Automatic upgrade while Sessions run
+
+1. On a portable install, start a long Run in an IM conversation and a long internal Session, then publish a newer
+   channel target.
+2. Expected: `opentag daemon status` does not stay in `awaiting_protected_work`. While the new version installs, a new
+   IM message still gets a reply. After the restart both Sessions continue with reason "the OpenTag daemon was
+   restarted or upgraded", with no error card and no creator notice. A second upgrade during the same Run also
+   continues it.
+
 ## Retries run out
 
 1. Repeat the crash case, and kill the daemon again within a minute or so of each resume; start it again each time. Wait

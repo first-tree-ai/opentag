@@ -403,15 +403,21 @@ export class UpdateManager {
         await this.#options.saveState(state);
         resumeAdmission = this.#options.quiesce?.() ?? (() => undefined);
         await this.#waitForProtectedWork(target);
-        if (this.#stopped) return "finished";
-        if (this.#latestTarget !== target) return "superseded";
         if (this.#canInterruptWork()) {
           // Recovery became available: new work no longer has to wait through the install.
           resumeAdmission();
           resumeAdmission = undefined;
         }
       }
+      const cancelled = this.#cancellation(target);
+      if (cancelled) return cancelled;
+      const previousAttempt = state.lastAttempt;
       const started = await this.#recordStartedAttempt(target, state);
+      const cancelledDuringWrite = this.#cancellation(target);
+      if (cancelledDuringWrite) {
+        await this.#withdrawAttempt(target, state, previousAttempt);
+        return cancelledDuringWrite;
+      }
       // Without a wait there is nothing to drain: Sessions keep running and new work keeps arriving
       // through the install, and a failed install costs them nothing.
       if (!(await this.#executeAttempt(target, state, started))) return "finished";
@@ -426,6 +432,35 @@ export class UpdateManager {
 
   #canInterruptWork(): boolean {
     return this.#options.canInterruptWork?.() ?? false;
+  }
+
+  /** Why a new attempt must not start: the awaits before it can outlive a stop or a newer target. */
+  #cancellation(target: string): "finished" | "superseded" | undefined {
+    if (this.#stopped) return "finished";
+    return this.#latestTarget === target ? undefined : "superseded";
+  }
+
+  /**
+   * Remove an attempt whose install never started. Left in place, it would read as an interrupted
+   * attempt after a restart and block this target.
+   */
+  async #withdrawAttempt(
+    target: string,
+    state: UpdaterStateSnapshot,
+    previous: UpdaterAttempt | undefined,
+  ): Promise<void> {
+    delete state.attempts[target];
+    state.state = "idle";
+    if (previous) state.lastAttempt = previous;
+    else delete state.lastAttempt;
+    try {
+      await this.#options.saveState(state);
+    } catch (error) {
+      this.#logger.warn(
+        { target, error: error instanceof Error ? error.message : String(error) },
+        "An attempt whose install never started could not be withdrawn; the target stays blocked",
+      );
+    }
   }
 
   async #recordStartedAttempt(target: string, state: UpdaterStateSnapshot): Promise<UpdaterAttempt> {

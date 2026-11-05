@@ -31,6 +31,8 @@ function harness(
     discoverTarget?: () => Promise<RuntimeChannelTarget | undefined>;
     discoveryIntervalMs?: number;
     discoveryMaxBackoffMs?: number;
+    beforeLoad?: () => Promise<void>;
+    beforeSave?: (state: UpdaterStateSnapshot) => Promise<void>;
   } = {},
 ): Harness {
   let stored = overrides.stored ? structuredClone(overrides.stored) : undefined;
@@ -70,9 +72,13 @@ function harness(
     onHandoff: () => {
       handoffs += 1;
     },
-    loadState: async () => stored,
+    loadState: async () => {
+      await overrides.beforeLoad?.();
+      return stored;
+    },
     saveState: async (state) => {
       if (state.state === overrides.failSaveForState) throw new Error("state disk unavailable");
+      await overrides.beforeSave?.(state);
       stored = structuredClone(state);
     },
     checkIntervalMs: 10,
@@ -416,6 +422,160 @@ describe("UpdateManager", () => {
     expect(h.quiescedDuringInstall).toEqual([false]);
     expect(h.handoffs).toBe(1);
     expect(h.isQuiesced()).toBe(true);
+  });
+
+  describe("cancelled before an interruptible install starts", () => {
+    function gate() {
+      let release: () => void = () => undefined;
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return { release, released };
+    }
+
+    function heldLoad() {
+      const held = gate();
+      const h = harness({ beforeLoad: () => held.released });
+      h.setRecoverable(true);
+      h.setProtectedWork(2);
+      return { h, held };
+    }
+
+    function heldAttemptWrite() {
+      const held = gate();
+      let reached: () => void = () => undefined;
+      const writing = new Promise<void>((resolve) => {
+        reached = resolve;
+      });
+      let holding = true;
+      const h = harness({
+        beforeSave: async (state) => {
+          if (state.state !== "installing" || !holding) return;
+          holding = false;
+          reached();
+          await held.released;
+        },
+      });
+      h.setRecoverable(true);
+      h.setProtectedWork(2);
+      return { h, held, writing };
+    }
+
+    it("does not install or hand off when stopped during the state read", async () => {
+      const { h, held } = heldLoad();
+      h.manager.observe(target("0.0.3-staging.1.1"));
+      await h.settle();
+      h.manager.stop();
+      held.release();
+      await h.settle();
+      expect(h.installs).toEqual([]);
+      expect(h.handoffs).toBe(0);
+      expect(h.isQuiesced()).toBe(false);
+      expect(h.state()?.attempts ?? {}).toEqual({});
+    });
+
+    it("installs only the newer target observed during the state read", async () => {
+      const { h, held } = heldLoad();
+      h.manager.observe(target("0.0.3-staging.1.1"));
+      await h.settle();
+      h.manager.observe(target("0.0.3-staging.1.2"));
+      held.release();
+      await h.settle();
+      expect(h.installs).toEqual(["0.0.3-staging.1.2"]);
+      expect(Object.keys(h.state()?.attempts ?? {})).toEqual(["0.0.3-staging.1.2"]);
+      expect(h.handoffs).toBe(1);
+    });
+
+    it("withdraws the attempt when stopped during its write, so a restart can still install the target", async () => {
+      const { h, held, writing } = heldAttemptWrite();
+      h.manager.observe(target("0.0.3-staging.1.1"));
+      await writing;
+      h.manager.stop();
+      held.release();
+      await h.settle();
+      expect(h.installs).toEqual([]);
+      expect(h.handoffs).toBe(0);
+      expect(h.isQuiesced()).toBe(false);
+      expect(h.state()?.attempts).toEqual({});
+      expect(h.state()?.state).toBe("idle");
+      expect(h.state()?.lastAttempt).toBeUndefined();
+    });
+
+    it("installs only the newer target observed during the attempt write", async () => {
+      const { h, held, writing } = heldAttemptWrite();
+      h.manager.observe(target("0.0.3-staging.1.1"));
+      await writing;
+      h.manager.observe(target("0.0.3-staging.1.2"));
+      held.release();
+      await h.settle();
+      expect(h.installs).toEqual(["0.0.3-staging.1.2"]);
+      expect(Object.keys(h.state()?.attempts ?? {})).toEqual(["0.0.3-staging.1.2"]);
+      expect(h.state()?.lastAttempt?.target).toBe("0.0.3-staging.1.2");
+      expect(h.handoffs).toBe(1);
+    });
+
+    it("keeps the last finished attempt when a later one is withdrawn", async () => {
+      const previous = { target: "0.0.2-staging.0.1", startedAt: "T0", finishedAt: "T1", result: "failed" as const };
+      const held = gate();
+      let reached: () => void = () => undefined;
+      const writing = new Promise<void>((resolve) => {
+        reached = resolve;
+      });
+      let holding = true;
+      const h = harness({
+        stored: {
+          schemaVersion: 1,
+          currentVersion: "0.0.2-staging.1.1",
+          state: "idle",
+          attempts: {},
+          lastAttempt: previous,
+        },
+        beforeSave: async (state) => {
+          if (state.state !== "installing" || !holding) return;
+          holding = false;
+          reached();
+          await held.released;
+        },
+      });
+      h.setRecoverable(true);
+      h.manager.observe(target("0.0.3-staging.1.1"));
+      await writing;
+      h.manager.stop();
+      held.release();
+      await h.settle();
+      expect(h.installs).toEqual([]);
+      expect(h.state()?.lastAttempt).toEqual(previous);
+    });
+
+    it("logs and leaves the record when withdrawing the attempt cannot be saved", async () => {
+      const held = gate();
+      let reached: () => void = () => undefined;
+      const writing = new Promise<void>((resolve) => {
+        reached = resolve;
+      });
+      let holding = true;
+      const h = harness({
+        beforeSave: async (state) => {
+          if (state.state === "installing" && holding) {
+            holding = false;
+            reached();
+            await held.released;
+            return;
+          }
+          if (state.state === "idle") throw new Error("state disk unavailable");
+        },
+      });
+      h.setRecoverable(true);
+      h.manager.observe(target("0.0.3-staging.1.1"));
+      await writing;
+      h.manager.stop();
+      held.release();
+      await h.settle();
+      expect(h.installs).toEqual([]);
+      expect(h.handoffs).toBe(0);
+      expect(h.state()?.state).toBe("installing");
+      expect(h.logs.some((entry) => JSON.stringify(entry).includes("could not be withdrawn"))).toBe(true);
+    });
   });
 
   it("waits with no force timeout while interrupted work could not be recovered", async () => {

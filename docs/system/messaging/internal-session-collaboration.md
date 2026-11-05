@@ -188,3 +188,32 @@ openTag currently supports this path only with a single Server replica. Proof-au
 source/target SessionMessage Runtime delivery use that replica's transport owner (Local Computer or Cloud Runner). Ordinary multi-replica
 load balancing, sticky routing, and cross-replica owner discovery, forwarding, or delivery relay are not supported;
 horizontal replicas require an explicit cross-instance owner-routing design before they can be enabled.
+
+## Steering parent messages into a running child
+
+> **Planned — not yet implemented.** Tracking: #1303
+
+A parent Session may send a message to its child at any time, and the message is steered into the child's running Turn
+instead of waiting for that Turn to end. This extends steering to a child that is running a Session-message Run (normally
+the parent's task), which today waits in the FIFO, and to Cloud Sessions. The child still reports completion, failure, or
+timeout to the parent, and the parent decides what to do next.
+
+## Stopping a parent stops its children
+
+> **Planned — not yet implemented.** Tracking: #1304
+
+When a parent Session is stopped or cancelled for good — not merely idle between Turns — every internal Session it
+created, recursively, is stopped as well. Today there is no Session-level stop entry point, so nothing cascades from a
+parent Session. Agent suspend, delete, and transfer already stop every live Session of the Agent, internal Sessions
+included; see [Agent, Session, and Computer model](../agent-session-computer-model.md#configuration-identity).
+
+## Automatic retry before a notice
+
+> **Planned — not yet implemented.** Tracking: #1301
+
+The Client daemon will retry a Session message automatically at most once, and only for a recoverable failure: a crash or
+power loss, a restart or upgrade interruption, `turn_timeout`, or a model HTTP 429. This replaces the terminal
+`turn_timeout` and interrupted-steer rules above and the current five-attempt inbox retry; non-recoverable failures stay terminal.
+When the one retry fails, the creator receives the notice. After a daemon restart, each interrupted internal Session
+receives a continuation message with the interruption reason before its queued messages run. See
+[Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work).

@@ -45,12 +45,58 @@ trace. Credential grant frames are secret-bearing and non-persistent: they are
 handled outside ordinary logging and tracing and fenced to the current placement
 and connection instance.
 
-For IM message delivery, the Server owns the durable delivery identity and
-global custody state. The Client persists the input, exact dispatch identity,
-and local Turn binding before reporting acceptance. Retained custody and Turn
-reports can then be reconciled after reconnect or Server restart without
-starting a second Turn. Placement generation and connection-instance checks
-fence every acceptance and report.
+### Delivery and execution responsibility
+
+Delivery responsibility is two-stage, split at the Client's acceptance:
+
+1. Until the Client accepts an input, the Server owns its delivery. An IM
+   delivery stays pending on the Server and is retried with capped backoff
+   within its ingress deadline; see
+   [IM delivery claim queries](messaging/im-delivery-claim.md). A Session
+   message has no Server queue: an unreachable target fails visibly and the
+   caller decides whether to resend; see
+   [Message domains](messaging/message-domains.md#routing).
+2. Once the Client accepts, the Client daemon owns execution. The Client
+   persists the input, exact dispatch identity, and local Turn binding before
+   reporting acceptance. The Server never dispatches accepted input again: it
+   only reconciles retained custody and Turn reports after reconnect or Server
+   restart, without starting a second Turn. Placement generation and
+   connection-instance checks fence every acceptance and report.
+
+What the Client does today with accepted work that does not complete on a
+Local Computer:
+
+- An IM Turn is never rerun. A daemon shutdown reports it `cancelled /
+  client_shutdown`; a Turn found unresolved after a restart reports `unknown /
+  turn_state_unknown`; a Run past its budget reports `failed / turn_timeout`.
+  All of these carry `executionEffects: may_have_occurred`, and the Server
+  shows the person an [error card](messaging/im-feedback.md).
+- A Session message follows the inbox retry policy: a failure not classified
+  `never` retries with backoff up to five attempts within 15 minutes, and a
+  message whose Run was in flight at a restart runs again. `turn_timeout` and an
+  interrupted steer are terminal and produce a
+  [Run outcome notice](messaging/internal-session-collaboration.md#run-outcome-notices).
+
+### Automatic retry of accepted work
+
+> **Planned — not yet implemented.** Tracking: #1301
+
+Automatic retry of already-accepted work belongs to the Client daemon, not the
+Server. It replaces the current rules above that never rerun an interrupted or
+timed-out IM Turn and that retry a Session message up to five times.
+
+- The Client retries only recoverable failures: a process crash or power loss,
+  an upgrade or restart interruption, a Run timeout, and a model API HTTP 429
+  rate limit. Non-recoverable failures, such as local validation errors, are
+  never retried automatically.
+- Each message gets at most one automatic retry. If the retry also fails, the
+  Client reports the failure to the Server, and the Server shows the error to
+  the person.
+- After a daemon restart, the Client injects a continuation message carrying
+  the interruption reason into every interrupted Session — IM channel and
+  thread Sessions as well as internal Sessions — and then processes the queued
+  messages that were not yet processed.
+- A person can always retry manually by sending another message.
 
 Computer repair commits installation replacement, old credential revocation,
 new credential issuance, and connect-code consumption in one transaction. The

@@ -10,12 +10,7 @@ import {
   type RuntimeDurabilityStore,
   type RuntimeRetryScheduler,
 } from "../runtime/runtime-durability.js";
-import {
-  type JoinedRunOutcome,
-  SessionMessageInbox,
-  type SessionMessageInboxOptions,
-  type SessionMessageRunOutcomeEvent,
-} from "../runtime/session-message-inbox.js";
+import { SessionMessageInbox, type SessionMessageRunOutcomeEvent } from "../runtime/session-message-inbox.js";
 import { SessionMessageRun, sessionMessageOfRun, sessionMessageRunId } from "../runtime/session-message-run.js";
 
 type Items = readonly { text: string }[];
@@ -93,12 +88,11 @@ function makeInbox(
     rateLimitRetryDelayMs?: number;
     maxRememberedMessages?: number;
     timeoutScheduler?: RuntimeRetryScheduler;
-    credentialEnvironment?: SessionMessageInboxOptions["credentialEnvironment"];
   } = {},
 ) {
   const inbox = new SessionMessageInbox({
     admission: new AdmissionController(),
-    credentialEnvironment: options.credentialEnvironment ?? {
+    credentialEnvironment: {
       cleanup: vi.fn(async () => undefined),
       prepare: vi.fn(async () => {
         throw new Error("Internal Sessions do not prepare credentials");
@@ -534,7 +528,7 @@ describe("the retry of a Session message Run", () => {
     expect(attempts).toHaveLength(1);
   });
 
-  it("delivers a steered message once on its own, with a fresh count, when the shared count runs out", async () => {
+  it("fails every message with the Run when the shared count runs out", async () => {
     const { attempts, runtime, steers } = harness();
     const outcomes: SessionMessageRunOutcomeEvent[] = [];
     const inbox = makeInbox(runtime, { outcomes });
@@ -549,28 +543,22 @@ describe("the retry of a Session message Run", () => {
     for (let index = 2; index <= MAX_AUTOMATIC_RETRIES + 1; index += 1) {
       (await started(attempts, index)).finish(rateLimited);
     }
-    const own = await started(attempts, MAX_AUTOMATIC_RETRIES + 2);
-    expect(own.texts[0]).toContain("the turn this message was steered into failed");
-    expect(own.texts.at(-1)).toBe("second");
-    expect(bodies(own.texts, "first")).toEqual([]);
-    expect(inbox.getState(second.messageId)).toMatchObject({ status: "running", attempts: 0, steerRedelivered: true });
+    await vi.waitFor(() => expect(inbox.getState(second.messageId)?.status).toBe("failed"));
+    await inbox.settled();
+    expect(attempts).toHaveLength(MAX_AUTOMATIC_RETRIES + 1);
     expect(inbox.getState(first.messageId)).toMatchObject({
       status: "failed",
       lastError: { code: "provider_rate_limited" },
     });
-    // Its own Run has its own retries.
-    own.finish(rateLimited);
-    (await started(attempts, MAX_AUTOMATIC_RETRIES + 3)).finish();
-    await inbox.settled();
-    expect(inbox.getState(second.messageId)?.status).toBe("succeeded");
     expect(outcomes.map(({ messageId, reason }) => [messageId, reason])).toEqual([
       [first.messageId, "provider_rate_limited"],
+      [second.messageId, "session_message_steer_interrupted"],
     ]);
     expect(inbox.pendingCount).toBe(0);
   });
 
-  it("delivers each steered message once more, in order, when the failure is not recoverable", async () => {
-    const { attempts, runtime, state, steers } = harness();
+  it("fails every message with the Run, without a retry, when the failure is not recoverable", async () => {
+    const { attempts, runtime, steers } = harness();
     const inbox = makeInbox(runtime);
     const { message } = conversation();
     const [first, second, carriedLate] = [message("first"), message("second"), message("late")];
@@ -584,73 +572,11 @@ describe("the retry of a Session message Run", () => {
     await inbox.accept(carriedLate);
     await vi.waitFor(() => expect(inbox.getState(carriedLate.messageId)?.status).toBe("running"));
     retry.finish(new Error("the provider broke"));
-    const own = await started(attempts, 3);
-    expect(own.texts.at(-1)).toBe("second");
-    // The next one steers into that Run, as any message does, and this was its one delivery as well.
-    await vi.waitFor(() => expect(inbox.getState(carriedLate.messageId)?.joinedRunId).toBe(state.activeRunId));
-    expect(inbox.getState(carriedLate.messageId)?.steerRedelivered).toBe(true);
-    own.finish();
-    await inbox.settled();
-    expect(attempts).toHaveLength(3);
-    expect(inbox.getState(first.messageId)?.status).toBe("failed");
-    expect(inbox.getState(second.messageId)?.status).toBe("succeeded");
-    expect(inbox.getState(carriedLate.messageId)?.status).toBe("succeeded");
-  });
-
-  it("fails and notifies when the one delivery fails too, and no further delivery follows", async () => {
-    const { attempts, runtime, steers, state } = harness();
-    const outcomes: SessionMessageRunOutcomeEvent[] = [];
-    const inbox = makeInbox(runtime, { outcomes });
-    const { message } = conversation();
-    const [first, second, third] = [message("first"), message("second"), message("third")];
-    await inbox.accept(first);
-    const attempt = await started(attempts, 1);
-    await inbox.accept(second);
-    await inbox.accept(third);
-    await vi.waitFor(() => expect(steers).toHaveLength(2));
-    await vi.waitFor(() => expect(inbox.getState(third.messageId)?.status).toBe("running"));
-    attempt.finish(new Error("the provider broke"));
-    const own = await started(attempts, 2);
-    expect(own.texts.at(-1)).toBe("second");
-    await vi.waitFor(() => expect(inbox.getState(third.messageId)?.joinedRunId).toBe(state.activeRunId));
-    own.finish(new Error("the provider broke again"));
     await inbox.settled();
     expect(attempts).toHaveLength(2);
-    for (const request of [first, second, third]) {
-      expect(inbox.getState(request.messageId)).toMatchObject({ status: "failed" });
+    for (const request of [first, second, carriedLate]) {
+      expect(inbox.getState(request.messageId)?.status).toBe("failed");
     }
-    expect(outcomes.map(({ messageId }) => messageId)).toEqual([first.messageId, second.messageId, third.messageId]);
-  });
-
-  it("does not deliver a steered message again when a stop ended the Run", async () => {
-    const stopped = new AbortController();
-    const { attempts, runtime, steers } = harness();
-    const outcomes: SessionMessageRunOutcomeEvent[] = [];
-    const inbox = makeInbox(runtime, {
-      outcomes,
-      credentialEnvironment: {
-        mode: "proxy",
-        cleanup: vi.fn(async () => undefined),
-        prepare: vi.fn(async () => ({ executionId: "execution", signal: stopped.signal })) as never,
-      },
-    });
-    const { message } = conversation();
-    const second = message("second");
-    await inbox.accept(message("first"));
-    const attempt = await started(attempts, 1);
-    await inbox.accept(second);
-    await vi.waitFor(() => expect(steers).toHaveLength(1));
-    await vi.waitFor(() => expect(inbox.getState(second.messageId)?.status).toBe("running"));
-    stopped.abort();
-    attempt.finish(new Error("stopped"));
-    await inbox.settled();
-    expect(attempts).toHaveLength(1);
-    expect(inbox.getState(second.messageId)).toMatchObject({
-      status: "failed",
-      lastError: { code: "session_message_steer_interrupted" },
-    });
-    expect(inbox.getState(second.messageId)?.steerRedelivered).toBeUndefined();
-    expect(outcomes).toHaveLength(2);
   });
 
   it("waits for a message still being steered before it decides what the retry carries", async () => {
@@ -686,13 +612,13 @@ describe("the retry of a Session message Run", () => {
     const run = new SessionMessageRun(sessionMessageRunId("lead"), async (message, outcome) => {
       settled.push([message.messageId, outcome]);
     });
-    const settled: Array<[string, JoinedRunOutcome]> = [];
+    const settled: Array<[string, AgentSteerOutcome]> = [];
     const message = conversation().message("late");
     expect(run.reserve(message)).toBe(true);
     const ended = run.endAttempt();
     await vi.advanceTimersByTimeAsync(10_000);
     await expect(ended).resolves.toBe(false);
-    await run.settle("ended");
+    await run.settle(false);
     expect(run.reserve(conversation().message("after"))).toBe(false);
     run.steered(message, run.id, { outcome: Promise.resolve("interrupted") });
     await vi.waitFor(() => expect(settled).toEqual([[message.messageId, "interrupted"]]));
@@ -736,7 +662,7 @@ describe("a Session message Run after a crash or restart", () => {
     }
   });
 
-  it("delivers a steered message once on its own when the crash spends the Run's last retry", async () => {
+  it("fails the messages steered into the Run when the crash spends its last retry; queued ones run", async () => {
     const { message } = conversation();
     const [lead, steered, queued] = [message("lead"), message("steered"), message("queued")];
     const persistence = await crashed([
@@ -745,91 +671,35 @@ describe("a Session message Run after a crash or restart", () => {
       record(queued, "accepted"),
     ]);
     const outcomes: SessionMessageRunOutcomeEvent[] = [];
-    const { attempts, runtime, steers } = harness();
+    const { attempts, runtime } = harness();
     const inbox = makeInbox(runtime, { persistence, outcomes, now: () => 2_000 });
     await inbox.ready();
     expect(inbox.getState(lead.messageId)?.status).toBe("failed");
-    expect(outcomes.map(({ messageId }) => messageId)).toEqual([lead.messageId]);
-    const own = await started(attempts, 1);
-    expect(own.texts[0]).toContain(NOTICE);
-    expect(own.texts.at(-1)).toBe("steered");
-    expect(inbox.getState(steered.messageId)).toMatchObject({ steerRedelivered: true, attempts: 0 });
-    // The queued one was never steered: it follows in order, without the notice.
-    await vi.waitFor(() => expect(steers).toHaveLength(1));
-    expect(steers[0]?.texts.at(-1)).toBe("queued");
-    expect(steers[0]?.texts[0]).not.toContain(NOTICE);
-    await vi.waitFor(() => expect(inbox.getState(queued.messageId)?.status).toBe("running"));
-    own.finish();
-    await inbox.settled();
-    expect(inbox.getState(steered.messageId)?.status).toBe("succeeded");
-    expect(inbox.getState(queued.messageId)?.status).toBe("succeeded");
-  });
-
-  it("delivers a steered message whose Run already failed before the crash reached it", async () => {
-    const { message } = conversation();
-    const [lead, steered] = [message("lead"), message("steered")];
-    const persistence = await crashed([
-      record(lead, "failed", { outcomeReport: "published" }),
-      record(steered, "running", { joinedRunId: sessionMessageRunId(lead.messageId) }),
-    ]);
-    const { attempts, runtime } = harness();
-    const inbox = makeInbox(runtime, { persistence });
-    await inbox.ready();
-    const own = await started(attempts, 1);
-    expect(own.texts.at(-1)).toBe("steered");
-    expect(inbox.getState(steered.messageId)?.steerRedelivered).toBe(true);
-    own.finish();
-    await inbox.settled();
-    expect(inbox.getState(steered.messageId)?.status).toBe("succeeded");
-  });
-
-  it("keeps the one delivery across a restart: a message that had it fails with the next Run", async () => {
-    const { message } = conversation();
-    const [lead, steered] = [message("lead"), message("steered")];
-    const persistence = await crashed([
-      record(lead, "failed", { outcomeReport: "published" }),
-      record(steered, "running", { joinedRunId: sessionMessageRunId(lead.messageId), steerRedelivered: true }),
-    ]);
-    const outcomes: SessionMessageRunOutcomeEvent[] = [];
-    const { attempts, runtime } = harness();
-    const inbox = makeInbox(runtime, { persistence, outcomes });
-    await inbox.ready();
     expect(inbox.getState(steered.messageId)).toMatchObject({
       status: "failed",
       lastError: { code: "run_interrupted" },
     });
-    expect(attempts).toHaveLength(0);
-    expect(outcomes.map(({ messageId }) => messageId)).toEqual([steered.messageId]);
+    expect(outcomes.map(({ messageId }) => messageId).sort()).toEqual([lead.messageId, steered.messageId].sort());
+    const own = await started(attempts, 1);
+    expect(own.texts.at(-1)).toBe("queued");
+    expect(own.texts[0]).not.toContain(NOTICE);
+    own.finish();
+    await inbox.settled();
+    expect(inbox.getState(queued.messageId)?.status).toBe("succeeded");
   });
 
-  it("stays queued and unrun when its delivery cannot be written, and recovers on the next start", async () => {
+  it("fails a steered message whose Run already failed before the crash reached it", async () => {
     const { message } = conversation();
     const [lead, steered] = [message("lead"), message("steered")];
-    const store = await crashed([
+    const persistence = await crashed([
       record(lead, "failed", { outcomeReport: "published" }),
       record(steered, "running", { joinedRunId: sessionMessageRunId(lead.messageId) }),
     ]);
-    let writes = 0;
-    const persistence: RuntimeDurabilityStore = {
-      list: (kind) => store.list(kind),
-      write: async (written) => {
-        writes += 1;
-        // The recovery of the `running` record commits; the delivery after it does not.
-        if (writes > 1) throw new Error("disk full");
-        await store.write(written);
-      },
-    };
     const { attempts, runtime } = harness();
     const inbox = makeInbox(runtime, { persistence });
     await inbox.ready();
-    expect(inbox.getState(steered.messageId)?.steerRedelivered).toBeUndefined();
+    expect(inbox.getState(steered.messageId)?.status).toBe("failed");
     expect(attempts).toHaveLength(0);
-    expect(inbox.queuedCount).toBe(0);
-    expect(
-      (await store.list("session-message")).find((stored) => stored.key === record(steered, "running").key),
-    ).toMatchObject({
-      status: "retryable",
-    });
   });
 
   it("runs a steered message on its own, with the notice and a fresh count, when its Run already ended", async () => {

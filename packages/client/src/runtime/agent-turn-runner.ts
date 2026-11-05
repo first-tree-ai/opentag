@@ -127,7 +127,7 @@ export interface AgentTurnRunnerOptions {
     /** The message's input for a retry, built once the retry's credentials are prepared. */
     input(message: SessionMessageDeliveryRequestV3, processedAt: Date): AgentInput;
     /** Resolves once the message's outcome is durable. */
-    settle(message: SessionMessageDeliveryRequestV3, outcome: AgentSteerOutcome | "cancelled"): Promise<void>;
+    settle(message: SessionMessageDeliveryRequestV3, outcome: AgentSteerOutcome): Promise<void>;
   };
 }
 
@@ -189,8 +189,6 @@ interface RunningTurn {
   arrivals: Map<string, number>;
   /** Set once the Turn's outcome is decided; a message acknowledged later follows its own receipt. */
   finalized: boolean;
-  /** A stop or cancel does not deliver its messages again. */
-  cancelled?: boolean;
   /** Run time of the latest attempt that is not recorded yet. */
   unrecordedRunMs: number;
   /** Messages an earlier attempt held, replayed in the current attempt's input. */
@@ -388,9 +386,7 @@ export class AgentTurnRunner {
   sessionMessageSteered(message: SessionMessageDeliveryRequestV3, turnId: string, receipt: AgentSteerReceipt): void {
     const turn = this.#turns.get(turnId);
     if (!turn || turn.finalized) {
-      void receipt.outcome.then((outcome) =>
-        this.#sessionMessages.settle(message, turn?.cancelled && outcome !== "not_started" ? "cancelled" : outcome),
-      );
+      void receipt.outcome.then((outcome) => this.#sessionMessages.settle(message, outcome));
     } else {
       turn.joined.set(message.messageId, { message, receipt });
     }
@@ -844,18 +840,16 @@ export class AgentTurnRunner {
   /** Every Session message that joined the Turn ends with it. */
   async #settleSessionMessages(turn: RunningTurn, completion: TurnCompletion): Promise<void> {
     turn.finalized = true;
-    turn.cancelled = completion.outcome === "cancelled";
     const completed = completion.outcome === "completed";
-    const unfinished = turn.cancelled ? "cancelled" : "interrupted";
-    const settle = (message: SessionMessageDeliveryRequestV3, outcome: AgentSteerOutcome | "cancelled") =>
+    const settle = (message: SessionMessageDeliveryRequestV3, outcome: AgentSteerOutcome) =>
       this.#sessionMessages.settle(message, outcome);
     await Promise.allSettled([
       ...turn.steers.flatMap((steer) =>
-        steer.type === "session:message:deliver" ? [settle(steer, completed ? "processed" : unfinished)] : [],
+        steer.type === "session:message:deliver" ? [settle(steer, completed ? "processed" : "interrupted")] : [],
       ),
       ...[...turn.joined.values()].map(async ({ message, receipt }) => {
         const outcome = await receipt.outcome;
-        await settle(message, completed || outcome === "not_started" ? outcome : unfinished);
+        await settle(message, outcome === "processed" && !completed ? "interrupted" : outcome);
       }),
     ]);
   }

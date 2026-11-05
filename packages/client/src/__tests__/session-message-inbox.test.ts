@@ -2450,7 +2450,7 @@ describe("SessionMessageInbox", () => {
 
   it.each([
     ["not_started", "accepted"],
-    ["interrupted", "accepted"],
+    ["interrupted", "failed"],
   ] as const)("resolves a steered message whose joined Run ended as %s", async (outcome, status) => {
     const admission = new AdmissionController();
     const persistence = new MemoryRuntimeDurabilityStore();
@@ -2514,14 +2514,30 @@ describe("SessionMessageInbox", () => {
       expect(inbox.getState(message.messageId)?.status).toBe("succeeded");
       expect(inbox.getState(message.messageId)?.outcomeReport).toBeUndefined();
     } else {
-      // The Run it joined failed: it runs once more on its own, and only that Run can fail it.
-      expect(inbox.getState(message.messageId)?.steerRedelivered).toBe(true);
       held.reservation.release();
-      await vi.waitFor(() => expect(prompts).toEqual(["steered"]));
       await inbox.settled();
-      expect(failures).toEqual([]);
-      expect(onRunOutcome).not.toHaveBeenCalled();
-      expect(inbox.getState(message.messageId)?.status).toBe("succeeded");
+      expect(prompts).toEqual([]);
+      expect(inbox.getState(message.messageId)?.lastError).toMatchObject({
+        code: "session_message_steer_interrupted",
+        retryability: "never",
+      });
+      expect(failures).toMatchObject([{ code: "session_message_steer_interrupted" }]);
+      // A possibly-started steer is terminal like any other permanent failure: it is reported once
+      // through the durable outcome path, and the marker records the handoff in the same record.
+      expect(onRunOutcome).toHaveBeenCalledOnce();
+      expect(onRunOutcome).toHaveBeenCalledWith(
+        expect.objectContaining({
+          messageId: message.messageId,
+          targetSessionId,
+          outcome: "failed",
+          reason: "session_message_steer_interrupted",
+        }),
+      );
+      expect(inbox.getState(message.messageId)?.outcomeReport).toBe("published");
+      await expect(inbox.accept({ ...message, requestId: randomUUID() })).resolves.toMatchObject({
+        status: "rejected",
+        reason: "provider_unavailable",
+      });
     }
     await inbox.settled();
     inbox.stop();
@@ -2597,9 +2613,9 @@ describe("SessionMessageInbox", () => {
 
   it.each([
     ["completed", "succeeded"],
-    ["aborted", "accepted"],
+    ["aborted", "failed"],
   ] as const)(
-    "does not redeliver a Provider-owned steer unless the host Run failed: it %s during steer acceptance",
+    "does not redeliver a Provider-owned steer when the host Run %s during steer acceptance",
     async (hostStatus, recordStatus) => {
       const admission = new AdmissionController();
       const persistence = new MemoryRuntimeDurabilityStore();
@@ -2629,17 +2645,13 @@ describe("SessionMessageInbox", () => {
       expect((await inbox.accept(message)).status).toBe("accepted");
       await expect(hostRun).resolves.toMatchObject({ status: hostStatus });
       await vi.waitFor(() => expect(inbox.getState(message.messageId)?.status).toBe(recordStatus));
+      await inbox.settled();
       held.reservation.release();
       await inbox.settled();
-      // The Provider owned the input once its steer RPC succeeded, so only a failed host Run delivers it again.
+      // The Provider owned the input once its steer RPC succeeded, so the inbox never delivers it again.
       expect(runtime.steers).toBe(1);
-      if (hostStatus === "completed") {
-        expect(runtime.prompts).toBe(1);
-        expect(ensureRuntime).not.toHaveBeenCalled();
-      } else {
-        expect(inbox.getState(message.messageId)?.steerRedelivered).toBe(true);
-        expect(ensureRuntime).toHaveBeenCalledOnce();
-      }
+      expect(runtime.prompts).toBe(1);
+      expect(ensureRuntime).not.toHaveBeenCalled();
       expect(inbox.queuedCount).toBe(0);
       inbox.stop();
       await runtime.close();
@@ -2887,26 +2899,50 @@ describe("SessionMessageInbox steer custody with Claude Code", () => {
     }
   });
 
-  it("delivers a steer the provider started once more when the host Run then fails", async () => {
+  it("fails a steer the provider started without replay when the host Run then fails", async () => {
     const h = await harness();
     try {
+      // The first daemon terminalizes the steer but cannot hand its outcome over (for example it
+      // crashes between the two writes): the terminal record keeps `outcomeReport: pending`.
+      h.reporter.available = false;
       const first = h.inbox(() => h.host);
       const uuid = await h.steerInto(first);
       send(h.hostChild, { type: "command_lifecycle", command_uuid: uuid, state: "started" });
       await vi.waitFor(() => expect(first.getState(h.message.messageId)?.status).toBe("running"));
       h.hostChild.emit("exit", 1, null);
       await expect(h.hostRun).resolves.toMatchObject({ status: "failed" });
-      await vi.waitFor(async () => expect((await h.committed())?.steerRedelivered).toBe(true));
-      // Durable before it runs again, and neither a failure nor a notice yet.
-      expect(await h.committed()).toMatchObject({
-        status: "accepted",
-        attempts: 0,
-        interruption: { reason: "steered_run_failed" },
-      });
-      expect(h.failures).toEqual([]);
+      await vi.waitFor(async () => expect((await h.committed())?.status).toBe("failed"));
+      expect((await h.committed())?.lastError).toMatchObject({ code: "session_message_steer_interrupted" });
+      expect(h.failures).toMatchObject([{ code: "session_message_steer_interrupted", retryability: "never" }]);
+      // The terminal status and the notice intent committed in one write.
+      expect((await h.committed())?.outcomeReport).toBe("pending");
       expect(h.outcomes).toEqual([]);
       first.stop();
       await first.settled();
+
+      h.reporter.available = true;
+      const replacement = await h.newRuntime();
+      const restored = h.inbox(() => replacement);
+      await restored.ready();
+      h.held.reservation.release();
+      await restored.settled();
+      expect(restored.getState(h.message.messageId)?.status).toBe("failed");
+      // Hydration hands the pending report over exactly once and never reruns the message.
+      await vi.waitFor(async () => expect((await h.committed())?.outcomeReport).toBe("published"));
+      expect(h.outcomes).toEqual([
+        expect.objectContaining({
+          messageId: h.message.messageId,
+          outcome: "failed",
+          reason: "session_message_steer_interrupted",
+        }),
+      ]);
+      await expect(restored.accept({ ...h.message, requestId: randomUUID() })).resolves.toMatchObject({
+        status: "rejected",
+        reason: "provider_unavailable",
+      });
+      await restored.settled();
+      expect(h.children).toHaveLength(1);
+      restored.stop();
     } finally {
       await h.close();
     }

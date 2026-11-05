@@ -62,9 +62,8 @@ the same Session after the daemon is back, its input begins with
 
 1. While a visible Session's IM Turn is working, send it a Session message, then kill and restart the daemon.
 2. Expected: the Turn continues, and the message is steered into it again with the notice that it may already have been
-   handled.
-3. Make that Turn fail. Expected: the message runs once more as its own Run, with the same notice, and no failure is reported
-   for it while that Run can still succeed.
+   handled. If that Turn fails, the message fails with it and does not run again: the person gets the error card, and the
+   message's sender gets a notice.
 
 ## Parent message steered into a running child
 
@@ -75,11 +74,10 @@ Use a steer-capable Provider (Claude Code on a current version). A child's long 
    all messages succeed together when the Run completes.
 3. Repeat, then kill and restart the daemon after the follow-ups were steered. Expected: the child resumes with the crash
    notice, the follow-ups arrive again in order, each with the notice, and the parent gets no failure notice.
-4. Repeat the crash until the retries run out. Expected: the child's message fails with one notice. Each steered follow-up then
-   runs once more on its own with the notice, or steers into the one before it, and succeeds with no failure notice. A message
-   queued but not yet steered also runs, without the notice.
-5. Make both the child's task and a follow-up's own delivery fail. Expected: one notice each to the sender, and no further Run.
-6. Suspend the Agent while a follow-up is steered into a child's Run. Expected: the follow-up does not run again.
+4. Repeat the crash until the retries run out. Expected: the child's message fails, and the steered follow-ups fail with it:
+   one notice per message to its sender, no further Run. A message queued but not yet steered runs on its own.
+5. Make the child's task fail without a retry while a follow-up is steered into it. Expected: both fail with one notice each to
+   the sender, and no further Run.
 
 ## Failure notice to the sender
 

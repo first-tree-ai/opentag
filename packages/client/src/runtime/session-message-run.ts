@@ -1,7 +1,7 @@
 import type { SessionMessageDeliveryRequestV3 } from "@opentag/shared";
-import type { AgentSteerReceipt } from "../agent-runtime/types.js";
+import type { AgentSteerOutcome, AgentSteerReceipt } from "../agent-runtime/types.js";
 import { MAX_RECORDED_STEERS } from "./interruption-retry.js";
-import type { JoinableRuns, JoinedRunOutcome } from "./session-message-inbox.js";
+import type { JoinableRuns } from "./session-message-inbox.js";
 
 /** How long a retry waits for steers still in flight before it gives up. */
 const STEER_SETTLE_TIMEOUT_MS = 10_000;
@@ -24,7 +24,7 @@ export function sessionMessageOfRun(runId: string): string | undefined {
  */
 export class SessionMessageRun implements JoinableRuns {
   readonly id: string;
-  readonly #settle: (message: SessionMessageDeliveryRequestV3, outcome: JoinedRunOutcome) => Promise<void>;
+  readonly #settle: (message: SessionMessageDeliveryRequestV3, outcome: AgentSteerOutcome) => Promise<void>;
   /** Messages an earlier attempt held; the current attempt's input replays them. */
   #carried: SessionMessageDeliveryRequestV3[] = [];
   /** Messages steered into the current attempt, in order, with what the provider did with them. */
@@ -37,7 +37,7 @@ export class SessionMessageRun implements JoinableRuns {
 
   constructor(
     id: string,
-    settle: (message: SessionMessageDeliveryRequestV3, outcome: JoinedRunOutcome) => Promise<void>,
+    settle: (message: SessionMessageDeliveryRequestV3, outcome: AgentSteerOutcome) => Promise<void>,
   ) {
     this.id = id;
     this.#settle = settle;
@@ -98,15 +98,14 @@ export class SessionMessageRun implements JoinableRuns {
     this.#attemptEnded = false;
   }
 
-  /** The Run ended; resolves once what became of each message in it is durable. */
-  async settle(ending: "completed" | "ended" | "cancelled"): Promise<void> {
+  /** Every message in the Run ends with it; resolves once their outcomes are durable. */
+  async settle(completed: boolean): Promise<void> {
     this.#settled = true;
-    const unfinished = ending === "cancelled" ? "cancelled" : "interrupted";
     await Promise.allSettled([
-      ...this.#carried.map((message) => this.#settle(message, ending === "completed" ? "processed" : unfinished)),
+      ...this.#carried.map((message) => this.#settle(message, completed ? "processed" : "interrupted")),
       ...[...this.#joined.values()].map(async ({ message, receipt }) => {
         const outcome = await receipt.outcome;
-        await this.#settle(message, ending === "completed" || outcome === "not_started" ? outcome : unfinished);
+        await this.#settle(message, outcome === "processed" && !completed ? "interrupted" : outcome);
       }),
     ]);
   }

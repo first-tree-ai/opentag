@@ -154,12 +154,10 @@ kind of Session the target is. A scheduled message has no sender: its notice goe
   record write; the marker becomes `published` once the report is durable in the reporter's file. On startup a
   terminal record still marked `pending` (for example after a crash between the two writes) hands its report over
   again, and the child is never rerun. Terminal records written before the marker existed carry no marker and are
-  not backfilled. The Server-backed Runtime durability adapter does not store the marker. A steered message succeeds when
-  the Run it joined completes, and returns to the FIFO with no report when the provider never started it. When that Run fails
-  it is delivered again on its own, once, and only that delivery can fail it: it then takes this terminal path with the
-  failure of that delivery. A stop or cancel of the Run fails it without another delivery (reason
-  `session_message_steer_interrupted`). See
-  [Delivery again after the steered Run fails](#delivery-again-after-the-steered-run-fails).
+  not backfilled. The Server-backed Runtime durability adapter does not store the marker. A steered message follows
+  the Run it joined: when that Run ends without completing, the message takes this same terminal path (reason
+  `session_message_steer_interrupted`), a completed Run makes it succeed, and a message the provider never started returns
+  to the FIFO with no report. This is true of an IM Turn and a Session message Run alike, and the sender gets the notice.
 - Cloud: the Runner's `session:message:settled` frame carries the failure `reason` (for example `turn_timeout`) on a
   collaboration-v3 channel. Every non-completed outcome (`failed`, `cancelled`, `unknown`) produces a notice. The
   Server makes up to three delivery attempts, 30 seconds apart. The notice's source authority is the settling
@@ -255,8 +253,7 @@ is answered `accepted` and changes nothing. See
 On a Local Computer a Session message is steered into the Session's IM Turn whenever the runtime can take it, including
 that Turn's retry and the Turn resumed after a process interruption
 ([#1301](https://github.com/first-tree-ai/opentag/issues/1301#issuecomment-6651237819)). A steered message has no count of its own: it
-shares the count of the Turn it joined, so they retry together. When the Turn finally fails, the message is delivered again
-([below](#delivery-again-after-the-steered-run-fails)).
+shares the count of the Turn it joined, so they retry together and fail together.
 
 - **Model HTTP 429, retried in place.** Messages already steered into the Turn join the same retry, in their original order
   among the Turn's IM steers, and stay `running`. They are not queued again. The list is kept in memory, not in the Turn's
@@ -267,9 +264,9 @@ shares the count of the Turn it joined, so they retry together. When the Turn fi
   have handled it already. Until then they wait in the FIFO, re-checking about once per second. If the Turn ends first, they
   run as their own Runs, in order and with a fresh count, as they do when the runtime cannot steer. If the Turn cannot be
   resumed, the existing fallback applies: the waiting messages fail.
-- **Running out of retries, `turn_timeout`, or any other failure** ends the Turn, and the messages in it are delivered again.
-  The same happens when the count runs out at a restart; a message whose new state cannot be written yet stays queued and does
-  not run. Queued messages run on their own.
+- **Running out of retries, `turn_timeout`, or any other failure** ends the Turn, and the messages in it fail with it. When
+  the count runs out at a restart, the messages steered into that Turn fail rather than run again; a message whose failure
+  cannot be written yet stays queued and does not run. Queued messages run on their own.
 
 A message stays queued and waits for the Turn to end when the runtime cannot steer or refuses the steer, when the Turn
 already carries 16 Session messages, or when a visible Session has no IM outbox context.
@@ -293,24 +290,9 @@ Local Computer.
   into it, then queued messages, steer into it in order once it is running. A message that was already steered carries the
   notice, so the Agent knows it may have handled it. If the Run ends first, they run as their own Runs, in order, and each
   one's count starts from 0.
-- **Running out of retries, `turn_timeout`, or any other failure** ends the Run. The Run's own message fails and gets its notice,
-  and the messages steered into it are delivered again. The same happens when the count runs out at a restart.
+- **Running out of retries, `turn_timeout`, or any other failure** ends the Run, and the messages steered into it fail with it.
+  Each sender gets a notice, with reason `session_message_steer_interrupted`. When the count runs out at a restart, the messages
+  steered into that Run fail with `run_interrupted`; queued messages run on their own.
 
-A crash can land between the Run's terminal write and those of its messages. They are recovered from the Run's record: if it
-failed they are delivered again, and if it succeeded they run again on their own with the notice. This is the same accepted cost
-of repeated handling.
-
-### Delivery again after the steered Run fails
-
-When the Run a message was steered into finally fails (count exhausted, `turn_timeout`, or a failure that is not retried), for
-an IM Turn or a Session message Run alike, the message does not fail with it. It returns to its place in the FIFO and is delivered
-again with the continuation notice, because it may already have been handled. Its count starts from 0.
-
-- **Once per message.** `steerRedelivered` is written to the durable record before the message runs again, so a restart cannot
-  grant a second delivery. If the write fails, the message does not run: it is recovered on the next start.
-- **It can still steer.** If another Run is running by then, the message steers into it as any message does. When that Run
-  fails, there is no further delivery and the message fails.
-- **Only that delivery can fail it.** If it fails too, retries included, the message fails and its sender is notified.
-- **A stop or cancel does not deliver again.** A cancelled IM Turn, or a Session message Run whose execution was revoked or
-  replaced, fails its messages with `session_message_steer_interrupted`. A daemon stop is neither: the Run and its messages are
-  recovered on restart.
+A crash can land between the Run's terminal write and those of its messages. If the Run failed, they fail at the restart. If
+it succeeded, they run again on their own with the notice: this is the same accepted cost of repeated handling.

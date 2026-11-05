@@ -68,6 +68,8 @@ import {
 import { AgentWorkspaceManager } from "./agent-workspace.js";
 import { ClientRuntime, type ClientRuntimeOptions } from "./client-runtime.js";
 import { ContextTreeManager, resolveContextTreePackage } from "./context-tree.js";
+import { InterruptedWorkRecovery } from "./interrupted-work-recovery.js";
+import { TurnRetryStore } from "./interruption-retry.js";
 import { MvpTurnReportRecovery } from "./mvp-turn-report-recovery.js";
 import { resolveAccountHome } from "./provider-cli/account-layout.js";
 import { ProviderCliManager } from "./provider-cli/manager.js";
@@ -861,9 +863,19 @@ export async function createClientRuntime(
     logger: moduleLogger("session-message-outcome"),
     persistence: options.durabilityStore ?? new FileRuntimeDurabilityStore(options.home),
   });
+  // Durable input of accepted IM Turns, for their one automatic retry (Local only).
+  const turnRetries = new TurnRetryStore(options.home);
+  let runner: AgentTurnRunner;
   const sessionMessageInbox = new SessionMessageInbox({
     admission,
     cliCommand: options.cliCommand ?? "opentag",
+    /* v8 ignore start -- late-bound adapter; the AgentTurnRunner methods have their own tests. */
+    joinableRuns: {
+      reserve: (message, runId) => runner.reserveSessionMessage(message, runId),
+      release: (message, runId) => runner.releaseSessionMessage(message, runId),
+      steered: (message, runId, receipt) => runner.sessionMessageSteered(message, runId, receipt),
+    },
+    /* v8 ignore stop */
     credentialEnvironment,
     imCredentialGrantVersion: connection.capabilityVersion.bind(connection, RUNTIME_CAPABILITY.imCredentialGrant),
     metrics: durabilityMetrics,
@@ -875,17 +887,23 @@ export async function createClientRuntime(
     turnPlan: providerCliTurnPlans,
   });
   await Promise.all([reportOwner.ready(), sessionMessageOutcomes.ready(), sessionMessageInbox.ready()]);
+  const restartRetryAvailable = () => connection.capabilityVersion(RUNTIME_CAPABILITY.sessionRecovery) === 1;
+  let interruptedWork: InterruptedWorkRecovery | undefined;
   const mvpReportRecovery = new MvpTurnReportRecovery({
     bindingStore,
     logger: moduleLogger("report-recovery"),
     reconciler,
     reportOwner,
+    /* v8 ignore next -- late-bound adapter; InterruptedWorkRecovery is covered by interruption-retry tests. */
+    retryGate: { isPendingRetry: (sessionId, turnId) => interruptedWork?.isPendingRetry(sessionId, turnId) === true },
+    /* v8 ignore next -- forwards to TurnRetryStore.remove, covered by interruption-retry tests. */
+    onRecorded: (sessionId, turnId) => turnRetries.remove(sessionId, turnId),
   });
-  let runner: AgentTurnRunner;
   const preflight = createClientRuntimePreflight({
     providers,
     workspace,
   });
+  const custodyLogger = moduleLogger("turn-custody");
   const custody = new TurnCustodyOwner({
     admission,
     bindingStore,
@@ -893,8 +911,15 @@ export async function createClientRuntime(
     imSteerVersion: connection.capabilityVersion.bind(connection, RUNTIME_CAPABILITY.imSteer),
     reconciler,
     preflight,
+    retries: turnRetries,
+    /* v8 ignore next 7 -- logging only; the custody decision is covered by interruption-retry tests. */
+    onRetryInputUnavailable: (request, turnId) =>
+      custodyLogger.warn(
+        { code: "TURN_RETRY_INPUT_UNAVAILABLE", sessionId: request.sessionId, deliveryId: request.deliveryId, turnId },
+        "Turn accepted without retry input; an interruption is reported instead of retried",
+      ),
     /* v8 ignore next -- late binding is required because custody and runner own each other. */
-    start: (owner) => runner.start(owner),
+    start: (owner, startOptions) => runner.start(owner, startOptions),
     /* v8 ignore next -- late binding is required because custody and runner own each other. */
     steer: (request) => runner.steer(request),
   });
@@ -909,7 +934,25 @@ export async function createClientRuntime(
     turnPlan: providerCliTurnPlans,
     outgoingReplies: createOutgoingReplyCollector(providerCliTurnPlans),
     agentErrorReporter: options.agentErrorReporter,
+    retries: turnRetries,
+    restartRetryAvailable,
+    sessionMessages: {
+      input: sessionMessageInbox.joinedRunInput.bind(sessionMessageInbox),
+      settle: sessionMessageInbox.settleJoined.bind(sessionMessageInbox),
+    },
   });
+  interruptedWork = new InterruptedWorkRecovery({
+    bindingStore,
+    connection,
+    custody,
+    inbox: sessionMessageInbox,
+    logger: moduleLogger("interrupted-work-recovery"),
+    reconciler,
+    retries: turnRetries,
+  });
+  reconciler.setResumer(interruptedWork);
+  await interruptedWork.start();
+  const recovery = interruptedWork;
   const availabilityTester = new AgentRuntimeAvailabilityTester({
     factories: new Map(factories.map((factory) => [factory.manifest.providerId, factory])),
   });
@@ -944,7 +987,8 @@ export async function createClientRuntime(
         if (temporary) await rm(temporary, { recursive: true, force: true });
       }
     },
-    ...createClientRuntimeHandlers(custody, reportOwner, mvpReportRecovery),
+    ...createClientRuntimeHandlers(custody, reportOwner, mvpReportRecovery, recovery),
+    handleSessionRecoverResult: recovery.handleResult.bind(recovery),
     handleTurnActivityResult: runner.handleActivityResult.bind(runner),
     handleSessionMessageOutcomeResult: sessionMessageOutcomes.handleResult.bind(sessionMessageOutcomes),
   });
@@ -1367,6 +1411,7 @@ export function createClientRuntimeHandlers(
   custody: Pick<TurnCustodyOwner, "accept" | "acceptSteer">,
   reportOwner: Pick<TurnReportOwner, "handleResult">,
   recovery: Pick<MvpTurnReportRecovery, "afterReconciled" | "cancel" | "prepare">,
+  prepared?: Pick<InterruptedWorkRecovery, "reconcileRejected" | "sessionPrepared">,
 ): ComposedClientRuntimeHandlers {
   return {
     handleDelivery: (request) => custody.accept(request),
@@ -1374,7 +1419,18 @@ export function createClientRuntimeHandlers(
     handleTurnReportResult: (result) => reportOwner.handleResult(result).then(() => undefined),
     prepareReconcileResult: (request, result) => recovery.prepare(request, result),
     onReconcileResultSendFailed: (request, result) => recovery.cancel(request, result),
-    onReconciled: (request, result) => recovery.afterReconciled(request, result),
+    onReconciled: (request, result) => {
+      const replay = recovery.afterReconciled(request, result);
+      // Session messages that waited for this Session's preparation (e.g. after a restart) may run, or,
+      // while a resumed Turn is `running`, be steered into it.
+      if (request.desired === "ready" && (result.status === "ready" || result.status === "running")) {
+        prepared?.sessionPrepared(request.sessionId);
+      }
+      if (request.desired === "ready" && result.status === "rejected") {
+        prepared?.reconcileRejected(request.sessionId, result.reason ?? "session_recovery_rejected");
+      }
+      return replay;
+    },
   };
 }
 

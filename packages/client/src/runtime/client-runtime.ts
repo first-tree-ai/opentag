@@ -1,5 +1,6 @@
 import type {
   SessionMessageOutcomeResult,
+  SessionRecoverResult,
   SlackAutoSetupRuntimeRequest,
   SlackAutoSetupRuntimeResult,
   TurnActivityResult,
@@ -53,6 +54,7 @@ type ResidualBusinessFrame = Extract<
       | "turn:report:result"
       | "approval:decision"
       | "session:message:outcome:result"
+      | "session:recover:result"
       | "turn:activity:result";
   }
 >;
@@ -72,6 +74,7 @@ export interface ClientRuntimeOptions {
   handleSteer?(request: RuntimeImSteerRequest): Promise<RuntimeImSteerResult> | RuntimeImSteerResult;
   handleTurnActivityResult?(result: TurnActivityResult): void;
   handleSessionMessageOutcomeResult?(result: SessionMessageOutcomeResult): void;
+  handleSessionRecoverResult?(result: SessionRecoverResult): void;
   handleTurnReportResult?(result: TurnReportResult): Promise<void> | void;
   handleSessionMessageDelivery?(
     request: SessionMessageDeliveryRequestV3,
@@ -277,6 +280,7 @@ export class ClientRuntime {
     }
     if (frame.type === "turn:activity:result") this.#options.handleTurnActivityResult?.(frame);
     if (frame.type === "session:message:outcome:result") this.#options.handleSessionMessageOutcomeResult?.(frame);
+    if (frame.type === "session:recover:result") this.#options.handleSessionRecoverResult?.(frame);
     if (frame.type === "turn:report:result") await this.#options.handleTurnReportResult?.(frame);
   }
 

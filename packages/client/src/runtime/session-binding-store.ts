@@ -89,6 +89,10 @@ export interface LocalSessionBinding {
   unresolvedTurn?: UnresolvedTurn;
 }
 
+export interface SessionPreparationOptions {
+  resumeTurnId?: string;
+}
+
 export interface SessionPreparationResult {
   binding: LocalSessionBinding;
   unresolvedTurn?: UnresolvedTurn;
@@ -143,7 +147,16 @@ export class SessionBindingStore {
     await this.#validateAndSelectRuntimeBinding(current, request, hashes);
   }
 
-  prepare(request: SessionReconcileRequest, hashes: RuntimeSnapshotHashes): Promise<SessionPreparationResult> {
+  /**
+   * `resumeTurnId` prepares the Session around its unresolved Turn for that Turn's automatic retry:
+   * the binding change fence still applies (same generation and snapshot), and the unresolved
+   * custody is kept unchanged.
+   */
+  prepare(
+    request: SessionReconcileRequest,
+    hashes: RuntimeSnapshotHashes,
+    options: SessionPreparationOptions = {},
+  ): Promise<SessionPreparationResult> {
     return this.#withSessionLock(request.sessionId, async () => {
       const runtime = request.runtime;
       if (!runtime) throw new SessionBindingConflictError("conflict", "A ready binding requires a runtime snapshot");
@@ -154,7 +167,11 @@ export class SessionBindingStore {
       const current = await this.#readBinding(bindingPath);
       if (current) this.#validateIdentity(current, request);
       if (current) assertSettledBindingChange(current, request, hashes);
-      if (current?.unresolvedTurn) {
+      const resumed =
+        current?.unresolvedTurn && current.unresolvedTurn.turnId === options.resumeTurnId
+          ? current.unresolvedTurn
+          : undefined;
+      if (current?.unresolvedTurn && !resumed) {
         return { binding: current, unresolvedTurn: current.unresolvedTurn };
       }
       const runtimeBinding = current
@@ -186,9 +203,10 @@ export class SessionBindingStore {
         sessionConfigHash: hashes.sessionConfigHash,
         lastEffectiveSnapshotHash: hashes.effectiveSnapshotHash,
         recentRecordedInputs: current?.recentRecordedInputs ?? [],
+        ...(resumed ? { unresolvedTurn: resumed } : {}),
       };
       await this.#writeBinding(bindingPath, binding);
-      return { binding };
+      return resumed ? { binding, unresolvedTurn: resumed } : { binding };
     });
   }
 
@@ -231,6 +249,21 @@ export class SessionBindingStore {
       const updated = { ...binding, unresolvedTurn };
       await this.#writeBinding(path, updated);
       return { status: "committed", binding: updated, unresolvedTurn };
+    });
+  }
+
+  /**
+   * Undo an acceptance that was committed here but never acknowledged (its retry input could not
+   * be made durable). Only the exact Turn, still in `accepted`, is removed.
+   */
+  discardAccepted(agentId: string, sessionId: string, turnId: string): Promise<boolean> {
+    return this.#withSessionLock(sessionId, async () => {
+      const path = sessionBindingPath(this.#home, agentId, sessionId);
+      const binding = await this.#requireBinding(agentId, sessionId);
+      if (binding.unresolvedTurn?.turnId !== turnId || binding.unresolvedTurn.phase !== "accepted") return false;
+      const { unresolvedTurn: _discarded, ...rest } = binding;
+      await this.#writeBinding(path, rest);
+      return true;
     });
   }
 

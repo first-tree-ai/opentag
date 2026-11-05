@@ -16,6 +16,10 @@ export interface MvpTurnReportRecoveryOptions {
   maxPreparedBatches?: number;
   reconciler: Pick<SessionReconciler, "claimRecovery" | "clearRecovery" | "withAgentLock">;
   reportOwner: Pick<TurnReportOwner, "create" | "rearmTerminal" | "submit">;
+  /** Turns waiting for their automatic retry are not reported as interrupted. */
+  retryGate?: { isPendingRetry(sessionId: string, turnId: string): boolean };
+  /** Called once a replayed report is recorded, to drop the Turn's retry input. */
+  onRecorded?(sessionId: string, turnId: string): Promise<void>;
 }
 
 type RetainedReportReference = NonNullable<SessionReconcileResult["retainedReports"]>[number];
@@ -49,6 +53,8 @@ export class MvpTurnReportRecovery {
   readonly #maxPreparedBatches: number;
   readonly #reconciler: MvpTurnReportRecoveryOptions["reconciler"];
   readonly #reportOwner: MvpTurnReportRecoveryOptions["reportOwner"];
+  readonly #retryGate: MvpTurnReportRecoveryOptions["retryGate"];
+  readonly #onRecorded: MvpTurnReportRecoveryOptions["onRecorded"];
   readonly #prepared = new Map<string, PreparedBatch>();
   readonly #queues = new Map<string, ReplayQueue>();
   #activeReplays = 0;
@@ -60,6 +66,8 @@ export class MvpTurnReportRecovery {
     this.#maxPreparedBatches = options.maxPreparedBatches ?? 256;
     this.#reconciler = options.reconciler;
     this.#reportOwner = options.reportOwner;
+    this.#retryGate = options.retryGate;
+    this.#onRecorded = options.onRecorded;
     if (!Number.isSafeInteger(this.#maxActiveReplays) || this.#maxActiveReplays < 1) {
       throw new Error("MVP Turn Report active replay limit must be a positive safe integer");
     }
@@ -74,13 +82,7 @@ export class MvpTurnReportRecovery {
       let binding = await this.#bindingStore.read(request.agentId, request.sessionId);
       if (!binding) return result;
       const unresolved = binding.unresolvedTurn;
-      if (
-        unresolved &&
-        !this.#reconciler.claimRecovery(request.sessionId, {
-          deliveryId: unresolved.deliveryId,
-          turnId: unresolved.turnId,
-        })
-      ) {
+      if (unresolved && !this.#claim(request.sessionId, unresolved)) {
         return result;
       }
       if (unresolved && unresolved.phase !== "reporting") {
@@ -126,6 +128,17 @@ export class MvpTurnReportRecovery {
     });
   }
 
+  /**
+   * Claim the recovery of an unresolved Turn. A Turn whose automatic retry is pending is not
+   * claimed: the Client owns it, and no failure is reported before the retry runs.
+   */
+  #claim(sessionId: string, unresolved: { deliveryId: string; phase: string; turnId: string }): boolean {
+    if (!this.#reconciler.claimRecovery(sessionId, { deliveryId: unresolved.deliveryId, turnId: unresolved.turnId })) {
+      return false;
+    }
+    return unresolved.phase === "reporting" || this.#retryGate?.isPendingRetry(sessionId, unresolved.turnId) !== true;
+  }
+
   afterReconciled(request: SessionReconcileRequest, result: SessionReconcileResult): void {
     const references = result.retainedReports;
     if (!references || references.length === 0) return;
@@ -168,6 +181,11 @@ export class MvpTurnReportRecovery {
     if (!batch) return;
     if (batch.pendingSends === 1) this.#prepared.delete(request.requestId);
     else batch.pendingSends -= 1;
+  }
+
+  async #recorded(sessionId: string, turnId: string): Promise<void> {
+    if (!this.#onRecorded) return;
+    await this.#onRecorded(sessionId, turnId).catch(() => undefined);
   }
 
   #startQueues(): void {
@@ -216,6 +234,7 @@ export class MvpTurnReportRecovery {
               this.#reconciler.withAgentLock(queue.agentId, async () => {
                 await this.#bindingStore.recordResult(queue.agentId, sessionId, report.turnId, report.resultHash);
                 this.#reconciler.clearRecovery(sessionId, report.turnId);
+                await this.#recorded(sessionId, report.turnId);
               }),
             { onTerminal: () => reportTerminal?.() },
           )

@@ -12,8 +12,21 @@ let threadSequence = 0;
 
 const send = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 
+function respondFixtureOutput(message) {
+  if (message.method === "fixture/echo") {
+    send({ id: message.id, result: message.params });
+    return true;
+  }
+  if (message.method === "fixture/large-output") {
+    const bytes = message.params.oversized === true ? 8 * 1024 * 1024 + 1 : 1024 * 1024 + 1;
+    send({ id: message.id, result: { output: "x".repeat(bytes) } });
+    return true;
+  }
+  return false;
+}
+
 // Real Codex hydrates the whole stored thread into the `thread/resume` response unless the client
-// opts out with `excludeTurns`, so a long thread exceeds the Client's 1 MiB App Server line limit.
+// opts out with `excludeTurns`. The long-thread regression uses a 1 MiB wire budget to detect hydration.
 const hydratedThread = (threadId) => ({
   thread: {
     id: threadId,
@@ -64,10 +77,7 @@ createInterface({ input: process.stdin }).on("line", (line) => {
     } else send({ method: "fixture/initialized", params: {} });
     return;
   }
-  if (message.method === "fixture/echo") {
-    send({ id: message.id, result: message.params });
-    return;
-  }
+  if (respondFixtureOutput(message)) return;
   if (message.method === "thread/start") {
     if (scenario === "probe-hang") return;
     threadSequence += 1;

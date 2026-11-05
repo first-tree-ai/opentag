@@ -858,7 +858,7 @@ describe("SessionMessageInbox", () => {
       store.write(recordFor(old, "accepted", { acceptedAt: 1, attempts: 0 })),
       // Crash mid-Run: no reason recorded.
       store.write(recordFor(running, "running")),
-      // The one automatic retry was already spent when the daemon stopped again.
+      // Its one automatic retry is already spent; a process interruption still resumes it.
       store.write(recordFor(retried, "running", { attempts: 1 })),
       // An orderly stop recorded its reason.
       store.write(
@@ -894,25 +894,20 @@ describe("SessionMessageInbox", () => {
     expect(inbox.getState(old.messageId)?.status).toBe("succeeded");
     expect(inbox.getState(running.messageId)).toMatchObject({
       status: "succeeded",
-      attempts: 1,
-      // Used for the retry's notice, then cleared: only what ends a Run is left on the record.
+      attempts: 0,
+      // Used for the resumed Run's notice, then cleared: only what ends a Run is left on the record.
       interruption: undefined,
     });
     expect(inbox.getState(stopped.messageId)?.status).toBe("succeeded");
-    expect(inbox.getState(retried.messageId)).toMatchObject({
-      status: "failed",
-      lastError: { code: "run_interrupted" },
-    });
-    expect(onRunOutcome).toHaveBeenCalledWith(
-      expect.objectContaining({ messageId: retried.messageId, outcome: "failed", reason: "run_interrupted" }),
-    );
-    expect(runtime.prompt).toHaveBeenCalledTimes(3);
+    expect(inbox.getState(retried.messageId)).toMatchObject({ status: "succeeded", attempts: 1 });
+    expect(onRunOutcome).not.toHaveBeenCalledWith(expect.objectContaining({ messageId: retried.messageId }));
+    expect(runtime.prompt).toHaveBeenCalledTimes(4);
     const inputs = runtime.prompt.mock.calls.map(
       (call) => (call[0] as unknown as { input: { items: Array<{ text: string }> } }).input.items,
     );
     const crashed = inputs.find((items) => items.at(-1)?.text === "running");
     expect(crashed?.[0]?.text).toContain(
-      "at or before 2026-11-05T02:00:00.000Z because the OpenTag daemon stopped unexpectedly",
+      "at or before 2026-11-05T02:00:00.000Z because the OpenTag daemon stopped (crash",
     );
     const restarted = inputs.find((items) => items.at(-1)?.text === "stopped");
     expect(restarted?.[0]?.text).toContain(

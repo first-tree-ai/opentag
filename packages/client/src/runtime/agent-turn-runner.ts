@@ -189,8 +189,6 @@ interface RunningTurn {
   arrivals: Map<string, number>;
   /** Set once the Turn's outcome is decided; a message acknowledged later follows its own receipt. */
   finalized: boolean;
-  /** Whether the current attempt is a retry or a resumed Turn, so no further retry can carry a message. */
-  retrying: boolean;
   /** Messages an earlier attempt held, replayed in the current attempt's input. */
   steers: readonly SteeredInput[];
 }
@@ -282,7 +280,6 @@ export class AgentTurnRunner {
       joining: new Map(),
       arrivals: new Map(),
       finalized: false,
-      retrying: options.continuation !== undefined,
       steers: options.steers ?? [],
     };
     turn.promise = this.#run(turn, abort.signal)
@@ -361,17 +358,14 @@ export class AgentTurnRunner {
   }
 
   /**
-   * Hold a place in this running Turn for a Session message about to be steered into it. `refused`
-   * leaves the message queued: the Turn is not running here, or it holds as many as it can carry.
+   * Hold a place in this running Turn for a Session message about to be steered into it. False leaves
+   * the message queued: the Turn is not running here, or it holds as many as it can carry.
    */
-  reserveSessionMessage(
-    message: SessionMessageDeliveryRequestV3,
-    turnId: string,
-  ): "refused" | "first_attempt" | "retry" {
+  reserveSessionMessage(message: SessionMessageDeliveryRequestV3, turnId: string): boolean {
     const turn = this.#turns.get(turnId);
-    if (!turn || turn.phase !== "running" || turn.owner.request.sessionId !== message.targetSessionId) return "refused";
+    if (!turn || turn.phase !== "running" || turn.owner.request.sessionId !== message.targetSessionId) return false;
     const held = turn.steers.filter((steer) => steer.type === "session:message:deliver").length;
-    if (held + turn.joined.size + turn.joining.size >= MAX_RECORDED_STEERS) return "refused";
+    if (held + turn.joined.size + turn.joining.size >= MAX_RECORDED_STEERS) return false;
     turn.arrivals.set(steeredInputId(message), turn.arrivals.size);
     let done!: () => void;
     const steering = new Promise<void>((resolve) => {
@@ -382,7 +376,7 @@ export class AgentTurnRunner {
     });
     turn.steering.add(steering);
     turn.joining.set(message.messageId, done);
-    return turn.retrying ? "retry" : "first_attempt";
+    return true;
   }
 
   /** The reserved message was steered: an in-place retry of this Turn now carries it. */
@@ -740,7 +734,7 @@ export class AgentTurnRunner {
   }
 
   /**
-   * Decide whether a finished attempt gets the Turn's one automatic retry. Returns the recorded
+   * Decide what follows a finished attempt. Returns the recorded
    * interruption for an in-process retry, `deferred` when an orderly shutdown leaves the retry to
    * the restarted daemon, or undefined when the outcome is reported as is.
    */
@@ -757,7 +751,6 @@ export class AgentTurnRunner {
     const interruption: Interruption = { reason, at: new Date(this.#now()).toISOString() };
     let record: Awaited<ReturnType<TurnRetryStore["update"]>>;
     try {
-      // Recorded even with no retry left: it says what ended this attempt, for the Turn's joined messages.
       record = await this.#retries.update(turn.owner.request.sessionId, turn.owner.turnId, (current) => ({
         ...current,
         interruption,
@@ -765,8 +758,10 @@ export class AgentTurnRunner {
     } catch {
       return undefined;
     }
-    if (!record || record.retries >= MAX_AUTOMATIC_RETRIES) return undefined;
-    return restart ? "deferred" : interruption;
+    if (!record) return undefined;
+    // A process interruption always resumes after restart; only an ordinary failure needs a retry left.
+    if (restart) return "deferred";
+    return record.retries >= MAX_AUTOMATIC_RETRIES ? undefined : interruption;
   }
 
   /** Durably spend the Turn's one automatic retry before it starts; false leaves the failure reported. */
@@ -789,7 +784,6 @@ export class AgentTurnRunner {
     const messages = await this.#sessionMessagesForRetry(turn);
     const arrival = (input: SteeredInput) => turn.arrivals.get(steeredInputId(input)) ?? 0;
     turn.steers = [...steers, ...messages].sort((left, right) => arrival(left) - arrival(right));
-    turn.retrying = true;
     return true;
   }
 

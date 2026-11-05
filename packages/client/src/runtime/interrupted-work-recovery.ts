@@ -4,7 +4,7 @@ import { type ClientLogger, createLogger } from "../observability/logger.js";
 import {
   acknowledgedSteers,
   type Interruption,
-  MAX_AUTOMATIC_RETRIES,
+  noteInterruption,
   type TurnRetryRecord,
   type TurnRetryStore,
 } from "./interruption-retry.js";
@@ -48,10 +48,10 @@ export interface InterruptedWorkRecoveryOptions {
 }
 
 /**
- * Owns the restart half of the one-automatic-retry rule on a Local Computer.
+ * Owns resuming accepted work after a process interruption on a Local Computer.
  *
  * On startup it finds accepted IM Turns that the previous daemon left unresolved (crash, power loss,
- * or an orderly stop that deferred the retry), spends their one retry durably, and fences their
+ * or an orderly stop), counts the interruption against the fast-loop fuse, and fences their
  * Sessions. Once connected it asks the Server to re-prepare every Session with interrupted work
  * (`session:recover`); the resulting ready reconcile resumes the Turn with a continuation notice.
  * Internal and visible Session messages waiting in the inbox ride on the same request. When the
@@ -204,18 +204,27 @@ export class InterruptedWorkRecovery implements InterruptedTurnResumer {
       await this.#options.retries.remove(record.sessionId, record.turnId).catch(() => undefined);
       return;
     }
-    // A Turn that already reported, or already used its retry, follows ordinary report recovery.
-    if (turn.phase === "reporting" || record.retries >= MAX_AUTOMATIC_RETRIES) return;
+    // A Turn that already reported follows ordinary report recovery.
+    if (turn.phase === "reporting") return;
     const interruption = record.interruption ?? {
       reason: "daemon_crash" as const,
       at: new Date(this.#now()).toISOString(),
     };
-    // Spend the retry before anything runs: a second interruption is reported, never retried again.
+    // The reason goes to the resumed Turn's notice; what ends that Turn is recorded anew. A process
+    // interruption spends no retry, but a fast loop trips the fuse and is reported instead.
+    const { fuse, tripped } = noteInterruption(record.interruptionFuse, this.#now());
     const { interruption: _ended, ...attempt } = record;
-    const spent: TurnRetryRecord = { ...attempt, retries: record.retries + 1 };
+    const spent: TurnRetryRecord = { ...attempt, interruptionFuse: fuse };
     try {
       await this.#options.retries.write(spent);
     } catch {
+      return;
+    }
+    if (tripped) {
+      this.#logger.warn(
+        { code: "TURN_INTERRUPTION_FUSE_TRIPPED", sessionId: record.sessionId, turnId: record.turnId },
+        "Interrupted Turn stopped resuming after repeated fast interruptions",
+      );
       return;
     }
     this.#turns.set(record.sessionId, {

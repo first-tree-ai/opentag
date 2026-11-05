@@ -75,22 +75,32 @@ message ends `failed` and an internal Session's creator gets a
 
 ### Automatic retry of accepted work
 
-Automatic retry of accepted work belongs to the Local Client daemon; the Server
-never redelivers accepted input and only records the outcome the Client reports.
-The Client retries only recoverable interruptions — a daemon crash or power
-loss, an orderly restart or upgrade, a Run timeout (`turn_timeout`), and a model
-HTTP 429 (`provider_rate_limited`) — and at most once per message. Every other
-failure, and a failure of the one retry, is reported as before: an IM Turn gets
-its terminal report and error card, an internal Session's creator gets its
-[Run outcome notice](messaging/internal-session-collaboration.md#run-outcome-notices).
-While the retry is pending or running nothing is reported, so the Server shows
-no error card and sends no notice for it.
+Automatic retry and resuming of accepted work belong to the Local Client
+daemon; the Server never redelivers accepted input and only records the outcome
+the Client reports. The rule ([#1301](https://github.com/first-tree-ai/opentag/issues/1301#issuecomment-6651237819))
+separates two cases:
 
-The retry continues the same Session with a continuation notice as the first
-input item — `[OpenTag] Your previous turn was interrupted at <time> because
-<reason> (automatic retry 1/1). Before continuing, check your history …` — then
-the original input and, for an IM Turn, the messages steered into it, in their
-original order. Duplicates
+- A process interruption (a daemon crash or power loss, an orderly restart or
+  upgrade) always resumes after restart. It does not count as a retry. Three
+  consecutive interruptions, each within about 2 minutes of the previous
+  resume, stop the work and report a failure; a longer run resets the count
+  (`INTERRUPTION_FUSE_*`). This does not catch work that crashes the daemon
+  only after running longer than that.
+- An ordinary failure worth retrying, a Run timeout (`turn_timeout`) or a model
+  HTTP 429 (`provider_rate_limited`), gets at most one automatic retry per
+  message.
+
+Every other failure, a failed retry, and a tripped fuse are reported as before:
+an IM Turn gets its terminal report and error card, an internal Session's
+creator gets its [Run outcome notice](messaging/internal-session-collaboration.md#run-outcome-notices).
+While a retry or a resume is pending or running nothing is reported, so the
+Server shows no error card and sends no notice for it.
+
+A resumed or retried Run continues the same Session with a continuation notice as
+the first input item — `[OpenTag] Your previous turn was interrupted at <time>
+because <reason>. Before continuing, check your history …`, with `(automatic
+retry 1/1)` after the reason for a retry — then the original input and, for an IM
+Turn, the messages steered into it, in their original order. Duplicates
 are acceptable: the Provider may or may not have persisted the interrupted turn.
 
 - Timeout and 429 retry in place, in the same daemon (a 429 after about 30
@@ -98,11 +108,11 @@ are acceptable: the Provider may or may not have persisted the interrupted turn.
   only the first attempt. An IM Turn keeps its delivery and Turn identity, so
   the retry's report settles the original delivery.
 - An orderly stop (`opentag daemon restart`, upgrade) does not report
-  `cancelled / client_shutdown` while the retry is still available; it records
-  the interruption durably and leaves the Turn unresolved. A crash leaves no
+  `cancelled / client_shutdown`; it records the interruption durably and leaves
+  the Turn unresolved, whether or not its retry is spent. A crash leaves no
   record of its own: an unresolved Turn found on restart is a crash.
-- On startup the daemon spends the retry durably before anything runs, so a
-  second interruption is reported, never retried again. The IM Turn's original
+- On startup the daemon records the interruption against the fuse durably before
+  anything runs. The IM Turn's original
   input lives in a per-Session file under `data/runtime/turn-retries/`, written
   at acceptance and removed when the Turn's result is recorded. It is part of
   the acceptance boundary: when it cannot be written, the just-committed
@@ -120,9 +130,10 @@ are acceptable: the Provider may or may not have persisted the interrupted turn.
   waits briefly for steers still in flight, so one acknowledged as the Run ends
   is not lost; if one does not settle in time, the failure is reported the same
   way. A Session message's
-  interruption is kept on its durable inbox record, updated in place so the
-  inbox order survives a restart; the Server-backed durability adapter does not
-  store it, so a recovered Run there is retried as a crash.
+  interruption and fuse count are kept on its durable inbox record, updated in
+  place so the inbox order survives a restart; the Server-backed durability
+  adapter does not store them, so a recovered Run there resumes as a crash and
+  has no fuse.
 - Only the Server can prepare a Session for the new connection (current
   snapshot and a fresh Session CLI proof), so after connecting the daemon sends
   `session:recover` for each Session with interrupted or waiting work (see
@@ -130,9 +141,9 @@ are acceptable: the Provider may or may not have persisted the interrupted turn.
   moves the IM Turn's report ownership to the new connection and sends a ready
   reconcile, admitted at its send boundary only while the Agent, Session and
   placement are still live, so a concurrent Agent stop is never overtaken. The
-  daemon prepares the Session around its unresolved Turn and starts the retry;
-  when it cannot start yet (for example admission is full), the retry stays
-  pending and the daemon asks for another reconcile. Before and during the retry the Session answers the
+  daemon prepares the Session around its unresolved Turn and resumes it;
+  when it cannot start yet (for example admission is full), the resume stays
+  pending and the daemon asks for another reconcile. Before and during the resume the Session answers the
   Server's accepted-recovery reconcile with `busy / active_turn`, which defers
   recovery without a diagnostic and is never a report.
 - The daemon owns each recovery until the Session is actually prepared: after

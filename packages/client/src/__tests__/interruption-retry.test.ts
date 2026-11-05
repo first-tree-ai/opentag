@@ -56,12 +56,14 @@ describe("interruption classification and continuation", () => {
 
   it("states the reason, the retry count, and how to continue", () => {
     expect(buildContinuationNotice({ reason: "client_shutdown", at: "2026-11-05T01:00:00.000Z" })).toBe(
-      "[OpenTag] Your previous turn was interrupted at 2026-11-05T01:00:00.000Z because the OpenTag daemon was restarted or upgraded (automatic retry 1/1). Before continuing, check your history and the work already done in this conversation, including replies already sent, then continue the original request. The original request follows; it may duplicate a message already in your history. Do not repeat replies or side effects that already happened.",
+      "[OpenTag] Your previous turn was interrupted at 2026-11-05T01:00:00.000Z because the OpenTag daemon was restarted or upgraded. Before continuing, check your history and the work already done in this conversation, including replies already sent, then continue the original request. The original request follows; it may duplicate a message already in your history. Do not repeat replies or side effects that already happened.",
     );
     expect(buildContinuationNotice({ reason: "daemon_crash", at: "T" })).toContain(
-      "interrupted at or before T because the OpenTag daemon stopped unexpectedly (process crash or power loss)",
+      "interrupted at or before T because the OpenTag daemon stopped (crash, power loss, restart, or upgrade).",
     );
-    expect(buildContinuationNotice({ reason: "provider_rate_limited", at: "T" })).toContain("(HTTP 429)");
+    expect(buildContinuationNotice({ reason: "provider_rate_limited", at: "T" })).toContain(
+      "(HTTP 429) (automatic retry 1/1)",
+    );
   });
 
   it("re-includes the original input and steered messages after the notice", () => {
@@ -775,14 +777,14 @@ describe("TurnCustodyOwner acceptance with retry input", () => {
 });
 
 describe("InterruptedWorkRecovery", () => {
-  it("spends the retry on startup, asks the Server to recover, and resumes on the ready reconcile", async () => {
+  it("spends no retry on startup, asks the Server to recover, and resumes on the ready reconcile", async () => {
     const f = recoveryFixture();
     const request = delivery();
     f.records.set(request.sessionId, turnRetryRecord(request, "turn-1"));
     f.unresolved.set(request.sessionId, { turnId: "turn-1", deliveryId: request.deliveryId, phase: "running" });
     await f.recovery.start();
     // The reason goes to the resumed Turn's notice; on disk it would be taken for what ended that Turn.
-    expect(f.records.get(request.sessionId)).toMatchObject({ retries: 1 });
+    expect(f.records.get(request.sessionId)).toMatchObject({ retries: 0 });
     expect(f.records.get(request.sessionId)?.interruption).toBeUndefined();
     expect(f.reconciler.setRecovery).toHaveBeenCalledWith(request.sessionId, {
       deliveryId: request.deliveryId,
@@ -897,27 +899,36 @@ describe("InterruptedWorkRecovery", () => {
     f.recovery.stop();
   });
 
-  it("keeps the recorded reason of an orderly stop and leaves spent or recorded Turns to report recovery", async () => {
+  it("keeps an orderly stop's reason, resumes a Turn whose retry is spent, and leaves reporting Turns to report recovery", async () => {
     const f = recoveryFixture();
     const stopped = delivery("session-stopped");
     const spent = delivery("session-spent");
+    const reporting = delivery("session-reporting");
     const recorded = delivery("session-recorded");
     f.records.set(stopped.sessionId, {
       ...turnRetryRecord(stopped, "turn-stopped"),
       interruption: { reason: "client_shutdown", at: "T" },
     });
     f.records.set(spent.sessionId, { ...turnRetryRecord(spent, "turn-spent"), retries: 1 });
+    f.records.set(reporting.sessionId, turnRetryRecord(reporting, "turn-reporting"));
     f.records.set(recorded.sessionId, turnRetryRecord(recorded, "turn-recorded"));
+    f.unresolved.set(reporting.sessionId, {
+      turnId: "turn-reporting",
+      deliveryId: reporting.deliveryId,
+      phase: "reporting",
+    });
     f.unresolved.set(stopped.sessionId, { turnId: "turn-stopped", deliveryId: stopped.deliveryId, phase: "running" });
     f.unresolved.set(spent.sessionId, { turnId: "turn-spent", deliveryId: spent.deliveryId, phase: "running" });
     await f.recovery.start();
     f.version = 1;
-    expect(f.records.get(stopped.sessionId)).toMatchObject({ retries: 1 });
+    expect(f.records.get(stopped.sessionId)).toMatchObject({ retries: 0 });
     expect(f.records.get(stopped.sessionId)?.interruption).toBeUndefined();
     expect(f.recovery.isPendingRetry(stopped.sessionId, "turn-stopped")).toBe(true);
-    expect(f.recovery.isPendingRetry(spent.sessionId, "turn-spent")).toBe(false);
+    expect(f.records.get(spent.sessionId)).toMatchObject({ retries: 1 });
+    expect(f.recovery.isPendingRetry(spent.sessionId, "turn-spent")).toBe(true);
+    expect(f.recovery.isPendingRetry(reporting.sessionId, "turn-reporting")).toBe(false);
     expect(f.records.has(recorded.sessionId)).toBe(false);
-    expect(f.reconciler.setRecovery).toHaveBeenCalledOnce();
+    expect(f.reconciler.setRecovery).toHaveBeenCalledTimes(2);
     // The recorded reason still reaches the resumed Turn's notice.
     f.recovery.resume(stopped.sessionId, { deliveryId: stopped.deliveryId, turnId: "turn-stopped" });
     expect(f.custody.resume).toHaveBeenCalledWith(

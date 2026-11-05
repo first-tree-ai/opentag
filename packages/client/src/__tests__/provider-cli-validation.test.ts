@@ -143,6 +143,27 @@ describe("provider CLI validation classification", () => {
       { status: "needs_attention", reason: "upgrade_required" },
     ],
     ["unknown", { ok: false, error: { type: "api", subtype: "unknown" } }, { status: "needs_attention" }],
+    [
+      "rate limit as lark-cli reports it",
+      { ok: false, identity: "bot", error: { type: "api", subtype: "rate_limit", code: 99991400, retryable: true } },
+      { status: "retrying", reason: "rate_limited" },
+    ],
+    [
+      "rate limit code without normalization",
+      { code: 99991400, msg: "limited" },
+      { status: "retrying", reason: "rate_limited" },
+    ],
+    ["rate limit code as a string", { error: { code: "99991400" } }, { status: "retrying", reason: "rate_limited" }],
+    [
+      "unreachable proxy as lark-cli reports it",
+      { ok: false, identity: "bot", error: { type: "network", subtype: "server_error", code: 503 } },
+      { status: "retrying", reason: "provider_unreachable" },
+    ],
+    [
+      "invalid app secret as lark-cli reports it",
+      { ok: false, identity: "bot", error: { type: "config", subtype: "invalid_client", code: 10014 } },
+      { status: "needs_attention" },
+    ],
   ])("classifies structured Feishu %s failures", (_case, payload, expected) => {
     expect(classifyLarkAuthStatus(payload, feishuIdentity)).toEqual(expected);
   });
@@ -207,6 +228,26 @@ describe("provider CLI validation classification", () => {
 
 describe("Feishu tenant token exchange", () => {
   const grant = feishuGrant;
+
+  it.each([200, 400])("reads the Feishu rate limit code on HTTP %i as rate limited, not rejected", async (status) => {
+    await expect(
+      exchangeFeishuTenantToken(
+        grant,
+        undefined,
+        (async () => new Response(JSON.stringify({ code: 99991400, msg: "limited" }), { status })) as typeof fetch,
+      ),
+    ).rejects.toMatchObject({ kind: "rate_limited" });
+  });
+
+  it.each([200, 400])("still reads an invalid app secret on HTTP %i as rejected", async (status) => {
+    await expect(
+      exchangeFeishuTenantToken(
+        grant,
+        undefined,
+        (async () => new Response(JSON.stringify({ code: 10014, msg: "invalid" }), { status })) as typeof fetch,
+      ),
+    ).rejects.toMatchObject({ kind: "credential_rejected" });
+  });
 
   it("classifies 429, non-JSON 503, HTTP 200 code!=0, oversize, and abort", async () => {
     await expect(

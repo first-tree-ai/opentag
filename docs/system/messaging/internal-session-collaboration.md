@@ -273,6 +273,11 @@ shares the count of the Turn it joined, so they retry together and fail together
 A message stays queued and waits for the Turn to end when the runtime cannot steer or refuses the steer, when the Turn
 already carries 16 Session messages, or when a visible Session has no IM outbox context.
 
+A Local daemon runs in `legacy` credential mode unless `OPENTAG_RUNTIME_CREDENTIAL_MODE=proxy` is set, and that mode has no IM
+outbox context. So on a default Local daemon a Session message never steers into a visible Session, IM Turn or not: it waits in
+the FIFO and runs as its own Run. Steering into an internal Session does not depend on this. Tracking:
+[#1335](https://github.com/first-tree-ai/opentag/issues/1335).
+
 The accepted cost is extra delivery and repeated handling around a process interruption: each retry can replay the Turn and
 its messages, and work that runs at least 5 minutes between crashes is never stopped by the count. After a crash the resumed Turn may already have the steered message
 in its history, and the message is delivered again; the continuation notice tells the Agent, but cannot prevent every

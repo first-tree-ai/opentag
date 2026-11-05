@@ -146,6 +146,30 @@ require the expected status. Runtime test callers wait on their existing result
 TTL/cancellation promise immediately after dispatch; a delayed send callback does
 not extend that budget. Transport completion remains owned by the registry/socket.
 
+## Session recovery
+
+The optional `runtime.sessionRecovery` capability (version 1) lets a restarted Local daemon ask the Server to prepare
+a Session whose accepted work it is about to retry. The Client sends `session:recover` with the Session, Agent and
+placement generation, plus the delivery and Turn identity when the interrupted work is an accepted IM Turn. The Server
+answers `session:recover:result`:
+
+- `scheduled`: it moved the named Turn's report ownership to the requesting connection and will send an ordinary
+  `session:reconcile` (`desired: ready`) for the Session. For an IM Turn the reconcile carries the frozen dispatch
+  snapshot; otherwise it carries the current assembled snapshot (with `sessionKind: internal` and the creator for an
+  internal Session).
+- `rejected` (final, with a reason such as `session_ended`, `placement_stale` or `turn_not_recoverable`), `retry`
+  (transient), or `unsupported_capability`.
+
+Only the exact current connection of the Session's placement Computer is served; a superseded connection is rejected.
+Authorization and the report-owner takeover run in one transaction that locks the Agent and binding, the Session,
+its placement, and the Computer (whose `current_instance_id` must equal the requesting connection) before the delivery
+row, so a concurrent end, move, suspend, or reconnect either wins and refuses the request or waits for it. `scheduled`
+does not end the Client's ownership: the Client keeps the recovery until the ready reconcile prepares the Session and
+sends the request again when it does not arrive.
+The request never redelivers input and never writes a Turn Report. A Client whose Server did not negotiate the
+capability keeps the previous behavior: it reports interrupted IM Turns and fails waiting Session messages instead of
+retrying them. See [Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work).
+
 ## Channel target advertisement
 
 The optional `runtime.channelTarget` capability (version 1) lets a connected Client learn the exact channel latest target for automatic upgrades. When the capability is negotiated, every v2 `heartbeat:result` may carry an optional `channelTarget` field: the Server's release channel and the exact SemVer it currently advertises, read from the channel's published release pointer. The field is additive and negotiated, so older Clients with strict heartbeat schemas never receive it, and a Client behind an older Server simply sees no target. The Client treats only an exact version-string match as already current; SemVer precedence is used solely to reject an older target, while an equal-precedence target with different build metadata is installed. A target for another channel is rejected before any upgrade decision.

@@ -12,6 +12,7 @@ import {
   type SessionMessageOutcomeReport,
   type SessionReconcileRequest,
   type SessionReconcileResult,
+  type SessionRecoverRequest,
   type TurnActivityRequest,
   type TurnReportRequest,
 } from "@opentag/shared";
@@ -128,6 +129,41 @@ describe("RuntimeDomainOwner", () => {
       expect(onSessionMessageOutcome).toHaveBeenCalledTimes(supported ? 1 : 0);
       // A processing failure answers retry so the Client keeps the report.
       expect(h.owner.businessOptions().failureResult(frame as never)).toMatchObject({ status: "retry" });
+    } finally {
+      h.owner.close();
+    }
+  });
+
+  it.each([undefined, 1])("gates Session recovery requests on runtime.sessionRecovery %s", async (version) => {
+    const onSessionRecover = vi.fn(async () => ({ status: "scheduled" as const }));
+    const h = await ownerFixture(1_000, { onSessionRecover });
+    const frame: SessionRecoverRequest = {
+      type: "session:recover",
+      requestId: randomUUID(),
+      sessionId: randomUUID(),
+      agentId: randomUUID(),
+      placementGeneration: 1,
+    };
+    try {
+      expect(h.owner.businessOptions().parse(frame)).toEqual(frame);
+      const context: RuntimeBusinessContext = {
+        ...h.context,
+        negotiatedCapabilities: version ? { [RUNTIME_CAPABILITY.sessionRecovery]: version } : {},
+      };
+      expect(await h.owner.handle(frame, context)).toEqual({
+        type: "session:recover:result",
+        requestId: frame.requestId,
+        sessionId: frame.sessionId,
+        status: version === 1 ? "scheduled" : "unsupported_capability",
+      });
+      expect(onSessionRecover).toHaveBeenCalledTimes(version === 1 ? 1 : 0);
+      // Only the current connection may recover: a superseded one is refused outright.
+      expect(await h.owner.handle(frame, { ...context, instanceId: randomUUID() })).toMatchObject({
+        status: "rejected",
+        reason: "stale_connection",
+      });
+      expect(h.owner.businessOptions().failureResult(frame as never)).toMatchObject({ status: "retry" });
+      expect(h.owner.businessOptions().laneKey(frame as never)).toBe(`session-recover:${frame.sessionId}`);
     } finally {
       h.owner.close();
     }

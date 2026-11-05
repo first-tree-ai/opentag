@@ -1193,6 +1193,35 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       handlers.onReconcileResultSendFailed({} as never, {} as never, new Error("send")),
     ).resolves.toBeUndefined();
     await expect(handlers.onReconciled({} as never, {} as never)).resolves.toBeUndefined();
+    const prepared = { sessionPrepared: vi.fn(), reconcileRejected: vi.fn() };
+    const withRecovery = createClientRuntimeHandlers(
+      custody as never,
+      reportOwner as never,
+      recovery as never,
+      prepared,
+    );
+    for (const [desired, status] of [
+      ["ready", "ready"],
+      ["ready", "running"],
+      ["ready", "recovery_required"],
+      ["ready", "rejected"],
+      ["stopped", "stopped"],
+    ] as const) {
+      await withRecovery.onReconciled(
+        { desired, sessionId: `${desired}-${status}` } as never,
+        { status, ...(status === "rejected" ? { reason: "session_binding_conflict" } : {}) } as never,
+      );
+    }
+    await withRecovery.onReconciled(
+      { desired: "ready", sessionId: "no-reason" } as never,
+      { status: "rejected" } as never,
+    );
+    // A ready Session releases waiting Session messages; so does a resumed Turn (`running`), to steer them in.
+    expect(prepared.sessionPrepared.mock.calls).toEqual([["ready-ready"], ["ready-running"]]);
+    expect(prepared.reconcileRejected.mock.calls).toEqual([
+      ["ready-rejected", "session_binding_conflict"],
+      ["no-reason", "session_recovery_rejected"],
+    ]);
 
     const request = delivery(snapshot());
     const verifyAgent = vi.fn(async () => undefined);

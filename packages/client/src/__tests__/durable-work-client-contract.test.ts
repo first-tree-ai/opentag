@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { SessionReconcileRequest, TurnReportRequest } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AdmissionController } from "../runtime/admission-controller.js";
+import { MAX_AUTOMATIC_RETRIES } from "../runtime/interruption-retry.js";
 import { MvpTurnReportRecovery } from "../runtime/mvp-turn-report-recovery.js";
 import {
   type DurableWorkKind,
@@ -655,7 +656,7 @@ describe("Real-scheduler Client durable-work contract", () => {
     expect(await persistence.status("turn-report", report.turnId)).toBe("succeeded");
   });
 
-  it.each(["succeeded", "retry", "failed", "dead-letter"] as const)(
+  it.each(["succeeded", "retry", "failed", "retry-failed"] as const)(
     "runs the Inbox %s path with real timers",
     async (outcome) => {
       const persistence = new ObservedDurabilityStore();
@@ -665,8 +666,8 @@ describe("Real-scheduler Client durable-work contract", () => {
       const prompt = vi.fn(async () => {
         attempts += 1;
         if (outcome === "failed") throw { message: "blocked", retryability: "never" };
-        if (outcome === "dead-letter" || (outcome === "retry" && attempts === 1))
-          throw new Error("provider unavailable");
+        if (outcome === "retry-failed" || (outcome === "retry" && attempts === 1))
+          throw Object.assign(new Error("rate limited"), { code: "provider_rate_limited" });
         return { status: "completed", output: [] };
       });
       const inbox = new SessionMessageInbox({
@@ -677,12 +678,7 @@ describe("Real-scheduler Client durable-work contract", () => {
         imCredentialGrantVersion: () => 2,
         sessionCollaborationVersion: () => 3,
         logger: { warn: vi.fn() },
-        retryPolicy: {
-          baseDelayMs: 10,
-          maxDelayMs: 10,
-          maxAgeMs: 1_000,
-          maxAttempts: outcome === "dead-letter" ? 1 : 5,
-        },
+        rateLimitRetryDelayMs: 10,
         reconciler: {
           checkSessionMessageDelivery: () => undefined,
           clearActivity: () => true,
@@ -700,7 +696,7 @@ describe("Real-scheduler Client durable-work contract", () => {
         expect(persistence.rejected).toEqual([]);
       });
       await expect(inbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
-      const status = outcome === "retry" ? "succeeded" : outcome;
+      const status = outcome === "retry" ? "succeeded" : outcome === "retry-failed" ? "failed" : outcome;
       await vi.waitFor(
         async () =>
           expect(await persistence.status("session-message", `${request.targetSessionId}:${request.messageId}`)).toBe(
@@ -710,6 +706,7 @@ describe("Real-scheduler Client durable-work contract", () => {
       );
       await inbox.settled();
       expect(persistence.edges).toContain("accepted -> running");
+      if (outcome === "retry-failed") expect(prompt).toHaveBeenCalledTimes(1 + MAX_AUTOMATIC_RETRIES);
       if (outcome === "retry")
         expect(persistence.edges).toEqual(
           expect.arrayContaining(["running -> retryable", "retryable -> accepted", "running -> succeeded"]),

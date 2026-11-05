@@ -111,7 +111,7 @@ export function TaskActivity({
   return (
     <section
       ref={sectionRef}
-      className="relative grid w-full gap-5"
+      className="relative grid w-full grid-cols-1 gap-5"
       aria-labelledby="task-activity-title"
       data-ui="task-thread"
       onScroll={(event) => updateScrollState(event.currentTarget)}
@@ -127,7 +127,7 @@ export function TaskActivity({
       <TaskActivityTimeline key={task.id} entryIds={entries.map((entry) => entry.id)}>
         {pagination}
         {entries.length > 0 ? (
-          <div className="grid">
+          <div className="grid grid-cols-1">
             {entries.map((entry) => (
               <div key={entry.id} className="py-4 first:pt-0 last:pb-0">
                 <TaskEntry capturedFeedSupplied={capturedFeedSupplied} task={task} entry={entry} />
@@ -175,13 +175,13 @@ function TaskInternalSessionsList({ sessions, footer }: { sessions: TaskInternal
   return (
     <section
       aria-labelledby="task-internal-sessions-title"
-      className="grid gap-2 rounded-lg border border-kumo-line bg-kumo-base p-4"
+      className="grid grid-cols-1 gap-2 rounded-lg border border-kumo-line bg-kumo-base p-4"
       data-ui="task-internal-sessions"
     >
       <Text as="h3" id="task-internal-sessions-title" variant="heading">
         {m.tasks_internal_sessions_heading()}
       </Text>
-      <ul className="grid divide-y divide-kumo-line">
+      <ul className="grid grid-cols-1 divide-y divide-kumo-line">
         {sessions.map((session) => {
           const activityAt = session.lastActivityAt ?? session.endedAt ?? session.createdAt;
           const preview = session.title?.trim() || session.runtimeModel || session.id;

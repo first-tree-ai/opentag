@@ -41,7 +41,7 @@ export class TaskActivityTimeline extends Component<Props, object, ScrollAnchor 
 
   override render() {
     return (
-      <div ref={this.timeline} className="grid gap-5">
+      <div ref={this.timeline} className="grid grid-cols-1 gap-5">
         {this.props.children}
       </div>
     );

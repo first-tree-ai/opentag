@@ -431,12 +431,14 @@ export function TaskDetailPage({
     <TaskActivityPagination loadMoreError={loadMoreError} repliesQuery={repliesQuery} taskQuery={taskQuery} />
   );
   return (
-    <article className="grid gap-6" data-ui="task-conversation-page">
+    // Every grid down to the message rows uses a shrinkable column: an auto column grows to fit a
+    // single-line truncated title, which widens the page and lets the load-time scroll move it sideways.
+    <article className="grid grid-cols-1 gap-6" data-ui="task-conversation-page">
       <nav className="-ml-2" aria-label={m.tasks_back_to_tasks()}>
         <TaskBackLink agentId={agentId ?? task.agent.id} showExamples={showExamples} />
       </nav>
 
-      <header className="grid gap-4" data-ui="task-conversation-header">
+      <header className="grid grid-cols-1 gap-4" data-ui="task-conversation-header">
         {/*
          * The title may be a message excerpt or a saved title, so nothing shares its row. The
          * status is a fact about the Task and sits with the other facts, last, where it reads as

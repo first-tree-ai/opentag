@@ -730,11 +730,11 @@ export class SessionCollaborationService {
   }
 
   /**
-   * Tell the creator of an internal Session that one of its Runs ended without completing. The
-   * notice is an ordinary SessionMessage from the child to its creator with a deterministic id,
-   * so it reuses the existing authorization, lock order, idempotency, activity projection, and
-   * delivery (including visible-Session callback rules). Notices only ever travel to the
-   * creator, so they move strictly up the creation tree and can never echo back to the child.
+   * Tell a message's sender that its Run ended without completing. The notice is an ordinary
+   * SessionMessage from the target to the sender with a deterministic id, so it reuses the existing
+   * authorization, lock order, idempotency, activity projection, and delivery (including
+   * visible-Session callback rules). `resolveRunOutcomeNotice` picks the recipient, and a failed
+   * notice is never reported back to its own sender, so notices cannot echo between two Sessions.
    */
   async notifyRunOutcome(input: RunOutcomeNoticeInput): Promise<RunOutcomeNoticeStatus> {
     const noticeId = runOutcomeNoticeMessageId(input.childSessionId, input.messageId);
@@ -752,10 +752,10 @@ export class SessionCollaborationService {
         sourceComputerId: input.source.computerId,
         sourceConnectionInstanceId: input.source.connectionInstanceId,
         sourcePlacementGeneration: input.source.placementGeneration,
-        targetSessionId: notice.creatorSessionId,
+        targetSessionId: notice.recipientSessionId,
         content: renderRunOutcomeNotice(input),
       });
-      result = await this.#deliver(attempt, notice.creatorSessionId);
+      result = await this.#deliver(attempt, notice.recipientSessionId);
     } catch (error) {
       result = this.#failure(noticeId, error);
     }

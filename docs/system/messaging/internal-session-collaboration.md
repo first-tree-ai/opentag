@@ -136,8 +136,11 @@ existing thread scope. Internal targets never receive provider credentials or ou
 
 ## Run outcome notices
 
-`accepted` and `session list` describe delivery only. When an internal Session's Run ends without completing, the
-Server tells the Session that created it (`created_by_session_id`):
+`accepted` and `session list` describe delivery only. A Session message has the same goal as an IM message: once accepted, the
+Client owns retrying it, and a final failure or an unrecoverable error reaches whoever sent it, as an error card reaches the
+person for an IM message. So when a message's Run ends without completing, the Server tells the message's sender, whichever
+kind of Session the target is. A scheduled message has no sender: its notice goes to an internal target's creator
+(`created_by_session_id`), and a visible target produces none:
 
 - Local: a message whose Run a daemon crash or restart interrupts, or that hits a model HTTP 429, gets at most 2 automatic
   retries, as described in
@@ -155,7 +158,7 @@ Server tells the Session that created it (`created_by_session_id`):
   the Run it joined completes, and returns to the FIFO with no report when the provider never started it. When that Run fails
   it is delivered again on its own, once, and only that delivery can fail it: it then takes this terminal path with the
   failure of that delivery. A stop or cancel of the Run fails it without another delivery (reason
-  `session_message_steer_interrupted`). Eligibility is unchanged, so a visible target produces no notice yet; see
+  `session_message_steer_interrupted`). See
   [Delivery again after the steered Run fails](#delivery-again-after-the-steered-run-fails).
 - Cloud: the Runner's `session:message:settled` frame carries the failure `reason` (for example `turn_timeout`) on a
   collaboration-v3 channel. Every non-completed outcome (`failed`, `cancelled`, `unknown`) produces a notice. The
@@ -168,26 +171,27 @@ Server tells the Session that created it (`created_by_session_id`):
   settling allocation stays in the Sandbox reclaim barrier, so idle reclamation or borrow cannot delete the journal;
   see [Cloud context](../cloud/cloud-context.md).
 
-The notice is an ordinary SessionMessage from the child to its creator. It uses the existing authorization, lock order,
-activity projection, and delivery, including the visible-Session callback rules. A visible creator's callback Run
-decides what to tell the user; openTag does not forward anything to IM. The text starts with
-`[openTag notice] Internal Session Run did not complete` (`SESSION_RUN_OUTCOME_NOTICE_HEADER`). A notice means the
-child's done milestone, its final result sent with `opentag session send`, will not arrive on its own. It names the child,
-the reported message, the outcome, and a stable reason code, never provider output. It also says that the child keeps
-its context and that `opentag session send <child-session-id>` continues it. Managed instructions describe the
-header so the creator knows the message comes from openTag, not from the child.
+The notice is an ordinary SessionMessage from the target to the recipient. A sender that is also the creator gets one notice,
+since there is one recipient. It uses the existing authorization, lock order, activity projection, and delivery, including the
+visible-Session callback rules. A visible recipient's callback Run decides what to tell the user; openTag does not forward
+anything to IM. The text starts with `[openTag notice] Internal Session Run did not complete`
+(`SESSION_RUN_OUTCOME_NOTICE_HEADER`), whichever kind of Session the target is. A notice means the target's result for that
+message will not arrive on its own. It names the target, the reported message, the outcome, and a stable reason code, never
+provider output. It also says that the target keeps its context and that `opentag session send <session-id>` continues it.
+Managed instructions describe the header so the recipient knows the message comes from openTag, not from that Session.
 
 Safety rules:
 
 - The source authority is the reporting connection: the Local Computer's current connection, or the exact Cloud Runner
   connection that settled the Run. A stale or superseded connection gets `stale_generation`.
-- The reported message must be a stored SessionMessage addressed to an active internal Session that has a creator.
-  Completed Runs, visible targets, ended children, and unknown messages are ignored. An ended creator rejects the
-  notice through normal authorization.
-- The notice ID is UUIDv5 over the child Session and reported message IDs. Report retries, Runner settlement replays,
+- The reported message must be a stored SessionMessage addressed to an active Session. Completed Runs, ended targets, and
+  unknown messages are ignored, and so is a message with no recipient. An ended recipient rejects the notice through normal
+  authorization.
+- The notice ID is UUIDv5 over the target Session and reported message IDs. Report retries, Runner settlement replays,
   and concurrent reports converge on one `session_messages` row; an accepted notice is never delivered again.
-- Notices only go to the creator, so they move up the creation tree and never return to the child. If the creator's
-  own Run fails while handling a notice, its creator may be notified in turn, ending at the visible root.
+- A notice never goes back to its own sender, so notices cannot bounce between two Sessions. If a Session's Run fails while
+  handling a notice, that Session's creator is notified instead, so failed notices only climb the creation tree and end at the
+  visible root. A message a Session sent to itself goes the same way.
 
 No schema change is involved: notices reuse `session_messages` and the existing closure activity projection.
 
@@ -240,7 +244,7 @@ restart, upgrade, or model HTTP 429; a retry that actually ran for at least 5 mi
 limit counts actual running time across its retries and resumes. Reaching it (`turn_timeout`) and non-recoverable failures
 are not retried, and the five-attempt inbox retry is gone. The retried Run starts with the continuation notice and the
 original message. A retry after a model HTTP 429 stays in place: the Run keeps holding the Session through the backoff, so
-no other work overtakes it. The creator receives the notice only when the message finally fails, so the superior hears about
+no other work overtakes it. The sender receives the notice only when the message finally fails, so the superior hears about
 a timeout directly. After a daemon restart, each interrupted Session's message runs once the Server has prepared the Session
 again, before the Session's queued messages. A replay of a message the inbox still holds, including one waiting for its retry,
 is answered `accepted` and changes nothing. See
@@ -306,12 +310,7 @@ again with the continuation notice, because it may already have been handled. It
   grant a second delivery. If the write fails, the message does not run: it is recovered on the next start.
 - **It can still steer.** If another Run is running by then, the message steers into it as any message does. When that Run
   fails, there is no further delivery and the message fails.
-- **Only that delivery can fail it.** If it fails too, retries included, the message fails and its outcome is reported.
+- **Only that delivery can fail it.** If it fails too, retries included, the message fails and its sender is notified.
 - **A stop or cancel does not deliver again.** A cancelled IM Turn, or a Session message Run whose execution was revoked or
   replaced, fails its messages with `session_message_steer_interrupted`. A daemon stop is neither: the Run and its messages are
   recovered on restart.
-
-> **Planned — not yet implemented.** Tracking: #1303
-
-When that delivery fails, the sender is notified, including when the target is a visible Session. Today the Server ignores a
-report for a visible target and sends the notice to the target's creator, not to its sender.

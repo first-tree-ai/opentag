@@ -6,7 +6,7 @@ const RUN_OUTCOME_NOTICE_NAMESPACE = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
 
 /**
  * UUIDv5 over `opentag:session-run-outcome:<childSessionId>:<messageId>`. One reported message
- * yields exactly one creator notice id, so report retries, Runner settlement replays, and
+ * yields exactly one notice id, so report retries, Runner settlement replays, and
  * concurrent reports converge on the same SessionMessage row instead of a second notice.
  */
 export function runOutcomeNoticeMessageId(childSessionId: string, messageId: string): string {
@@ -44,9 +44,9 @@ export function renderRunOutcomeNotice(input: {
     `Message: ${input.messageId}`,
     `Outcome: ${input.outcome} (reason: ${input.reason})`,
     "",
-    `The internal Session you created stopped working on that message because ${OUTCOME_SUMMARY[input.outcome]}.`,
-    "This notice was written by openTag, not by the child Session. openTag will not rerun the message automatically.",
-    "The child Session is still active and keeps its conversation context; work it did before stopping may be partial.",
+    `That Session stopped working on that message because ${OUTCOME_SUMMARY[input.outcome]}.`,
+    "This notice was written by openTag, not by that Session. openTag will not rerun the message automatically.",
+    "That Session is still active and keeps its conversation context; work it did before stopping may be partial.",
     `To continue it, send it a follow-up: opentag session send ${input.childSessionId} --message "<what to do next>"`,
     "Decide whether to continue, retry differently, or report the result; tell the user only what is useful.",
   ].join("\n");

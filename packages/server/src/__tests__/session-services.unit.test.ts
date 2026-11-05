@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { gzipSync } from "node:zlib";
-import type { NormalizedInboundImEvent, SessionReconcileRequest, SessionReconcileResult } from "@opentag/shared";
+import {
+  type NormalizedInboundImEvent,
+  SESSION_RUN_OUTCOME_NOTICE_HEADER,
+  type SessionReconcileRequest,
+  type SessionReconcileResult,
+} from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstrap.js";
@@ -12,6 +17,7 @@ import {
   imMessageDeliveries,
   imMessages,
   sessionDescendants,
+  sessionMessages,
   sessionPlacements,
   sessions,
   users,
@@ -255,7 +261,7 @@ describe("SessionService with the unit database", () => {
     ).rejects.toMatchObject({ code: "SESSION_MESSAGE_CONFLICT" });
   });
 
-  it("resolves Run outcome notices only for an active internal child's own messages", async () => {
+  it("resolves Run outcome notices for an active target's own messages, to their sender", async () => {
     const service = new SessionService(db.database, { now: () => fixture.now });
     const creator = await service.ensureChatSession(
       { imBindingId: fixture.bindingId, channelId: "C1", conversationKind: "dm" },
@@ -273,8 +279,8 @@ describe("SessionService with the unit database", () => {
     });
     await expect(
       service.resolveRunOutcomeNotice({ childSessionId: child.session.id, messageId: taskId }),
-    ).resolves.toEqual({ creatorSessionId: creator.session.id, installationId: fixture.installationId });
-    // A message addressed to another Session, an unknown message, or a visible target is not eligible.
+    ).resolves.toEqual({ recipientSessionId: creator.session.id, installationId: fixture.installationId });
+    // A message addressed to another Session or an unknown message is not eligible.
     await expect(
       service.resolveRunOutcomeNotice({ childSessionId: creator.session.id, messageId: taskId }),
     ).resolves.toBeUndefined();
@@ -295,6 +301,79 @@ describe("SessionService with the unit database", () => {
       content: "notice",
     });
     expect(notice.route).toMatchObject({ sourceSessionId: child.session.id, targetSessionId: creator.session.id });
+
+    const send = (
+      source: { session: { id: string }; placement: { generation: number } },
+      targetSessionId: string,
+      content: string,
+    ) =>
+      service.authorizeAndRecordMessage({
+        messageId: randomUUID(),
+        sourceSessionId: source.session.id,
+        sourceInstallationId: fixture.installationId,
+        sourceComputerId: fixture.computerId,
+        sourceConnectionInstanceId: fixture.instanceId,
+        sourcePlacementGeneration: source.placement.generation,
+        targetSessionId,
+        content,
+      });
+    const resolve = (childSessionId: string, messageId: string) =>
+      service.resolveRunOutcomeNotice({ childSessionId, messageId });
+    const toRecipient = (recipientSessionId: string) => ({
+      recipientSessionId,
+      installationId: fixture.installationId,
+    });
+
+    // A visible target: its sender hears about it.
+    const callback = await send(child, creator.session.id, "callback");
+    await expect(resolve(creator.session.id, callback.message.id)).resolves.toEqual(toRecipient(child.session.id));
+
+    // A sender that is not the target's creator: only the sender hears about it.
+    const sibling = await service.createInternalSessionWithMessage({
+      creatorSessionId: creator.session.id,
+      creatorInstallationId: fixture.installationId,
+      creatorConnectionInstanceId: fixture.instanceId,
+      creatorComputerId: fixture.computerId,
+      creatorPlacementGeneration: 1,
+      messageId: randomUUID(),
+      initialMessage: "sibling task",
+    });
+    const fromSibling = await send(sibling, child.session.id, "from a sibling");
+    await expect(resolve(child.session.id, fromSibling.message.id)).resolves.toEqual(toRecipient(sibling.session.id));
+
+    // A failed notice climbs to the creator, never back to the Session the notice was about.
+    const failedNotice = await send(sibling, child.session.id, `${SESSION_RUN_OUTCOME_NOTICE_HEADER}\nSession: x`);
+    await expect(resolve(child.session.id, failedNotice.message.id)).resolves.toEqual(toRecipient(creator.session.id));
+    // At a visible target it stops.
+    const failedAtTop = await send(child, creator.session.id, `${SESSION_RUN_OUTCOME_NOTICE_HEADER}\nSession: x`);
+    await expect(resolve(creator.session.id, failedAtTop.message.id)).resolves.toBeUndefined();
+
+    // No sender but the target itself, or none at all (scheduled): its creator, or nobody at a visible target.
+    const toItself = await send(child, child.session.id, "to itself").catch(() => undefined);
+    if (toItself) {
+      await expect(resolve(child.session.id, toItself.message.id)).resolves.toEqual(toRecipient(creator.session.id));
+    }
+    const withoutSender = async (targetSessionId: string) => {
+      const scheduledId = randomUUID();
+      await db.database.insert(sessionMessages).values({
+        id: scheduledId,
+        sourceSessionId: null,
+        scheduledOrigin: {
+          scheduleId: randomUUID(),
+          scheduledFor: fixture.now.toISOString(),
+          timezone: "UTC",
+          name: "schedule",
+        },
+        targetSessionId,
+        content: "scheduled",
+        contentHash: "a".repeat(64),
+        createdAt: fixture.now,
+        updatedAt: fixture.now,
+      } as never);
+      return resolve(targetSessionId, scheduledId);
+    };
+    await expect(withoutSender(child.session.id)).resolves.toEqual(toRecipient(creator.session.id));
+    await expect(withoutSender(creator.session.id)).resolves.toBeUndefined();
 
     // An ended child is never notified about.
     await db.database.update(sessions).set({ endedAt: fixture.now }).where(eq(sessions.id, child.session.id));

@@ -78,12 +78,21 @@ Use a steer-capable Provider (Claude Code on a current version). A child's long 
 4. Repeat the crash until the retries run out. Expected: the child's message fails with one notice. Each steered follow-up then
    runs once more on its own with the notice, or steers into the one before it, and succeeds with no failure notice. A message
    queued but not yet steered also runs, without the notice.
-5. Make both the child's task and a follow-up's own delivery fail. Expected: one notice each and no further Run.
+5. Make both the child's task and a follow-up's own delivery fail. Expected: one notice each to the sender, and no further Run.
 6. Suspend the Agent while a follow-up is steered into a child's Run. Expected: the follow-up does not run again.
+
+## Failure notice to the sender
+
+1. Have a child send a Session message to its visible parent, and make that Run fail. Expected: the child, as the sender, gets
+   one notice naming the parent's Session, and the parent's IM conversation gets no error card.
+2. Have one child send a message to a sibling, and make that Run fail. Expected: the sending child gets one notice; their parent
+   gets none.
+3. Make a parent's task fail in its child. Expected: the parent gets exactly one notice, though it is both sender and creator.
+4. Make a scheduled message fail in an internal Session. Expected: its creator gets one notice. In a visible Session: no notice.
 
 ## Not retried
 
 - A non-recoverable failure (for example revoked provider credentials) shows its error immediately, with no retry.
 - A Computer connected to an older Server that does not negotiate `runtime.sessionRecovery` keeps the previous
   behaviour after a restart: the interrupted Turn reports `turn_state_unknown`, and waiting internal Session messages
-  fail with a creator notice instead of waiting indefinitely.
+  fail with a notice to their sender instead of waiting indefinitely.

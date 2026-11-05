@@ -1,15 +1,16 @@
 import { createHash } from "node:crypto";
-import type {
-  AgentScheduleLastDispatch,
-  CloudModelOptions,
-  ImConversationKind,
-  InternalSessionRuntimeOverrides,
-  Session,
-  SessionCliListItem,
-  SessionCliListQuery,
-  SessionCliListResponse,
-  SessionKind,
-  SessionPlacement,
+import {
+  type AgentScheduleLastDispatch,
+  type CloudModelOptions,
+  type ImConversationKind,
+  type InternalSessionRuntimeOverrides,
+  SESSION_RUN_OUTCOME_NOTICE_HEADER,
+  type Session,
+  type SessionCliListItem,
+  type SessionCliListQuery,
+  type SessionCliListResponse,
+  type SessionKind,
+  type SessionPlacement,
 } from "@opentag/shared";
 import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
@@ -556,15 +557,23 @@ export class SessionService {
    * internal child with a creator. The facts only select the notice route; the subsequent
    * `authorizeAndRecordMessage` re-proves every authority under the normal lock order.
    */
+  /**
+   * Who hears that a message's Run did not complete: its sender, whatever kind of Session the target
+   * is. A message with no other sender (scheduled, or sent to itself) and a notice that itself failed
+   * go to an internal target's creator instead, so notices can only climb the creation tree from
+   * there and never bounce between two Sessions.
+   */
   async resolveRunOutcomeNotice(input: {
     childSessionId: string;
     messageId: string;
-  }): Promise<{ creatorSessionId: string; installationId: string } | undefined> {
+  }): Promise<{ recipientSessionId: string; installationId: string } | undefined> {
     const [row] = await this.#database
       .select({
         creatorSessionId: sessions.createdBySessionId,
         installationId: computers.currentInstallationId,
+        isNotice: sql<boolean>`starts_with(${sessionMessages.content}, ${SESSION_RUN_OUTCOME_NOTICE_HEADER})`,
         kind: sessions.kind,
+        sourceSessionId: sessionMessages.sourceSessionId,
       })
       .from(sessionMessages)
       .innerJoin(sessions, eq(sessions.id, sessionMessages.targetSessionId))
@@ -578,8 +587,10 @@ export class SessionService {
         ),
       )
       .limit(1);
-    if (row?.kind !== "internal" || !row.creatorSessionId) return undefined;
-    return { creatorSessionId: row.creatorSessionId, installationId: row.installationId };
+    if (!row) return undefined;
+    const sender = !row.isNotice && row.sourceSessionId !== input.childSessionId ? row.sourceSessionId : null;
+    const recipientSessionId = sender ?? (row.kind === "internal" ? row.creatorSessionId : null);
+    return recipientSessionId ? { recipientSessionId, installationId: row.installationId } : undefined;
   }
 
   async withCollaborationDispatchAdmission<T>(

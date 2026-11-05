@@ -291,7 +291,7 @@ Sessions** heading, from the `/detail/internal-sessions` section under the canon
 shows the first page and loads the next one on **Load more internal Sessions**. Each row shows the
 Session's title, or its model or id when it has none, with its id beside a title. It reads
 **Active** until the Session ends and **Ended** afterwards, and shows the relative time of its
-latest activity. The section appears only when the Task has internal Sessions. A page that cannot
+latest activity. A long title truncates on its line and never widens the page. The section appears only when the Task has internal Sessions. A page that cannot
 be read says so in the section's place and leaves the conversation in place. Collaboration messages
 are not shown.
 

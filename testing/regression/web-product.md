@@ -146,6 +146,7 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | TK-04 | Each reply once | Task with Agent replies | Each reply appears once in the timeline, without per-message status labels | Core | unit: `features/task-conversation.test.tsx`, `features/task-outgoing-replies.test.tsx` |
 | TK-05 | Cancel a Task | Cancel a queued Task (only queued Tasks offer Cancel) | Asks to confirm; the status reads "已取消" / "Cancelled" (not Completed) and the Task still appears under the Completed filter | Edge | unit: `features/task-cancel.test.tsx`, `features/tasks-page.test.tsx` |
 | TK-06 | Narrow Agent workspace | Agent home, Tasks, and Skills in a narrow Agent workspace | Stay usable without overflow | Edge | smoke: `app.spec.ts` |
+| TK-07 | Long internal Session title | Task with an internal Session whose title fills 120 characters, at 390, 1440, and 2000px; reopen it from the list | The title truncates on its line; Status and the row's status stay in view; the content never scrolls sideways | Edge | smoke: `task-detail-layout-smoke.spec.ts` |
 
 ## Account
 

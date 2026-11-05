@@ -91,6 +91,7 @@ function makeInbox(
     outcomes?: SessionMessageRunOutcomeEvent[];
     now?: () => number;
     rateLimitRetryDelayMs?: number;
+    maxRememberedMessages?: number;
     timeoutScheduler?: RuntimeRetryScheduler;
     credentialEnvironment?: SessionMessageInboxOptions["credentialEnvironment"];
   } = {},
@@ -123,6 +124,7 @@ function makeInbox(
     },
     steerRetryMs: 2,
     ...(options.now ? { now: options.now } : {}),
+    ...(options.maxRememberedMessages ? { maxRememberedMessages: options.maxRememberedMessages } : {}),
     ...(options.timeoutScheduler ? { timeoutScheduler: options.timeoutScheduler } : {}),
   });
   inboxes.push(inbox);
@@ -462,6 +464,58 @@ describe("the retry of a Session message Run", () => {
     await inbox.settled();
     expect(attempts).toHaveLength(2);
     expect(inbox.getState(first.messageId)?.status).toBe("succeeded");
+  });
+
+  it("answers from the record once the bounded cache has evicted the message", async () => {
+    const { attempts, runtime, steers } = harness();
+    const inbox = makeInbox(runtime, { rateLimitRetryDelayMs: 200, maxRememberedMessages: 1 });
+    const { message } = conversation();
+    const [first, other] = [message("first"), message("other")];
+    await inbox.accept(first);
+    (await started(attempts, 1)).finish(rateLimited);
+    await vi.waitFor(() => expect(inbox.getState(first.messageId)?.status).toBe("retryable"));
+    // The other message takes the cache's one place.
+    await inbox.accept(other);
+    await expect(inbox.accept({ ...first, requestId: randomUUID() })).resolves.toMatchObject({ status: "accepted" });
+    expect(inbox.getState(first.messageId)).toMatchObject({ status: "retryable", attempts: 1 });
+    expect(inbox.queuedCount).toBe(1);
+    // A different payload under that ID still conflicts.
+    await expect(
+      inbox.accept({ ...first, requestId: randomUUID(), content: { kind: "text", text: "different" } }),
+    ).resolves.toMatchObject({ status: "rejected", reason: "input_conflict" });
+    const retry = await started(attempts, 2);
+    await vi.waitFor(() => expect(steers.map((steer) => steer.texts.at(-1))).toEqual(["other"]));
+    await vi.waitFor(() => expect(inbox.getState(other.messageId)?.status).toBe("running"));
+    retry.finish();
+    await inbox.settled();
+    expect(attempts).toHaveLength(2);
+    expect(inbox.getState(first.messageId)?.status).toBe("succeeded");
+    // Terminal outcomes survive eviction as well: a replay does not run it again.
+    await inbox.accept(message("evicts"));
+    (await started(attempts, 3)).finish();
+    await inbox.settled();
+    await expect(inbox.accept({ ...first, requestId: randomUUID() })).resolves.toMatchObject({ status: "accepted" });
+    await inbox.settled();
+    expect(attempts).toHaveLength(3);
+  });
+
+  it("answers a replay of an evicted failed message as rejected, without running it", async () => {
+    const { attempts, runtime } = harness();
+    const inbox = makeInbox(runtime, { maxRememberedMessages: 1 });
+    const { message } = conversation();
+    const failed = message("failed");
+    await inbox.accept(failed);
+    (await started(attempts, 1)).finish(new Error("the provider broke"));
+    await vi.waitFor(() => expect(inbox.getState(failed.messageId)?.status).toBe("failed"));
+    await inbox.settled();
+    await inbox.accept(message("evicts"));
+    (await started(attempts, 2)).finish();
+    await inbox.settled();
+    await expect(inbox.accept({ ...failed, requestId: randomUUID() })).resolves.toMatchObject({
+      status: "rejected",
+      reason: "provider_unavailable",
+    });
+    expect(attempts).toHaveLength(2);
   });
 
   it("answers a replay after a restart without resetting the count of the message it recovered", async () => {

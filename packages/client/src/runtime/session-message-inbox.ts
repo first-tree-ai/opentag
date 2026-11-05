@@ -260,7 +260,8 @@ export class SessionMessageInbox {
     key: string,
     hash: string,
   ): SessionMessageDeliveryResult | undefined {
-    const remembered = this.#remembered.get(key);
+    // The cache is bounded and a record can outlive its entry, so the record answers a miss.
+    const remembered = this.#remembered.get(key) ?? this.#rememberedFromRecord(key);
     if (!remembered) return undefined;
     if (remembered.hash !== hash) return deliveryResult(request, "rejected", "input_conflict");
     if (remembered.status === "rejected" || remembered.status === "dead-letter" || remembered.status === "failed") {
@@ -271,6 +272,17 @@ export class SessionMessageInbox {
     return remembered.status === "retryable" && !this.#records.has(key)
       ? undefined
       : deliveryResult(request, "accepted");
+  }
+
+  #rememberedFromRecord(key: string): RememberedMessage | undefined {
+    const record = this.#records.get(key);
+    if (!record) return undefined;
+    const hash = sessionMessageSemanticHash(record.payload);
+    if (record.status === "succeeded") return { hash, status: "succeeded" };
+    if (record.status === "failed" || record.status === "dead-letter") {
+      return { hash, status: record.status, reason: "provider_unavailable" };
+    }
+    return { hash, status: "accepted" };
   }
 
   #acceptanceReason(request: SessionMessageDeliveryRequestV3): InputRejectReason | undefined {

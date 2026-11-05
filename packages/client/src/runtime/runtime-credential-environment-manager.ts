@@ -96,7 +96,7 @@ export interface PreparedMcpGatewayLaunch {
 export interface PreparedRuntimeCredentialEnvironment {
   /** Local-only exact proxy socket for this execution. Cloud uses its mounted bridge. */
   readonly allowedUnixSockets?: readonly string[];
-  /** Present in proxy mode; exact-execution cleanup token. */
+  /** Exact preparation/execution cleanup token in either credential mode. */
   readonly executionId?: string;
   /** Execution environment manifest merged by the Turn launcher. */
   readonly environmentManifest?: string;
@@ -130,7 +130,7 @@ export interface RuntimeCredentialEnvironmentManagerOptions {
   readonly logger?: Pick<ClientLogger, "debug" | "warn">;
   /**
    * Explicit mode selection. `"proxy"` never falls back to raw materials; `"legacy"`
-   * keeps the existing Local behavior unchanged. Default `"legacy"`.
+   * keeps the existing Local raw-credential projection. Default `"legacy"`.
    */
   readonly mode?: RuntimeCredentialMode;
   readonly now?: () => number;
@@ -175,8 +175,8 @@ interface ActiveProxyExecution {
  * Runtime credential environment lifecycle with explicit proxy mode. Proxy mode opens
  * a trusted execution through the control connection, holds short-lived capabilities
  * only inside the trusted Relay, and materializes execution-local handles, CA, CLI
- * config, and shims for the Sandbox. Legacy mode delegates to the existing IM
- * credential environment manager unchanged.
+ * config, and shims for the Sandbox. Legacy mode delegates credential materialization
+ * and live non-secret outbox context to the existing IM manager.
  */
 export class RuntimeCredentialEnvironmentManager {
   readonly #legacy?: ImCredentialEnvironmentManager;
@@ -270,6 +270,9 @@ export class RuntimeCredentialEnvironmentManager {
 
   /** IM outbox context of the Session's live execution, so input steered into it names the same target. */
   outboxContextForSession(sessionId: string): RuntimeImOutboxContext | undefined {
+    if (this.#mode === "legacy") {
+      return this.#requireLegacy().outboxContextForSession(sessionId);
+    }
     return this.#proxyExecutions.get(sessionId)?.outboxContext;
   }
 
@@ -341,7 +344,9 @@ export class RuntimeCredentialEnvironmentManager {
   }
 
   async cleanup(sessionId: string, executionId?: string): Promise<void> {
-    if (this.#mode === "legacy") return this.#requireLegacy().cleanup(sessionId);
+    if (this.#mode === "legacy") {
+      return this.#requireLegacy().cleanup(sessionId, executionId);
+    }
     const active = this.#proxyExecutions.get(sessionId);
     if (executionId !== undefined && active && active.executionId !== executionId) {
       // Stale cleanup for a replaced execution: successor material stays untouched.

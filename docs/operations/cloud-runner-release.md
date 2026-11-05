@@ -11,6 +11,14 @@ records the verified image digest, channel, version and source SHA as a GitHub A
 succeeds. A version tag is never overwritten; a retry can reuse an existing image only after its identity is verified.
 `Runner Toolchain` remains the independent, offline-only PR build check.
 
+Pinned Runner tool downloads retry only HTTP 408, 429, 500, 502, 503 and 504 and selected transient connection errors.
+Each artifact has at most four download attempts, with waits of 5, 10 and 20 seconds inside one 120-second deadline covering
+requests, redirects and body reads. Cancellation stops requests and waits. Permanent errors, size violations and digest
+mismatches fail immediately; retries never relax the reviewed versions, sizes or SHA256 checks. Provider CLI installation
+owns its download retries, with no additional retry loop in Runner assembly. The Native Proxy workflow uses the same
+Provider CLI fetcher for its bounded official gh archive and checksum downloads, then verifies the selected SHA256 before
+extraction. A failed or partial download is not written to the destination file.
+
 ## Publishing configuration
 
 Reuse the portable workflow's `OPENTAG_PORTABLE_GCP_WORKLOAD_IDENTITY_PROVIDER` and
@@ -96,6 +104,12 @@ and requires a final not-found response. It verifies purpose/target/environment 
 command, arguments, absence of environment credentials, UID and etag before deleting. It checks leadership again before
 create/delete. A matching previous-digest probe is deleted before importing the new digest. Foreign or replaced resources
 are rejected rather than deleted; create responses of uncertain outcome are reconciled without blindly repeating POST.
+
+Idempotent GET reads during preparation and cleanup retry HTTP 429, 500, 502, 503 and 504 and fetch transport failures
+at the existing two-second polling cadence, within that phase's original deadline. A read failure never counts as
+not-found or readiness. Other HTTP errors, credential failures, invalid JSON and ownership mismatches fail immediately.
+Preparation cancellation interrupts reads and retry waits; cleanup still uses its independent budget. POST and DELETE
+are not retried.
 
 Graceful shutdown aborts preparation, drains bounded cleanup, then closes the dedicated lock connection. A forced kill
 can interrupt cleanup; the next leader recovers the same named, strictly owned probe. A change to project, identity,

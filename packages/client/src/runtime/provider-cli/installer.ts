@@ -60,7 +60,42 @@ function throwIfCancelled(cancel: AbortSignal | undefined): void {
 const DOWNLOAD_TIMEOUT_MS = 120_000;
 const MAX_REDIRECT_HOPS = 8;
 const REDIRECT_STATUSES: ReadonlySet<number> = new Set([301, 302, 303, 307, 308]);
+const RETRY_STATUSES: ReadonlySet<number> = new Set([408, 429, 500, 502, 503, 504]);
+const RETRY_DELAYS_MS = [5_000, 10_000, 20_000];
+const RETRY_NETWORK_CODES: ReadonlySet<string> = new Set([
+  "ECONNRESET",
+  "ECONNREFUSED",
+  "ETIMEDOUT",
+  "EAI_AGAIN",
+  "UND_ERR_CONNECT_TIMEOUT",
+  "UND_ERR_HEADERS_TIMEOUT",
+  "UND_ERR_BODY_TIMEOUT",
+  "UND_ERR_SOCKET",
+]);
 const logger = createLogger("runtime-provider-cli-installer");
+
+class TransientArtifactError extends Error {}
+
+function isTransientArtifactError(error: unknown): boolean {
+  if (error instanceof TransientArtifactError) return true;
+  const network = error as { code?: string; cause?: { code?: string } } | undefined;
+  return RETRY_NETWORK_CODES.has(network?.cause?.code ?? network?.code ?? "");
+}
+
+async function waitForArtifactRetry(delayMs: number, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted();
+  await new Promise<void>((resolve, reject) => {
+    const abort = () => {
+      clearTimeout(timer);
+      reject(signal.reason);
+    };
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", abort);
+      resolve();
+    }, delayMs);
+    signal.addEventListener("abort", abort, { once: true });
+  });
+}
 
 /**
  * Resolve one request or redirect hop to the next URL. Every hop — the reviewed catalog
@@ -79,24 +114,6 @@ export function resolveProviderCliArtifactUrl(current: string, location?: string
     throw new ProviderCliInstallError("integrity_failed", "Artifact URL and every redirect hop must use HTTPS");
   }
   return next.toString();
-}
-
-async function requestProviderCliArtifact(
-  fetchImpl: typeof fetch,
-  url: string,
-  signal: AbortSignal,
-  cancel: AbortSignal | undefined,
-): Promise<Response> {
-  try {
-    return await fetchImpl(url, { redirect: "manual", signal });
-  } catch (error) {
-    throwIfCancelled(cancel);
-    logger.debug({ code: "artifact_download_failed", error: String(error) }, "Provider CLI artifact download failed");
-    throw new ProviderCliInstallError(
-      "install_incomplete",
-      `Artifact download failed: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
 }
 
 async function cancelProviderCliRedirectBody(response: Response): Promise<void> {
@@ -118,14 +135,12 @@ async function cancelProviderCliRedirectBody(response: Response): Promise<void> 
 async function fetchProviderCliArtifactResponse(
   fetchImpl: typeof fetch,
   url: string,
-  timeoutMs: number,
-  cancel: AbortSignal | undefined,
+  signal: AbortSignal,
 ): Promise<Response> {
   let current = resolveProviderCliArtifactUrl(url);
-  const timeout = AbortSignal.timeout(timeoutMs);
-  const signal = cancel ? AbortSignal.any([timeout, cancel]) : timeout;
   for (let redirects = 0; ; redirects += 1) {
-    const response = await requestProviderCliArtifact(fetchImpl, current, signal, cancel);
+    signal.throwIfAborted();
+    const response = await fetchImpl(current, { redirect: "manual", signal });
     if (!REDIRECT_STATUSES.has(response.status)) return response;
 
     const location = response.headers.get("location");
@@ -156,23 +171,35 @@ async function readProviderCliArtifactBody(
   cancel: AbortSignal | undefined,
 ): Promise<Uint8Array> {
   if (!response.ok) {
-    throw new ProviderCliInstallError("install_incomplete", `Artifact download failed with HTTP ${response.status}`);
+    await cancelProviderCliRedirectBody(response);
+    const message = `Artifact download failed with HTTP ${response.status}`;
+    if (RETRY_STATUSES.has(response.status)) throw new TransientArtifactError(message);
+    throw new ProviderCliInstallError("install_incomplete", message);
   }
   const length = response.headers.get("content-length");
   if (length !== null && Number.parseInt(length, 10) > maxBytes) {
+    await cancelProviderCliRedirectBody(response);
     throw new ProviderCliInstallError("integrity_failed", "Artifact exceeds the reviewed size bound");
   }
-  if (!response.body) return new Uint8Array(await response.arrayBuffer());
+  if (!response.body) {
+    const body = new Uint8Array(await response.arrayBuffer());
+    if (body.byteLength > maxBytes) {
+      throw new ProviderCliInstallError("integrity_failed", "Artifact exceeds the reviewed size bound");
+    }
+    return body;
+  }
 
   const reader = response.body.getReader();
   // The fetch signal already aborts the body; also cancel the reader so a stream that ignores the
   // signal cannot keep the socket (and the daemon process) alive after cancellation.
   const onCancel = () => void reader.cancel(cancel?.reason).catch(() => undefined);
   cancel?.addEventListener("abort", onCancel, { once: true });
+  if (cancel?.aborted) onCancel();
   try {
     return await readProviderCliArtifactChunks(reader, maxBytes, cancel);
   } finally {
     cancel?.removeEventListener("abort", onCancel);
+    reader.releaseLock();
   }
 }
 
@@ -205,16 +232,50 @@ async function readProviderCliArtifactChunks(
   return concatenateProviderCliArtifactChunks(chunks, received);
 }
 
-/**
- * Create the bounded artifact fetcher. `fetchImpl` exists so tests can exercise the
- * full redirect and size-bound policy without network or TLS; production always uses
- * the global fetch with manual redirect handling.
- */
+async function fetchProviderCliArtifactWithRetry(
+  fetchImpl: typeof fetch,
+  url: string,
+  maxBytes: number,
+  signal: AbortSignal,
+): Promise<Uint8Array> {
+  for (let attempt = 0; ; attempt += 1) {
+    signal.throwIfAborted();
+    try {
+      const response = await fetchProviderCliArtifactResponse(fetchImpl, url, signal);
+      const body = await readProviderCliArtifactBody(response, maxBytes, signal);
+      signal.throwIfAborted();
+      return body;
+    } catch (error) {
+      signal.throwIfAborted();
+      const delay = RETRY_DELAYS_MS[attempt];
+      if (delay === undefined || !isTransientArtifactError(error)) throw error;
+      await waitForArtifactRetry(delay, signal);
+    }
+  }
+}
+
+/** Create a bounded GET fetcher; retries, redirects and body reads share one deadline. */
 export function createProviderCliFetcher(fetchImpl: typeof fetch = fetch): ProviderCliFetcher {
-  return async ({ url, maxBytes, timeoutMs, signal }) => {
-    throwIfCancelled(signal);
-    const response = await fetchProviderCliArtifactResponse(fetchImpl, url, timeoutMs, signal);
-    return readProviderCliArtifactBody(response, maxBytes, signal);
+  return async ({ url, maxBytes, timeoutMs, signal: cancel }) => {
+    throwIfCancelled(cancel);
+    const deadline = new AbortController();
+    const timer = setTimeout(
+      () => deadline.abort(new DOMException("Artifact download timed out", "TimeoutError")),
+      timeoutMs,
+    );
+    const signal = cancel ? AbortSignal.any([cancel, deadline.signal]) : deadline.signal;
+    try {
+      return await fetchProviderCliArtifactWithRetry(fetchImpl, url, maxBytes, signal);
+    } catch (error) {
+      throwIfCancelled(cancel);
+      if (error instanceof ProviderCliInstallError) throw error;
+      throw new ProviderCliInstallError(
+        "install_incomplete",
+        `Artifact download failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      clearTimeout(timer);
+    }
   };
 }
 

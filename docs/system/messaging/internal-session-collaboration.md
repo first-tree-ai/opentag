@@ -136,6 +136,16 @@ publishes any user-facing result through the official provider CLI during that c
 child's text automatically. Channel callbacks target the existing chat or channel, while thread callbacks retain the
 existing thread scope. Internal targets never receive provider credentials or outbox context.
 
+Default Local (`legacy`) Turns retain the non-secret context from their existing credential grant after credential
+materialization succeeds. Session messages steered into that live Turn use the same Server-authorized channel or thread
+target without requesting another grant. Cleanup, shutdown, or cancellation withdraws that context; a failed or superseded
+preparation cannot restore it. The Client never derives an outbox target from the Session message's sender or content.
+Each legacy preparation returns an execution cleanup token, also recorded in its environment manifest. Materialization
+and cleanup share one serial lifecycle per Session: a replacement waits for older writes and teardown, and cleanup carrying
+an older token cannot remove the replacement's context or files. A Run that never prepared credentials does not perform
+Session-wide cleanup. Other Sessions prepare independently.
+An older grant without outbox context still leaves visible Session messages queued until the Turn ends.
+
 ## Run outcome notices
 
 `accepted` and `session list` describe delivery only. A Session message has the same goal as an IM message: once accepted, the
@@ -276,11 +286,6 @@ shares the count of the Turn it joined, so they retry together and fail together
 
 A message stays queued and waits for the Turn to end when the runtime cannot steer or refuses the steer, when the Turn
 already carries 16 Session messages, or when a visible Session has no IM outbox context.
-
-A Local daemon runs in `legacy` credential mode unless `OPENTAG_RUNTIME_CREDENTIAL_MODE=proxy` is set, and that mode has no IM
-outbox context. So on a default Local daemon a Session message never steers into a visible Session, IM Turn or not: it waits in
-the FIFO and runs as its own Run. Steering into an internal Session does not depend on this. Tracking:
-[#1335](https://github.com/first-tree-ai/opentag/issues/1335).
 
 The accepted cost is extra delivery and repeated handling around a process interruption: each retry can replay the Turn and
 its messages, and work that runs at least 5 minutes between crashes is never stopped by the count. After a crash the resumed Turn may already have the steered message

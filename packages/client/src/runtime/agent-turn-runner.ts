@@ -646,14 +646,17 @@ export class AgentTurnRunner {
     let releaseObserver: () => void = () => undefined;
     let turnPlanInput: ProviderCliTurnPlanPrepareInput | undefined;
     let preparedExecutionId: string | undefined;
+    let credentialPrepared = false;
     const phaseTimings: TurnPhaseTimings = {};
     try {
       signal.throwIfAborted();
-      const started = await this.#startTurn(owner, turn, signal, interruption !== undefined);
+      const started = await this.#startTurn(owner, signal, interruption !== undefined);
+      credentialPrepared = true;
       preparedExecutionId = started.preparedExecutionId;
-      turnPlanInput = started.turnPlanInput;
       phaseTimings.credentialPrepareMs = started.credentialPrepareMs;
-      phaseTimings.turnPlanPrepareMs = started.turnPlanPrepareMs;
+      const turnPlanStartedAt = this.#now();
+      turnPlanInput = await this.#prepareTurnPlanForRun(owner, turn, started.credentials, signal);
+      phaseTimings.turnPlanPrepareMs = Math.max(0, this.#now() - turnPlanStartedAt);
       const runSignal = started.runSignal;
       runSignal.throwIfAborted();
       const ensureStartedAt = this.#now();
@@ -718,8 +721,10 @@ export class AgentTurnRunner {
         /* v8 ignore next -- turn-plan teardown is best-effort. */
         await this.#turnPlan?.cleanup(turnPlanInput).catch(() => undefined);
       }
-      /* v8 ignore next -- credential teardown is best-effort. */
-      await this.#credentialEnvironment.cleanup(owner.request.sessionId, preparedExecutionId).catch(() => undefined);
+      if (credentialPrepared) {
+        /* v8 ignore next -- credential teardown is best-effort. */
+        await this.#credentialEnvironment.cleanup(owner.request.sessionId, preparedExecutionId).catch(() => undefined);
+      }
       clearTimeout(timer);
       turn.unrecordedRunMs = await runTime.finish();
     }
@@ -910,18 +915,16 @@ export class AgentTurnRunner {
    */
   async #startTurn(
     owner: LiveTurnOwner,
-    turn: RunningTurn,
     signal: AbortSignal,
     retry = false,
   ): Promise<{
+    credentials: PreparedRuntimeCredentialEnvironment;
     preparedExecutionId?: string;
     allowedUnixSockets?: readonly string[];
     runSignal: AbortSignal;
-    turnPlanInput?: ProviderCliTurnPlanPrepareInput;
     webTools?: PreparedWebToolsLaunch;
     mcpGateway?: PreparedMcpGatewayLaunch;
     credentialPrepareMs: number;
-    turnPlanPrepareMs: number;
   }> {
     // A retry keeps the phase it reached: the durable custody phase never moves backwards.
     if (!retry) {
@@ -947,18 +950,14 @@ export class AgentTurnRunner {
     );
     const credentialPrepareMs = Math.max(0, this.#now() - credentialStartedAt);
     const runSignal = credentials.signal ? AbortSignal.any([signal, credentials.signal]) : signal;
-    const turnPlanStartedAt = this.#now();
-    const turnPlanInput = await this.#prepareTurnPlanForRun(owner, turn, credentials, signal);
-    const turnPlanPrepareMs = Math.max(0, this.#now() - turnPlanStartedAt);
     return {
+      credentials,
       ...(credentials.executionId ? { preparedExecutionId: credentials.executionId } : {}),
       ...(credentials.allowedUnixSockets ? { allowedUnixSockets: credentials.allowedUnixSockets } : {}),
       runSignal,
-      ...(turnPlanInput ? { turnPlanInput } : {}),
       ...(credentials.web ? { webTools: credentials.web } : {}),
       ...(credentials.mcp ? { mcpGateway: credentials.mcp } : {}),
       credentialPrepareMs,
-      turnPlanPrepareMs,
     };
   }
 

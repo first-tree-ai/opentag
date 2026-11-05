@@ -92,6 +92,13 @@ info only; API-definition metadata remains available to normal execution-purpose
 For every valid visible Session Turn that may write to IM, including an IM delivery or an internal-collaboration callback,
 the Client creates a private `0600` environment file and passes only its path as `OPENTAG_PROVIDER_ENV_FILE`. The Agent
 calls the official `lark-cli` or `slack api` command directly; the managed launcher loads its credentials automatically.
+
+Saving Agent configuration changes its revision and invalidates an execution
+opened under the earlier revision. A self-configuration workflow must complete
+any pre-save notice before saving, then use a fresh Turn to verify the saved
+configuration and deliver its result. The old Turn's provider environment cannot
+authorize that confirmation; do not copy or reuse its credentials.
+
 Slack read methods use native URL-encoded `--data` parameters (for example `slack api files.info --data 'file=F...'`),
 because legacy Slack endpoints ignore JSON parameters when the Local CLI talks to Slack directly. Message writes keep
 `--json`. In proxy mode the Server also accepts JSON reads and normalizes their upstream encoding.

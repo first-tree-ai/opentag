@@ -159,6 +159,23 @@ Provoke and confirm the Agent surfaces the provider error instead of inventing s
 - `invalid_auth` / `token_revoked` after the test App's bot token is revoked in Slack
 - `missing_scope` if a method is called without the matching granted scope (should not happen on a complete install)
 
+## Execution admission and configuration changes
+
+Use an authorized test binding and a harmless, uniquely marked DM for each new
+Turn. Exercise startup while delivery acceptance is still committing. Pending
+custody remains retryable; matching accepted custody starts the Turn without a
+spurious `credential_unavailable`. Terminal custody and a different Turn,
+Session, Agent, Computer, connection instance, or placement never authorize it.
+The controlled acceptance race is also covered by
+`runtime-credentials-db.test.ts` and `runtime-execution-authority.test.ts`.
+
+For self-configuration, finish any pre-save notice before saving. The old Turn's
+provider access must fail after its Agent revision changes. Send a new DM and
+verify that its fresh Turn can read the saved configuration and send one marked
+reply. Confirm delivery by provider receipt and message readback, without
+replaying the old Turn's uncertain send. Run this sequence separately for Slack
+and Feishu when both authorized test bindings are available.
+
 ## Cloud Agent `/slackauthticket` automatic setup
 
 1. Create a Cloud Agent (or open **Messaging** settings on an unbound Cloud Agent) with fresh browser state and choose

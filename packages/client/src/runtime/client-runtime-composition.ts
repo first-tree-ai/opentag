@@ -938,7 +938,6 @@ export async function createClientRuntime(
     restartRetryAvailable,
     sessionMessages: {
       input: sessionMessageInbox.joinedRunInput.bind(sessionMessageInbox),
-      spendRetry: sessionMessageInbox.spendJoinedRetry.bind(sessionMessageInbox),
       settle: sessionMessageInbox.settleJoined.bind(sessionMessageInbox),
     },
   });

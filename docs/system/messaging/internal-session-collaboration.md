@@ -127,11 +127,11 @@ existing thread scope. Internal targets never receive provider credentials or ou
 `accepted` and `session list` describe delivery only. When an internal Session's Run ends without completing, the
 Server tells the Session that created it (`created_by_session_id`):
 
-- Local: a message whose Run a daemon crash or restart interrupts resumes after restart, and gets at most one automatic
-  retry after `turn_timeout` or a model HTTP 429, as described in
-  [Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work). The Run
-  starts with the continuation notice and the original message. Every other failure, and a failure of the retry, is
-  terminal (a timed-out retry reports `turn_timeout`; a fast interruption loop that trips the fuse reports `run_interrupted`).
+- Local: a message whose Run a daemon crash or restart interrupts, or that hits a model HTTP 429, gets at most 2 automatic
+  retries, as described in
+  [Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work). The retried Run
+  starts with the continuation notice and the original message. Every other failure, including `turn_timeout`, is terminal
+  without a retry, and so is running out of retries (`provider_rate_limited`, or `run_interrupted` after a crash).
   After a restart, accepted messages wait without failing until the Server prepares their Session; if the Server
   refuses (for example the Session ended), they fail with that reason. The daemon then reports the outcome with
   `session:message:outcome`. Reports are kept in a local durable file and resent until the Server gives a final
@@ -140,7 +140,7 @@ Server tells the Session that created it (`created_by_session_id`):
   terminal record still marked `pending` (for example after a crash between the two writes) hands its report over
   again, and the child is never rerun. Terminal records written before the marker existed carry no marker and are
   not backfilled. The Server-backed Runtime durability adapter does not store the marker. A steered message follows
-  the Turn it joined: when that Turn ends without completing and has no further retry, the message takes this same
+  the Turn it joined: when that Turn ends without completing, the message takes this same
   terminal path (reason `session_message_steer_interrupted`), a completed Turn makes it succeed, and a message the
   provider never started returns to the FIFO with no report. Eligibility is unchanged, so a message steered into a
   visible Session's IM Turn produces no notice.
@@ -224,47 +224,39 @@ included; see [Agent, Session, and Computer model](../agent-session-computer-mod
 
 ## Automatic retry before a notice
 
-On a Local Computer a Session message whose Run a crash, power loss, restart or upgrade interrupts resumes after restart.
-This never counts as a retry. Three consecutive interruptions, each within about 2 minutes of resuming, stop it and report
-a failure; a longer run resets the count. A `turn_timeout` or a model HTTP 429 gets at most one automatic retry. Either way
-the Run starts with the continuation notice and the original message; non-recoverable failures stay terminal and the
-five-attempt inbox retry is gone. The creator receives the notice only when the message finally fails. After a daemon
-restart, each interrupted Session's message runs once the Server has prepared the Session again, before the Session's
-queued messages. See [Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work).
+On a Local Computer a Session message running on its own gets at most 2 automatic retries after a crash, power loss,
+restart, upgrade, or model HTTP 429; a retry that ran for at least 5 minutes resets the count. Reaching the Run's duration
+limit (`turn_timeout`) and non-recoverable failures are not retried, and the five-attempt inbox retry is gone. The retried
+Run starts with the continuation notice and the original message. The creator receives the notice only when the message
+finally fails, so the superior hears about a timeout directly. After a daemon restart, each interrupted Session's message
+runs once the Server has prepared the Session again, before the Session's queued messages. See
+[Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work).
 
 ### Session messages steered into an IM Turn
 
 On a Local Computer a Session message is steered into the Session's IM Turn whenever the runtime can take it, including
 that Turn's retry and the Turn resumed after a process interruption
-([#1301](https://github.com/first-tree-ai/opentag/issues/1301#issuecomment-6651237819)). What happens next depends on how
-the Turn was interrupted:
+([#1301](https://github.com/first-tree-ai/opentag/issues/1301#issuecomment-6651237819)). A steered message has no count of its own: it
+shares the count of the Turn it joined, so they retry together and fail together.
 
-- **Timeout or model HTTP 429, retried in place.** Messages already steered into the Turn join the same retry, in their
-  original order among the Turn's IM steers. Each message stays `running`, spends its one retry, and gets the Turn's
-  result. It is not queued again. The list is kept in memory, not in the Turn's retry file. A message that already used its
-  retry fails instead of joining. If the spend cannot be written, the message joins with a warning; at worst it later gets
-  one more retry.
-- **Crash or restart.** The Turn is resumed with the continuation notice, without its Session messages, and keeps whatever
-  retry it had. Messages already steered before the interruption, then queued messages, are steered into the resumed Turn
-  in order once it is running. A message that was already steered carries the continuation notice, without a specific
-  cause, so the Agent knows it may have handled it already. Until then they wait in the FIFO, re-checking about once per
-  second. If the resumed Turn ends first, they run as their own Runs, in order, as they do when the runtime cannot steer.
-  If the Turn cannot be resumed, the existing fallback applies: the waiting messages fail.
-- **A Turn with no retry left.** A message steered into a Turn whose retry is spent gets no further retry: if that Turn
-  fails with an ordinary error, the message fails. A process interruption still resumes it.
-- **A fast interruption loop.** The Turn and each message that was `running` count interruptions separately, and each stops
-  when its own fuse trips.
-- **A failure that is not recoverable** fails the message without a retry.
-
-A failed message is reported to the Server once, as `session_message_steer_interrupted` or `run_interrupted`, but no creator
-notice follows: notices are only for internal targets (see [Run outcome notices](#run-outcome-notices)), and an IM Turn
-runs on a visible Session. So the sender of a message steered into an IM Turn is not told that it failed.
+- **Model HTTP 429, retried in place.** Messages already steered into the Turn join the same retry, in their original order
+  among the Turn's IM steers, and stay `running`. They are not queued again. The list is kept in memory, not in the Turn's
+  retry file. A message steered into that retry joins the next one the same way.
+- **Crash or restart.** The Turn is resumed with the continuation notice, without its Session messages. Messages already
+  steered before the interruption, then queued messages, are steered into the resumed Turn in order once it is running. A
+  message that was already steered carries the continuation notice, without a specific cause, so the Agent knows it may
+  have handled it already. Until then they wait in the FIFO, re-checking about once per second. If the Turn ends first, they
+  run as their own Runs, in order and with a fresh count, as they do when the runtime cannot steer. If the Turn cannot be
+  resumed, the existing fallback applies: the waiting messages fail.
+- **Running out of retries, `turn_timeout`, or any other failure** ends the Turn, and the messages in it fail with it. When
+  the count runs out at a restart, the messages steered into that Turn fail rather than run again; queued messages run on
+  their own.
 
 A message stays queued and waits for the Turn to end when the runtime cannot steer or refuses the steer, when the Turn
 already carries 16 Session messages, or when a visible Session has no IM outbox context.
 
-The accepted cost is extra delivery and repeated handling around a process interruption, now without a small upper bound:
-each interruption can replay the Turn and its messages. After a crash the resumed Turn may already have the steered message
+The accepted cost is extra delivery and repeated handling around a process interruption: each retry can replay the Turn and
+its messages, and work that runs at least 5 minutes between crashes is never stopped by the count. After a crash the resumed Turn may already have the steered message
 in its history, and the message is delivered again; the continuation notice tells the Agent, but cannot prevent every
 repeat. A message steered just before a crash, whose `running` state was not yet written, is delivered again without the
 notice. Steering

@@ -33,9 +33,15 @@ export class ServerRuntimeDurabilityStore implements RuntimeDurabilityStore {
   }
 
   async write<T>(record: DurableWorkRecord<T>): Promise<void> {
-    // The Server row has no outcome-report marker, interruption reason, or fast-loop count; all are
-    // Local-only (file store). Without them a recovered Run still resumes, reported as a crash.
-    const { outcomeReport: _localOnly, interruptionFuse: _localFuse, interruption: _localReason, ...portable } = record;
+    // The Server row has none of these; they are Local-only (file store). Without them a recovered Run
+    // still resumes, reported as a crash, its count never resets, and it counts as running on its own.
+    const {
+      outcomeReport: _localOnly,
+      retryStartedAt: _localStart,
+      joinedRunId: _localRun,
+      interruption: _localReason,
+      ...portable
+    } = record;
     const parsed = RuntimeDurableWorkRecordSchema.parse(portable);
     // Keep the seam's clock injectable for deterministic adapters and future lease metadata.
     this.#now();

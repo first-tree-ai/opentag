@@ -19,26 +19,22 @@ import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
 import { deriveRuntimeKey } from "./runtime-paths.js";
 
 /**
- * The recoverable interruption classes. A process interruption always resumes and never counts as a
- * retry; only an ordinary failure spends the one automatic retry. Everything else is reported.
+ * The interruptions that get an automatic retry. Reaching the Run's duration limit (`turn_timeout`) and
+ * every other failure are reported, without a retry.
  *
  * - `daemon_crash`: the daemon stopped with the work in flight, found on restart (usually a crash or
  *   power loss; a Session message steered into a Turn records nothing itself, so also a stop).
  * - `client_shutdown`: an orderly daemon stop (restart, upgrade) cancelled the Run.
- * - `turn_timeout`: the Run reached its maximum duration. An ordinary failure.
- * - `provider_rate_limited`: the model API answered HTTP 429. An ordinary failure.
+ * - `provider_rate_limited`: the model API answered HTTP 429.
  */
-export type InterruptionReason = "daemon_crash" | "client_shutdown" | "turn_timeout" | "provider_rate_limited";
+export type InterruptionReason = "daemon_crash" | "client_shutdown" | "provider_rate_limited";
 
-const REASONS = new Set<InterruptionReason>([
-  "daemon_crash",
-  "client_shutdown",
-  "turn_timeout",
-  "provider_rate_limited",
-]);
+const REASONS = new Set<InterruptionReason>(["daemon_crash", "client_shutdown", "provider_rate_limited"]);
 
-/** At most one automatic retry per accepted message, for ordinary failures. */
-export const MAX_AUTOMATIC_RETRIES = 1;
+/** At most this many automatic retries in a row. */
+export const MAX_AUTOMATIC_RETRIES = 2;
+/** A retry that ran at least this long resets the count. */
+export const RETRY_RESET_AFTER_MS = 5 * 60_000;
 /** A rate-limited Run waits this long before its automatic retry. */
 export const RATE_LIMIT_RETRY_DELAY_MS = 30_000;
 
@@ -48,37 +44,23 @@ export interface Interruption {
   at: string;
 }
 
-/** Interruptions this close to the previous resume count as a fast loop. */
-export const INTERRUPTION_FUSE_WINDOW_MS = 2 * 60_000;
-/** This many consecutive fast interruptions stop the work and report a failure. */
-export const INTERRUPTION_FUSE_LIMIT = 3;
-
-/** The durable count of fast process interruptions of one Turn or Session message. */
-export interface InterruptionFuse {
-  /** When it last resumed, in epoch milliseconds. */
-  resumedAt: number;
-  /** Consecutive interruptions within the window of resuming; a longer run resets it. */
-  fast: number;
+/** The durable retry count of a Turn or of a Session message running on its own. */
+export interface RetryCount {
+  count: number;
+  /** When the latest retry started, in epoch milliseconds. */
+  startedAt?: number;
 }
 
 /**
- * Record a process interruption found at `now`. Once tripped the fuse stays tripped, so a later
- * restart cannot resume work whose failure is already being reported.
+ * The count after an interruption at `now`. `exhausted` means no retry is left. It is recorded as one
+ * past the limit, so a later restart cannot revive work whose failure is already being reported.
  */
-export function noteInterruption(
-  previous: InterruptionFuse | undefined,
-  now: number,
-): { fuse: InterruptionFuse; tripped: boolean } {
-  if (previous && previous.fast >= INTERRUPTION_FUSE_LIMIT) return { fuse: previous, tripped: true };
-  const fast = previous && now - previous.resumedAt < INTERRUPTION_FUSE_WINDOW_MS ? previous.fast + 1 : 0;
-  return { fuse: { resumedAt: now, fast }, tripped: fast >= INTERRUPTION_FUSE_LIMIT };
-}
-
-function parseInterruptionFuse(value: unknown): InterruptionFuse | undefined {
-  const fuse = value as Partial<InterruptionFuse> | undefined;
-  return fuse && Number.isSafeInteger(fuse.resumedAt) && Number.isSafeInteger(fuse.fast)
-    ? { resumedAt: fuse.resumedAt as number, fast: fuse.fast as number }
-    : undefined;
+export function nextRetry(previous: RetryCount, now: number): RetryCount & { exhausted: boolean } {
+  if (previous.count > MAX_AUTOMATIC_RETRIES) return { ...previous, exhausted: true };
+  const ranLong = previous.startedAt !== undefined && now - previous.startedAt >= RETRY_RESET_AFTER_MS;
+  const count = ranLong ? 0 : previous.count;
+  if (count >= MAX_AUTOMATIC_RETRIES) return { ...previous, count: MAX_AUTOMATIC_RETRIES + 1, exhausted: true };
+  return { count: count + 1, startedAt: now, exhausted: false };
 }
 
 /** Maps a Run failure reason to a recoverable class, or undefined when it must not be retried. */
@@ -92,8 +74,6 @@ function describeInterruption(reason: InterruptionReason): string {
       return "the OpenTag daemon stopped (crash, power loss, restart, or upgrade)";
     case "client_shutdown":
       return "the OpenTag daemon was restarted or upgraded";
-    case "turn_timeout":
-      return "the turn reached its maximum run duration";
     case "provider_rate_limited":
       return "the model API rate-limited the request (HTTP 429)";
   }
@@ -104,12 +84,10 @@ function describeInterruption(reason: InterruptionReason): string {
  * may or may not have persisted the interrupted turn, so the original input always follows and
  * may duplicate history.
  */
-export function buildContinuationNotice(interruption: Interruption, attempt = 1): string {
+export function buildContinuationNotice(interruption: Interruption): string {
   const when = interruption.reason === "daemon_crash" ? `at or before ${interruption.at}` : `at ${interruption.at}`;
-  const ordinary = interruption.reason === "turn_timeout" || interruption.reason === "provider_rate_limited";
-  const retry = ordinary ? ` (automatic retry ${attempt}/${MAX_AUTOMATIC_RETRIES})` : "";
   return [
-    `[OpenTag] Your previous turn was interrupted ${when} because ${describeInterruption(interruption.reason)}${retry}.`,
+    `[OpenTag] Your previous turn was interrupted ${when} because ${describeInterruption(interruption.reason)} (automatic retry).`,
     "Before continuing, check your history and the work already done in this conversation, including replies already sent, then continue the original request.",
     "The original request follows; it may duplicate a message already in your history. Do not repeat replies or side effects that already happened.",
   ].join(" ");
@@ -130,10 +108,10 @@ export interface TurnRetryRecord {
   request: DirectImMessageDeliveryRequest;
   /** Messages steered into this Turn, re-included on retry. */
   steers: RuntimeImSteerRequest[];
-  /** Automatic retries already started for this Turn, after ordinary failures only. */
+  /** Automatic retries in a row, for process interruptions and model 429 alike. */
   retries: number;
-  /** Fast process interruptions of this Turn; resuming never spends a retry. */
-  interruptionFuse?: InterruptionFuse;
+  /** When the latest retry started, in epoch milliseconds; a long enough retry resets the count. */
+  retryStartedAt?: number;
   /** What ended the Turn's latest attempt; cleared when an attempt starts, so it never names an older one. */
   interruption?: Interruption;
 }
@@ -283,7 +261,9 @@ export function parseTurnRetryRecord(value: unknown): TurnRetryRecord {
   ) {
     throw new RuntimeStorageError("invalid", "Turn retry record is invalid");
   }
-  const interruptionFuse = parseInterruptionFuse(candidate.interruptionFuse);
+  const retryStartedAt = Number.isSafeInteger(candidate.retryStartedAt)
+    ? (candidate.retryStartedAt as number)
+    : undefined;
   return {
     schemaVersion: 1,
     agentId: request.agentId,
@@ -293,7 +273,7 @@ export function parseTurnRetryRecord(value: unknown): TurnRetryRecord {
     request,
     steers,
     retries: candidate.retries as number,
-    ...(interruptionFuse ? { interruptionFuse } : {}),
+    ...(retryStartedAt !== undefined ? { retryStartedAt } : {}),
     ...(interruption
       ? { interruption: { reason: interruption.reason as InterruptionReason, at: interruption.at as string } }
       : {}),

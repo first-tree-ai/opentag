@@ -8,15 +8,17 @@ import {
   type RuntimeImSteerRequest,
   type SessionRecoverRequest,
 } from "@opentag/shared";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentRunResult } from "../agent-runtime/types.js";
 import { AdmissionController } from "../runtime/admission-controller.js";
 import { AgentTurnRunner, buildRetryAgentInput } from "../runtime/agent-turn-runner.js";
 import { InterruptedWorkRecovery } from "../runtime/interrupted-work-recovery.js";
 import {
   buildContinuationNotice,
+  MAX_AUTOMATIC_RETRIES,
   MAX_RECORDED_STEERS,
   parseTurnRetryRecord,
+  RATE_LIMIT_RETRY_DELAY_MS,
   recoverableFailure,
   type TurnRetryRecord,
   TurnRetryStore,
@@ -31,18 +33,34 @@ import type { TurnReportOwner } from "../runtime/turn-report-owner.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
 
 const homes: string[] = [];
+const realSetTimeout = globalThis.setTimeout;
+/** The 429 backoff is short here, unless a test uses fake timers or its own delay. */
+let rateLimitDelayMs = 1;
+
+beforeEach(() => {
+  rateLimitDelayMs = 1;
+  vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: () => void, ms?: number, ...rest: unknown[]) =>
+    realSetTimeout(
+      handler,
+      ms === RATE_LIMIT_RETRY_DELAY_MS ? rateLimitDelayMs : ms,
+      ...(rest as []),
+    )) as typeof setTimeout);
+});
+
 afterEach(async () => {
   vi.useRealTimers();
+  vi.restoreAllMocks();
   await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true })));
 });
 
 describe("interruption classification and continuation", () => {
   it("retries only the recoverable classes", () => {
-    for (const reason of ["turn_timeout", "provider_rate_limited", "client_shutdown", "daemon_crash"]) {
+    for (const reason of ["provider_rate_limited", "client_shutdown", "daemon_crash"]) {
       expect(recoverableFailure(reason)).toBe(reason);
     }
     for (const reason of [
       undefined,
+      "turn_timeout",
       "provider_failed",
       "provider_quota_exceeded",
       "provider_authentication_failed",
@@ -54,24 +72,24 @@ describe("interruption classification and continuation", () => {
     }
   });
 
-  it("states the reason, the retry count, and how to continue", () => {
+  it("states the reason and how to continue", () => {
     expect(buildContinuationNotice({ reason: "client_shutdown", at: "2026-11-05T01:00:00.000Z" })).toBe(
-      "[OpenTag] Your previous turn was interrupted at 2026-11-05T01:00:00.000Z because the OpenTag daemon was restarted or upgraded. Before continuing, check your history and the work already done in this conversation, including replies already sent, then continue the original request. The original request follows; it may duplicate a message already in your history. Do not repeat replies or side effects that already happened.",
+      "[OpenTag] Your previous turn was interrupted at 2026-11-05T01:00:00.000Z because the OpenTag daemon was restarted or upgraded (automatic retry). Before continuing, check your history and the work already done in this conversation, including replies already sent, then continue the original request. The original request follows; it may duplicate a message already in your history. Do not repeat replies or side effects that already happened.",
     );
     expect(buildContinuationNotice({ reason: "daemon_crash", at: "T" })).toContain(
-      "interrupted at or before T because the OpenTag daemon stopped (crash, power loss, restart, or upgrade).",
+      "interrupted at or before T because the OpenTag daemon stopped (crash, power loss, restart, or upgrade) (automatic retry).",
     );
     expect(buildContinuationNotice({ reason: "provider_rate_limited", at: "T" })).toContain(
-      "(HTTP 429) (automatic retry 1/1)",
+      "(HTTP 429) (automatic retry).",
     );
   });
 
   it("re-includes the original input and steered messages after the notice", () => {
     const request = delivery();
     const steer = steerRequest(request, "and also this");
-    const input = buildRetryAgentInput(request, [steer], { reason: "turn_timeout", at: "T" }, new Date(0));
+    const input = buildRetryAgentInput(request, [steer], { reason: "provider_rate_limited", at: "T" }, new Date(0));
     const texts = input.items.map((item) => (item.type === "text" ? item.text : ""));
-    expect(texts[0]).toContain("because the turn reached its maximum run duration");
+    expect(texts[0]).toContain("because the model API rate-limited the request");
     expect(texts).toContain("hello");
     expect(texts.at(-2)).toContain("Messages that arrived during the interrupted turn");
     expect(texts.at(-1)).toContain("and also this");
@@ -133,21 +151,20 @@ describe("TurnRetryStore steer capture", () => {
 });
 
 describe("AgentTurnRunner automatic retry", () => {
-  it("retries a timed-out Turn once in place with the continuation notice and reports the retry", async () => {
+  it("retries a rate-limited Turn in place with the continuation notice and reports the retry", async () => {
     const h = runnerHarness();
-    h.request.runtime.budget = { maxDurationMs: 20 };
     const acknowledged = steerRequest(h.request, "steered in");
     const deferred = { ...steerRequest(h.request, "deferred, still the Server's"), deliveryId: randomUUID() };
     h.records.set(h.request.sessionId, { ...turnRetryRecord(h.request, "turn-1"), steers: [acknowledged, deferred] });
     h.receipts.push({ kind: "steer", deliveryId: acknowledged.deliveryId, turnId: "turn-1" });
     h.prompt
-      .mockImplementationOnce(abortedOnSignal)
+      .mockImplementationOnce(rateLimited)
       .mockImplementationOnce(async () => ({ runId: "turn-1", status: "completed", output: [] }));
     h.runner.start(owner(h.request));
     await h.runner.settled();
     expect(h.prompt).toHaveBeenCalledTimes(2);
     const retryItems = promptItems(h.prompt, 1);
-    expect(retryItems[0]?.text).toContain("maximum run duration (automatic retry 1/1)");
+    expect(retryItems[0]?.text).toContain("(HTTP 429) (automatic retry)");
     expect(retryItems.at(-1)?.text).toContain("steered in");
     expect(retryItems.at(-1)?.text).not.toContain("deferred, still the Server's");
     expect(h.records.get(h.request.sessionId)).toMatchObject({ retries: 1 });
@@ -162,7 +179,6 @@ describe("AgentTurnRunner automatic retry", () => {
     ["no longer holds the Turn", "replaced"],
   ] as const)("reports the failure instead of retrying when the Session binding %s", async (_name, scenario) => {
     const h = runnerHarness();
-    h.request.runtime.budget = { maxDurationMs: 20 };
     const steer = steerRequest(h.request, "steered in");
     h.records.set(h.request.sessionId, { ...turnRetryRecord(h.request, "turn-1"), steers: [steer] });
     h.receipts.push({ kind: "steer", deliveryId: steer.deliveryId, turnId: "turn-1" });
@@ -171,13 +187,13 @@ describe("AgentTurnRunner automatic retry", () => {
     if (scenario === "replaced") {
       h.bindingRead.mockResolvedValueOnce({ recentRecordedInputs: [], unresolvedTurn: undefined });
     }
-    h.prompt.mockImplementationOnce(abortedOnSignal);
+    h.prompt.mockImplementationOnce(rateLimited);
     h.runner.start(owner(h.request));
     await h.runner.settled();
     // The attempt that held the steer is the only one: no retry can run without the acknowledged input.
     expect(h.prompt).toHaveBeenCalledOnce();
     expect(h.create).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ outcome: "failed", errorReason: "turn_timeout" }),
+      expect.objectContaining({ outcome: "failed", errorReason: "provider_rate_limited" }),
       3,
     );
     expect(h.logs).toContainEqual(
@@ -187,11 +203,10 @@ describe("AgentTurnRunner automatic retry", () => {
 
   it("retries without consulting the binding when no steer was captured", async () => {
     const h = runnerHarness();
-    h.request.runtime.budget = { maxDurationMs: 20 };
     h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
     h.bindingRead.mockRejectedValue(new Error("disk"));
     h.prompt
-      .mockImplementationOnce(abortedOnSignal)
+      .mockImplementationOnce(rateLimited)
       .mockImplementationOnce(async () => ({ runId: "turn-1", status: "completed", output: [] }));
     h.runner.start(owner(h.request));
     await h.runner.settled();
@@ -202,11 +217,10 @@ describe("AgentTurnRunner automatic retry", () => {
 
   it("retries without a captured steer whose receipt is absent from a readable binding", async () => {
     const h = runnerHarness();
-    h.request.runtime.budget = { maxDurationMs: 20 };
     const steer = steerRequest(h.request, "deferred, still the Server's");
     h.records.set(h.request.sessionId, { ...turnRetryRecord(h.request, "turn-1"), steers: [steer] });
     h.prompt
-      .mockImplementationOnce(abortedOnSignal)
+      .mockImplementationOnce(rateLimited)
       .mockImplementationOnce(async () => ({ runId: "turn-1", status: "completed", output: [] }));
     h.runner.start(owner(h.request));
     await h.runner.settled();
@@ -216,10 +230,9 @@ describe("AgentTurnRunner automatic retry", () => {
   });
 
   it.each(["provider steer", "receipt write"] as const)(
-    "replays a steer still acknowledging its %s when the Run times out",
+    "replays a steer still acknowledging its %s when the Run hits a 429",
     async (slow) => {
       const h = runnerHarness();
-      h.request.runtime.budget = { maxDurationMs: 250 };
       h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
       h.retries.appendSteer = async (steer) => {
         const record = h.records.get(h.request.sessionId) as TurnRetryRecord;
@@ -243,10 +256,16 @@ describe("AgentTurnRunner automatic retry", () => {
           await record(steer);
         });
       }
+      let endRun: () => void = () => undefined;
       h.prompt
-        .mockImplementationOnce((input) => {
+        .mockImplementationOnce(() => {
           h.emit({ type: "run_started", runId: "turn-1" });
-          return abortedOnSignal(input).finally(() => setTimeout(release, 30));
+          return new Promise<AgentRunResult>((resolve) => {
+            endRun = () => {
+              setTimeout(release, 30);
+              void rateLimited().then(resolve);
+            };
+          });
         })
         .mockImplementationOnce(async () => {
           release();
@@ -257,6 +276,12 @@ describe("AgentTurnRunner automatic retry", () => {
         expect(h.updateUnresolved).toHaveBeenCalledWith(expect.anything(), expect.anything(), "turn-1", "running"),
       );
       const answer = h.runner.steer(steerRequest(h.request, "more"));
+      await vi.waitFor(() =>
+        slow === "provider steer"
+          ? expect(h.runtime.steer).toHaveBeenCalled()
+          : expect(h.recordSteer).toHaveBeenCalled(),
+      );
+      endRun();
       await h.runner.settled();
       await expect(answer).resolves.toMatchObject({ status: "steered" });
       expect(h.prompt).toHaveBeenCalledTimes(2);
@@ -267,23 +292,27 @@ describe("AgentTurnRunner automatic retry", () => {
   it("reports the failure when an in-flight steer never settles", async () => {
     vi.useFakeTimers();
     const h = runnerHarness();
-    h.request.runtime.budget = { maxDurationMs: 100 };
     h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
     h.runtime.steer.mockImplementationOnce(() => new Promise<undefined>(() => undefined));
-    h.prompt.mockImplementationOnce((input) => {
+    let endRun: () => void = () => undefined;
+    h.prompt.mockImplementationOnce(() => {
       h.emit({ type: "run_started", runId: "turn-1" });
-      return abortedOnSignal(input);
+      return new Promise<AgentRunResult>((resolve) => {
+        endRun = () => void rateLimited().then(resolve);
+      });
     });
     h.runner.start(owner(h.request));
     await vi.advanceTimersByTimeAsync(0);
     void h.runner.steer(steerRequest(h.request, "more"));
-    await vi.advanceTimersByTimeAsync(100 + 9_999);
+    await vi.advanceTimersByTimeAsync(0);
+    endRun();
+    await vi.advanceTimersByTimeAsync(RATE_LIMIT_RETRY_DELAY_MS + 9_999);
     expect(h.create).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     await h.runner.settled();
     expect(h.prompt).toHaveBeenCalledOnce();
     expect(h.create).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ outcome: "failed", errorReason: "turn_timeout" }),
+      expect.objectContaining({ outcome: "failed", errorReason: "provider_rate_limited" }),
       3,
     );
     expect(h.logs).toContainEqual(
@@ -291,16 +320,15 @@ describe("AgentTurnRunner automatic retry", () => {
     );
   });
 
-  it("reports the failure when the one retry also times out", async () => {
+  it("reports the failure when two retries in a row also hit a 429", async () => {
     const h = runnerHarness();
-    h.request.runtime.budget = { maxDurationMs: 20 };
     h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
-    h.prompt.mockImplementation(abortedOnSignal);
+    h.prompt.mockImplementation(rateLimited);
     h.runner.start(owner(h.request));
     await h.runner.settled();
-    expect(h.prompt).toHaveBeenCalledTimes(2);
+    expect(h.prompt).toHaveBeenCalledTimes(1 + MAX_AUTOMATIC_RETRIES);
     expect(h.create).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ outcome: "failed", errorReason: "turn_timeout" }),
+      expect.objectContaining({ outcome: "failed", errorReason: "provider_rate_limited" }),
       3,
     );
   });
@@ -328,25 +356,28 @@ describe("AgentTurnRunner automatic retry", () => {
     expect(h.create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ outcome: "completed" }), 3);
   });
 
-  it("does not retry non-recoverable failures, spent retries, or Turns without durable input", async () => {
-    for (const scenario of ["provider_failed", "spent", "no-record"] as const) {
+  it("does not retry a timeout, non-recoverable failures, spent retries, or Turns without durable input", async () => {
+    const providerFailed = async (): Promise<AgentRunResult> => ({
+      runId: "turn-1",
+      status: "failed",
+      output: [],
+      error: { code: "provider_error", message: "no" },
+    });
+    const prompts = {
+      turn_timeout: abortedOnSignal,
+      provider_failed: providerFailed,
+      spent: rateLimited,
+      "no-record": rateLimited,
+    };
+    for (const scenario of ["turn_timeout", "provider_failed", "spent", "no-record"] as const) {
       const h = runnerHarness();
-      h.request.runtime.budget = { maxDurationMs: 20 };
+      if (scenario === "turn_timeout") h.request.runtime.budget = { maxDurationMs: 20 };
       if (scenario !== "no-record")
         h.records.set(h.request.sessionId, {
           ...turnRetryRecord(h.request, "turn-1"),
-          retries: scenario === "spent" ? 1 : 0,
+          retries: scenario === "spent" ? MAX_AUTOMATIC_RETRIES : 0,
         });
-      h.prompt.mockImplementation(
-        scenario === "provider_failed"
-          ? async () => ({
-              runId: "turn-1",
-              status: "failed",
-              output: [],
-              error: { code: "provider_error", message: "no" },
-            })
-          : abortedOnSignal,
-      );
+      h.prompt.mockImplementation(prompts[scenario]);
       h.runner.start(owner(h.request));
       await h.runner.settled();
       expect(h.prompt).toHaveBeenCalledOnce();
@@ -357,7 +388,6 @@ describe("AgentTurnRunner automatic retry", () => {
   it("reports the original failure when the retry state cannot be written", async () => {
     for (const failing of ["interruption", "claim", "removed"] as const) {
       const h = runnerHarness();
-      h.request.runtime.budget = { maxDurationMs: 20 };
       h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
       let writes = 0;
       const update = h.retries.update;
@@ -369,28 +399,39 @@ describe("AgentTurnRunner automatic retry", () => {
         if (failing === "removed" && writes === 2) return undefined;
         return update(...args);
       };
-      h.prompt.mockImplementation(abortedOnSignal);
+      h.prompt.mockImplementation(rateLimited);
       h.runner.start(owner(h.request));
       await h.runner.settled();
       expect(h.prompt).toHaveBeenCalledOnce();
       expect(h.create).toHaveBeenCalledExactlyOnceWith(
-        expect.objectContaining({ outcome: "failed", errorReason: "turn_timeout" }),
+        expect.objectContaining({ outcome: "failed", errorReason: "provider_rate_limited" }),
         3,
       );
     }
   });
 
-  it("retries a deadline-bounded timeout with a fresh Run budget", async () => {
+  it("reports a rate-limited Turn when the runner has no durable Turn input at all", async () => {
+    const h = runnerHarness({ withoutRetries: true });
+    h.prompt.mockImplementationOnce(rateLimited);
+    h.runner.start(owner(h.request));
+    await h.runner.settled();
+    expect(h.prompt).toHaveBeenCalledOnce();
+    expect(h.create).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ outcome: "failed", errorReason: "provider_rate_limited" }),
+      3,
+    );
+  });
+
+  it("gives a retry a fresh Run budget even after the ingress deadline passed", async () => {
+    rateLimitDelayMs = 30;
     const h = runnerHarness();
-    h.request.runtime.budget = { maxDurationMs: 40 };
-    // The ingress deadline cuts the first attempt short and has passed before the retry starts.
+    h.request.runtime.budget = { maxDurationMs: 2_000 };
+    // The ingress deadline bounds only the first attempt, and passes during the backoff.
     h.request.deadlineAt = new Date(Date.now() + 15).toISOString();
     h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
-    const started: number[] = [];
-    h.prompt.mockImplementation(async (input) => {
-      started.push(Date.now());
-      if (started.length === 2) return { runId: "turn-1", status: "completed", output: [] };
-      return abortedOnSignal(input);
+    h.prompt.mockImplementationOnce(rateLimited).mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      return { runId: "turn-1", status: "completed", output: [] };
     });
     h.runner.start(owner(h.request));
     await h.runner.settled();
@@ -399,6 +440,7 @@ describe("AgentTurnRunner automatic retry", () => {
   });
 
   it("leaves a rate-limited Turn for the restarted daemon when the daemon stops during the wait", async () => {
+    rateLimitDelayMs = 60_000;
     for (const stopBeforeWait of [false, true]) {
       const h = runnerHarness({ restartRetry: true });
       h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
@@ -777,14 +819,14 @@ describe("TurnCustodyOwner acceptance with retry input", () => {
 });
 
 describe("InterruptedWorkRecovery", () => {
-  it("spends no retry on startup, asks the Server to recover, and resumes on the ready reconcile", async () => {
+  it("counts the retry on startup, asks the Server to recover, and resumes on the ready reconcile", async () => {
     const f = recoveryFixture();
     const request = delivery();
     f.records.set(request.sessionId, turnRetryRecord(request, "turn-1"));
     f.unresolved.set(request.sessionId, { turnId: "turn-1", deliveryId: request.deliveryId, phase: "running" });
     await f.recovery.start();
     // The reason goes to the resumed Turn's notice; on disk it would be taken for what ended that Turn.
-    expect(f.records.get(request.sessionId)).toMatchObject({ retries: 0 });
+    expect(f.records.get(request.sessionId)).toMatchObject({ retries: 1 });
     expect(f.records.get(request.sessionId)?.interruption).toBeUndefined();
     expect(f.reconciler.setRecovery).toHaveBeenCalledWith(request.sessionId, {
       deliveryId: request.deliveryId,
@@ -899,7 +941,7 @@ describe("InterruptedWorkRecovery", () => {
     f.recovery.stop();
   });
 
-  it("keeps an orderly stop's reason, resumes a Turn whose retry is spent, and leaves reporting Turns to report recovery", async () => {
+  it("keeps an orderly stop's reason, counts a Turn's retries, and leaves reporting Turns to report recovery", async () => {
     const f = recoveryFixture();
     const stopped = delivery("session-stopped");
     const spent = delivery("session-spent");
@@ -921,10 +963,10 @@ describe("InterruptedWorkRecovery", () => {
     f.unresolved.set(spent.sessionId, { turnId: "turn-spent", deliveryId: spent.deliveryId, phase: "running" });
     await f.recovery.start();
     f.version = 1;
-    expect(f.records.get(stopped.sessionId)).toMatchObject({ retries: 0 });
+    expect(f.records.get(stopped.sessionId)).toMatchObject({ retries: 1 });
     expect(f.records.get(stopped.sessionId)?.interruption).toBeUndefined();
     expect(f.recovery.isPendingRetry(stopped.sessionId, "turn-stopped")).toBe(true);
-    expect(f.records.get(spent.sessionId)).toMatchObject({ retries: 1 });
+    expect(f.records.get(spent.sessionId)).toMatchObject({ retries: 2 });
     expect(f.recovery.isPendingRetry(spent.sessionId, "turn-spent")).toBe(true);
     expect(f.recovery.isPendingRetry(reporting.sessionId, "turn-reporting")).toBe(false);
     expect(f.records.has(recorded.sessionId)).toBe(false);
@@ -996,6 +1038,7 @@ function recoveryFixture() {
       awaiting: [] as Array<{ sessionId: string; agentId: string; placementGeneration: number }>,
       sessionsAwaitingPreparation: () => fixture.inbox.awaiting,
       failAwaitingPreparation: vi.fn(async () => undefined),
+      failJoinedRun: vi.fn(async () => undefined),
       sessionPrepared: vi.fn(),
     },
     custody: { resume: vi.fn(() => true) },
@@ -1042,7 +1085,7 @@ function recoveryFixture() {
   return fixture;
 }
 
-function runnerHarness(options: { restartRetry?: boolean | (() => boolean) } = {}) {
+function runnerHarness(options: { restartRetry?: boolean | (() => boolean); withoutRetries?: boolean } = {}) {
   const request = delivery();
   const records = new Map<string, TurnRetryRecord>();
   const retries = {
@@ -1113,7 +1156,7 @@ function runnerHarness(options: { restartRetry?: boolean | (() => boolean) } = {
       cleanup: vi.fn(async () => undefined),
     },
     logger: recordingLogger(logs),
-    retries,
+    ...(options.withoutRetries ? {} : { retries }),
     restartRetryAvailable:
       typeof options.restartRetry === "function" ? options.restartRetry : () => options.restartRetry === true,
   });
@@ -1141,6 +1184,10 @@ function promptItems(prompt: { mock: { calls: unknown[][] } }, call: number): Ar
   const request = prompt.mock.calls[call]?.[0] as { input: { items: Array<{ text: string }> } } | undefined;
   if (!request) throw new Error(`prompt call ${call} is missing`);
   return request.input.items;
+}
+
+async function rateLimited(): Promise<AgentRunResult> {
+  return { runId: "turn-1", status: "failed", output: [], error: { code: "provider_rate_limited", message: "429" } };
 }
 
 function abortedOnSignal(input: { signal?: AbortSignal }): Promise<AgentRunResult> {

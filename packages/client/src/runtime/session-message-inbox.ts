@@ -17,9 +17,9 @@ import {
   buildContinuationNotice,
   type Interruption,
   type InterruptionReason,
-  MAX_AUTOMATIC_RETRIES,
-  noteInterruption,
+  nextRetry,
   RATE_LIMIT_RETRY_DELAY_MS,
+  type RetryCount,
   recoverableFailure,
   sessionMessageKey,
 } from "./interruption-retry.js";
@@ -462,7 +462,7 @@ export class SessionMessageInbox {
       this.#joinableRuns?.release(next.request, runId);
       return false;
     }
-    if (record) record = await this.#recordSteered(record);
+    if (record) record = await this.#recordSteered(record, runId);
     this.#remember(key, { hash: next.hash, status: "accepted" });
     if (this.#joinableRuns) {
       if (record) this.#joinRun(record, next.hash);
@@ -493,10 +493,17 @@ export class SessionMessageInbox {
 
   async #recordSteered(
     record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
+    runId: string,
   ): Promise<DurableWorkRecord<SessionMessageDeliveryRequestV3>> {
     try {
       // A restart before the joined Run settles recovers a `running` record like any interrupted Run.
-      return await this.#transition(record, "running", { interruption: undefined });
+      // It shares the Run's retry count from here; if that Run ends first it runs on its own, afresh.
+      return await this.#transition(record, "running", {
+        attempts: 0,
+        interruption: undefined,
+        joinedRunId: runId,
+        retryStartedAt: undefined,
+      });
     } catch {
       // The record stays `accepted` on disk, so a restart redelivers it; this process still settles it.
       this.#logger.warn(
@@ -522,20 +529,26 @@ export class SessionMessageInbox {
   }
 
   /**
-   * Spend the message's one automatic retry for the in-place retry of the Run it joined; false when it
-   * has none left. An unwritten spend only risks one more retry later, so it does not stop the message.
+   * A Turn's retries ran out at startup: the messages steered into it share its count, so they fail with
+   * it instead of running again.
    */
-  async spendJoinedRetry(message: SessionMessageDeliveryRequestV3): Promise<boolean> {
-    const record = this.#records.get(sessionMessageKey(message));
-    if (!record) return true;
-    if (record.attempts >= MAX_AUTOMATIC_RETRIES) return false;
-    await this.#persist({ ...record, attempts: record.attempts + 1, updatedAt: this.#now() }).catch(() => {
-      this.#logger.warn(
-        { code: "SESSION_MESSAGE_RETRY_SPEND_FAILED", messageId: message.messageId },
-        "Session message retry could not be recorded before joining the Turn's retry",
+  async failJoinedRun(runId: string): Promise<void> {
+    for (const record of [...this.#records.values()]) {
+      if (record.joinedRunId !== runId || record.status !== "retryable") continue;
+      const sessionId = record.payload.targetSessionId;
+      const queue = this.#queues.get(sessionId) ?? [];
+      const position = queue.findIndex((next) => next.request.messageId === record.payload.messageId);
+      if (position < 0) continue;
+      const [next] = queue.splice(position, 1);
+      this.#queuedTotal -= 1;
+      if (queue.length === 0) this.#queues.delete(sessionId);
+      await this.#failTerminally(
+        record,
+        (next as QueuedMessage).hash,
+        "runtime",
+        interruptedFailure(record.payload.requestId, "daemon_crash"),
       );
-    });
-    return true;
+    }
   }
 
   /** The Run this message joined ended; resolves once the message's outcome is durable. */
@@ -593,7 +606,7 @@ export class SessionMessageInbox {
     const status = outcome === "processed" ? "succeeded" : "accepted";
     let next = record;
     try {
-      next = await this.#transition(record, status);
+      next = await this.#transition(record, status, { joinedRunId: undefined });
     } catch {
       this.#logger.warn(
         { code: "SESSION_MESSAGE_STEER_PERSISTENCE_FAILED", messageId, outcome },
@@ -635,7 +648,9 @@ export class SessionMessageInbox {
     try {
       // The interruption this Run retries is for its notice only; what ends this Run is recorded anew.
       const continuation = current?.interruption;
-      if (current) current = await this.#transition(current, "running", { interruption: undefined });
+      if (current) {
+        current = await this.#transition(current, "running", { interruption: undefined, joinedRunId: undefined });
+      }
       await this.#reconciler.withAgentLock(next.request.agentId, async () => {
         this.#reconciler.setActivity(sessionId, {
           phase: "running",
@@ -843,27 +858,26 @@ export class SessionMessageInbox {
     }
     if (record.status === "running") {
       // The daemon stopped while this message's Run was in flight: a crash leaves no reason behind, an
-      // orderly stop of its own Run records `client_shutdown`. It resumes, spending no retry, unless a
-      // fast loop trips the fuse.
+      // orderly stop of its own Run records `client_shutdown`.
       const interruption: Interruption = {
         reason: recoverableFailure(record.interruption?.reason) ?? "daemon_crash",
         at: record.interruption?.at ?? new Date(this.#now()).toISOString(),
       };
-      const { fuse, tripped } = noteInterruption(record.interruptionFuse, this.#now());
-      if (tripped) {
+      // A message steered into a Turn shares that Turn's count, so it is not counted here.
+      const retry = record.joinedRunId ? undefined : nextRetry(messageRetryCount(record), this.#now());
+      if (retry?.exhausted) {
         const failure = interruptedFailure(record.payload.requestId, interruption.reason);
-        record = await this.#transition(
-          { ...record, attempts: record.attempts + 1, lastError: failure, interruptionFuse: fuse },
-          "failed",
-          { nextAttemptAt: undefined, ...this.#pendingOutcomeReport() },
-        );
+        record = await this.#transition({ ...record, attempts: retry.count, lastError: failure }, "failed", {
+          nextAttemptAt: undefined,
+          ...this.#pendingOutcomeReport(),
+        });
         this.#remember(key, { hash, status: "failed", reason: "provider_unavailable" });
         return record;
       }
       record = {
         ...record,
+        ...(retry ? messageRetryFields(retry) : {}),
         interruption,
-        interruptionFuse: fuse,
         status: "retryable",
         nextAttemptAt: this.#now(),
         updatedAt: this.#now(),
@@ -921,20 +935,20 @@ export class SessionMessageInbox {
     this.#emitFailure(failure);
     const now = this.#now();
     if (this.#abort.signal.aborted) {
-      // An orderly daemon stop: keep the record `running` with the reason, so the restarted daemon
-      // runs the message's one automatic retry (or reports it when the retry is already spent).
+      // An orderly daemon stop: keep the record `running` with the reason, for the restarted daemon.
       const interruption: Interruption = { reason: "client_shutdown", at: new Date(now).toISOString() };
       await this.#persist({ ...record, interruption, updatedAt: now }).catch(() => undefined);
       return;
     }
-    const reason = timedOut ? "turn_timeout" : recoverableFailure(failure.code);
-    if (reason && record.attempts < MAX_AUTOMATIC_RETRIES) {
+    const reason = timedOut ? undefined : recoverableFailure(failure.code);
+    const retry = reason && nextRetry(messageRetryCount(record), now);
+    if (reason && retry && !retry.exhausted) {
       const interruption: Interruption = { reason, at: new Date(now).toISOString() };
       const delay = reason === "provider_rate_limited" ? this.#rateLimitRetryDelayMs : 0;
       let retryable: DurableWorkRecord<SessionMessageDeliveryRequestV3>;
       try {
         retryable = await this.#transition(
-          { ...record, attempts: record.attempts + 1, lastError: failure, interruption, updatedAt: now },
+          { ...record, ...messageRetryFields(retry), lastError: failure, interruption, updatedAt: now },
           "retryable",
           { nextAttemptAt: now + delay },
         );
@@ -1068,6 +1082,17 @@ function terminalRunOutcome(record: DurableWorkRecord<SessionMessageDeliveryRequ
 } {
   const code = record.lastError?.code ?? "retry_exhausted";
   return { outcome: code === SESSION_MESSAGE_TURN_TIMEOUT_CODE ? "timed_out" : "failed", code };
+}
+
+function messageRetryCount(record: DurableWorkRecord<SessionMessageDeliveryRequestV3>): RetryCount {
+  return {
+    count: record.attempts,
+    ...(record.retryStartedAt !== undefined ? { startedAt: record.retryStartedAt } : {}),
+  };
+}
+
+function messageRetryFields(retry: RetryCount): { attempts: number; retryStartedAt?: number } {
+  return { attempts: retry.count, ...(retry.startedAt !== undefined ? { retryStartedAt: retry.startedAt } : {}) };
 }
 
 function interruptedFailure(requestId: string, reason: InterruptionReason): DurableFailure {

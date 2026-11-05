@@ -4,7 +4,7 @@ import { type ClientLogger, createLogger } from "../observability/logger.js";
 import {
   acknowledgedSteers,
   type Interruption,
-  noteInterruption,
+  nextRetry,
   type TurnRetryRecord,
   type TurnRetryStore,
 } from "./interruption-retry.js";
@@ -39,7 +39,10 @@ export interface InterruptedWorkRecoveryOptions {
   bindingStore: Pick<SessionBindingStore, "read">;
   connection: Pick<RuntimeConnection, "capabilityVersion" | "send" | "subscribeState">;
   custody: Pick<TurnCustodyOwner, "resume">;
-  inbox: Pick<SessionMessageInbox, "failAwaitingPreparation" | "sessionPrepared" | "sessionsAwaitingPreparation">;
+  inbox: Pick<
+    SessionMessageInbox,
+    "failAwaitingPreparation" | "failJoinedRun" | "sessionPrepared" | "sessionsAwaitingPreparation"
+  >;
   logger?: Pick<ClientLogger, "info" | "warn">;
   now?: () => number;
   reconciler: Pick<SessionReconciler, "clearRecovery" | "setRecovery">;
@@ -51,7 +54,7 @@ export interface InterruptedWorkRecoveryOptions {
  * Owns resuming accepted work after a process interruption on a Local Computer.
  *
  * On startup it finds accepted IM Turns that the previous daemon left unresolved (crash, power loss,
- * or an orderly stop), counts the interruption against the fast-loop fuse, and fences their
+ * or an orderly stop), counts the interruption as a retry durably, and fences their
  * Sessions. Once connected it asks the Server to re-prepare every Session with interrupted work
  * (`session:recover`); the resulting ready reconcile resumes the Turn with a continuation notice.
  * Internal and visible Session messages waiting in the inbox ride on the same request. When the
@@ -210,21 +213,30 @@ export class InterruptedWorkRecovery implements InterruptedTurnResumer {
       reason: "daemon_crash" as const,
       at: new Date(this.#now()).toISOString(),
     };
-    // The reason goes to the resumed Turn's notice; what ends that Turn is recorded anew. A process
-    // interruption spends no retry, but a fast loop trips the fuse and is reported instead.
-    const { fuse, tripped } = noteInterruption(record.interruptionFuse, this.#now());
+    // Counted before anything runs. The reason goes to the resumed Turn's notice; what ends that Turn
+    // is recorded anew.
+    const { count, startedAt, exhausted } = nextRetry(
+      { count: record.retries, ...(record.retryStartedAt !== undefined ? { startedAt: record.retryStartedAt } : {}) },
+      this.#now(),
+    );
     const { interruption: _ended, ...attempt } = record;
-    const spent: TurnRetryRecord = { ...attempt, interruptionFuse: fuse };
+    const spent: TurnRetryRecord = {
+      ...attempt,
+      retries: count,
+      ...(startedAt !== undefined ? { retryStartedAt: startedAt } : {}),
+    };
     try {
       await this.#options.retries.write(spent);
     } catch {
       return;
     }
-    if (tripped) {
+    if (exhausted) {
       this.#logger.warn(
-        { code: "TURN_INTERRUPTION_FUSE_TRIPPED", sessionId: record.sessionId, turnId: record.turnId },
-        "Interrupted Turn stopped resuming after repeated fast interruptions",
+        { code: "TURN_RETRIES_EXHAUSTED", sessionId: record.sessionId, turnId: record.turnId },
+        "Interrupted Turn used its automatic retries and falls back to failure reporting",
       );
+      // The messages steered into this Turn share its count, so they fail with it.
+      await this.#options.inbox.failJoinedRun(record.turnId);
       return;
     }
     this.#turns.set(record.sessionId, {

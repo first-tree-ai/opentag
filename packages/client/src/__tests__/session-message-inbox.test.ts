@@ -467,7 +467,7 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
   });
 
-  it("retries a timed-out Run once with a continuation notice, then reports timed_out", async () => {
+  it("reports a timed-out Run without a retry", async () => {
     let fireTimeout: () => void = () => undefined;
     const timeoutScheduler: RuntimeRetryScheduler = {
       schedule(_delay, task) {
@@ -510,22 +510,7 @@ describe("SessionMessageInbox", () => {
     await expect(inbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
     await inbox.settled();
     expect(prompt).toHaveBeenCalledOnce();
-    expect(inbox.getState(request.messageId)).toMatchObject({
-      status: "retryable",
-      attempts: 1,
-      interruption: { reason: "turn_timeout" },
-    });
-    expect(onRunOutcome).not.toHaveBeenCalled();
-    expect(retries).toHaveLength(1);
-    expect(retries[0]?.delay).toBe(0);
-    retries[0]?.task();
-    await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(2));
-    await inbox.settled();
-    const retryText = prompt.mock.calls[1]?.[0].input.items[0]?.text ?? "";
-    expect(retryText).toContain("[OpenTag] Your previous turn was interrupted at");
-    expect(retryText).toContain("reached its maximum run duration (automatic retry 1/1)");
-    expect(prompt.mock.calls[1]?.[0].input.items.at(-1)?.text).toBe(request.content.text);
-    expect(retries).toHaveLength(1);
+    expect(retries).toHaveLength(0);
     expect(inbox.getState(request.messageId)).toMatchObject({
       status: "failed",
       lastError: { code: "turn_timeout", retryability: "never" },
@@ -536,11 +521,11 @@ describe("SessionMessageInbox", () => {
     );
     // A redelivery of the same message is answered from memory and never reruns it.
     expect((await inbox.accept(request)).status).toBe("rejected");
-    expect(prompt).toHaveBeenCalledTimes(2);
+    expect(prompt).toHaveBeenCalledOnce();
     inbox.stop();
   });
 
-  it("retries a rate-limited Run once after a delay; a second 429 is reported", async () => {
+  it("retries a rate-limited Run twice after a delay; a third 429 is reported", async () => {
     const retries: Array<{ delay: number; task: () => void }> = [];
     const onRunOutcome = vi.fn();
     const prompt = vi.fn(async () => ({
@@ -574,6 +559,10 @@ describe("SessionMessageInbox", () => {
     expect(retries.map((retry) => retry.delay)).toEqual([30_000]);
     retries[0]?.task();
     await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(retries).toHaveLength(2));
+    expect(prompt.mock.calls[1]).toBeDefined();
+    retries[1]?.task();
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(3));
     await inbox.settled();
     expect(inbox.getState(request.messageId)?.status).toBe("failed");
     expect(onRunOutcome).toHaveBeenCalledWith(
@@ -858,7 +847,7 @@ describe("SessionMessageInbox", () => {
       store.write(recordFor(old, "accepted", { acceptedAt: 1, attempts: 0 })),
       // Crash mid-Run: no reason recorded.
       store.write(recordFor(running, "running")),
-      // Its one automatic retry is already spent; a process interruption still resumes it.
+      // One of its two automatic retries is already spent; this interruption uses the other.
       store.write(recordFor(retried, "running", { attempts: 1 })),
       // An orderly stop recorded its reason.
       store.write(
@@ -894,12 +883,12 @@ describe("SessionMessageInbox", () => {
     expect(inbox.getState(old.messageId)?.status).toBe("succeeded");
     expect(inbox.getState(running.messageId)).toMatchObject({
       status: "succeeded",
-      attempts: 0,
-      // Used for the resumed Run's notice, then cleared: only what ends a Run is left on the record.
+      attempts: 1,
+      // Used for the retry's notice, then cleared: only what ends a Run is left on the record.
       interruption: undefined,
     });
     expect(inbox.getState(stopped.messageId)?.status).toBe("succeeded");
-    expect(inbox.getState(retried.messageId)).toMatchObject({ status: "succeeded", attempts: 1 });
+    expect(inbox.getState(retried.messageId)).toMatchObject({ status: "succeeded", attempts: 2 });
     expect(onRunOutcome).not.toHaveBeenCalledWith(expect.objectContaining({ messageId: retried.messageId }));
     expect(runtime.prompt).toHaveBeenCalledTimes(4);
     const inputs = runtime.prompt.mock.calls.map(
@@ -1305,7 +1294,7 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
   });
 
-  it("persists running work, retries a 429 once with an injected scheduler, then fails", async () => {
+  it("persists running work, retries a 429 with an injected scheduler, then fails", async () => {
     let now = 1_000;
     const scheduled: Array<() => void> = [];
     const scheduler: RuntimeRetryScheduler = {
@@ -1367,10 +1356,13 @@ describe("SessionMessageInbox", () => {
 
     scheduled.shift()?.();
     await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(scheduled).toHaveLength(1));
+    scheduled.shift()?.();
+    await vi.waitFor(() => expect(runtime.prompt).toHaveBeenCalledTimes(3));
     await inbox.settled();
     expect(inbox.getState(request.messageId)?.status).toBe("failed");
     expect(inbox.pendingCount).toBe(0);
-    expect(inbox.metricsSnapshot()).toMatchObject({ retries: 1, deadLetters: 0 });
+    expect(inbox.metricsSnapshot()).toMatchObject({ retries: 2, deadLetters: 0 });
     await vi.waitFor(() => expect(executeUpdate).toHaveBeenCalledWith("0.0.3"));
     updater.stop();
     now += 1_000;

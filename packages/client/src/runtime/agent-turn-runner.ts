@@ -39,9 +39,10 @@ import {
   acknowledgedSteers,
   buildContinuationNotice,
   type Interruption,
-  MAX_AUTOMATIC_RETRIES,
   MAX_RECORDED_STEERS,
+  nextRetry,
   RATE_LIMIT_RETRY_DELAY_MS,
+  type RetryCount,
   recoverableFailure,
   type TurnRetryRecord,
   type TurnRetryStore,
@@ -124,8 +125,6 @@ export interface AgentTurnRunnerOptions {
   readonly sessionMessages?: {
     /** The message's input for a retry, built once the retry's credentials are prepared. */
     input(message: SessionMessageDeliveryRequestV3, processedAt: Date): AgentInput;
-    /** Durably spend the message's one retry; false means it cannot join this one and must fail. */
-    spendRetry(message: SessionMessageDeliveryRequestV3): Promise<boolean>;
     /** Resolves once the message's outcome is durable. */
     settle(message: SessionMessageDeliveryRequestV3, outcome: AgentSteerOutcome): Promise<void>;
   };
@@ -592,7 +591,8 @@ export class AgentTurnRunner {
       const attempt = await this.#attempt(turn, shutdownSignal, trace, interruption);
       planInput = attempt.turnPlanInput ?? planInput;
       const next = await this.#nextRetry(turn, attempt.completion, shutdownSignal);
-      const ready = next && next !== "deferred" && (await this.#retryDue(next, shutdownSignal));
+      // An in-place retry only follows a 429, which waits first; false when an orderly stop interrupts it.
+      const ready = next && next !== "deferred" && (await waitUnlessAborted(RATE_LIMIT_RETRY_DELAY_MS, shutdownSignal));
       if (next === "deferred" || ready === false) {
         this.#logger.info({ ...fields, reason: attempt.completion.errorReason }, "Turn left for retry after restart");
         await trace.finish();
@@ -604,12 +604,6 @@ export class AgentTurnRunner {
       this.#logger.info({ ...fields, reason: next.reason }, "Turn automatic retry started");
       interruption = next;
     }
-  }
-
-  /** A rate-limited retry waits first; false when an orderly stop interrupts the wait. */
-  #retryDue(next: Interruption, shutdownSignal: AbortSignal): Promise<boolean> {
-    if (next.reason !== "provider_rate_limited") return Promise.resolve(true);
-    return waitUnlessAborted(RATE_LIMIT_RETRY_DELAY_MS, shutdownSignal);
   }
 
   /** One provider attempt of the Turn; a retry runs it again with the continuation notice. */
@@ -759,9 +753,9 @@ export class AgentTurnRunner {
       return undefined;
     }
     if (!record) return undefined;
-    // A process interruption always resumes after restart; only an ordinary failure needs a retry left.
+    // The restarted daemon counts a process interruption and decides whether the Turn resumes.
     if (restart) return "deferred";
-    return record.retries >= MAX_AUTOMATIC_RETRIES ? undefined : interruption;
+    return nextRetry(retryCount(record), this.#now()).exhausted ? undefined : interruption;
   }
 
   /** Durably spend the Turn's one automatic retry before it starts; false leaves the failure reported. */
@@ -777,11 +771,19 @@ export class AgentTurnRunner {
       return false;
     }
     await this.#returnUnstartedSessionMessages(turn);
-    const spent = await this.#retries.update(sessionId, turn.owner.turnId, spendRetry).catch(() => undefined);
+    const spent = await this.#retries
+      .update(sessionId, turn.owner.turnId, (record) => spendRetry(record, this.#now()))
+      .catch(() => undefined);
     if (!spent) return false;
     const steers = spent.steers.length === 0 ? [] : await this.#acknowledgedImSteers(turn, spent);
     if (!steers) return false;
-    const messages = await this.#sessionMessagesForRetry(turn);
+    // Session messages share this Turn's count: every retry carries the ones an earlier attempt held
+    // and the ones that joined this attempt. They are not counted themselves.
+    const messages = [
+      ...turn.steers.filter((steer) => steer.type === "session:message:deliver"),
+      ...[...turn.joined.values()].map(({ message }) => message),
+    ];
+    turn.joined = new Map();
     const arrival = (input: SteeredInput) => turn.arrivals.get(steeredInputId(input)) ?? 0;
     turn.steers = [...steers, ...messages].sort((left, right) => arrival(left) - arrival(right));
     return true;
@@ -813,20 +815,6 @@ export class AgentTurnRunner {
       turn.joined.delete(id);
       await this.#sessionMessages.settle(message, "not_started");
     }
-  }
-
-  /**
-   * The Session messages this retry carries. Each spends its own retry durably first, so a crash
-   * during this retry fails the message instead of running it again; one that cannot fails now.
-   */
-  async #sessionMessagesForRetry(turn: RunningTurn): Promise<SessionMessageDeliveryRequestV3[]> {
-    const carried: SessionMessageDeliveryRequestV3[] = [];
-    for (const { message } of turn.joined.values()) {
-      if (await this.#sessionMessages.spendRetry(message)) carried.push(message);
-      else await this.#sessionMessages.settle(message, "interrupted");
-    }
-    turn.joined = new Map();
-    return carried;
   }
 
   /** Every Session message that joined the Turn ends with it. */
@@ -1155,7 +1143,6 @@ const NO_SESSION_MESSAGES: NonNullable<AgentTurnRunnerOptions["sessionMessages"]
   input: () => {
     throw new Error("A Session message joined the Turn without an owner to build its input");
   },
-  spendRetry: async () => false,
   settle: async () => undefined,
 };
 
@@ -1166,9 +1153,17 @@ const NO_TURN_RETRIES: NonNullable<AgentTurnRunnerOptions["retries"]> = {
   update: async () => undefined,
 };
 
-function spendRetry(record: TurnRetryRecord): TurnRetryRecord {
+function retryCount(record: TurnRetryRecord): RetryCount {
+  return {
+    count: record.retries,
+    ...(record.retryStartedAt !== undefined ? { startedAt: record.retryStartedAt } : {}),
+  };
+}
+
+/** Only called once `nextRetry` said a retry is left, so this one starts now. */
+function spendRetry(record: TurnRetryRecord, now: number): TurnRetryRecord {
   const { interruption: _interruption, ...rest } = record;
-  return { ...rest, retries: record.retries + 1 };
+  return { ...rest, retries: nextRetry(retryCount(record), now).count, retryStartedAt: now };
 }
 
 /**

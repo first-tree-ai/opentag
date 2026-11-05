@@ -97,6 +97,12 @@ command, arguments, absence of environment credentials, UID and etag before dele
 create/delete. A matching previous-digest probe is deleted before importing the new digest. Foreign or replaced resources
 are rejected rather than deleted; create responses of uncertain outcome are reconciled without blindly repeating POST.
 
+Idempotent GET reads during preparation and cleanup retry HTTP 429, 500, 502, 503 and 504 and fetch transport failures
+at the existing two-second polling cadence, within that phase's original deadline. A read failure never counts as
+not-found or readiness. Other HTTP errors, credential failures, invalid JSON and ownership mismatches fail immediately.
+Preparation cancellation interrupts reads and retry waits; cleanup still uses its independent budget. POST and DELETE
+are not retried.
+
 Graceful shutdown aborts preparation, drains bounded cleanup, then closes the dedicated lock connection. A forced kill
 can interrupt cleanup; the next leader recovers the same named, strictly owned probe. A change to project, identity,
 repository or VPC placement creates a different namespace: inspect old `ot-warm-*` probes explicitly after such a change.

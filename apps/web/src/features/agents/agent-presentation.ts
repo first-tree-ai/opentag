@@ -26,7 +26,7 @@ type AgentCardStatus = {
 
 export function agentCardStatus(agent: AgentListItem): AgentCardStatus {
   const status = serverStatusPresentation(agent) ?? agentAvailabilityCardStatus(agent);
-  const detail = agentActivityDetail(agent, status.tone === "success");
+  const detail = agentActivityDetail(agent);
   return detail ? { ...status, detail } : status;
 }
 
@@ -55,10 +55,10 @@ function agentAvailabilityCardStatus(agent: AgentListItem): AgentCardStatus {
 
 /**
  * How many Tasks the Agent is running. Work in progress is a fact whatever the Agent's status, so it
- * shows on every row; "waiting" only shows beside Ready, where it is the useful thing to know rather
- * than a contradiction of a blocked or paused status. An unknown activity says nothing.
+ * shows on every row. An idle Agent says nothing beside its status: "Waiting" beside Ready only
+ * repeated what Ready already says, and read as the Agent being stuck. An unknown activity says nothing.
  */
-export function agentActivityDetail(agent: Pick<AgentListItem, "activity">, ready: boolean): string | undefined {
+export function agentActivityDetail(agent: Pick<AgentListItem, "activity">): string | undefined {
   const { activity } = agent;
   if (activity.state === "working") {
     const count = activity.runningTaskCount;
@@ -70,7 +70,7 @@ export function agentActivityDetail(agent: Pick<AgentListItem, "activity">, read
       ? m.agents_card_activity_running_tasks_single({ count })
       : m.agents_card_activity_running_tasks_plural({ count });
   }
-  return activity.state === "idle" && ready ? m.agents_card_activity_waiting() : undefined;
+  return undefined;
 }
 
 function blockedAgentCardStatus(agent: AgentListItem): AgentCardStatus {

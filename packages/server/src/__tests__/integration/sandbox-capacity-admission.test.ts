@@ -507,8 +507,13 @@ describe("physical ownership and reservation authority", () => {
       const service = new AgentService(database, { cloudIdentitiesEnabled: true });
       await service.suspendById(accountId, route.agentId);
       if (change === "delete") await service.deleteById(accountId, route.agentId);
-      if (change === "transfer")
-        await service.transferToAccount({ agentId: route.agentId, targetAccountId: target, slack: "disable" });
+      if (change === "transfer") {
+        await expect(
+          service.transferToAccount({ agentId: route.agentId, targetAccountId: target, slack: "disable" }),
+        ).rejects.toMatchObject({ reason: "configuration_immutable" });
+        // Retained capacity from historical transfers keeps its original owner.
+        await sql`update agents set created_by_user_id=${target}, computer_id=null, revision=revision+1 where id=${route.agentId}`;
+      }
       expect(await countCloudCapacityOccupancy(database, accountId)).toEqual({ accountUsed: 1, platformUsed: 1 });
       expect(await countCloudCapacityOccupancy(database, target)).toEqual({ accountUsed: 0, platformUsed: 1 });
       expect(await loadSandboxOwnerById(database, ready.row.id)).toMatchObject({
@@ -666,7 +671,10 @@ async function withdrawAuthority(
       return;
     case "transfer":
       await service.suspendById(accountId, route.agentId);
-      await service.transferToAccount({ agentId: route.agentId, targetAccountId: target, slack: "disable" });
+      await expect(
+        service.transferToAccount({ agentId: route.agentId, targetAccountId: target, slack: "disable" }),
+      ).rejects.toMatchObject({ reason: "configuration_immutable" });
+      await writer.sql`update agents set created_by_user_id=${target}, computer_id=null, revision=revision+1 where id=${route.agentId}`;
       return;
     case "revision": {
       const current = await service.getConfigById(accountId, route.agentId);

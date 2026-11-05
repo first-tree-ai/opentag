@@ -550,6 +550,38 @@ export class SessionService {
     });
   }
 
+  /**
+   * Unlocked eligibility read for an internal Session's Run outcome notice. The reported message
+   * must be a stored SessionMessage addressed to that Session, and the Session must be an active
+   * internal child with a creator. The facts only select the notice route; the subsequent
+   * `authorizeAndRecordMessage` re-proves every authority under the normal lock order.
+   */
+  async resolveRunOutcomeNotice(input: {
+    childSessionId: string;
+    messageId: string;
+  }): Promise<{ creatorSessionId: string; installationId: string } | undefined> {
+    const [row] = await this.#database
+      .select({
+        creatorSessionId: sessions.createdBySessionId,
+        installationId: computers.currentInstallationId,
+        kind: sessions.kind,
+      })
+      .from(sessionMessages)
+      .innerJoin(sessions, eq(sessions.id, sessionMessages.targetSessionId))
+      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+      .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
+      .where(
+        and(
+          eq(sessionMessages.id, input.messageId),
+          eq(sessionMessages.targetSessionId, input.childSessionId),
+          isNull(sessions.endedAt),
+        ),
+      )
+      .limit(1);
+    if (row?.kind !== "internal" || !row.creatorSessionId) return undefined;
+    return { creatorSessionId: row.creatorSessionId, installationId: row.installationId };
+  }
+
   async withCollaborationDispatchAdmission<T>(
     route: AuthorizedSessionMessageRoute,
     operation: (onDispatched: () => void) => Promise<T>,

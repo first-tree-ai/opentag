@@ -44,6 +44,99 @@ describe("ClaudeCodeProcess", () => {
     await process.close();
   });
 
+  it("keeps the query open across results until every steered input has started", async () => {
+    const child = fakeChild();
+    const writes: string[] = [];
+    child.stdin.on("data", (line) => writes.push(line.toString()));
+    const process = fakeProcess(child);
+    const seen: [unknown, boolean | undefined][] = [];
+    await expect(process.steer({ type: "user", uuid: "early" })).rejects.toMatchObject({ code: "exited" });
+    const run = process.execute(
+      { type: "user", text: "first" },
+      (message, terminal) => seen.push([message.type, terminal]),
+      new AbortController().signal,
+    );
+    const handle = await process.steer({ type: "user", uuid: "steer-1" });
+    await expect(process.steer({ type: "user", uuid: "big", text: "x".repeat(8 * 1024 * 1024) })).rejects.toMatchObject(
+      { code: "protocol" },
+    );
+    expect(writes.map((line) => JSON.parse(line).uuid)).toEqual([undefined, "steer-1"]);
+    child.stdout.write('{"type":"command_lifecycle","command_uuid":"steer-1","state":"queued"}\n');
+    child.stdout.write('{"type":"result"}\n');
+    // A result before the steer started is not terminal: input can still be written.
+    await process.send({ type: "control_response" });
+    // Written and queued is not started: the process could still exit without processing it.
+    expect(handle.started()).toBe(false);
+    // A lifecycle for a command this process did not steer (the prompt itself) changes nothing.
+    child.stdout.write('{"type":"command_lifecycle","command_uuid":"prompt","state":"started"}\n');
+    child.stdout.write('{"type":"command_lifecycle","command_uuid":"steer-1","state":"started"}\n');
+    expect(handle.started()).toBe(true);
+    child.stdout.write('{"type":"result"}\n');
+    expect(seen).toEqual([
+      ["command_lifecycle", false],
+      ["result", false],
+      ["command_lifecycle", false],
+      ["command_lifecycle", false],
+      ["result", true],
+    ]);
+    await expect(process.steer({ type: "user", uuid: "late" })).rejects.toMatchObject({ code: "exited" });
+    child.emit("exit", 0, null);
+    await run;
+    await process.close();
+  });
+
+  it("queues steer input behind the prompt while permission control initializes", async () => {
+    const child = fakeChild();
+    const writes: string[] = [];
+    child.stdin.on("data", (line) => writes.push(line.toString()));
+    const process = new ClaudeCodeProcess({
+      args: ["--permission-prompt-tool", "stdio"],
+      cwd: "/",
+      env: {},
+      spawnProcess: () => child,
+    });
+    const run = process.execute({ type: "user", text: "work" }, () => undefined, new AbortController().signal);
+    const handle = await process.steer({ type: "user", uuid: "steer-1" });
+    expect(writes).toHaveLength(1);
+    child.stdout.write(
+      `${JSON.stringify({ type: "control_response", response: { subtype: "success", request_id: "opentag_initialize" } })}\n`,
+    );
+    expect(
+      writes
+        .join("")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line).uuid ?? JSON.parse(line).text ?? JSON.parse(line).type),
+    ).toEqual(["control_request", "work", "steer-1"]);
+    // The steered input never started: the process exiting after a result is a failure, not a success.
+    child.stdout.write('{"type":"result"}\n');
+    child.emit("exit", 0, null);
+    await expect(run).rejects.toMatchObject({ code: "exited" });
+    expect(handle.started()).toBe(false);
+    await process.close();
+  });
+
+  it("forgets a steer whose write failed", async () => {
+    const child = fakeChild();
+    const process = fakeProcess(child);
+    const seen: (boolean | undefined)[] = [];
+    const run = process.execute(
+      { type: "user" },
+      (_message, terminal) => seen.push(terminal),
+      new AbortController().signal,
+    );
+    child.stdin.write = ((_chunk: unknown, callback: (error?: Error | null) => void) => {
+      callback(new Error("write failed"));
+      return false;
+    }) as typeof child.stdin.write;
+    await expect(process.steer({ type: "user", uuid: "steer-1" })).rejects.toMatchObject({ code: "write" });
+    child.stdout.write('{"type":"result"}\n');
+    expect(seen).toEqual([true]);
+    child.emit("exit", 0, null);
+    await run;
+    await process.close();
+  });
+
   it("reports a native response write failure", async () => {
     const child = fakeChild();
     const process = fakeProcess(child);

@@ -407,7 +407,7 @@ describe("background and WebSocket tracing", () => {
     });
     const diagnosticWrites: Array<Record<string, unknown>> = [];
     const loggerCodes: string[] = [];
-    const selectRows = [[], [{ displayName: "Agent", receiveMode: "direct_only" }]];
+    const selectRows = [[], [], [{ displayName: "Agent", receiveMode: "direct_only" }]];
     const database = {
       select: vi.fn(() => resolvedQuery(selectRows.shift() ?? [])),
       transaction: vi.fn(async (run: (transaction: unknown) => Promise<unknown>) =>
@@ -485,7 +485,7 @@ describe("background and WebSocket tracing", () => {
     const qrReady = new Promise<never>((_resolve, reject) => {
       rejectQr = reject;
     });
-    const selectRows = [[], [{ displayName: "Agent", receiveMode: "direct_only" }], []];
+    const selectRows = [[], [], [{ displayName: "Agent", receiveMode: "direct_only" }], []];
     const startRegistration = vi.fn().mockReturnValue({
       abort: vi.fn(),
       qrReady,

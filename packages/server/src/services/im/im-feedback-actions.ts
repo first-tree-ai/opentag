@@ -26,13 +26,11 @@ import {
 import { WorkspaceSaveFailedError } from "../sandboxes/errors.js";
 import type { SandboxRunnerService } from "../sandboxes/sandbox-runner-service.js";
 import {
-  createImFeedbackTarget,
   type FeedbackAction,
   type FeedbackTarget,
   hasFrozenFeedbackBatch,
   ImFeedbackStore,
 } from "./im-feedback-store.js";
-import { IM_QUEUE_CAPACITY } from "./im-queue-policy.js";
 import { lockImAgentCustody } from "./inbound-admission.js";
 
 export class ImFeedbackServiceError extends Error {
@@ -65,13 +63,6 @@ type Actor =
       bindingId?: string;
     };
 
-type FeedbackScope = {
-  target: FeedbackTarget;
-  agent: typeof agents.$inferSelect;
-  session: typeof sessions.$inferSelect;
-  placement: typeof sessionPlacements.$inferSelect;
-  delivery: typeof imMessageDeliveries.$inferSelect;
-};
 function nativeActorMatches(actor: Actor, target: FeedbackTarget): boolean {
   if ("accountId" in actor) return true;
   if (
@@ -85,25 +76,6 @@ function nativeActorMatches(actor: Actor, target: FeedbackTarget): boolean {
     ? actor.installationId === target.installationId
     : actor.bindingId === target.bindingId;
 }
-function unsettledAttempt(d: typeof imMessageDeliveries.$inferSelect): boolean {
-  return d.state === "pending" || d.state === "steered" || (d.state === "accepted" && d.reportedAt === null);
-}
-function neverStarted(d: typeof imMessageDeliveries.$inferSelect, hash: string | null): boolean {
-  if (d.turnReport)
-    return (
-      d.reportedAt !== null &&
-      d.turnReport.executionEffects === "not_started" &&
-      d.turnReport.outcome !== "completed" &&
-      d.turnReport.resultHash === hash
-    );
-  return (
-    ["expired", "terminal_rejected"].includes(d.state) &&
-    d.dispatchRequestId === null &&
-    d.inputHash === null &&
-    d.steerTargetDeliveryId === null
-  );
-}
-
 export class ImFeedbackActionsService {
   readonly #jobs = new Set<Promise<void>>();
   readonly store: ImFeedbackStore;
@@ -303,16 +275,7 @@ export class ImFeedbackActionsService {
     )
       return [];
     if (t.state === "workspace_blocked") return workspaceActions(this.options.sandboxRunner, scope.sandbox, t);
-    const d = scope.delivery;
-    if (!neverStarted(d, t.reportHash) || !(await this.#currentMessage(tx, t))) return [];
-    if (await hasFrozenFeedbackBatch(tx, t.deliveryId)) return [];
-    return t.effects === "not_started" &&
-      d.attemptOrdinal < 3 &&
-      d.expiresAt > this.now &&
-      scope.agent.status === "active" &&
-      !scope.session.endedAt
-      ? ["retry_task"]
-      : [];
+    return [];
   }
 
   async #lockScope(tx: DatabaseTransaction, id: string, actor: Actor) {
@@ -364,46 +327,6 @@ export class ImFeedbackActionsService {
       )
       .limit(1);
     return !newer;
-  }
-
-  async #queueRetry(tx: DatabaseTransaction, scope: FeedbackScope): Promise<string> {
-    const { target, session, placement, agent } = scope;
-    if (session.endedAt || placement.generation !== target.placementGeneration || agent.status !== "active")
-      throw conflict();
-    const attempts = await tx
-      .select()
-      .from(imMessageDeliveries)
-      .where(
-        and(eq(imMessageDeliveries.messageId, target.messageId), eq(imMessageDeliveries.sessionId, target.sessionId)),
-      )
-      .orderBy(imMessageDeliveries.id)
-      .for("update");
-    if (attempts.some(unsettledAttempt)) throw conflict();
-    const ordinal = Math.max(...attempts.map((d) => d.attemptOrdinal)) + 1;
-    if (ordinal > 3) throw conflict();
-    const now = this.now;
-    const [count] = (await tx.execute(
-      sql`select count(*)::int as count from im_message_deliveries where session_id=${target.sessionId}::uuid and state='pending' and reason is null and expires_at>${now.toISOString()}::timestamptz and dispatch_request_id is null and steer_target_delivery_id is null`,
-    )) as Array<{ count: number }>;
-    if ((count?.count ?? IM_QUEUE_CAPACITY) >= IM_QUEUE_CAPACITY) throw conflict();
-    const original = attempts.find((d) => d.attemptOrdinal === 0);
-    if (!original || original.expiresAt <= now) throw conflict();
-    const [retry] = await tx
-      .insert(imMessageDeliveries)
-      .values({
-        messageId: target.messageId,
-        sessionId: target.sessionId,
-        attention: "direct",
-        placementGeneration: placement.generation,
-        attemptOrdinal: ordinal,
-        retryOfDeliveryId: original.id,
-        nextAttemptAt: now,
-        expiresAt: original.expiresAt,
-      })
-      .returning({ id: imMessageDeliveries.id });
-    if (!retry) throw conflict();
-    await createImFeedbackTarget(tx, retry.id, now);
-    return retry.id;
   }
 
   async #insertAction(
@@ -490,8 +413,8 @@ export class ImFeedbackActionsService {
         .limit(1);
       if (target.revision !== revision || !(await this.#available(tx, target, latest)).includes(kind)) throw conflict();
       if (!(await this.#currentMessage(tx, target))) throw conflict();
-      const resultDeliveryId = kind === "retry_task" ? await this.#queueRetry(tx, scope) : undefined;
-      const action = await this.#insertAction(tx, target, revision, kind, actor, resultDeliveryId);
+      if (kind === "retry_task") throw conflict();
+      const action = await this.#insertAction(tx, target, revision, kind, actor);
       return { action, target, fresh: true };
     });
   }

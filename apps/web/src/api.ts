@@ -10,6 +10,8 @@ import {
   type AccountSetupResetMode,
   AGENT_ACTIVITY_TASK_COUNT_HEADER,
   AGENT_ACTIVITY_TASK_COUNT_VERSION,
+  AGENT_STATUS_HEADER,
+  AGENT_STATUS_VERSION,
   type AgentAdminConfig,
   AgentAdminConfigSchema,
   type AgentCloudOverview,
@@ -27,6 +29,8 @@ import {
   AgentScheduleSchema,
   type AgentSetupSnapshot,
   AgentSetupSnapshotSchema,
+  type AgentStatusResponse,
+  AgentStatusResponseSchema,
   type AgentUsageDetail,
   AgentUsageDetailSchema,
   type AgentUsageWindowDays,
@@ -74,6 +78,7 @@ import {
   agentSlackAutoSetupPath,
   agentSlackConfigurationPath,
   agentSlackOAuthStartPath,
+  agentStatusesPath,
   agentSuspendPath,
   agentUsagePath,
   CLOUD_BILLING_CHECKOUT_PATH,
@@ -453,8 +458,15 @@ export class BrowserApi {
 
   agents(): Promise<ListAgentsResponse> {
     return this.request(HTTP_PATHS.accountAgents, ListAgentsResponseSchema, {
-      headers: { [AGENT_ACTIVITY_TASK_COUNT_HEADER]: AGENT_ACTIVITY_TASK_COUNT_VERSION },
+      headers: {
+        [AGENT_ACTIVITY_TASK_COUNT_HEADER]: AGENT_ACTIVITY_TASK_COUNT_VERSION,
+        [AGENT_STATUS_HEADER]: AGENT_STATUS_VERSION,
+      },
     });
+  }
+
+  agentStatuses(ids: readonly string[]): Promise<AgentStatusResponse> {
+    return this.request(agentStatusesPath(ids), AgentStatusResponseSchema);
   }
 
   tasks(input: { cursor?: string; agentId?: string; kind?: "channel" | "thread" } = {}): Promise<ListTasksResponse> {

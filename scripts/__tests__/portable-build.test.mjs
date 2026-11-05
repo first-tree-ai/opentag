@@ -373,6 +373,29 @@ test("channel pointers are single-writer, monotonic, and ordered installer-first
     assert.doesNotMatch(command, /--tag latest/);
   }
   assert.match(workflow, /node scripts\/resolve-npm-dist-tag\.mjs/);
+
+  for (const [publishStep, verifyStep, portableStep] of [
+    [
+      "- name: Publish staging package",
+      "- name: Verify published staging package",
+      "- name: Publish portable staging release",
+    ],
+    [
+      "- name: Publish production package",
+      "- name: Verify published production package",
+      "- name: Publish portable production release",
+    ],
+  ]) {
+    const publishIndex = workflow.indexOf(publishStep);
+    const verifyIndex = workflow.indexOf(verifyStep);
+    const portableIndex = workflow.indexOf(portableStep);
+    assert.ok(publishIndex > 0 && verifyIndex > publishIndex, `${verifyStep} must follow ${publishStep}`);
+    assert.ok(portableIndex > verifyIndex, `${verifyStep} must run before ${portableStep}`);
+    const verifyBlock = workflow.slice(verifyIndex, portableIndex);
+    assert.match(verifyBlock, /timeout-minutes: 35/);
+    assert.match(verifyBlock, /node scripts\/check-npm-version\.mjs/);
+    assert.match(verifyBlock, /--require-published/);
+  }
 });
 
 test("the uploader treats the version prefix as immutable and flips channel pointers last", async () => {

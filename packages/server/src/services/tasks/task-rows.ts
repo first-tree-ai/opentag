@@ -11,8 +11,8 @@ import { agentAvatarPath, TASK_CANCELLED_DELIVERY_REASON } from "@opentag/shared
 import { deriveTaskTitle, messageTextFromBlocks } from "./task-title.js";
 
 /**
- * The stored shape of one Task list or detail row: the topic identity, its rollup facts and the
- * latest execution of the topic. Every column here is read from one SQL statement, so a row never
+ * The stored shape of one Task list or detail row: the Task identity, its rollup facts and the
+ * latest execution of the Task. Every column here is read from one SQL statement, so a row never
  * mixes executions of different reads.
  */
 export interface TaskSummaryRow extends Record<string, unknown> {
@@ -90,6 +90,11 @@ export interface InternalSessionRow extends Record<string, unknown> {
   runtimeReasoningEffort: string | null;
   endedAt: Date | string | null;
   createdAt: Date | string;
+  /** The stored manual or generated title. */
+  title: string | null;
+  /** The whole body of the first collaboration message the Session received, if any. */
+  firstMessage: string | null;
+  lastActivityAt: Date | string;
   /** The exact `created_at` key of this row, at the precision the page was ordered by. */
   cursorAt: string;
 }
@@ -137,7 +142,7 @@ export function toIso(value: Date | string): string {
 }
 
 /**
- * The status is the topic's latest execution situation, read by precedence rather than by the
+ * The status is the Task's latest execution situation, read by precedence rather than by the
  * most recent delivery: a disconnected channel first, then any Turn still running, then anything
  * still queued, and only then the outcome of the last execution. An accepted delivery counts as
  * running only while its deadline has not passed, its Session is alive, and no later Turn ran in
@@ -152,7 +157,7 @@ export function taskStatus(row: TaskSummaryRow): TaskStatus {
   if (row.endedAt) return "ended";
   if (row.hasRunning) return "running";
   if (row.hasPending) return "queued";
-  // Every listed topic has a direct delivery, so a missing latest execution cannot happen.
+  // Every listed Task has a direct delivery, so a missing latest execution cannot happen.
   if (!row.deliveryState) return "idle";
   if (row.deliveryState === "expired")
     return row.deliveryReason === TASK_CANCELLED_DELIVERY_REASON ? "cancelled" : "expired";
@@ -296,6 +301,31 @@ export function toTurn(row: TaskTurnRow): TaskTurn {
   };
 }
 
+/** The longest internal Session title derived from a message, in code points; a stored Task title's bound. */
+export const INTERNAL_SESSION_TITLE_MAX_LENGTH = 120;
+
+/**
+ * One line of text: every run of Unicode whitespace (ASCII, NBSP, ideographic and other spaces)
+ * collapsed to one space and the ends trimmed, so leading or repeated whitespace never spends a
+ * title budget. Empty is absent.
+ */
+function oneLine(text: string | null, maxCodePoints?: number): string | null {
+  const line = text?.replace(/\s+/gu, " ").trim();
+  if (!line) return null;
+  if (maxCodePoints === undefined) return line;
+  // Cap by code points, never splitting a surrogate pair, then trim a space the cut left behind.
+  return Array.from(line).slice(0, maxCodePoints).join("").trimEnd();
+}
+
+/**
+ * The internal Session's title: its stored title on one line, or else the start of the first
+ * collaboration message it received, collapsed to one line and capped. All normalization happens
+ * here, with one definition of whitespace, rather than partly in SQL.
+ */
+export function internalSessionTitle(session: Pick<InternalSessionRow, "title" | "firstMessage">): string | null {
+  return oneLine(session.title) ?? oneLine(session.firstMessage, INTERNAL_SESSION_TITLE_MAX_LENGTH);
+}
+
 export function toInternalSession(session: InternalSessionRow) {
   return {
     id: session.id,
@@ -304,6 +334,8 @@ export function toInternalSession(session: InternalSessionRow) {
     endedAt: session.endedAt ? toIso(session.endedAt) : null,
     runtimeModel: session.runtimeModel,
     runtimeReasoningEffort: session.runtimeReasoningEffort,
+    title: internalSessionTitle(session),
+    lastActivityAt: toIso(session.lastActivityAt),
   };
 }
 

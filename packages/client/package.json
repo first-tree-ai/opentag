@@ -35,7 +35,7 @@
     "tar-stream": "3.2.0",
     "ws": "^8.21.3",
     "zod": "^4.5.1",
-    "@first-tree-ai/context-tree": "1.0.2-alpha.202611020650"
+    "@first-tree-ai/context-tree": "1.1.1"
   },
   "devDependencies": {
     "@types/semver": "^7.8.0",

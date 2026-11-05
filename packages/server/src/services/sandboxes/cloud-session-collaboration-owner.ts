@@ -47,6 +47,8 @@ import {
 import type {
   CloudSessionMessageDeliveryInput,
   CloudSessionMessageOutcome,
+  RunOutcomeNoticeInput,
+  RunOutcomeNotifier,
 } from "../sessions/session-collaboration-service.js";
 import type { SessionService } from "../sessions/session-service.js";
 import type { CloudModelGrantPort } from "./cloud-delivery-owner.js";
@@ -95,6 +97,13 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_ENSURE_TIMEOUT_MS = 20_000;
 /** Grant transport allowance on top of the Turn budget (mirrors the IM delivery owner). */
 const CLOUD_SESSION_GRANT_TRANSPORT_MS = 30_000;
+/**
+ * Bounded Server-side redelivery of one creator Run outcome notice. The settlement ack waits for
+ * these attempts, so the Runner's journaled settlement stays the replay owner until the notice
+ * has a final answer; every attempt reuses the same deterministic notice row.
+ */
+const RUN_OUTCOME_NOTICE_ATTEMPTS = 3;
+const RUN_OUTCOME_NOTICE_RETRY_MS = 30_000;
 /** Non-terminal durable work statuses: every one of them keeps the reclaim/save barrier. */
 const UNSETTLED_DURABLE_STATUSES = ["accepted", "running", "retryable"] as const;
 
@@ -216,6 +225,9 @@ export function createCloudSourceConnectionVerifier(
 /** The exact allocation identity a tracked entry belongs to; reuses the durable envelope shape. */
 type TrackedAllocation = CloudWorkAllocation;
 
+/** One settlement handler's own custody hold; see `CloudSessionWorkTracker.holdSettlement`. */
+export type SettlementCustodyToken = symbol;
+
 function trackedAllocationKey(allocation: TrackedAllocation): string {
   return `${allocation.sandboxId}:${allocation.environmentGeneration}:${allocation.resourceName}`;
 }
@@ -231,6 +243,105 @@ function trackedAllocationKey(allocation: TrackedAllocation): string {
  */
 export class CloudSessionWorkTracker {
   readonly #byAllocation = new Map<string, Map<string, { turnId?: string }>>();
+  /**
+   * Settlement custody: terminal Turns whose `session:message:settled:ack` is still withheld while
+   * the creator notice runs (or after the settling connection left before the ack). The Runner
+   * settlement journal on that exact allocation is then the only replay owner, so the allocation
+   * must stay unclaimable until the ack has been handed to its exact connection. Keyed like
+   * `#byAllocation`, so a replacement allocation is never pinned.
+   *
+   * Custody is handler-owned: every settlement handler (the original connection's and each
+   * replay's) holds its own token on the shared `messageId:turnId` entry. A handler whose
+   * terminal commit lost releases only its own token, so a stale CAS loser can never drop the
+   * custody a concurrent replay established for its own still-pending notice and ack.
+   */
+  readonly #settling = new Map<string, Map<string, { sessionId: string; holders: Set<SettlementCustodyToken> }>>();
+
+  /** Hold one exact settlement's custody for the calling handler; the token releases only this hold. */
+  holdSettlement(
+    allocation: TrackedAllocation,
+    sessionId: string,
+    messageId: string,
+    turnId: string,
+  ): SettlementCustodyToken {
+    const key = trackedAllocationKey(allocation);
+    let entries = this.#settling.get(key);
+    if (!entries) {
+      entries = new Map();
+      this.#settling.set(key, entries);
+    }
+    const entryKey = `${messageId}:${turnId}`;
+    let entry = entries.get(entryKey);
+    if (!entry) {
+      entry = { sessionId, holders: new Set() };
+      entries.set(entryKey, entry);
+    }
+    const token: SettlementCustodyToken = Symbol(entryKey);
+    entry.holders.add(token);
+    return token;
+  }
+
+  /**
+   * Release one handler's hold (its terminal commit lost, so it never owned an ack). Other
+   * handlers' holds on the same settlement stay in force.
+   */
+  releaseSettlementHold(
+    allocation: TrackedAllocation,
+    messageId: string,
+    turnId: string,
+    token: SettlementCustodyToken,
+  ): void {
+    const key = trackedAllocationKey(allocation);
+    const entries = this.#settling.get(key);
+    const entryKey = `${messageId}:${turnId}`;
+    const entry = entries?.get(entryKey);
+    if (!entries || !entry) return;
+    entry.holders.delete(token);
+    if (entry.holders.size === 0) entries.delete(entryKey);
+    if (entries.size === 0) this.#settling.delete(key);
+  }
+
+  /**
+   * The settlement's ack reached its exact Runner connection: the Runner deletes its journaled
+   * settlement, so no handler has a replay left to protect and every hold on it ends.
+   */
+  releaseSettlement(allocation: TrackedAllocation, messageId: string, turnId: string): void {
+    const key = trackedAllocationKey(allocation);
+    const entries = this.#settling.get(key);
+    if (!entries) return;
+    entries.delete(`${messageId}:${turnId}`);
+    if (entries.size === 0) this.#settling.delete(key);
+  }
+
+  /** Any settlement custody at all (lets allocation-loss recovery skip pruning cheaply). */
+  get hasAnySettlementCustody(): boolean {
+    return this.#settling.size > 0;
+  }
+
+  /** Settlement custody on this exact allocation (part of the reclaim barrier). */
+  hasSettlementCustody(allocation: TrackedAllocation): boolean {
+    return (this.#settling.get(trackedAllocationKey(allocation))?.size ?? 0) > 0;
+  }
+
+  /** Settlement custody of one Session on any allocation (the Session-wide barrier view). */
+  hasSessionSettlementCustody(sessionId: string): boolean {
+    for (const entries of this.#settling.values()) {
+      for (const entry of entries.values()) if (entry.sessionId === sessionId) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Drop custody held on any other generation/resource of this Sandbox: that allocation was
+   * retired with its Runner journal, so its withheld ack can never be delivered or replayed.
+   */
+  pruneRetiredSettlements(current: TrackedAllocation): void {
+    const prefix = `${current.sandboxId}:`;
+    const currentKey = trackedAllocationKey(current);
+    for (const key of [...this.#settling.keys()]) {
+      if (key.startsWith(prefix) && key !== currentKey) this.#settling.delete(key);
+    }
+  }
 
   register(allocation: TrackedAllocation, messageId: string, turnId?: string): void {
     const key = trackedAllocationKey(allocation);
@@ -284,14 +395,21 @@ export class CloudSessionWorkTracker {
 
   /** Clear every generation of one Sandbox (test/restart simulation only). */
   clearSandbox(sandboxId: string): void {
-    for (const key of [...this.#byAllocation.keys()]) {
-      if (key.startsWith(`${sandboxId}:`)) this.#byAllocation.delete(key);
+    for (const map of [this.#byAllocation, this.#settling]) {
+      for (const key of [...map.keys()]) {
+        if (key.startsWith(`${sandboxId}:`)) map.delete(key);
+      }
     }
   }
 
-  /** Approximate liveness for the fast pre-filter: exact allocation identity only. */
+  /**
+   * Approximate liveness for the fast pre-filter: exact allocation identity only. Withheld
+   * settlement custody counts as busy: the Runner journal on this allocation still owns replay.
+   */
   isBusy(allocation: TrackedAllocation): boolean {
-    return (this.#byAllocation.get(trackedAllocationKey(allocation))?.size ?? 0) > 0;
+    return (
+      (this.#byAllocation.get(trackedAllocationKey(allocation))?.size ?? 0) > 0 || this.hasSettlementCustody(allocation)
+    );
   }
 
   /** Any tracked work on any generation of one Sandbox (diagnostics/tests). */
@@ -349,6 +467,8 @@ export interface CloudSessionCollaborationOwnerOptions {
   now?: () => number;
   requestTimeoutMs?: number;
   ensureTimeoutMs?: number;
+  /** Test seam for the delay between creator Run outcome notice attempts. */
+  runOutcomeRetryMs?: number;
 }
 
 export type CloudSessionCancelOutcome = {
@@ -457,6 +577,10 @@ export class CloudSessionCollaborationOwner {
   readonly #tails = new Map<string, Promise<unknown>>();
   readonly #tasks = new Set<Promise<unknown>>();
   readonly #stop = new AbortController();
+  #runOutcomeNotifier: RunOutcomeNotifier | undefined;
+  readonly #runOutcomeRetryMs: number;
+  /** `${connectionId}:${messageId}` of notices whose settlement ack is still withheld. */
+  readonly #noticesInFlight = new Set<string>();
   #closing: Promise<void> | undefined;
 
   constructor(options: CloudSessionCollaborationOwnerOptions) {
@@ -477,6 +601,16 @@ export class CloudSessionCollaborationOwner {
     this.#now = options.now ?? (() => Date.now());
     this.#requestTimeoutMs = options.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     this.#ensureTimeoutMs = options.ensureTimeoutMs ?? DEFAULT_ENSURE_TIMEOUT_MS;
+    this.#runOutcomeRetryMs = options.runOutcomeRetryMs ?? RUN_OUTCOME_NOTICE_RETRY_MS;
+  }
+
+  /**
+   * Late-bound creator notifier: the collaboration service depends on this owner for Cloud
+   * transport, so composition binds the reverse edge after both exist. Without it, settlement
+   * behaves exactly as before and no notice is sent.
+   */
+  setRunOutcomeNotifier(notifier: RunOutcomeNotifier): void {
+    this.#runOutcomeNotifier = notifier;
   }
 
   close(): Promise<void> {
@@ -684,7 +818,7 @@ export class CloudSessionCollaborationOwner {
     signal?.throwIfAborted();
     const connection = this.#dispatchableConnection(sandbox);
     if (!connection) throw new CloudSessionDispatchUnavailableError();
-    if (scheduled && connection.sessionCollaborationVersion !== 2) {
+    if (scheduled && connection.sessionCollaborationVersion < 2) {
       throw new CloudScheduledOriginUnsupportedError();
     }
     const socket = this.#socketFor(connection);
@@ -1397,7 +1531,7 @@ export class CloudSessionCollaborationOwner {
     if (frame.phase === "started") return;
     // A downgraded Runner retains accepted custody, but receives no execution grant for a
     // scheduled entry until a v2 reconnect can understand its journal and managed input.
-    if (scheduled && connection.sessionCollaborationVersion !== 2) return;
+    if (scheduled && connection.sessionCollaborationVersion < 2) return;
     if (row.bindingStatus !== "active") {
       // A transient IM reauthorization pauses new grants but never erases accepted custody: keep
       // the entry pending; the restored authority re-handshakes the Runner and re-announces.
@@ -1464,6 +1598,15 @@ export class CloudSessionCollaborationOwner {
     ) {
       return;
     }
+    // Both a new and a replayed identical commit may notify: the notice id is deterministic, so a
+    // replay after a lost notice repairs it and a replay after a delivered notice is a no-op.
+    const notice = this.#runOutcomeNotifier ? runOutcomeNotice(frame, envelope, connection) : undefined;
+    // Settlement custody is held BEFORE the durable row turns terminal: from that commit until the
+    // withheld ack reaches the exact Runner, the Runner journal on this allocation is the only
+    // replay owner, and no claim may observe a gap between the two barriers.
+    const hold = notice
+      ? this.#work.holdSettlement(connection.scope, connection.scope.sessionId, frame.messageId, frame.turnId)
+      : undefined;
     const outcome = settledOutcome(frame.outcome);
     const committed = await this.#terminalizeDurable(
       {
@@ -1473,17 +1616,92 @@ export class CloudSessionCollaborationOwner {
       },
       existing,
     );
-    if (!committed) return;
+    if (!committed) {
+      // Only this handler's own hold: a concurrent replay that won the commit keeps its custody
+      // until its own exact ack is handed off.
+      if (hold) this.#work.releaseSettlementHold(connection.scope, frame.messageId, frame.turnId, hold);
+      return;
+    }
     this.#work.settleTurn(connection.scope, frame.messageId, frame.turnId);
     this.#revokeGrant(frame.turnId);
-    this.#sendToConnection(connection, {
+    const ack = {
       type: "session:message:settled:ack",
       messageId: frame.messageId,
       requestId: frame.requestId,
       status: committed,
       turnId: frame.turnId,
-    });
+    } as const;
+    if (notice) {
+      /*
+       * The ack lets the Runner delete its only durable copy of this settlement, and the notice's
+       * source authority is this exact live connection. So the ack waits until the notice has a
+       * final answer (or its bounded attempts are spent) and is sent only on the still-current
+       * connection; a detach, supersession, or Server stop before then leaves the settlement
+       * journaled, and the Runner replays it to the next connection, which notifies again under
+       * the same notice id. The wait runs off the frame loop. Until the ack is handed to the exact
+       * connection, the settlement custody above keeps this allocation out of idle/borrow claims;
+       * a withheld ack keeps it held for the replay.
+       */
+      const inFlight = `${connection.connectionId}:${frame.messageId}`;
+      if (!this.#noticesInFlight.has(inFlight)) {
+        this.#noticesInFlight.add(inFlight);
+        void this.#track(
+          this.#notifyThenAcknowledge(connection, notice, ack).finally(() => this.#noticesInFlight.delete(inFlight)),
+        );
+      }
+    } else {
+      this.#sendToConnection(connection, ack);
+    }
     await this.#recordActivity(connection.scope.sandboxId);
+  }
+
+  async #notifyThenAcknowledge(
+    connection: CloudConnectionRecord,
+    notice: RunOutcomeNoticeInput,
+    ack: Extract<Parameters<RunnerHub["sendToCurrent"]>[2], { type: "session:message:settled:ack" }>,
+  ): Promise<void> {
+    if ((await this.#notifyRunOutcome(notice)) === "aborted") return;
+    if (!this.#isExactConnection(connection) || !this.#sendToConnection(connection, ack)) {
+      // Custody stays held on this allocation: the replayed settlement's own final ack releases
+      // it, and allocation retirement drops it with the journal.
+      this.#logger?.warn(
+        { code: "CLOUD_SESSION_RUN_OUTCOME_ACK_WITHHELD", messageId: notice.messageId },
+        "The settling Runner connection changed before the Run outcome notice finished; the settlement stays journaled for replay",
+      );
+      return;
+    }
+    this.#work.releaseSettlement(connection.scope, ack.messageId, ack.turnId);
+  }
+
+  /** `final` once the notice has a final answer or its bounded attempts are spent. */
+  async #notifyRunOutcome(notice: RunOutcomeNoticeInput): Promise<"final" | "aborted"> {
+    const notifier = this.#runOutcomeNotifier;
+    if (!notifier) return "final";
+    for (let attempt = 1; attempt <= RUN_OUTCOME_NOTICE_ATTEMPTS; attempt += 1) {
+      if (this.#stop.signal.aborted) return "aborted";
+      let status: Awaited<ReturnType<RunOutcomeNotifier["notifyRunOutcome"]>>;
+      try {
+        status = await notifier.notifyRunOutcome(notice);
+      } catch (error) {
+        this.#logger?.warn(
+          { code: "CLOUD_SESSION_RUN_OUTCOME_NOTICE_FAILED", messageId: notice.messageId, err: error },
+          "The internal Session Run outcome notice could not be processed",
+        );
+        status = "retry";
+      }
+      if (status !== "retry") return "final";
+      if (attempt === RUN_OUTCOME_NOTICE_ATTEMPTS) break;
+      try {
+        await delay(this.#runOutcomeRetryMs, undefined, { signal: this.#stop.signal });
+      } catch {
+        return "aborted";
+      }
+    }
+    this.#logger?.warn(
+      { code: "CLOUD_SESSION_RUN_OUTCOME_NOTICE_UNDELIVERED", messageId: notice.messageId },
+      "The internal Session Run outcome notice was not accepted by its creator",
+    );
+    return "final";
   }
 
   #rejectReceipt(
@@ -1508,7 +1726,9 @@ export class CloudSessionCollaborationOwner {
    * Evaluated inside the Sandbox claim transaction. A record whose allocation was retired or
    * replaced is not a barrier: its Runner journal is gone, so it can never execute and must not
    * pin a replacement environment. Records without the Cloud envelope (legacy Local shape) stay
-   * conservative.
+   * conservative. A terminal record whose settlement ack is still withheld (creator notice in
+   * flight, or the settling connection left before the ack) also blocks its exact allocation:
+   * the Runner journal there is the notice's only replay owner until that ack is delivered.
    */
   async hasUnsettledSessionWork(input: {
     allocation?: CloudWorkAllocation;
@@ -1516,10 +1736,24 @@ export class CloudSessionCollaborationOwner {
     transaction?: DatabaseTransaction;
   }): Promise<boolean> {
     const executor = input.transaction ?? this.#database;
+    /*
+     * A withheld settlement ack: the durable row is already terminal, but the Runner journal on
+     * this exact allocation is still the creator notice's only replay owner. A settlement handler
+     * acquires custody BEFORE its terminal commit, so the durable read below and this custody
+     * check together leave no gap only when custody is (re)checked AFTER the read: a row the read
+     * saw as terminal was terminalized after its custody was held, and only the exact ack (which
+     * lets the Runner delete its journal) or allocation retirement releases that custody. The
+     * early check is just a fast path; every negative answer re-checks custody after the awaits.
+     */
+    const hasCustody = () =>
+      input.allocation
+        ? this.#work.hasSettlementCustody(input.allocation)
+        : this.#work.hasSessionSettlementCustody(input.sessionId);
+    if (hasCustody()) return true;
     // Only records written under the Session's own placement Computer are authoritative: a Local
     // runtime HTTP writer must never be able to inject work into a Cloud Session's barrier scope.
     const computerId = await this.#sessionComputerId(input.sessionId, executor);
-    if (!computerId) return false;
+    if (!computerId) return hasCustody();
     const rows = await executor
       .select({ payload: runtimeDurableWork.payload })
       .from(runtimeDurableWork)
@@ -1532,12 +1766,14 @@ export class CloudSessionCollaborationOwner {
         ),
       );
     const allocation = input.allocation;
-    if (!allocation) return rows.length > 0;
-    return rows.some(({ payload }) => {
-      const envelope = parseCloudSessionWorkEnvelope(payload);
-      if (!envelope) return true;
-      return allocationMatches(envelope.allocation, allocation);
-    });
+    const unsettled = allocation
+      ? rows.some(({ payload }) => {
+          const envelope = parseCloudSessionWorkEnvelope(payload);
+          if (!envelope) return true;
+          return allocationMatches(envelope.allocation, allocation);
+        })
+      : rows.length > 0;
+    return unsettled || hasCustody();
   }
 
   /**
@@ -1570,9 +1806,17 @@ export class CloudSessionCollaborationOwner {
           like(runtimeDurableWork.recordKey, `${sessionId}:%`),
         ),
       );
-    if (rows.length === 0) return 0;
+    if (rows.length === 0 && !this.#work.hasAnySettlementCustody) return 0;
     signal?.throwIfAborted();
     const sandbox = await loadSandboxRecordBySessionId(this.#database, sessionId);
+    if (sandbox?.currentResourceName) {
+      this.#work.pruneRetiredSettlements({
+        sandboxId: sandbox.id,
+        environmentGeneration: sandbox.environmentGeneration,
+        resourceName: sandbox.currentResourceName,
+      });
+    }
+    if (rows.length === 0) return 0;
     let retired = 0;
     for (const row of rows) {
       signal?.throwIfAborted();
@@ -1952,6 +2196,34 @@ function allocationMatches(left: CloudWorkAllocation, right: CloudWorkAllocation
 }
 
 /** The durable outcome for one acknowledged Runner terminal result; outcomes stay distinguishable. */
+/** The creator notice for one non-completed settlement, or undefined for a completed Run. */
+function runOutcomeNotice(
+  frame: RunnerCloudSessionMessageSettledFrame,
+  envelope: CloudSessionWorkEnvelope,
+  connection: CloudConnectionRecord,
+): RunOutcomeNoticeInput | undefined {
+  if (frame.outcome === "completed") return undefined;
+  const outcome = frame.reason === "turn_timeout" ? "timed_out" : frame.outcome === "failed" ? "failed" : frame.outcome;
+  const reason =
+    frame.reason ??
+    (frame.outcome === "cancelled"
+      ? "turn_cancelled"
+      : frame.outcome === "unknown"
+        ? "turn_state_unknown"
+        : "turn_failed");
+  return {
+    childSessionId: connection.scope.sessionId,
+    messageId: frame.messageId,
+    outcome,
+    reason,
+    source: {
+      computerId: connection.computerId,
+      connectionInstanceId: connection.connectionId,
+      placementGeneration: envelope.request.placementGeneration,
+    },
+  };
+}
+
 function settledOutcome(outcome: RunnerCloudSessionMessageSettledFrame["outcome"]): {
   status: "succeeded" | "failed";
   code?: string;

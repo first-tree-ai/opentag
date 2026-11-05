@@ -27,6 +27,7 @@ import {
 import { type AgentReadStage, AgentService } from "../../services/agents/index.js";
 import { rethrowGateFailure, settle, whilePaused } from "../support/barrier.js";
 import { deferred } from "../support/deferred.js";
+import { transferLegacyAgentFixture } from "../support/legacy-agent-fixture.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 const NOW = new Date("2026-05-04T09:00:00.000Z");
@@ -219,7 +220,7 @@ async function transferAndAppendDelivery(
   const mover = actor();
   const moverService = new AgentService(mover.database, { now: () => NOW });
   await moverService.suspendById(fixture.owner.userId, fixture.agentId);
-  await moverService.transferToAccount({
+  await transferLegacyAgentFixture(mover.database, {
     agentId: fixture.agentId,
     slack: "disable",
     targetAccountId: fixture.target.id,
@@ -343,7 +344,7 @@ describe("Agent read authorization snapshots", () => {
     const moved = await moving;
     rethrowGateFailure(gate);
     expect(moved).toMatchObject({ status: "fulfilled" });
-    await new AgentService(mover.database, { now: () => NOW }).transferToAccount({
+    await transferLegacyAgentFixture(mover.database, {
       agentId: fixture.agentId,
       slack: "disable",
       targetAccountId: fixture.target.id,
@@ -411,7 +412,7 @@ describe("Agent read authorization snapshots", () => {
     expect(moved.status).toBe("fulfilled");
     // The mover's connection is free again: the suspended transaction committed and the transfer can proceed.
     await expect(
-      new AgentService(mover.database, { now: () => NOW }).transferToAccount({
+      transferLegacyAgentFixture(mover.database, {
         agentId: fixture.agentId,
         slack: "disable",
         targetAccountId: fixture.target.id,

@@ -49,6 +49,7 @@ import {
   type CloudContextTreePreparationInput,
   type CloudContextTreeStatus,
   prepareCloudContextTree,
+  withContextTreeReadPath,
 } from "./cloud-context-tree.js";
 import { cloudSteerResult, openCloudSteerControl } from "./cloud-steer-control.js";
 import {
@@ -58,7 +59,7 @@ import {
   cloudWorkerTimeout,
 } from "./cloud-worker-input.js";
 import { registerRunnerSignalCleanup } from "./signals.js";
-import { assembleContextTreeSkills, assembleRunnerToolSkills } from "./skills.js";
+import { type AssembledContextTreeSkills, assembleContextTreeSkills, assembleRunnerToolSkills } from "./skills.js";
 
 /**
  * In-sandbox Cloud worker: one IM Turn or Session message inside the disposable Sandbox. The
@@ -301,7 +302,7 @@ export interface CloudTurnPiFactory {
 }
 
 export interface CloudTurnPiRuntime {
-  steer?(request: import("../agent-runtime/types.js").AgentSteerRequest): Promise<void>;
+  steer?(request: import("../agent-runtime/types.js").AgentSteerRequest): Promise<unknown>;
   prompt(request: AgentPromptRequest): Promise<AgentRunResult>;
   close(): Promise<void>;
 }
@@ -341,6 +342,8 @@ export interface CloudTurnWorkerRunOptions {
    * `prepareCloudContextTree`). Receives only per-Turn, in-sandbox inputs.
    */
   readonly prepareContextTree?: (input: CloudContextTreePreparationInput) => Promise<CloudContextTreePreparation>;
+  /** Test seam: replace packaged Context Tree Skill assembly (production reads the pinned package). */
+  readonly assembleContextTreeSkills?: () => Promise<AssembledContextTreeSkills>;
   /** Test seam: override the bounded pre-run Context Tree preparation budget. */
   readonly contextTreePreparationBudgetMs?: number;
   /** Test seam: build the Pi factory for this turn (production builds the real one). */
@@ -372,8 +375,8 @@ function createTurnExecutionContext(
 }
 
 /**
- * Optional pre-run memory with its own small budget on top of the Turn execution bounds. It is
- * fully awaited, so a stop leaves no CLI child or `git` writing after the Turn stopped waiting.
+ * Optional pre-run memory with its own small budget on top of the Turn execution bounds. It only
+ * writes local configuration and the `context-tree` shim; the Agent syncs through the gateway.
  */
 function prepareTurnContextTree(
   request: RunnerCloudWorkerRequest,
@@ -394,6 +397,13 @@ function prepareTurnContextTree(
     signal: AbortSignal.any([execution.signal, budget]),
     workspace: options.workspace,
   });
+}
+
+/** A failed assembly leaves the Agent without `context-tree-read`; the prompt status reports it. */
+function assembleTurnContextTreeSkills(
+  options: CloudTurnWorkerRunOptions,
+): Promise<AssembledContextTreeSkills | undefined> {
+  return (options.assembleContextTreeSkills ?? assembleContextTreeSkills)().catch(() => undefined);
 }
 
 function cloudPiDiagnostics(
@@ -476,9 +486,9 @@ export async function runCloudTurnWorker(
     // optional Context Tree preparation (which additionally has its own small budget).
     const execution = createTurnExecutionContext(request, options);
     const diagnostics = cloudPiDiagnostics(options.onDiagnostic, execution, preparationStarted);
-    const contextTreeSyncStarted = performance.now();
+    const contextTreePreparationStarted = performance.now();
     const contextTree = await prepareTurnContextTree(request, options, execution, scratch, manifest.environment);
-    const contextTreeSyncMs = Math.max(0, performance.now() - contextTreeSyncStarted);
+    const contextTreePreparationMs = Math.max(0, performance.now() - contextTreePreparationStarted);
     if (execution.signal.aborted) {
       // The execution deadline or caller stop fired during preparation. The preparation child
       // (including any nested git) was stopped and awaited, so Pi must not start now.
@@ -489,7 +499,7 @@ export async function runCloudTurnWorker(
         outcome: "aborted",
         durationMs: Math.max(0, performance.now() - preparationStarted),
         proxyStartMs,
-        contextTreeSyncMs,
+        contextTreePreparationMs,
         abortSource,
       });
       return completionForError(new Error("The Turn stopped during Context Tree preparation"), abortSource);
@@ -538,7 +548,7 @@ export async function runCloudTurnWorker(
     // `lark-cli`/`slack`) through the same assembly and argument helper; a missing skill set is
     // the honest host-dev case, never a different runtime.
     const skillsAssembleStarted = performance.now();
-    const contextTreeSkills = await assembleContextTreeSkills().catch(() => undefined);
+    const contextTreeSkills = await assembleTurnContextTreeSkills(options);
     const toolSkills = await assembleRunnerToolSkills();
     const skillPaths = [...(contextTreeSkills?.skillPaths ?? []), ...toolSkills.skills.map((skill) => skill.directory)];
     const skillsAssembleMs = Math.max(0, performance.now() - skillsAssembleStarted);
@@ -572,7 +582,13 @@ export async function runCloudTurnWorker(
       policy: TURN_POLICY,
       systemPrompt: renderManagedSystemPrompt(
         cloudWorkerRuntime(request),
-        cloudManagedSessionContext(request, contextTree.status),
+        cloudManagedSessionContext(
+          request,
+          withContextTreeReadPath(contextTree.status, {
+            skills: contextTreeSkills !== undefined,
+            gateway: Boolean(manifest.environment.OPENTAG_CONTEXT_TREE_URL),
+          }),
+        ),
       ),
       workspace: { cwd: options.workspace, environment: runtimeEnvironment },
     };
@@ -586,7 +602,7 @@ export async function runCloudTurnWorker(
       event: "end",
       durationMs: Math.max(0, performance.now() - preparationStarted),
       proxyStartMs,
-      contextTreeSyncMs,
+      contextTreePreparationMs,
       skillsAssembleMs,
     });
 

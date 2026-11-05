@@ -9,10 +9,11 @@ Account → Computer manages the connection. Agent settings identifies the assig
 computer opens directly; existing multi-computer accounts retain explicit selection. Do not add Agent lists or runtime
 configuration to this surface.
 
-Every confirmed inventory offers **Connect a new computer** here. Agent settings offers the same entry next to an
-assigned Local computer or an existing choice; it opens this page and starts the one shared create flow. That request
-is consumed once and removed from the URL, so reload or Back never issues another command. Connecting a computer
-never moves an Agent; choosing it for an Agent stays an explicit step in Agent settings.
+Every confirmed inventory offers **Connect a new computer** here. Agent settings offers that entry
+while the Agent has no Computer. A bound Agent offers repair of its existing Computer and cannot
+select a replacement. The create request is consumed once and removed from the URL, so reload or
+Back never issues another command. Connecting a Computer never moves an Agent. An edited Agent
+with an empty Computer can still finish its initial binding.
 
 ## State and interaction
 
@@ -32,8 +33,8 @@ expiry tells the reader why an old copy no longer works.
 
 - A local computer that is not online shows its status badge and one **Restore connection** action. Pressing it
   opens the shared command window inline on the card and issues a targeted repair command only then; the card hides
-  its badge while the window is shown, so the window's status is the only one. A link that names the computer (Agent
-  settings' Reconnect, the Agent list's Restore connection) arrives with that card's window already open. The copied
+  its badge while the window is shown, so the window's status is the only one. A **Restore connection** link that names the computer (from the Agent list, the
+  Agent home, or Agent settings) arrives with that card's window already open. The copied
   text is always complete. Copying is never evidence of connection.
 - While the inventory read is uncertain, the repair task is hidden and the card offers Check status instead. Cancel
   inventory reads that began before the failure, then latch uncertainty against the cache's current

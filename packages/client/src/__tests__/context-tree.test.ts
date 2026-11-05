@@ -1,9 +1,10 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { type ContextTreeConnection, contextTreeSelector } from "@opentag/shared";
+import type { ContextTreeConnection, EffectiveRuntimeSnapshot } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ContextTreeManager, codexInstallSkipReason, contextTreeFailureCode } from "../runtime/context-tree.js";
+import { renderManagedSystemPrompt } from "../runtime/managed-instructions.js";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -13,99 +14,113 @@ const sources = [
   { kind: "git", repository: "acme/project", path: "docs", ref: "main" },
   { kind: "git", repository: "acme/project", path: "notes", ref: "main" },
 ] as const satisfies readonly ContextTreeConnection[];
-async function fixture(options: { sync?: () => Promise<void>; denied?: boolean } = {}) {
-  const home = await mkdtemp(join(tmpdir(), "ct-manager-"));
+const authorized = { GH_TOKEN: "first-execution", OPENTAG_PROVIDER_PROXY_URL: "http://localhost/proxy" };
+async function fixture(
+  options: { managed?: boolean; codex?: unknown; platform?: NodeJS.Platform; noPackage?: boolean } = {},
+) {
+  const home = await realpath(await mkdtemp(join(tmpdir(), "ct-manager-")));
   roots.push(home);
   const cwd = join(home, "workspace");
   await mkdir(cwd);
   const execFile = vi.fn(async (_file: string, args: readonly string[]) => {
-    if (args[1] !== "sync") return { stdout: JSON.stringify({ installed: [{ host: "codex" }] }) };
-    const projectRoot = args[args.indexOf("--project-path") + 1] ?? "";
-    const config = JSON.parse(await readFile(join(projectRoot, ".context-tree.json"), "utf8"));
-    const source = config.trees.find(
-      (entry: ContextTreeConnection) => contextTreeSelector(entry) === args[args.indexOf("--tree") + 1],
-    );
-    if (!source) throw new Error("Selection was not persisted before fetching");
-    await options.sync?.();
-    return {
-      stdout: JSON.stringify({
-        schemaVersion: 3,
-        connections: [
-          {
-            ok: true,
-            connection: { projectRoot, source },
-            treeRoot: join(home, ".context-tree", source.path),
-            repository: {
-              root: join(home, ".context-tree"),
-              directory: source.path,
-              sha: "a".repeat(40),
-              branch: source.ref,
-            },
-            dirty: false,
-          },
-        ],
-      }),
-    };
+    if (args[1] === "sync") throw new Error("Preparation must not sync");
+    return { stdout: JSON.stringify(options.codex ?? { installed: [{ host: "codex" }] }) };
   });
   const manager = new ContextTreeManager({
     home,
     environment: { HOME: home },
-    managedCredentials: options.denied,
-    contextTreePackage: { root: home, cliPath: join(home, "cli.mjs"), skillsPath: home },
+    managedCredentials: options.managed,
+    contextTreePackage: options.noPackage ? null : { root: home, cliPath: join(home, "cli.mjs"), skillsPath: home },
     execFile,
-    sessionStartBudgetMs: options.sync ? 10 : 1000,
+    ...(options.platform ? { platform: options.platform } : {}),
   });
-  return { home, cwd, manager, execFile };
+  const projectPath = join(cwd, ".opentag", "context-tree", "project");
+  return { home, cwd, manager, execFile, projectPath };
 }
-it("syncs distinct subtrees once, reuses results, and preserves repository-owned config", async () => {
+const cliCommands = (execFile: ReturnType<typeof vi.fn>) =>
+  execFile.mock.calls.map(([, args]) => (args as readonly string[]).slice(1, 3).join(" "));
+const ranSync = (execFile: ReturnType<typeof vi.fn>) =>
+  execFile.mock.calls.some(([, args]) => (args as readonly string[]).includes("sync"));
+
+it("prepares without syncing and preserves repository-owned config", async () => {
   const f = await fixture();
   await writeFile(join(f.cwd, ".context-tree.json"), "user owned config");
-  const status = await f.manager.ensureAgent(f.cwd, "pi", sources);
-  expect(status).toMatchObject({ connections: sources.map((source) => ({ ...source, status: "ready" })) });
-  await f.manager.ensureAgent(f.cwd, "pi", [...sources].reverse());
+  const status = await f.manager.ensureAgent(f.cwd, "codex", sources);
+  expect(status).toEqual({
+    status: "configured",
+    connections: sources.map((source) => ({ ...source, status: "available", projectPath: f.projectPath })),
+  });
+  expect(cliCommands(f.execFile)).toEqual(["skills install", "skills install"]);
+  await f.manager.ensureAgent(f.cwd, "codex", [...sources].reverse());
+  expect(ranSync(f.execFile)).toBe(false);
   expect(f.execFile).toHaveBeenCalledTimes(2);
   expect(await readFile(join(f.cwd, ".context-tree.json"), "utf8")).toBe("user owned config");
   await f.manager.ensureAgent(f.cwd, "pi", [sources[0]]);
-  const config = JSON.parse(await readFile(join(f.cwd, ".opentag/context-tree/project/.context-tree.json"), "utf8"));
+  const config = JSON.parse(await readFile(join(f.projectPath, ".context-tree.json"), "utf8"));
   expect(config.trees).toEqual([sources[0]]);
+  expect(await readFile(join(f.manager.binDirectory(), "context-tree"), "utf8")).toContain("context-tree-client.mjs");
 });
-it("bounds startup while retaining and joining background work", async () => {
-  let release!: () => void;
-  const blocked = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const f = await fixture({ sync: () => blocked });
-  expect(await f.manager.ensureAgent(f.cwd, "pi", [sources[0]])).toMatchObject({
-    connections: [{ reason: "PREPARING" }],
-  });
-  release();
-  await vi.waitFor(async () => {
-    expect(await f.manager.ensureAgent(f.cwd, "pi", [sources[0]])).toMatchObject({
-      connections: [{ status: "ready" }],
+
+it("renders an identical managed prompt across preparations and execution token rotation", async () => {
+  const f = await fixture({ managed: true });
+  const snapshot: EffectiveRuntimeSnapshot = {
+    contextTrees: [...sources],
+    revision: { agent: { sequence: 1, id: "agent-1" }, session: { sequence: 1, id: "session-1" } },
+    agentId: "agent-1",
+    provider: "codex",
+    model: "model-1",
+    instructions: { platform: "platform", agent: "agent" },
+    execution: { approvalPolicy: "never", networkAccess: true },
+    workspace: { workspaceId: "workspace-1", mode: "empty_on_create", sharing: "agent" },
+    selfConfigurationEnabled: true,
+  };
+  const render = async (environment: Record<string, string>) =>
+    renderManagedSystemPrompt(snapshot, {
+      environment: "local",
+      sessionId: "session-1",
+      sessionKind: "visible",
+      cliCommand: "opentag",
+      sessionCliAvailable: true,
+      selfConfigurationEnabled: true,
+      contextTree: await f.manager.ensureAgent(f.cwd, "pi", sources, environment),
     });
-  });
-  expect(f.execFile).toHaveBeenCalledTimes(1);
+  const first = await render(authorized);
+  const second = await render({ ...authorized, GH_TOKEN: "next-execution" });
+  expect(second).toBe(first);
+  expect(first).toContain(`context-tree sync --project-path ${JSON.stringify(f.projectPath)}`);
+  expect(first).not.toMatch(/\/snapshots\/|synchronized|commit [0-9a-f]{7,}/);
+  expect(f.execFile).not.toHaveBeenCalled();
 });
-it("keeps a ready snapshot when the managed execution token rotates", async () => {
-  const f = await fixture({ denied: true });
-  const environment = { GH_TOKEN: "first-execution", OPENTAG_PROVIDER_PROXY_URL: "http://localhost/proxy" };
-  const first = await f.manager.ensureAgent(f.cwd, "pi", sources, environment);
-  expect(first).toMatchObject({ connections: [{ status: "ready" }, { status: "ready" }] });
-  expect(await f.manager.ensureAgent(f.cwd, "pi", sources, { ...environment, GH_TOKEN: "next-execution" })).toEqual(
-    first,
-  );
-  expect(f.execFile.mock.calls.filter(([, args]) => args[1] === "sync")).toHaveLength(2);
-});
-it("does not expose cached selections after authorization is removed", async () => {
-  const f = await fixture({ denied: true });
-  const auth = { GH_TOKEN: "execution", OPENTAG_PROVIDER_PROXY_URL: "http://localhost/proxy" };
-  await f.manager.ensureAgent(f.cwd, "pi", sources, auth);
+
+it("reports managed authorization failures and clears the persisted selection", async () => {
+  const f = await fixture({ managed: true });
+  await f.manager.ensureAgent(f.cwd, "pi", sources, authorized);
   expect(await f.manager.ensureAgent(f.cwd, "pi", sources, {})).toMatchObject({
     connections: [{ reason: "GITHUB_PERMISSION" }, { reason: "GITHUB_PERMISSION" }],
   });
-  const config = JSON.parse(await readFile(join(f.cwd, ".opentag/context-tree/project/.context-tree.json"), "utf8"));
+  const config = JSON.parse(await readFile(join(f.projectPath, ".context-tree.json"), "utf8"));
   expect(config.trees).toEqual([]);
+  expect(await f.manager.ensureAgent(f.cwd, "pi", sources)).toMatchObject({
+    connections: [
+      { status: "unavailable", reason: "AUTHENTICATION_REQUIRED" },
+      { status: "unavailable", reason: "AUTHENTICATION_REQUIRED" },
+    ],
+  });
 });
+
+it.each([
+  ["PACKAGE_MISSING", { noPackage: true }],
+  ["SHIM_UNAVAILABLE", { platform: "win32" as const }],
+  ["CODEX_NOT_INSTALLED", { codex: { installed: [], skipped: [] } }],
+])("reports %s as unavailable", async (reason, options) => {
+  const f = await fixture(options);
+  expect(await f.manager.ensureAgent(f.cwd, "codex", sources)).toEqual({
+    status: "configured",
+    connections: sources.map((source) => ({ ...source, status: "unavailable", reason })),
+  });
+  expect(ranSync(f.execFile)).toBe(false);
+});
+
 describe("contextTreeFailureCode", () => {
   it.each([
     [{ ok: true, findings: [] }, undefined],

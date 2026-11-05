@@ -150,7 +150,7 @@ describe("Agent transfer against PostgreSQL", () => {
     }
   });
 
-  it("moves a suspended Agent and keeps its Slack installation serving the new owner", async () => {
+  it("rejects transfer of a configured Slack Agent without changing retained state", async () => {
     const client = createDatabaseClient(databaseUrl);
     try {
       const source = await createAccount(client, "transfer-source");
@@ -236,33 +236,14 @@ describe("Agent transfer against PostgreSQL", () => {
 
       await expect(
         transferAgent(client.database, { agentId: created.id, targetAccountId: target, slack: "keep" }),
-      ).resolves.toMatchObject({
-        agentId: created.id,
-        imBinding: "kept",
-        previousComputerId: computer.id,
-        schedulesPaused: 1,
-        sourceAccountId: source,
-        targetAccountId: target,
-      });
-
-      const [moved] = await client.database.select().from(agents).where(eq(agents.id, created.id));
-      expect(moved).toMatchObject({ createdByUserId: target, computerId: null, status: "suspended" });
+      ).rejects.toMatchObject({ reason: "configuration_immutable" });
+      const [unchanged] = await client.database.select().from(agents).where(eq(agents.id, created.id));
+      expect(unchanged).toMatchObject({ createdByUserId: source, computerId: computer.id, status: "suspended" });
       const [keptBinding] = await client.database.select().from(imBindings).where(eq(imBindings.agentId, created.id));
       expect(keptBinding).toMatchObject({ status: "active", slackInstallationId: installation.id });
-      const [pausedSchedule] = await client.database
-        .select()
-        .from(agentSchedules)
-        .where(eq(agentSchedules.agentId, created.id));
-      expect(pausedSchedule).toMatchObject({ enabled: false, nextTriggerAt: null, name: "daily-digest" });
-
-      // The unique (account, lower(name)) index still covers the target Account after the move.
-      await expect(
-        agentsService.createForAccount(target, {
-          displayName: "Duplicate",
-          name: "release-bot",
-          runtimeProvider: "codex",
-        }),
-      ).rejects.toMatchObject({ code: "AGENT_NAME_CONFLICT" });
+      expect(await client.database.select().from(sessionPlacements)).toMatchObject([
+        { computerId: computer.id, generation: 1 },
+      ]);
     } finally {
       await client.sql.end();
     }

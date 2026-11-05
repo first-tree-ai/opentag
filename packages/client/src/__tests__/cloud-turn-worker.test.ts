@@ -168,6 +168,75 @@ it("captures a prompt rejection before runtime execution converts it to a comple
   expect(JSON.stringify(diagnostics)).not.toContain("private validation text");
 });
 
+describe("Cloud worker Context Tree read path", () => {
+  const source = { kind: "git", repository: "acme/project", path: "docs", ref: "main" } as const;
+  async function promptFor(options: { gateway: boolean; skillsFail: boolean }): Promise<string> {
+    const root = await mkdtemp(join(tmpdir(), "cloud-worker-tree-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const executionDir = await fixtureExecution(root, "turn-tree");
+    if (options.gateway) {
+      const manifestPath = join(executionDir, "environment.json");
+      const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as { environment: Record<string, string> };
+      manifest.environment.OPENTAG_CONTEXT_TREE_URL = "http://127.0.0.1:18082";
+      await writeFile(manifestPath, JSON.stringify(manifest));
+    }
+    const request = turnRequest(executionDir);
+    request.delivery.runtime.contextTrees = [source];
+    let systemPrompt = "";
+    const completion = await runCloudTurnWorker(request, {
+      executionMount: join(root, "mount"),
+      localProxyLoopbackSeam: true,
+      workspace: join(root, "workspace"),
+      // Local preparation succeeded; only the read path differs between cases.
+      prepareContextTree: async () => ({
+        status: {
+          status: "configured",
+          connections: [{ ...source, status: "available", projectPath: "/workspace/.opentag/context-tree/project" }],
+        },
+      }),
+      ...(options.skillsFail
+        ? {
+            assembleContextTreeSkills: async () => {
+              throw new Error("Context Tree packaged skills missing: context-tree-read");
+            },
+          }
+        : {}),
+      createPiFactory: () => ({
+        create: async (create) => {
+          systemPrompt = create.systemPrompt ?? "";
+          return {
+            close: async () => undefined,
+            prompt: async () => ({ runId: "fixture", status: "completed", output: [{ type: "text", text: "done" }] }),
+          };
+        },
+        resume: async () => {
+          throw new Error("unexpected resume");
+        },
+      }),
+    });
+    expect(completion.outcome).toBe("completed");
+    return systemPrompt;
+  }
+
+  it("advertises the read rule when the gateway and packaged Skills are present", async () => {
+    const prompt = await promptFor({ gateway: true, skillsFail: false });
+    expect(prompt).toContain("Read Context through the context-tree-read skill.");
+    expect(prompt).not.toContain("Context Tree unavailable");
+  });
+
+  it("reports each source unavailable when packaged Skill assembly fails", async () => {
+    const prompt = await promptFor({ gateway: true, skillsFail: true });
+    expect(prompt).toContain("Context Tree unavailable (SKILLS_UNAVAILABLE).");
+    expect(prompt).not.toContain("Read Context through the context-tree-read skill.");
+  });
+
+  it("reports each source unavailable when the parent opened no command gateway", async () => {
+    const prompt = await promptFor({ gateway: false, skillsFail: false });
+    expect(prompt).toContain("Context Tree unavailable (GATEWAY_UNAVAILABLE).");
+    expect(prompt).not.toContain("Read Context through the context-tree-read skill.");
+  });
+});
+
 it("mounts only the execution-scoped MCP gateway in the Cloud Pi configuration", async () => {
   const root = await mkdtemp(join(tmpdir(), "cloud-worker-mcp-"));
   cleanup.push(() => rm(root, { recursive: true, force: true }));

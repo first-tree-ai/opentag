@@ -284,6 +284,49 @@ describe("CloudTurnRunner Session collaboration", () => {
     await h.runner.close();
   });
 
+  it("journals and replays the worker's timeout reason with a failed Session settlement", async () => {
+    const h = harness({
+      worker: async () => ({
+        code: 1,
+        stderr: "",
+        stdout: `${JSON.stringify({
+          kind: "result",
+          completion: { outcome: "failed", executionEffects: "may_have_occurred", errorReason: "turn_timeout" },
+        })}\n`,
+      }),
+    });
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message, "internal"));
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+    await h.runner.waitForActive();
+    expect(settledOf(h.sent)[0]).toMatchObject({ outcome: "failed", reason: "turn_timeout" });
+    expect(await journal.read(h.message.messageId)).toMatchObject({
+      phase: "reported",
+      settlement: { outcome: "failed", reason: "turn_timeout" },
+    });
+    h.sent.length = 0;
+    await h.runner.reconcile();
+    expect(settledOf(h.sent)[0]).toMatchObject({ outcome: "failed", reason: "turn_timeout" });
+    await h.runner.close();
+  });
+
+  it("drops the worker's reason when a checkpoint failure replaces the settlement outcome", async () => {
+    const h = harness({
+      runnerOptions: {
+        checkpoint: async () => {
+          throw new Error("session workspace save failed");
+        },
+        onPersistenceError: () => undefined,
+      },
+      worker: async () => cancelledExec(),
+    });
+    await h.runner.handleSessionMessageRun(sessionRunFrame(h.message));
+    await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(h.message.requestId));
+    await h.runner.waitForActive();
+    expect(settledOf(h.sent)[0]?.outcome).toBe("failed");
+    expect(settledOf(h.sent)[0]?.reason).toBeUndefined();
+    await h.runner.close();
+  });
+
   it("journals, executes, and settles a Session message, forwarding the open proof via stdin", async () => {
     const h = harness({ proof: PROOF });
     await h.runner.handleSessionMessageRun(sessionRunFrame(h.message, "internal"));

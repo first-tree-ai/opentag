@@ -314,12 +314,13 @@ export class AgentSetupService {
         return activeMessagingState(binding, handoff);
       case "reauthorization_required":
         return blockedMessagingState(binding, "reauthorization-required");
+      case "disabled":
       case "error":
         return blockedMessagingState(binding, "provider-error");
       case "provisioning":
         return provisioningMessagingState(binding, attempt);
       default:
-        throw new Error(`The Messaging binding handoff state cannot be projected: ${handoff.bindingState}`);
+        throw new Error("The Messaging binding handoff state cannot be projected");
     }
   }
 }
@@ -556,9 +557,8 @@ function deriveSetupActions(
   switch (stage) {
     case "needs-computer":
       if (computer.kind === "observation-failed") return [{ kind: "refresh" }];
-      if (computer.kind === "not-bound" || computer.kind === "requires-rebind") {
-        return [{ kind: "bind-computer" }];
-      }
+      if (computer.kind === "not-bound") return [{ kind: "bind-computer" }];
+      if (computer.kind === "requires-rebind") return [];
       return [{ kind: "refresh" }, { kind: "repair-computer", computerId: computer.computerId }];
     case "needs-runtime":
       return [{ kind: "refresh" }];
@@ -582,12 +582,7 @@ function deriveSetupActions(
   }
 }
 
-/**
- * The actions a Messaging state may offer. There is deliberately no direct Provider switch: while a
- * binding is current the only way toward another Provider is `unbind-messaging`, after which the
- * projection returns to not-configured and `start-messaging` becomes legal. Same-Provider
- * reauthorization (and Feishu replacement) stays available because it names the exact binding.
- */
+/** Configured identities allow repair in place; a disconnected identity requires a new Agent. */
 function messagingActions(messaging: AgentSetupMessagingState, slackOAuthAvailable: boolean): AgentSetupAction[] {
   switch (messaging.kind) {
     case "not-configured": {
@@ -625,6 +620,7 @@ function blockedMessagingActions(
   messaging: Extract<AgentSetupMessagingState, { kind: "blocked" }>,
   slackOAuthAvailable: boolean,
 ): AgentSetupAction[] {
+  if (messaging.errorCode === "IM_BINDING_IDENTITY_DISCONNECTED") return [];
   if (messaging.code === "authorization-failed") {
     if (!messaging.bindingId) throw new Error("A failed Messaging authorization must name its binding");
     return [
@@ -655,9 +651,6 @@ function currentBindingActions(
   const actions: AgentSetupAction[] = [];
   if (provider !== "slack" || slackOAuthAvailable) {
     actions.push({ kind: "reauthorize-messaging", provider, bindingId, credentialGeneration });
-  }
-  if (provider === "feishu") {
-    actions.push({ kind: "replace-messaging", provider: "feishu", bindingId, credentialGeneration });
   }
   actions.push({ kind: "unbind-messaging", provider, bindingId });
   return actions;

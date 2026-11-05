@@ -119,6 +119,29 @@ requests retain deferred dispatch correlation; an unsent reservation can release
 through the existing retry path. Callers must await this close port before
 disposing its shared database pool.
 
+An accepted recovery claim uses the existing 15-second `next_attempt_at` lease and post-claim
+attempt count. Renewal starts immediately after commit, before enqueue, and runs every five seconds
+while queued or executing. Each renewal requires the same accepted, unreported attempt with no
+recorded retry outcome. A report or newer attempt wins, and a failed renewal cancels the old
+reconcile waiter. The worker also retains one local owner per delivery until its actual work settles;
+a scheduler timeout or grace expiry does not release that owner or admit duplicate local recovery.
+No transaction spans the Runtime wait.
+
+Accepted recovery explicitly opts into joined reconcile settlement. Cancellation removes its
+pending waiter and joins its admitted send callback. Result processing already admitted before
+cancellation remains owned until it finishes, including after the native request deadline. Other
+reconcile callers retain their existing bounded waiter and owner-drain contracts. Cancellation does
+not cancel the Client Turn, erase custody, or prevent an authentic report from recording. Shutdown
+drops queued recovery without a synthetic saturation failure; its lease expires for another worker.
+A failed renewal likewise leaves the existing lease to expire rather than rewriting a newer owner.
+
+A recovery deadline aborts reconcile, then records its one attempt-fenced timeout after actual
+settlement and renewal shutdown. Work ignoring cancellation keeps its lease and local owner even
+when the scheduler grace expires; it cannot schedule another recovery while still owned. Rejection
+with the deadline's abort reason is cooperative cancellation, not late settlement. An actual late
+result retains the late-settlement diagnostic, and an operation still running after the grace retains
+the abandonment diagnostic. Neither observation authorizes a new input dispatch or terminal report.
+
 For accepted Local custody, a reconcile response does not settle the delivery. `busy`, `running`,
 `reporting`, `recovery_required`, and `rejected` are recorded as distinct deferred status codes.
 `ready` and `stopped` without a recorded report mean `IM_DELIVERY_RECOVERY_AWAITING_REPORT`.
@@ -293,6 +316,13 @@ Each of these paths emits one diagnostic per failure run instead of one per atte
 the failure code already recorded for the delivery adds nothing an operator can act on. Only the
 terminal settlement always emits its own line. The pre-claim code is read in the claim, so no
 extra query is needed.
+
+If a steer target completes between claiming the follow-up and rechecking the target, the worker
+keeps `IM_DELIVERY_STEER_TARGET_ENDED` and the normal retry schedule without an error diagnostic
+only when the target is still accepted, its Session, Turn and report owner match, a `completed`
+report is recorded, and the follow-up has no frozen dispatch request. The retry warning retains
+the delivery ID, code and delay. Missing or mismatched targets, other report outcomes and frozen
+dispatches retain their failure diagnostics; the code alone does not identify an expected fallback.
 
 A timed-out attempt is recorded once, by the deadline. The aborted operation does not record a
 second, contradictory failure: that write would describe the same attempt and would reset the

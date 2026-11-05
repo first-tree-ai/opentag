@@ -63,10 +63,12 @@ function adapter(options: {
   provider?: "slack" | "feishu";
   fetchImpl?: typeof fetch;
   capture?: { calls: OutboundWriteCaptureEvent[]; error?: Error };
+  onCredentialFailure?: (authorization: RuntimeProxyAuthorization) => void;
 }) {
   const provider = options.provider ?? "slack";
   const instance = new ImProviderProxyAdapter({
     provider,
+    onCredentialFailure: options.onCredentialFailure,
     registry: new ProviderOperationRegistry(provider === "slack" ? SLACK_OPERATIONS : FEISHU_OPERATIONS),
     urlHandles: new RuntimeUrlHandleStore(),
     ...(options.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
@@ -144,6 +146,28 @@ describe("ImProviderProxyAdapter outbound capture", () => {
     expect(event.observedAt.getTime()).toBeLessThanOrEqual(Date.now());
     expect(event.requestBody).toMatchObject({ channel: "C0123ABCD" });
   });
+
+  it.each(["execution", "validation"] as const)(
+    "emits only a scoped execution authentication hint for %s without replaying the request",
+    async (purpose) => {
+      const upstream = fetchOnce({ ok: false, error: "token_revoked" });
+      const hints: RuntimeProxyAuthorization[] = [];
+      const instance = adapter({
+        fetchImpl: upstream.fetchImpl,
+        onCredentialFailure: (hint) => {
+          hints.push(hint);
+        },
+      });
+      const scope = authorization({ purpose });
+      const response = await instance.handle(
+        request({ method: "POST", path: "/api/auth.test", body: jsonBody({}) }),
+        scope,
+      );
+      expect(response.status).toBe(200);
+      expect(upstream.calls).toBe(1);
+      expect(hints).toEqual(purpose === "execution" ? [scope] : []);
+    },
+  );
 
   it("does not capture a business rejection", async () => {
     const upstream = fetchOnce({ ok: false, error: "channel_not_found" });

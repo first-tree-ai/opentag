@@ -16,8 +16,9 @@ import {
   sessions,
   users,
 } from "../db/schema/index.js";
+import { withAgentSessionStopAuthority } from "../runtime/agent-session-stop-authority.js";
 import { RuntimeDomainRequestError } from "../runtime/runtime-domain-owner.js";
-import { AgentService } from "../services/agents/index.js";
+import { AgentService, type AgentSessionStopTarget } from "../services/agents/index.js";
 import type { ExternalCallPolicy } from "../services/im/external-call-policy.js";
 import {
   classifyImInboundPersistenceError,
@@ -98,6 +99,56 @@ describe("SessionService with the unit database", () => {
   beforeEach(async () => {
     await db.reset();
     fixture = await seedFixture(db);
+  });
+
+  async function suspendedTarget() {
+    await new SessionService(db.database).ensureChatSession(
+      { imBindingId: fixture.bindingId, channelId: "C1", conversationKind: "channel" },
+      "channel",
+    );
+    const stopSessions = vi.fn(async (_targets: AgentSessionStopTarget[]) => undefined);
+    await new AgentService(db.database, { stopSessions }).suspendById(fixture.userId, fixture.agentId);
+    const target = stopSessions.mock.calls[0]?.[0][0];
+    if (!target) throw new Error("Suspension must capture its Session stop target");
+    return target;
+  }
+
+  it.each(["current", "reactivated", "newer revision", "other Session", "newer placement", "other Computer"])(
+    "admits only the captured lifecycle stop authority: %s",
+    async (change) => {
+      const target = await suspendedTarget();
+      if (change === "reactivated")
+        await db.database.update(agents).set({ status: "active" }).where(eq(agents.id, fixture.agentId));
+      if (change === "newer revision")
+        await db.database
+          .update(agents)
+          .set({ revision: target.agentRevision + 1 })
+          .where(eq(agents.id, fixture.agentId));
+      if (change === "other Session") target.sessionId = randomUUID();
+      if (change === "newer placement")
+        await db.database
+          .update(sessionPlacements)
+          .set({ generation: target.placementGeneration + 1 })
+          .where(eq(sessionPlacements.sessionId, target.sessionId));
+      if (change === "other Computer") target.computerId = randomUUID();
+      const enqueue = vi.fn(async () => "enqueued");
+      const result = await withAgentSessionStopAuthority(db.database, target, enqueue);
+      expect(result).toBe(change === "current" ? "enqueued" : undefined);
+      expect(enqueue).toHaveBeenCalledTimes(change === "current" ? 1 : 0);
+    },
+  );
+
+  it("rolls back work on the final stop executor when enqueue fails", async () => {
+    const target = await suspendedTarget();
+    const failure = new Error("Stop enqueue failed");
+    await expect(
+      withAgentSessionStopAuthority(db.database, target, async (transaction) => {
+        await transaction.update(agents).set({ displayName: "Uncommitted" }).where(eq(agents.id, fixture.agentId));
+        throw failure;
+      }),
+    ).rejects.toBe(failure);
+    const [agent] = await db.database.select().from(agents).where(eq(agents.id, fixture.agentId));
+    expect(agent?.displayName).toBe("Assistant");
   });
 
   it("validates chat scope and converges an existing session and placement", async () => {
@@ -202,6 +253,54 @@ describe("SessionService with the unit database", () => {
     await expect(
       service.createInternalSessionWithMessage({ ...input, overrides: { ...input.overrides, model: "other" } }),
     ).rejects.toMatchObject({ code: "SESSION_MESSAGE_CONFLICT" });
+  });
+
+  it("resolves Run outcome notices only for an active internal child's own messages", async () => {
+    const service = new SessionService(db.database, { now: () => fixture.now });
+    const creator = await service.ensureChatSession(
+      { imBindingId: fixture.bindingId, channelId: "C1", conversationKind: "dm" },
+      "channel",
+    );
+    const taskId = randomUUID();
+    const child = await service.createInternalSessionWithMessage({
+      creatorSessionId: creator.session.id,
+      creatorInstallationId: fixture.installationId,
+      creatorConnectionInstanceId: fixture.instanceId,
+      creatorComputerId: fixture.computerId,
+      creatorPlacementGeneration: 1,
+      messageId: taskId,
+      initialMessage: "task",
+    });
+    await expect(
+      service.resolveRunOutcomeNotice({ childSessionId: child.session.id, messageId: taskId }),
+    ).resolves.toEqual({ creatorSessionId: creator.session.id, installationId: fixture.installationId });
+    // A message addressed to another Session, an unknown message, or a visible target is not eligible.
+    await expect(
+      service.resolveRunOutcomeNotice({ childSessionId: creator.session.id, messageId: taskId }),
+    ).resolves.toBeUndefined();
+    await expect(
+      service.resolveRunOutcomeNotice({ childSessionId: child.session.id, messageId: randomUUID() }),
+    ).resolves.toBeUndefined();
+
+    // The notice is an ordinary child-to-creator message under the child's live authority.
+    const noticeId = randomUUID();
+    const notice = await service.authorizeAndRecordMessage({
+      messageId: noticeId,
+      sourceSessionId: child.session.id,
+      sourceInstallationId: fixture.installationId,
+      sourceComputerId: fixture.computerId,
+      sourceConnectionInstanceId: fixture.instanceId,
+      sourcePlacementGeneration: child.placement.generation,
+      targetSessionId: creator.session.id,
+      content: "notice",
+    });
+    expect(notice.route).toMatchObject({ sourceSessionId: child.session.id, targetSessionId: creator.session.id });
+
+    // An ended child is never notified about.
+    await db.database.update(sessions).set({ endedAt: fixture.now }).where(eq(sessions.id, child.session.id));
+    await expect(
+      service.resolveRunOutcomeNotice({ childSessionId: child.session.id, messageId: taskId }),
+    ).resolves.toBeUndefined();
   });
 
   it("authorizes messages and rejects stale, unavailable, and mismatched authorities", async () => {

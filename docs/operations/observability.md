@@ -138,7 +138,7 @@ Each phase has `start` and `end` or `failure` records. `durationMs` measures the
 `elapsedMs` measures worker elapsed time, and `seq` orders worker records. All use process-local
 monotonic clocks; `receivedElapsedMs` is the parent's independent receive clock. Never subtract
 clocks across processes. The `worker_preparation` `end` record also attaches optional sub-phase
-durations (`proxyStartMs`, `contextTreeSyncMs`, and `skillsAssembleMs`) when reached. The parent
+durations (`proxyStartMs`, `contextTreePreparationMs`, and `skillsAssembleMs`) when reached. The parent
 `worker_end` summary uses `durationMs` for the entire native exec span (not the last RPC) and
 attaches `credentialOpenMs` for the parent-side credential bridge open latency. Existing
 RPC budgets, compaction handling, Turn deadlines, cancellation, retry, stdout completion, and report
@@ -201,7 +201,7 @@ unrelated process clocks or sum overlapping phase envelopes. Allocation state, s
 trigger, workspace and resource limits define separate cohorts. Missing diagnostics are unavailable
 evidence, not zero duration or a proven timeout.
 
-The [Cloud evaluation suite](https://github.com/first-tree-ai/opentag/blob/main/testing/performance/cloud-latency/README.md) provides a repeatable
+The [Cloud evaluation tooling](https://github.com/first-tree-ai/opentag/tree/main/scripts/e2e/cloud-latency) provides a repeatable
 offline synthetic fixture, report generator and comparison guard. Its subprocess/model/tool/IM
 replacements do not measure production Cloud latency. Existing spans and Pi diagnostics do not
 form a complete end-to-end dataset, especially for ingress, outbound CLI receipts and model/tool
@@ -232,8 +232,7 @@ summaries are incomplete rather than successful handoffs. Records carry existing
 IDs, a process clock identity, UTC and monotonic durations; they exclude content and credentials.
 Logging failures do not change operation outcomes, custody, retries or checkpoint policy.
 
-The [Staging report guide](https://github.com/first-tree-ai/opentag/blob/main/testing/performance/cloud-latency/LIVE.md)
-describes the exact boundaries, blind spots and manual stdin-only aggregator. It reuses existing
+The [manual stdin-only aggregator](https://github.com/first-tree-ai/opentag/blob/main/packages/server/scripts/cloud-latency-report.ts) reuses existing
 Pi phase durations, rejects incomplete/conflicting evidence for complete-trace metrics, and emits
 aggregate counts/quantiles without resource IDs or raw files. It does not infer timeout or genuine
 end-to-end latency from missing records. Deployment, live collection and actual log arrival remain
@@ -264,8 +263,8 @@ before cleanup entry; a native destroy may already have happened during that int
 Shutdown records share the bounded payload and process-local clock rules above, carry no Turn ID,
 and remain separate from Turn latency reports. They add no wait, flush or retry policy. Their
 durations cannot establish provider deletion time, SIGTERM delivery time or an ingress latency
-distribution; provider state transitions require independent evidence. See the
-[shutdown validation guide](https://github.com/first-tree-ai/opentag/blob/main/testing/performance/cloud-latency/SHUTDOWN.md).
+distribution; provider state transitions require independent evidence. Keep shutdown experiment
+plans, observations and limitations in the related GitHub PR or Issue.
 
 ## Full-stack performance logging
 
@@ -304,7 +303,7 @@ In addition to paired performance spans, the Server and Cloud Runner emit struct
 streaming telemetry:
 
 - **Sandbox lifecycle (`module="sandboxes"`)** — `sandbox.lifecycle.provision` (`startupMode="cold_start"`), `sandbox.lifecycle.borrow` (`startupMode="warm_reuse"`), `sandbox.lifecycle.ready` (`startupDurationMs` on initial promotion, `startupMode="cold_start" | "warm_reuse" | "reconnect"`, `runnerVersion`), `sandbox.lifecycle.seal` (`durationMs`, `outcome`), and `sandbox.lifecycle.release` (`previousLifecycle`).
-- **Workspace persistence (`module="sandboxes"` on Server, `module="cloud-runner"` on Runner)** — Server-side `runner.workspace.claim`, `runner.workspace.download`, and `runner.workspace.upload` log `sandboxId`, `sessionId`, `environmentGeneration`, `workspaceGeneration`, `archiveBytes`, `saved`, and `sealed`. Runner-side `runner.workspace.restore`, `runner.workspace.save`, and `runner.workspace.seal` emit single-line JSON records to stderr with `durationMs`, `archiveBytes`, `workspaceBytes`, `entryCount`, `omittedCleanRepoCount`, `workspaceGeneration`, `saved`, and `sealed` (never workspace file paths or contents).
+- **Workspace persistence (`module="sandboxes"` on Server, `module="cloud-runner"` on Runner)** — Server-side `runner.workspace.claim`, `runner.workspace.download`, and `runner.workspace.upload` log `sandboxId`, `sessionId`, `environmentGeneration`, `workspaceGeneration`, `archiveBytes`, `saved`, and `sealed`. Runner-side `runner.workspace.restore`, `runner.workspace.save`, and `runner.workspace.seal` emit single-line JSON records to stderr with `durationMs`, `archiveBytes`, `workspaceBytes`, `entryCount`, `workspaceGeneration`, `saved`, and `sealed` (never workspace file paths or contents).
 - **Runner native sandbox lifecycle (`module="cloud-runner"`)** — `runner.native_sandbox.start`, `runner.native_sandbox.probe`, `runner.native_sandbox.reset`, and `runner.boot.ready` emit single-line JSON records to stderr with `durationMs`, `thresholdMs`, `slow`, `outcome`, and `runnerVersion`.
 - **Cloud Model streaming (`module="cloud-model-proxy"`, `operation="cloud_model.chat_completions"`)** — Records `firstEventMs` (time to first upstream chunk), `streamDurationMs`, `responseBytes`, `retryCount`, and `retryWaitMs`.
 - **MCP probe and Skill archive operations** — `McpProbe` logs `durationMs` on both `"MCP probe succeeded"` and `"MCP probe failed"`. `SkillService` records `normalizeDurationMs` on archive validation and `durationMs` on bundle opening, while `RemoteSkillService` records `openDurationMs` and `durationMs` on source resolution and installation.

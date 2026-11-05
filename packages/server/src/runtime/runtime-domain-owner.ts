@@ -38,6 +38,11 @@ import type { RuntimeBusinessContext, RuntimeBusinessOptions } from "./runtime-s
 
 export type { AcceptedDeliveryRecord, RecordedTurnRecord } from "./runtime-custody-store.js";
 
+/** Server-only evidence of committed claims; the Client's manifest remains untrusted. */
+export type RuntimeReconcileResult = SessionReconcileResult & {
+  claimedRetainedReports?: NonNullable<SessionReconcileResult["retainedReports"]>;
+};
+
 type DomainBusinessFrame = Exclude<
   ClientRuntimeBusinessFrame,
   { type: "approval:request" | "approval:result" | "runtime:self-check:report" | "runtime:credential-failure" }
@@ -341,7 +346,7 @@ export class RuntimeDomainOwner {
     admission?: RuntimeDispatchAdmission<SessionReconcileResult>,
     signal?: AbortSignal,
     options: { joinSettlement?: boolean } = {},
-  ): Promise<SessionReconcileResult> {
+  ): Promise<RuntimeReconcileResult> {
     if (this.#closed)
       return Promise.reject(new RuntimeDomainRequestError("stopped", "The runtime domain owner stopped"));
     const attrs = runtimeAttrs({
@@ -1144,12 +1149,14 @@ export class RuntimeDomainOwner {
   ): Promise<void> {
     const requestId = pending.request.requestId;
     try {
-      if (result.status !== "rejected") {
-        await this.#custody.claimRetainedReports(pending.request, result.retainedReports ?? [], context);
-      }
+      const claimedRetainedReports =
+        result.status === "rejected"
+          ? []
+          : await this.#custody.claimRetainedReports(pending.request, result.retainedReports ?? [], context);
       if (this.#pending.get(requestId) !== pending) return;
       await pending.onResult?.(result);
-      this.#settle(pending, result);
+      const settled: RuntimeReconcileResult = { ...result, claimedRetainedReports };
+      this.#settle(pending, settled);
     } catch (error) {
       if (this.#pending.get(requestId) !== pending) return;
       this.#pending.delete(requestId);

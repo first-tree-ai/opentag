@@ -274,6 +274,7 @@ describe("RuntimeDomainOwner", () => {
       vi.spyOn(f.custody, "claimRetainedReports").mockImplementation(async () => {
         entered.resolve();
         await finish.promise;
+        return [];
       });
       const abort = new AbortController();
       const request = reconcileRequest(f.computerId);
@@ -307,7 +308,7 @@ describe("RuntimeDomainOwner", () => {
       finish.resolve();
       await processing;
       if (nativeDeadline) await expect(pending).resolves.toMatchObject({ code: "timeout" });
-      else await expect(pending).resolves.toEqual(result);
+      else await expect(pending).resolves.toEqual({ ...result, claimedRetainedReports: [] });
       await f.owner.close();
     },
   );
@@ -1309,10 +1310,11 @@ describe("RuntimeDomainOwner", () => {
       expect(onResult).toHaveBeenCalledOnce();
       release();
       await completion;
-      await expect(pending).resolves.toEqual(result);
-      await expect(fixture.owner.requestReconcile(fixture.computerId, fixture.instanceId, request)).resolves.toEqual(
-        result,
-      );
+      await expect(pending).resolves.toEqual({ ...result, claimedRetainedReports: [] });
+      await expect(fixture.owner.requestReconcile(fixture.computerId, fixture.instanceId, request)).resolves.toEqual({
+        ...result,
+        claimedRetainedReports: [],
+      });
       expect(onResult).toHaveBeenCalledOnce();
     } finally {
       fixture.owner.close();
@@ -1366,6 +1368,7 @@ describe("RuntimeDomainOwner", () => {
     if (stage === "custody")
       claim.mockImplementation(async () => {
         await blocked;
+        return [];
       });
     const request = reconcileRequest(fixture.computerId);
     try {
@@ -1874,7 +1877,8 @@ class MemoryRuntimeCustodyStore implements RuntimeCustodyStore {
     request: SessionReconcileRequest,
     claims: NonNullable<SessionReconcileResult["retainedReports"]>,
     context: RuntimeBusinessContext,
-  ): Promise<void> {
+  ): Promise<NonNullable<SessionReconcileResult["retainedReports"]>> {
+    const claimed: NonNullable<SessionReconcileResult["retainedReports"]> = [];
     for (const claim of claims) {
       const delivery = this.#deliveries.get(claim.deliveryId);
       if (
@@ -1900,7 +1904,9 @@ class MemoryRuntimeCustodyStore implements RuntimeCustodyStore {
         });
       }
       this.#expectedResultHashes.set(claim.turnId, claim.resultHash);
+      claimed.push(claim);
     }
+    return claimed;
   }
 
   async getDelivery(deliveryId: string): Promise<AcceptedDeliveryRecord | undefined> {

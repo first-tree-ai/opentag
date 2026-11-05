@@ -979,7 +979,7 @@ describe("background and WebSocket tracing", () => {
     const custody = {
       beginDeliveryDispatch: vi.fn().mockResolvedValue("dispatched"),
       acceptDelivery: vi.fn().mockResolvedValue("accepted"),
-      claimRetainedReports: vi.fn().mockResolvedValue(undefined),
+      claimRetainedReports: vi.fn().mockResolvedValue([]),
       getDelivery: vi.fn().mockResolvedValue(undefined),
       getDeliveryByTurn: vi.fn().mockResolvedValue(undefined),
       getTurn: vi.fn().mockResolvedValue(undefined),

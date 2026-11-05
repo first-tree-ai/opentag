@@ -11,12 +11,56 @@ import {
   operationTimeoutCode,
   operationTimeoutExhausted,
   operationTimeoutStreak,
+  recoveryRetryCode,
 } from "../runtime/im-delivery-retry.js";
+import type { RuntimeReconcileResult } from "../runtime/runtime-domain-owner.js";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
 /** The offline backoff ceiling, so a permanently offline Computer cannot exceed it. */
 const RETRY_CEILING = 30 * MINUTE;
+
+describe("recoveryRetryCode", () => {
+  const delivery = { id: "delivery", turnId: "turn" };
+  const claim = {
+    deliveryId: delivery.id,
+    turnId: delivery.turnId,
+    dispatchRequestId: "dispatch",
+    inputHash: "input",
+    resultHash: "result",
+    placementGeneration: 1,
+  };
+  const result: RuntimeReconcileResult = {
+    type: "session:reconcile:result",
+    requestId: "request",
+    sessionId: "session",
+    placementGeneration: 1,
+    status: "stopped",
+    retainedReports: [claim],
+  };
+
+  it.each(["ready", "stopped"] as const)("requires a committed delivery and Turn claim for %s", (status) => {
+    expect(recoveryRetryCode({ ...result, status }, delivery)).toBe("IM_DELIVERY_RECOVERY_AWAITING_REPORT");
+    for (const claimedRetainedReports of [[], [{ ...claim, deliveryId: "other" }], [{ ...claim, turnId: "other" }]]) {
+      expect(recoveryRetryCode({ ...result, status, claimedRetainedReports }, delivery)).toBe(
+        "IM_DELIVERY_RECOVERY_AWAITING_REPORT",
+      );
+    }
+    expect(recoveryRetryCode({ ...result, status, claimedRetainedReports: [claim] }, delivery)).toBe(
+      "IM_DELIVERY_RECOVERY_REPORTING",
+    );
+  });
+
+  it.each([
+    ["rejected", "IM_DELIVERY_RECOVERY_REJECTED"],
+    ["recovery_required", "IM_DELIVERY_RECOVERY_REQUIRED"],
+    ["busy", "IM_DELIVERY_RECOVERY_BUSY"],
+    ["running", "IM_DELIVERY_RECOVERY_RUNNING"],
+    ["reporting", "IM_DELIVERY_RECOVERY_REPORTING"],
+  ] as const)("preserves %s even with a committed report claim", (status, code) => {
+    expect(recoveryRetryCode({ ...result, status, claimedRetainedReports: [claim] }, delivery)).toBe(code);
+  });
+});
 
 describe("cappedRetryDelayMs", () => {
   it("doubles from 2 s per attempt and stops growing at 30 s", () => {

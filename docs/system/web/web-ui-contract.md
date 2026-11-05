@@ -239,8 +239,8 @@ The action answers the status the row shows. When the Server's status snapshot n
 dependency setup already finished, that verdict decides the action, not the setup-owned reason it maps to:
 a failed messaging credential check uses **Reconnect channel** and an unavailable messaging CLI uses
 **Fix messaging**, both opening the Agent's messaging settings, on the row and on the Agent's dependency
-rows alike. Check timeouts, rate-limited credential checks and an expired Computer status report resolve on
-their own and offer no action. **Continue setup** stays for setup that is actually unfinished.
+rows alike. Check timeouts, rate-limited credential checks, an unreachable messaging provider and an expired
+Computer status report resolve on their own and offer no action. **Continue setup** stays for setup that is actually unfinished.
 
 Agent list and detail availability use the Server's current status snapshot. A foreground page polls
 `GET /api/v1/agents/status?ids=...` every ten seconds, batching up to 100 unique visible Agent IDs per

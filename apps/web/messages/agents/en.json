@@ -153,6 +153,7 @@
   "agents_status_computer_runtime_sign_in_required": "{providerName} sign-in required",
   "agents_status_computer_runtime_unavailable": "{providerName} unavailable",
   "agents_status_credential_failed": "Messaging credential check failed",
+  "agents_status_credential_provider_unreachable": "Messaging provider unreachable",
   "agents_status_credential_rate_limited": "Messaging credential check rate limited",
   "agents_status_credential_timeout": "Messaging credential check timed out",
   "agents_status_details_label": "{name}: {status}",

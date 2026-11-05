@@ -37,6 +37,7 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | AL-06 | Uppercase and Chinese names | Agents named, for example, "Atlas研发" | Names show as typed in the list and on the Agent page | Core | manual |
 | AL-07 | Long names | An Agent with a long name | Name wraps or truncates inside its row and in the Agent switcher; no overflow | Edge | smoke: `navigation-polish.spec.ts` |
 | AL-08 | Known messaging problem while a runtime check runs | Agent whose binding needs new permissions (or failed, or was turned off) while its runtime check is still running | The status shows the messaging problem and its action (Update permissions), not Checking; a confirmed runtime problem still comes first; an unreadable binding still reads Checking | Core | unit: `features/agents/agent-model.test.ts` |
+| AL-09 | Waiting Task count | Stop an Agent's Computer, then @-mention the Agent in two separate group threads; send a second message in one thread; send an unaddressed message in a group the Agent only overhears | The row and the Agent home read "2 tasks waiting" ("2 个任务等待中") beside the offline status; repeated messages in a Session and the overheard message add nothing. After the Computer returns and the messages are taken, the line goes away | Core | unit: `features/agent-list-order.test.ts`; integration: `agent-queued-task-count.test.ts` |
 
 ## Agent setup
 

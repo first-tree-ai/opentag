@@ -259,7 +259,8 @@ status, add a Refreshing status hold, or start a preparation POST on entry. Norm
 request deduplication and error presentation remain. Offline overrides other dependencies. First
 credential initialization is neutral for at most 15 seconds; completed failures, stale reports and
 check timeouts name the problem. Rechecks retain the last complete result at the Server. The
-Agent's Work row still describes running Tasks separately from availability.
+Agent's Work row still describes running Tasks separately from availability, with the same running-Task or
+waiting-Task (**N tasks waiting**, **N 个任务等待中**, on every status) line as the list row.
 
 Dependency rows use the causal status reason. Computer, runtime and initializing verdicts
 leave messaging unconfirmed and offer no messaging repair; they do not establish a separate

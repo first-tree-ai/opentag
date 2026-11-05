@@ -5,6 +5,8 @@
   "agents_capability_not_available": "暂不可用",
   "agents_capability_scope": "权限范围",
   "agents_capability_source": "来源：{source}",
+  "agents_card_activity_queued_tasks_plural": "{count} 个任务等待中",
+  "agents_card_activity_queued_tasks_single": "{count} 个任务等待中",
   "agents_card_activity_running_tasks_plural": "{count} 个任务运行中",
   "agents_card_activity_running_tasks_single": "{count} 个任务运行中",
   "agents_card_activity_working": "正在工作 · {elapsed}前开始",

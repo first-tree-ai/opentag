@@ -254,6 +254,7 @@ describe("AgentTurnRunner automatic retry", () => {
       });
       const hold = async () => {
         await inFlight;
+        return undefined;
       };
       if (slow === "provider steer") h.runtime.steer.mockImplementationOnce(hold);
       else {

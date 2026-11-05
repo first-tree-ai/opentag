@@ -29,6 +29,8 @@ export interface TurnCustodyOwnerOptions {
   reconciler: SessionReconciler;
   /** Durable input of accepted Turns for their one automatic retry; absent disables retries. */
   retries?: Pick<TurnRetryStore, "remove" | "write">;
+  /** Observes a Turn accepted without retry input because both the write and its rollback failed. */
+  onRetryInputUnavailable?(request: DirectImMessageDeliveryRequest, turnId: string): void;
   start?(
     owner: LiveTurnOwner,
     options?: { continuation?: Interruption; steers?: readonly RuntimeImSteerRequest[] },
@@ -76,6 +78,7 @@ export class TurnCustodyOwner {
   readonly #start?: TurnCustodyOwnerOptions["start"];
   readonly #steer?: TurnCustodyOwnerOptions["steer"];
   readonly #retries?: TurnCustodyOwnerOptions["retries"];
+  readonly #onRetryInputUnavailable?: TurnCustodyOwnerOptions["onRetryInputUnavailable"];
   readonly #requests = new Map<string, RememberedRequest>();
   readonly #deliveries = new Map<string, OwnedDelivery>();
   readonly #turns = new Map<string, OwnedDelivery>();
@@ -95,6 +98,7 @@ export class TurnCustodyOwner {
     this.#start = options.start;
     this.#steer = options.steer;
     this.#retries = options.retries;
+    this.#onRetryInputUnavailable = options.onRetryInputUnavailable;
     if (!Number.isSafeInteger(this.#maxRememberedRequests) || this.#maxRememberedRequests < 1) {
       throw new Error("maxRememberedRequests must be a positive safe integer");
     }
@@ -282,7 +286,7 @@ export class TurnCustodyOwner {
         this.#discard(owner);
         return { result: rejected(owner.request, "session_recovery_required") };
       }
-      if (custody.status === "committed" && !(await this.#recordRetryInput(owner))) {
+      if (custody.status === "committed" && (await this.#recordRetryInput(owner)) === "rolled_back") {
         this.#discard(owner);
         return { result: rejected(owner.request, "provider_unavailable") };
       }
@@ -314,18 +318,23 @@ export class TurnCustodyOwner {
   /**
    * The retry input is part of the acceptance boundary: the binding stores only the input's hash, so
    * an accepted Turn without its input could not be retried after a restart. When the input cannot be
-   * written, the just-committed acceptance is undone and the delivery is rejected (retryable).
+   * written, the just-committed acceptance is undone and the delivery is rejected (retryable) — but
+   * only once that rollback is confirmed. If the rollback itself fails, the durable custody stands,
+   * so the Turn is accepted and owned as before, without an automatic retry: a later interruption
+   * is reported through ordinary recovery instead of leaving unacknowledged custody behind.
    */
-  async #recordRetryInput(owner: OwnedDelivery): Promise<boolean> {
-    if (!this.#retries) return true;
+  async #recordRetryInput(owner: OwnedDelivery): Promise<"recorded" | "rolled_back" | "without_retry"> {
+    if (!this.#retries) return "recorded";
     try {
       await this.#retries.write(turnRetryRecord(owner.request, owner.turnId));
-      return true;
+      return "recorded";
     } catch {
-      await this.#bindingStore
+      const rolledBack = await this.#bindingStore
         .discardAccepted(owner.request.agentId, owner.request.sessionId, owner.turnId)
         .catch(() => false);
-      return false;
+      if (rolledBack) return "rolled_back";
+      this.#onRetryInputUnavailable?.(owner.request, owner.turnId);
+      return "without_retry";
     }
   }
 

@@ -33,6 +33,7 @@ import { AgentRuntimeProviderUnavailableError } from "./agent-runtime-provider-r
 import { ImCredentialEnvironmentError } from "./im-credential-environment-manager.js";
 import type { ImResourceFetcher } from "./im-resource-fetcher.js";
 import {
+  acknowledgedSteers,
   buildContinuationNotice,
   type Interruption,
   MAX_AUTOMATIC_RETRIES,
@@ -112,7 +113,7 @@ export interface AgentTurnRunnerOptions {
    * one automatic retry in place, and an orderly shutdown leaves the Turn unresolved for the
    * restarted daemon instead of reporting it cancelled.
    */
-  readonly retries?: Pick<TurnRetryStore, "appendSteer" | "update">;
+  readonly retries?: Pick<TurnRetryStore, "appendSteer" | "removeSteer" | "update">;
   /** Whether a Turn interrupted by shutdown can be retried after restart (`runtime.sessionRecovery`). */
   readonly restartRetryAvailable?: () => boolean;
 }
@@ -290,19 +291,17 @@ export class AgentTurnRunner {
     if (capture === "full") return steerResult(request, "deferred", "steer_unsupported");
     if (capture !== "appended") return steerResult(request, "deferred", "turn_not_running");
 
+    // Only a steer with a durable receipt transfers to this Turn; a retry replays exactly those, so a
+    // capture whose steer or receipt failed (answered `deferred`) is dropped and stays with the Server.
     try {
       await runtime.steer({
         expectedRunId: request.expectedTurnId,
         // Steer input assembles at the moment of the steer, so it carries its own UTC sample.
         input: buildAgentInput(request, undefined, owner.request.runtime, new Date(this.#now())),
       });
-    } catch {
-      return steerResult(request, "deferred", "steer_state_unknown");
-    }
-
-    try {
       await this.#bindingStore.recordSteer(request, semanticHash);
     } catch {
+      await this.#retries.removeSteer(request).catch(() => undefined);
       return steerResult(request, "deferred", "steer_state_unknown");
     }
     return steerResult(request, "steered");
@@ -672,11 +671,11 @@ export class AgentTurnRunner {
 
   /** Durably spend the Turn's one automatic retry before it starts; false leaves the failure reported. */
   async #claimRetry(turn: RunningTurn): Promise<boolean> {
-    const spent = await this.#retries
-      .update(turn.owner.request.sessionId, turn.owner.turnId, spendRetry)
-      .catch(() => undefined);
+    const { agentId, sessionId } = turn.owner.request;
+    const spent = await this.#retries.update(sessionId, turn.owner.turnId, spendRetry).catch(() => undefined);
     if (!spent) return false;
-    turn.steers = spent.steers;
+    const binding = await this.#bindingStore.read(agentId, sessionId).catch(() => undefined);
+    turn.steers = acknowledgedSteers(spent.steers, binding);
     return true;
   }
 
@@ -961,6 +960,7 @@ export function buildRetryAgentInput(
 /** Without durable Turn input no automatic retry is possible. */
 const NO_TURN_RETRIES: NonNullable<AgentTurnRunnerOptions["retries"]> = {
   appendSteer: async () => "appended",
+  removeSteer: async () => undefined,
   update: async () => undefined,
 };
 

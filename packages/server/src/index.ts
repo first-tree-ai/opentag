@@ -977,9 +977,9 @@ export async function startServer(): Promise<void> {
       database,
       logger: serviceLogger("session-recovery"),
       registry,
-      requestReconcile: (computerId, instanceId, request) => {
+      requestReconcile: (computerId, instanceId, request, admission) => {
         if (!recoveryDomain) return Promise.reject(new Error("The runtime domain owner is not ready"));
-        return recoveryDomain.requestReconcile(computerId, instanceId, request);
+        return recoveryDomain.requestReconcile(computerId, instanceId, request, undefined, admission);
       },
     });
     const domainOwner = new RuntimeDomainOwner(registry, custody, {

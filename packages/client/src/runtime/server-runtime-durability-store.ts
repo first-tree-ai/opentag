@@ -33,8 +33,9 @@ export class ServerRuntimeDurabilityStore implements RuntimeDurabilityStore {
   }
 
   async write<T>(record: DurableWorkRecord<T>): Promise<void> {
-    // The Server row has no outcome-report marker; outcome reports are Local-only (file store).
-    const { outcomeReport: _localOnly, ...portable } = record;
+    // The Server row has no outcome-report marker or interruption reason; both are Local-only (file
+    // store). Without the reason a recovered Run still gets its one retry, reported as a crash.
+    const { outcomeReport: _localOnly, interruption: _localReason, ...portable } = record;
     const parsed = RuntimeDurableWorkRecordSchema.parse(portable);
     // Keep the seam's clock injectable for deterministic adapters and future lease metadata.
     this.#now();

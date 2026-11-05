@@ -13,6 +13,7 @@ import { agents, computers, imBindings, imMessageDeliveries, sessionPlacements, 
 import type { ServiceLogger } from "../observability/service-logger.js";
 import type { EffectiveRuntimeSnapshotAssembler } from "../services/runtime-config/effective-runtime-snapshot-assembler.js";
 import type { ConnectionRegistry } from "./connection-registry.js";
+import type { RuntimeDispatchAdmission } from "./runtime-domain-owner.js";
 import type { RuntimeBusinessContext } from "./runtime-session.js";
 
 type RecoverDecision = Pick<SessionRecoverResult, "status" | "reason">;
@@ -27,6 +28,7 @@ export interface SessionRecoveryServiceOptions {
     computerId: string,
     instanceId: string,
     request: SessionReconcileRequest,
+    admission: RuntimeDispatchAdmission<SessionReconcileResult>,
   ): Promise<SessionReconcileResult>;
 }
 
@@ -70,7 +72,7 @@ export class SessionRecoveryService {
       return { status: "retry", reason: "runtime_not_ready" };
     }
     const { scope } = authorized;
-    this.#scheduleReconcile(context, {
+    this.#scheduleReconcile(frame, context, {
       type: "session:reconcile",
       requestId: randomUUID(),
       installationId: scope.installationId,
@@ -91,9 +93,15 @@ export class SessionRecoveryService {
    * reconcile that fails or is never answered is retried by the Client, which stays the owner of the
    * recovery until its Session is actually prepared.
    */
-  #scheduleReconcile(context: RuntimeBusinessContext, request: SessionReconcileRequest): void {
+  #scheduleReconcile(
+    frame: SessionRecoverRequest,
+    context: RuntimeBusinessContext,
+    request: SessionReconcileRequest,
+  ): void {
     const reconcile = this.#options
-      .requestReconcile(context.computerId, context.instanceId, request)
+      .requestReconcile(context.computerId, context.instanceId, request, (operation) =>
+        this.#withDispatchAdmission(frame, context, operation),
+      )
       .catch((error: unknown) => {
         this.#options.logger?.warn(
           {
@@ -107,6 +115,40 @@ export class SessionRecoveryService {
       })
       .finally(() => this.#inFlight.delete(reconcile));
     this.#inFlight.add(reconcile);
+  }
+
+  /**
+   * The final send boundary of the ready reconcile. Snapshot assembly and proof preparation ran after
+   * the takeover committed, so the authority is locked and rechecked again while the frame is enqueued,
+   * in the same order the Agent stop path takes (`withAgentSessionStopAuthority`: Agent, Session,
+   * placement). A stop that committed first refuses this reconcile; a stop that comes later waits
+   * and enqueues its `stopped` reconcile behind it.
+   */
+  #withDispatchAdmission(
+    frame: SessionRecoverRequest,
+    context: RuntimeBusinessContext,
+    operation: (onDispatched: () => void) => Promise<SessionReconcileResult>,
+  ): Promise<{ admitted: false } | { admitted: true; result: Promise<SessionReconcileResult> }> {
+    return this.#options.database.transaction(async (transaction) => {
+      const session = await lockLifecycle(transaction, frame, context);
+      if ("refusal" in session) return { admitted: false } as const;
+      const placement = await lockPlacement(transaction, frame, context);
+      if ("refusal" in placement) return { admitted: false } as const;
+      let markDispatched: () => void = () => undefined;
+      const dispatched = new Promise<void>((resolve) => {
+        markDispatched = resolve;
+      });
+      let result: Promise<SessionReconcileResult>;
+      try {
+        result = operation(markDispatched);
+      } catch (error) {
+        markDispatched();
+        throw error;
+      }
+      void result.catch(() => markDispatched());
+      await dispatched;
+      return { admitted: true, result } as const;
+    });
   }
 
   /** Waits for scheduled reconciles; used by tests and orderly shutdown. */
@@ -184,11 +226,12 @@ async function lockLifecycle(
     .limit(1);
   if (!identity) return { refusal: "session_not_found" };
   const [binding] = await transaction
-    .select({ agentId: imBindings.agentId })
+    .select({ agentId: imBindings.agentId, status: imBindings.status })
     .from(imBindings)
     .where(eq(imBindings.id, identity.bindingId))
     .for("share");
   if (binding?.agentId !== frame.agentId) return { refusal: "agent_mismatch" };
+  if (binding.status !== "active") return { refusal: "binding_not_active" };
   const [session] = await transaction
     .select({ kind: sessions.kind, endedAt: sessions.endedAt, creatorSessionId: sessions.createdBySessionId })
     .from(sessions)

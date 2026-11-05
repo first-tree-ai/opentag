@@ -18,6 +18,8 @@ const BINDING_CONFLICT_REASONS: Record<SessionBindingConflictError["code"], stri
   stale: "stale_configuration",
 };
 
+const RESUME_KEEPS_RETRY = new Set<SessionReconcileResult["status"]>(["running", "recovery_required"]);
+
 export type SessionActivityPhase = "running" | "reporting";
 
 export interface SessionTurnIdentity {
@@ -297,8 +299,11 @@ export class SessionReconciler {
       this.#resumer?.abandon(request.sessionId, recovery, "preparation_failed");
       throw error;
     });
-    if (result.status !== "running")
+    // `recovery_required` after preparation means the resumer could not start the Turn yet: it keeps
+    // the pending retry and asks for another reconcile. Anything else ends the retry.
+    if (!RESUME_KEEPS_RETRY.has(result.status)) {
       this.#resumer?.abandon(request.sessionId, recovery, result.reason ?? result.status);
+    }
     return result;
   }
 

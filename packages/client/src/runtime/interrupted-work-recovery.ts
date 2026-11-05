@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { RUNTIME_CAPABILITY, type SessionRecoverRequest, type SessionRecoverResult } from "@opentag/shared";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import {
+  acknowledgedSteers,
   type Interruption,
   MAX_AUTOMATIC_RETRIES,
   type TurnRetryRecord,
@@ -24,6 +25,8 @@ const RECOVER_RECONCILE_MS = 60_000;
 interface PendingTurn {
   record: TurnRetryRecord;
   interruption: Interruption;
+  /** Captured steers the Server settled with this Turn (they have a durable steer receipt). */
+  steers: TurnRetryRecord["steers"];
 }
 
 interface RecoverRequest {
@@ -111,21 +114,26 @@ export class InterruptedWorkRecovery implements InterruptedTurnResumer {
   resume(sessionId: string, turn: SessionTurnIdentity): boolean {
     const pending = this.#turns.get(sessionId);
     if (!pending || pending.record.turnId !== turn.turnId) return false;
-    this.#turns.delete(sessionId);
     const started = this.#options.custody.resume(pending.record.request, pending.record.turnId, {
       continuation: pending.interruption,
-      steers: pending.record.steers,
+      steers: pending.steers,
     });
     this.#logger.info(
       { sessionId, turnId: turn.turnId, reason: pending.interruption.reason, started },
-      started ? "Interrupted Turn automatic retry started" : "Interrupted Turn retry could not start",
+      started ? "Interrupted Turn automatic retry started" : "Interrupted Turn retry could not start yet",
     );
-    if (started) {
-      this.#settle(sessionId);
-      // Queued Session messages run after the retried Turn, never steered into it.
-      void this.#options.turnSettled(turn.turnId).then(() => this.#options.inbox.sessionPrepared(sessionId));
+    if (!started) {
+      // The Turn keeps its pending retry; the open recover request asks for another ready reconcile
+      // and gives up (reporting the Turn) only when its attempts run out.
+      const request = this.#requests.get(sessionId);
+      if (request) this.#scheduleResend(sessionId, request);
+      return false;
     }
-    return started;
+    this.#turns.delete(sessionId);
+    this.#settle(sessionId);
+    // Queued Session messages run after the retried Turn, never steered into it.
+    void this.#options.turnSettled(turn.turnId).then(() => this.#options.inbox.sessionPrepared(sessionId));
+    return true;
   }
 
   abandon(sessionId: string, turn: SessionTurnIdentity, reason: string): void {
@@ -211,7 +219,11 @@ export class InterruptedWorkRecovery implements InterruptedTurnResumer {
     } catch {
       return;
     }
-    this.#turns.set(record.sessionId, { record: spent, interruption });
+    this.#turns.set(record.sessionId, {
+      record: spent,
+      interruption,
+      steers: acknowledgedSteers(record.steers, unresolved),
+    });
     this.#options.reconciler.setRecovery(record.sessionId, { deliveryId: record.deliveryId, turnId: record.turnId });
     this.#logger.info(
       { sessionId: record.sessionId, turnId: record.turnId, reason: interruption.reason },

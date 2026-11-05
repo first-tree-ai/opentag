@@ -896,6 +896,7 @@ export async function createClientRuntime(
     providers,
     workspace,
   });
+  const custodyLogger = moduleLogger("turn-custody");
   const custody = new TurnCustodyOwner({
     admission,
     bindingStore,
@@ -904,6 +905,12 @@ export async function createClientRuntime(
     reconciler,
     preflight,
     retries: turnRetries,
+    /* v8 ignore next 7 -- logging only; the custody decision is covered by interruption-retry tests. */
+    onRetryInputUnavailable: (request, turnId) =>
+      custodyLogger.warn(
+        { code: "TURN_RETRY_INPUT_UNAVAILABLE", sessionId: request.sessionId, deliveryId: request.deliveryId, turnId },
+        "Turn accepted without retry input; an interruption is reported instead of retried",
+      ),
     /* v8 ignore next -- late binding is required because custody and runner own each other. */
     start: (owner, startOptions) => runner.start(owner, startOptions),
     /* v8 ignore next -- late binding is required because custody and runner own each other. */

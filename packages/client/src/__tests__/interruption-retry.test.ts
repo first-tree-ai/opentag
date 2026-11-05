@@ -157,10 +157,10 @@ describe("AgentTurnRunner automatic retry", () => {
   it("retries a timed-out Turn once in place with the continuation notice and reports the retry", async () => {
     const h = runnerHarness();
     h.request.runtime.budget = { maxDurationMs: 20 };
-    h.records.set(h.request.sessionId, {
-      ...turnRetryRecord(h.request, "turn-1"),
-      steers: [steerRequest(h.request, "steered in")],
-    });
+    const acknowledged = steerRequest(h.request, "steered in");
+    const deferred = { ...steerRequest(h.request, "deferred, still the Server's"), deliveryId: randomUUID() };
+    h.records.set(h.request.sessionId, { ...turnRetryRecord(h.request, "turn-1"), steers: [acknowledged, deferred] });
+    h.receipts.push({ kind: "steer", deliveryId: acknowledged.deliveryId, turnId: "turn-1" });
     h.prompt
       .mockImplementationOnce(abortedOnSignal)
       .mockImplementationOnce(async () => ({ runId: "turn-1", status: "completed", output: [] }));
@@ -170,6 +170,7 @@ describe("AgentTurnRunner automatic retry", () => {
     const retryItems = promptItems(h.prompt, 1);
     expect(retryItems[0]?.text).toContain("maximum run duration (automatic retry 1/1)");
     expect(retryItems.at(-1)?.text).toContain("steered in");
+    expect(retryItems.at(-1)?.text).not.toContain("deferred, still the Server's");
     expect(h.records.get(h.request.sessionId)).toMatchObject({ retries: 1 });
     expect(h.records.get(h.request.sessionId)?.interruption).toBeUndefined();
     expect(h.create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ outcome: "completed" }), 3);
@@ -446,6 +447,105 @@ describe("AgentTurnRunner steer capture", () => {
   });
 });
 
+describe("AgentTurnRunner steer custody", () => {
+  it.each(["provider", "receipt"] as const)(
+    "drops a captured steer whose %s step failed, so a later retry never replays it",
+    async (failing) => {
+      const h = runnerHarness();
+      h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
+      const captured: RuntimeImSteerRequest[] = [];
+      h.retries.appendSteer = async (steer?: RuntimeImSteerRequest) => {
+        if (steer) captured.push(steer);
+        return "appended";
+      };
+      // Even when removal fails too, the missing receipt keeps the steer out of the retry input.
+      h.retries.removeSteer.mockRejectedValueOnce(new Error("disk full"));
+      if (failing === "provider") h.runtime.steer.mockRejectedValueOnce(new Error("provider closed"));
+      else h.recordSteer.mockRejectedValueOnce(new Error("disk full"));
+      let finish: () => void = () => undefined;
+      h.prompt.mockImplementation(
+        () =>
+          new Promise<AgentRunResult>((resolve) => {
+            finish = () => resolve({ runId: "turn-1", status: "completed", output: [] });
+            h.emit({ type: "run_started", runId: "turn-1" } as never);
+          }),
+      );
+      h.runner.start(owner(h.request));
+      await vi.waitFor(() =>
+        expect(h.updateUnresolved).toHaveBeenCalledWith(expect.anything(), expect.anything(), "turn-1", "running"),
+      );
+      const steer = steerRequest(h.request, "more");
+      await expect(h.runner.steer(steer)).resolves.toMatchObject({ status: "deferred", reason: "steer_state_unknown" });
+      expect(h.retries.removeSteer).toHaveBeenCalledWith(steer);
+      finish();
+      await h.runner.settled();
+      // Crash after the deferred answer: the restart keeps only acknowledged steers.
+      const f = recoveryFixture();
+      f.records.set(h.request.sessionId, { ...turnRetryRecord(h.request, "turn-1"), steers: captured });
+      f.unresolved.set(h.request.sessionId, {
+        turnId: "turn-1",
+        deliveryId: h.request.deliveryId,
+        phase: "running",
+        recentRecordedInputs: h.receipts,
+      });
+      await f.recovery.start();
+      f.version = 1;
+      f.recovery.resume(h.request.sessionId, { deliveryId: h.request.deliveryId, turnId: "turn-1" });
+      expect(f.custody.resume).toHaveBeenCalledWith(h.request, "turn-1", expect.objectContaining({ steers: [] }));
+      f.recovery.stop();
+    },
+  );
+
+  it("replays an acknowledged steer after a restart", async () => {
+    const request = delivery();
+    const steer = steerRequest(request, "acknowledged");
+    const f = recoveryFixture();
+    f.records.set(request.sessionId, { ...turnRetryRecord(request, "turn-1"), steers: [steer] });
+    f.unresolved.set(request.sessionId, {
+      turnId: "turn-1",
+      deliveryId: request.deliveryId,
+      phase: "running",
+      recentRecordedInputs: [{ kind: "steer", deliveryId: steer.deliveryId, turnId: "turn-1" }],
+    });
+    await f.recovery.start();
+    f.version = 1;
+    f.recovery.resume(request.sessionId, { deliveryId: request.deliveryId, turnId: "turn-1" });
+    expect(f.custody.resume).toHaveBeenCalledWith(request, "turn-1", expect.objectContaining({ steers: [steer] }));
+    f.recovery.stop();
+  });
+});
+
+describe("InterruptedWorkRecovery resume refusal", () => {
+  it("keeps the pending retry when custody cannot start it, asks again, and resumes later", async () => {
+    vi.useFakeTimers();
+    const f = recoveryFixture();
+    const request = delivery();
+    f.records.set(request.sessionId, turnRetryRecord(request, "turn-1"));
+    f.unresolved.set(request.sessionId, { turnId: "turn-1", deliveryId: request.deliveryId, phase: "running" });
+    await f.recovery.start();
+    f.version = 1;
+    f.setState("registered");
+    const turn = { deliveryId: request.deliveryId, turnId: "turn-1" };
+    const frame = f.sent[0] as SessionRecoverRequest;
+    f.recovery.handleResult({
+      type: "session:recover:result",
+      requestId: frame.requestId,
+      sessionId: request.sessionId,
+      status: "scheduled",
+    });
+    f.custody.resume.mockReturnValueOnce(false);
+    expect(f.recovery.resume(request.sessionId, turn)).toBe(false);
+    // Still pending: the ordinary recovery path does not report it, and another reconcile is requested.
+    expect(f.recovery.isPendingRetry(request.sessionId, "turn-1")).toBe(true);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(f.sent).toHaveLength(2);
+    expect(f.recovery.resume(request.sessionId, turn)).toBe(true);
+    expect(f.recovery.isPendingRetry(request.sessionId, "turn-1")).toBe(false);
+    expect(f.inbox.failAwaitingPreparation).not.toHaveBeenCalled();
+    f.recovery.stop();
+  });
+});
+
 describe("TurnCustodyOwner acceptance with retry input", () => {
   it("rejects and undoes the acceptance when the retry input cannot be written", async () => {
     const home_ = await home();
@@ -486,6 +586,42 @@ describe("TurnCustodyOwner acceptance with retry input", () => {
     expect(again.result).toMatchObject({ status: "accepted" });
     expect(write).toHaveBeenCalledTimes(2);
   });
+
+  it.each(["throws", "refuses"] as const)(
+    "keeps and owns the Turn without a retry when the rollback %s",
+    async (rollback) => {
+      const request = delivery();
+      const discardAccepted = vi.fn(async (): Promise<boolean> => {
+        if (rollback === "throws") throw new Error("disk full");
+        return false;
+      });
+      const unavailable = vi.fn();
+      const reconciler = new SessionReconciler({ installationId: "installation" });
+      vi.spyOn(reconciler, "checkDelivery").mockReturnValue(undefined);
+      const custody = new TurnCustodyOwner({
+        bindingStore: {
+          recordAccepted: vi.fn(async () => ({ status: "committed", unresolvedTurn: { turnId: "turn-x" } })),
+          discardAccepted,
+        } as unknown as SessionBindingStore,
+        id: () => "turn-x",
+        reconciler,
+        retries: {
+          write: vi.fn(async () => {
+            throw new Error("disk full");
+          }),
+          remove: vi.fn(async () => undefined),
+        },
+        onRetryInputUnavailable: unavailable,
+      });
+      const decision = await custody.accept(request);
+      // The durable custody could not be undone, so it is acknowledged and owned, not abandoned.
+      expect(decision.result).toMatchObject({ status: "accepted", turnId: "turn-x" });
+      expect(discardAccepted).toHaveBeenCalledOnce();
+      expect(unavailable).toHaveBeenCalledExactlyOnceWith(request, "turn-x");
+      expect(custody.getTurn("turn-x")).toBeDefined();
+      expect(custody.admission.snapshot().sessions).toBe(1);
+    },
+  );
 });
 
 describe("InterruptedWorkRecovery", () => {
@@ -674,7 +810,15 @@ describe("InterruptedWorkRecovery", () => {
 
 function recoveryFixture() {
   const records = new Map<string, TurnRetryRecord>();
-  const unresolved = new Map<string, { turnId: string; deliveryId: string; phase: string }>();
+  const unresolved = new Map<
+    string,
+    {
+      turnId: string;
+      deliveryId: string;
+      phase: string;
+      recentRecordedInputs?: Array<{ kind: string; deliveryId: string; turnId: string }>;
+    }
+  >();
   const sent: unknown[] = [];
   let listener: (state: RuntimeConnectionState) => void = () => undefined;
   const fixture = {
@@ -697,7 +841,12 @@ function recoveryFixture() {
   fixture.recovery = new InterruptedWorkRecovery({
     bindingStore: {
       read: async (_agentId: string, sessionId: string) =>
-        (unresolved.has(sessionId) ? { unresolvedTurn: unresolved.get(sessionId) } : undefined) as never,
+        (unresolved.has(sessionId)
+          ? {
+              unresolvedTurn: unresolved.get(sessionId),
+              recentRecordedInputs: unresolved.get(sessionId)?.recentRecordedInputs ?? [],
+            }
+          : undefined) as never,
     },
     connection: {
       capabilityVersion: (capability) =>
@@ -743,7 +892,8 @@ function runnerHarness(options: { restartRetry?: boolean | (() => boolean) } = {
       records.set(sessionId, next);
       return next;
     },
-    appendSteer: async (): Promise<"appended" | "full" | "missing"> => "appended",
+    appendSteer: async (_steer?: RuntimeImSteerRequest): Promise<"appended" | "full" | "missing"> => "appended",
+    removeSteer: vi.fn(async (_steer: RuntimeImSteerRequest) => undefined),
   };
   const create = vi.fn((input: Parameters<TurnReportOwner["create"]>[0]) => ({
     ...input,
@@ -769,11 +919,16 @@ function runnerHarness(options: { restartRetry?: boolean | (() => boolean) } = {
     capabilities: { steer: "supported" },
     state: { phase: "running", activeRunId: "turn-1" },
   };
+  const receipts: Array<{ kind: "steer"; deliveryId: string; turnId: string }> = [];
+  const recordSteer = vi.fn(async (steer: RuntimeImSteerRequest) => {
+    receipts.push({ kind: "steer", deliveryId: steer.deliveryId, turnId: steer.expectedTurnId });
+  });
   const runner = new AgentTurnRunner({
     bindingStore: {
       updateUnresolved,
       getSteerReceipt: vi.fn(async () => undefined),
-      recordSteer: vi.fn(async () => undefined),
+      recordSteer,
+      read: vi.fn(async () => ({ recentRecordedInputs: receipts })),
     } as unknown as SessionBindingStore,
     connection: { send: vi.fn(async () => undefined), capabilityVersion: () => 3 },
     custody: { markReporting, recordResult: vi.fn() } as unknown as TurnCustodyOwner,
@@ -799,7 +954,21 @@ function runnerHarness(options: { restartRetry?: boolean | (() => boolean) } = {
       typeof options.restartRetry === "function" ? options.restartRetry : () => options.restartRetry === true,
   });
   const emit = (event: unknown) => void sink?.(event);
-  return { request, records, retries, runner, runtime, emit, prompt, create, markReporting, submit, updateUnresolved };
+  return {
+    request,
+    records,
+    retries,
+    receipts,
+    recordSteer,
+    runner,
+    runtime,
+    emit,
+    prompt,
+    create,
+    markReporting,
+    submit,
+    updateUnresolved,
+  };
 }
 
 function promptItems(prompt: { mock: { calls: unknown[][] } }, call: number): Array<{ text: string }> {

@@ -3,7 +3,7 @@ import { computeDirectInputHash, type SessionReconcileRequest } from "@opentag/s
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
-import { computers, imMessageDeliveries, sessionPlacements, sessions } from "../../db/schema/index.js";
+import { agents, computers, imMessageDeliveries, sessionPlacements, sessions } from "../../db/schema/index.js";
 import { PostgresRuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
 import { SessionRecoveryService } from "../../runtime/session-recovery.js";
 import { createFixture, turnReport } from "./im-recovery-locks-fixture.js";
@@ -36,7 +36,7 @@ async function restarted() {
     .where(eq(computers.id, f.context.computerId));
   const context = { ...f.context, instanceId };
   const requestReconcile = vi.fn(
-    async (_computerId: string, _instanceId: string, request: SessionReconcileRequest) => ({
+    async (_computerId: string, _instanceId: string, request: SessionReconcileRequest, _admission?: unknown) => ({
       type: "session:reconcile:result" as const,
       requestId: request.requestId,
       sessionId: request.sessionId,
@@ -89,6 +89,7 @@ it("moves the accepted Turn to the new connection and prepares the Session with 
       desired: "ready",
       runtime: h.f.rootRequest.runtime,
     }),
+    expect.any(Function),
   );
   expect(h.requestReconcile.mock.calls[0]?.[2]).not.toHaveProperty("sessionKind");
   // The retry's report settles the original delivery through the ordinary report path.
@@ -158,6 +159,7 @@ it("prepares an internal Session with its creator and the current snapshot", asy
     h.context.computerId,
     h.context.instanceId,
     expect.objectContaining({ sessionId: childId, sessionKind: "internal", creatorSessionId: h.f.sessionId }),
+    expect.any(Function),
   );
   expect(await h.owner()).toBe(h.f.context.instanceId);
 });
@@ -209,4 +211,71 @@ it.each([
   expect(await recovery).toEqual({ status: "rejected", reason });
   expect(await h.owner()).toBe(h.f.context.instanceId);
   expect(h.requestReconcile).not.toHaveBeenCalled();
+});
+
+it.each(["active", "suspended", "ended"] as const)(
+  "admits the ready reconcile at its send boundary only while the authority still holds (%s)",
+  async (state) => {
+    const h = await restarted();
+    expect(await h.service.recover(h.frame, h.context)).toEqual({ status: "scheduled" });
+    await h.service.settled();
+    const admission = h.requestReconcile.mock.calls[0]?.[3] as (
+      operation: (onDispatched: () => void) => Promise<unknown>,
+    ) => Promise<{ admitted: boolean; result?: Promise<unknown> }>;
+    // A stop committed after the takeover but before the frame is enqueued must win.
+    if (state === "suspended") {
+      await h.client.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, h.f.agentId));
+    }
+    if (state === "ended") {
+      await h.client.database.update(sessions).set({ endedAt: new Date() }).where(eq(sessions.id, h.f.sessionId));
+    }
+    const operation = vi.fn(async (onDispatched: () => void) => {
+      onDispatched();
+      return "sent";
+    });
+    const decision = await admission(operation);
+    expect(decision.admitted).toBe(state === "active");
+    expect(operation).toHaveBeenCalledTimes(state === "active" ? 1 : 0);
+    if (decision.admitted) await expect(decision.result).resolves.toBe("sent");
+  },
+);
+
+it("holds a concurrent Agent stop behind an admitted ready reconcile until it is enqueued", async () => {
+  const h = await restarted();
+  await h.service.recover(h.frame, h.context);
+  await h.service.settled();
+  const admission = h.requestReconcile.mock.calls[0]?.[3] as (
+    operation: (onDispatched: () => void) => Promise<unknown>,
+  ) => Promise<{ admitted: boolean }>;
+  const observer = createDatabaseClient(pg.databaseUrl, { max: 1 });
+  const stopper = createDatabaseClient(pg.databaseUrl, { max: 1 });
+  clients.push(observer, stopper);
+  let enqueue: (() => void) | undefined;
+  let suspended = false;
+  const admitted = admission(
+    (onDispatched) =>
+      new Promise((resolve) => {
+        enqueue = () => {
+          onDispatched();
+          resolve("sent");
+        };
+      }),
+  );
+  await vi.waitFor(() => expect(enqueue).toBeDefined());
+  const stop = stopper.sql`update agents set status = 'suspended' where id = ${h.f.agentId}`.then(() => {
+    suspended = true;
+  });
+  await vi.waitFor(
+    async () => {
+      const [row] = await observer.sql<{ waiting: boolean }[]>`
+        select exists(select 1 from pg_stat_activity where datname = current_database() and wait_event_type = 'Lock') as waiting`;
+      expect(row?.waiting).toBe(true);
+    },
+    { timeout: 10_000, interval: 50 },
+  );
+  expect(suspended).toBe(false);
+  enqueue?.();
+  expect((await admitted).admitted).toBe(true);
+  await stop;
+  expect(suspended).toBe(true);
 });

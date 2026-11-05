@@ -167,6 +167,14 @@ export class TurnRetryStore {
     return record ? outcome : "missing";
   }
 
+  /** Drop a captured steer that was not acknowledged (best effort; receipts filter it anyway). */
+  async removeSteer(request: RuntimeImSteerRequest): Promise<void> {
+    await this.update(request.sessionId, request.expectedTurnId, (current) => ({
+      ...current,
+      steers: current.steers.filter((steer) => steer.deliveryId !== request.deliveryId),
+    }));
+  }
+
   remove(sessionId: string, turnId?: string): Promise<void> {
     return this.#withLock(sessionId, async () => {
       const current = await this.#read(sessionId).catch(() => undefined);
@@ -244,6 +252,23 @@ export function parseTurnRetryRecord(value: unknown): TurnRetryRecord {
       ? { interruption: { reason: interruption.reason as InterruptionReason, at: interruption.at as string } }
       : {}),
   };
+}
+
+/**
+ * The captured steers that the Server settled with the root Turn: only those with a durable steer
+ * receipt in the Session binding. A captured steer whose provider steer or receipt failed was answered
+ * `deferred`, so the Server still owns it and the retry must not replay it.
+ */
+export function acknowledgedSteers(
+  steers: readonly RuntimeImSteerRequest[],
+  binding: { recentRecordedInputs: ReadonlyArray<{ kind: string; deliveryId: string; turnId: string }> } | undefined,
+): RuntimeImSteerRequest[] {
+  const receipts = new Set(
+    (binding?.recentRecordedInputs ?? [])
+      .filter((entry) => entry.kind === "steer")
+      .map((entry) => `${entry.deliveryId}:${entry.turnId}`),
+  );
+  return steers.filter((steer) => receipts.has(`${steer.deliveryId}:${steer.expectedTurnId}`));
 }
 
 export function turnRetryRecord(request: DirectImMessageDeliveryRequest, turnId: string): TurnRetryRecord {

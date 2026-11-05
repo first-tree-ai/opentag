@@ -178,6 +178,32 @@ describe("PostgresRuntimeExecutionAuthority delivery admission", () => {
 
     await expect(authority.authorize(deliverySource(), context())).resolves.toEqual({ status: "invalid" });
   });
+
+  it("authorizes an acceptance committed after the initial custody snapshot", async () => {
+    const { authority } = makeAuthority({ deliveries: [{ state: "accepted", ...acceptedDelivery() }] });
+
+    await expect(authority.authorize(deliverySource(), context())).resolves.toEqual({ status: "authorized" });
+  });
+
+  it.each([
+    { turnId: "another-turn" },
+    { sessionId: "another-session" },
+    { agentId: "another-agent" },
+    { computerId: "another-computer" },
+    { instanceId: "another-instance" },
+    { placementGeneration: PLACEMENT + 1 },
+    { inputHash: "" },
+  ])("refuses a newly observed acceptance with mismatched custody: %j", async (mismatch) => {
+    const { authority } = makeAuthority({ deliveries: [{ state: "accepted", ...acceptedDelivery(mismatch) }] });
+
+    await expect(authority.authorize(deliverySource(), context())).resolves.toEqual({ status: "invalid" });
+  });
+
+  it.each(["steered", "terminal_rejected", "completed"])("refuses a newly observed %s delivery", async (state) => {
+    const { authority } = makeAuthority({ deliveries: [{ ...acceptedDelivery(), state }] });
+
+    await expect(authority.authorize(deliverySource(), context())).resolves.toEqual({ status: "invalid" });
+  });
 });
 
 describe("PostgresRuntimeExecutionAuthority Session message admission", () => {

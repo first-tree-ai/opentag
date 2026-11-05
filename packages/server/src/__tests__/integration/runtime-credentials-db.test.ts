@@ -394,6 +394,22 @@ describe("PostgresRuntimeExecutionAuthority", () => {
     ).resolves.toEqual({ status: "invalid" });
   });
 
+  it("admits committed acceptance after a stale pending custody read", async () => {
+    const { state, context } = await authorityFixture();
+    const deliveryId = await seedDelivery(state.database, state, "accepted", "turn-1");
+    const custody = new PostgresRuntimeCustodyStore(state.database);
+    vi.spyOn(custody, "getDelivery").mockResolvedValueOnce(undefined);
+    const authority = new PostgresRuntimeExecutionAuthority({
+      database: state.database,
+      custody,
+      validationRuns: new RuntimeValidationRunRegistry(),
+    });
+
+    await expect(authority.authorize({ kind: "delivery", deliveryId, turnId: "turn-1" }, context)).resolves.toEqual({
+      status: "authorized",
+    });
+  });
+
   it("authorizes and revalidates an accepted Session collaboration message", async () => {
     const { state, authority, context } = await authorityFixture();
     const messageId = randomUUID();

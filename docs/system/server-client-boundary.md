@@ -197,6 +197,13 @@ the effective runtime snapshot; missing credentials and other start failures
 settle the Turn as typed, recoverable `not_started` failures. The Client never
 falls back to a different Provider.
 
+Execution admission can race the Server's acceptance commit. If the first custody
+read finds no acceptance, the fallback reads the delivery state and complete
+accepted identity in one SQL snapshot. Pending or expired dispatches remain
+retryable; a newly accepted delivery authorizes only its matching Turn, Session,
+Agent, Computer, connection instance, and placement generation. Terminal or
+mismatched custody remains invalid.
+
 ### Status state outside the Server process
 
 > **Planned — not yet implemented.** Tracking: #1215

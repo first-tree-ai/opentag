@@ -680,7 +680,9 @@ export class SessionMessageInbox {
     let executionSignal: AbortSignal | undefined;
     let runTime: { finish(): Promise<number> } | undefined;
     const settleRunTime = async () => {
-      const ranMs = (await runTime?.finish()) ?? 0;
+      // Once per Run: a returned failure reaches this again on its way to the failure path.
+      if (!runTime) return;
+      const ranMs = await runTime.finish();
       runTime = undefined;
       // Recorded by the write that follows; the record may hold newer run time than `current`.
       const latest = this.#records.get(key) ?? current;

@@ -370,8 +370,9 @@ export function agentRuntimeTestPath(agentId: string): string {
   return `${agentByIdPath(agentId)}/runtime-test`;
 }
 
-export function agentUsagePath(agentId: string, windowDays: number): string {
+export function agentUsagePath(agentId: string, windowDays: number, timezone?: string): string {
   const query = new URLSearchParams({ days: String(windowDays) });
+  if (timezone !== undefined) query.set("timezone", timezone);
   return `${agentByIdPath(agentId)}/usage?${query.toString()}`;
 }
 

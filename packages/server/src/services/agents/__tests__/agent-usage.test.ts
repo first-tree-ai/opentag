@@ -418,6 +418,59 @@ describe("readAgentUsageSummaries", () => {
     expect(flagged?.invalidTokenCount).toBe(true);
     expect(flagged?.tasks).toBe("2");
   });
+
+  it("buckets daily usage by the requested IANA timezone across canonical and fallback rows", async () => {
+    const fixture = await seed("pi");
+    // 2026-08-21T16:30:00Z is 2026-08-21 in UTC and 2026-08-22 00:30 in Asia/Shanghai
+    const boundaryAt = new Date("2026-08-21T16:30:00.000Z");
+    await addDelivery(fixture, {
+      acceptedAt: boundaryAt,
+      turnReport: { usage: { inputTokens: 10, cachedInputTokens: 5, outputTokens: 2 } },
+    });
+    const fallbackId = await addDelivery(fixture, {
+      acceptedAt: boundaryAt,
+      turnReport: { usage: { inputTokens: 1, outputTokens: 1 } },
+    });
+    await unit.engine.query("UPDATE im_message_deliveries SET turn_report = $2::jsonb WHERE id = $1", [
+      fallbackId,
+      JSON.stringify({ usage: { inputTokens: "1e1", cachedInputTokens: "5", outputTokens: "2" } }),
+    ]);
+
+    const utc = await readAgentUsageDaily(unit.database, {
+      agentId: fixture.agentId,
+      provider: "pi",
+      startedAt: START,
+      endedAt: END,
+    });
+    expect(utc.daily.find((point) => point.date === "2026-08-21")).toMatchObject({
+      tasks: 2,
+      measuredTasks: 2,
+      tokens: 34,
+    });
+    expect(utc.daily.find((point) => point.date === "2026-08-22")).toMatchObject({
+      tasks: 0,
+      measuredTasks: 0,
+      tokens: 0,
+    });
+
+    const shanghai = await readAgentUsageDaily(unit.database, {
+      agentId: fixture.agentId,
+      provider: "pi",
+      startedAt: START,
+      endedAt: END,
+      timezone: "Asia/Shanghai",
+    });
+    expect(shanghai.daily.find((point) => point.date === "2026-08-21")).toMatchObject({
+      tasks: 0,
+      measuredTasks: 0,
+      tokens: 0,
+    });
+    expect(shanghai.daily.find((point) => point.date === "2026-08-22")).toMatchObject({
+      tasks: 2,
+      measuredTasks: 2,
+      tokens: 34,
+    });
+  });
 });
 
 describe("usage arithmetic helpers", () => {

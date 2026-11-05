@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { browserApi } from "../../api.js";
+import { viewerTimezone } from "../../query/keys.js";
 import { CloudUsagePage } from "./cloud-usage-page.js";
 
 const usage: Extract<CloudUsageSummary, { enabled: true }> = {
@@ -36,7 +37,7 @@ describe("account-wide cloud usage", () => {
     expect(screen.getByRole("img", { name: /300 Tokens used/ })).toBeTruthy();
     expect(screen.queryByRole("region", { name: "Token breakdown" })).toBeNull();
     expect(screen.queryByRole("table")).toBeNull();
-    expect(load).toHaveBeenCalledWith(30);
+    expect(load).toHaveBeenCalledWith(30, viewerTimezone());
     expect(agents).not.toHaveBeenCalled();
   });
   it("changes the date range using the existing usage selector", async () => {
@@ -49,7 +50,7 @@ describe("account-wide cloud usage", () => {
     fireEvent.pointerDown(option, { pointerType: "mouse" });
     fireEvent.pointerUp(option, { pointerType: "mouse" });
     fireEvent.click(option);
-    await waitFor(() => expect(load).toHaveBeenCalledWith(7));
+    await waitFor(() => expect(load).toHaveBeenCalledWith(7, viewerTimezone()));
   });
   it("shows incomplete data as pending coverage and renders a truthful empty state", async () => {
     vi.spyOn(browserApi, "cloudUsage").mockResolvedValue({

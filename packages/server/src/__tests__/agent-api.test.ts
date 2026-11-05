@@ -261,16 +261,36 @@ describe("Agent HTTP API", () => {
     });
   });
 
-  it("gets Agent usage through a strict supported period", async () => {
+  it("gets Agent usage through a strict supported period and optional IANA timezone", async () => {
     const { app, service } = appWith();
     const response = await app.inject({ method: "GET", url: agentUsagePath(agentId, 30), headers: authorization });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual(agentUsage);
-    expect(service.getUsageById).toHaveBeenCalledWith(userId, agentId, 30);
+    expect(service.getUsageById).toHaveBeenCalledWith(userId, agentId, 30, "UTC");
+
+    const localized = await app.inject({
+      method: "GET",
+      url: agentUsagePath(agentId, 30, "Asia/Shanghai"),
+      headers: authorization,
+    });
+    expect(localized.statusCode).toBe(200);
+    expect(service.getUsageById).toHaveBeenCalledWith(userId, agentId, 30, "Asia/Shanghai");
 
     const invalid = await app.inject({ method: "GET", url: agentUsagePath(agentId, 14), headers: authorization });
     expect(invalid.statusCode).toBe(400);
-    expect(service.getUsageById).toHaveBeenCalledTimes(1);
+    const invalidOffset = await app.inject({
+      method: "GET",
+      url: `${agentUsagePath(agentId, 30)}&timezone=%2B08%3A00`,
+      headers: authorization,
+    });
+    expect(invalidOffset.statusCode).toBe(400);
+    const invalidZone = await app.inject({
+      method: "GET",
+      url: `${agentUsagePath(agentId, 30)}&timezone=Mars%2FPhobos`,
+      headers: authorization,
+    });
+    expect(invalidZone.statusCode).toBe(400);
+    expect(service.getUsageById).toHaveBeenCalledTimes(2);
   });
 
   it("rejects missing credentials, invalid params, and immutable authority fields", async () => {

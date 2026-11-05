@@ -688,6 +688,45 @@ describe("AgentService", () => {
     });
     expect(usage.daily.reduce((total, point) => total + point.measuredTasks, 0)).toBe(1);
     expect(usage.daily.reduce((total, point) => total + point.tokens, 0)).toBe(165);
+
+    const lateUtc = new Date("2026-08-23T18:00:00.000Z");
+    await createDelivery(binding.id, session.id, {
+      acceptedAt: lateUtc,
+      reportedAt: lateUtc,
+      usage: { inputTokens: 4, cachedInputTokens: 0, outputTokens: 1 },
+    });
+    const lateCloudId = await calls.create(
+      { accountId: bootstrap.userId, agentId: created.id, sessionId: session.id, source: "execution" },
+      { gateway: "litellm", model: "model-a" },
+      null,
+    );
+    await calls.finalize(
+      lateCloudId,
+      {
+        status: "complete",
+        usage: { inputTokens: 8, cachedInputTokens: 0, cacheWriteInputTokens: 0, outputTokens: 2 },
+      },
+      { resolution: "unbilled", pricedMicros: 0, debitedMicros: 0 },
+    );
+    await calls.db.query("UPDATE billing.attempts SET created_at=$2 WHERE id=$1", [lateCloudId, lateUtc.toISOString()]);
+
+    const utcUsage = await service.getUsageById(bootstrap.userId, created.id, 30, "UTC");
+    expect(utcUsage.daily.find((point) => point.date === "2026-08-23")).toMatchObject({
+      tasks: 1,
+      measuredTasks: 1,
+      tokens: 15,
+    });
+    const shanghaiUsage = await service.getUsageById(bootstrap.userId, created.id, 30, "Asia/Shanghai");
+    expect(shanghaiUsage.daily.find((point) => point.date === "2026-08-23")).toMatchObject({
+      tasks: 0,
+      measuredTasks: 0,
+      tokens: 0,
+    });
+    expect(shanghaiUsage.daily.find((point) => point.date === "2026-08-24")).toMatchObject({
+      tasks: 3,
+      measuredTasks: 2,
+      tokens: 180,
+    });
   });
   it("projects an orphaned accepted delivery older than the recovery window as unknown", async () => {
     const { bootstrap, computer, service } = await fixture();

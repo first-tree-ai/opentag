@@ -774,6 +774,7 @@ export class AgentService {
     callerUserId: string,
     agentId: string,
     windowDays: AgentUsageWindowDays,
+    timezone = "UTC",
   ): Promise<AgentUsageDetail> {
     const usageEndedAt = this.#now();
     const usageStartedAt = new Date(usageEndedAt.getTime() - windowDays * 24 * 60 * 60 * 1_000);
@@ -792,6 +793,7 @@ export class AgentService {
           provider: agent.runtimeProvider,
           startedAt: usageStartedAt,
           endedAt: usageEndedAt,
+          timezone,
         });
         return usage;
       },
@@ -803,7 +805,7 @@ export class AgentService {
       endedAt: usageEndedAt.toISOString(),
       ...usage,
     };
-    const cloud = await this.#cloudUsage?.readDetail(callerUserId, windowDays, agentId, usageEndedAt);
+    const cloud = await this.#cloudUsage?.readDetail(callerUserId, windowDays, agentId, usageEndedAt, timezone);
     mergeCloudUsage(result, cloud);
     return result;
   }

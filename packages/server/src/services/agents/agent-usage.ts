@@ -60,6 +60,7 @@ export interface AgentUsageDailyReadInput {
   provider: AgentRuntimeProvider;
   startedAt: Date;
   endedAt: Date;
+  timezone?: string;
 }
 
 export interface AgentUsageDailyRead {
@@ -187,11 +188,39 @@ export function addUsageTokenCounts(
 }
 
 /**
- * The zero-filled day bucket for one UTC date. Every date between the window start and end is present,
- * so a day without tasks reads as zero rather than disappearing from the series.
+ * The zero-filled day bucket for one calendar date in the requested timezone. Every date between the window
+ * start and end is present, so a day without tasks reads as zero rather than disappearing from the series.
  */
 function emptyUsageDay(date: string): AgentUsageDetail["daily"][number] {
   return { date, tasks: 0, measuredTasks: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, tokens: 0 };
+}
+
+function formatDateInTimezone(date: Date, timezone: string): string {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  const day = parts.find((part) => part.type === "day")?.value;
+  if (!year || !month || !day) throw new Error(`Failed to format date in timezone ${timezone}`);
+  return `${year}-${month}-${day}`;
+}
+
+/**
+ * Ordered `YYYY-MM-DD` calendar dates spanning `[startedAt, endedAt]` in `timezone`. Stepping in UTC after
+ * projecting the boundary dates into `timezone` avoids skipping or duplicating dates across 23h/25h DST transitions.
+ */
+export function usageCalendarDates(startedAt: Date, endedAt: Date, timezone = "UTC"): string[] {
+  const firstDate = Date.parse(`${formatDateInTimezone(startedAt, timezone)}T00:00:00.000Z`);
+  const lastDate = Date.parse(`${formatDateInTimezone(endedAt, timezone)}T00:00:00.000Z`);
+  const dates: string[] = [];
+  for (let timestamp = firstDate; timestamp <= lastDate; timestamp += 24 * 60 * 60 * 1_000) {
+    dates.push(new Date(timestamp).toISOString().slice(0, 10));
+  }
+  return dates;
 }
 
 /**
@@ -203,7 +232,8 @@ function emptyUsageDay(date: string): AgentUsageDetail["daily"][number] {
  */
 async function foldApproximatedReports(
   executor: QueryExecutor,
-  input: AgentUsageDailyReadInput,
+  provider: AgentRuntimeProvider,
+  timezone: string,
   window: SQL,
   daily: Map<string, AgentUsageDetail["daily"][number]>,
   result: AgentUsageDailyRead,
@@ -223,7 +253,7 @@ async function foldApproximatedReports(
     const batch = (await executor.execute(sql`
         ${usageWindowSql(window, sql`d.id as delivery_id,`)}
         select
-          to_char(accepted_at at time zone 'UTC', 'YYYY-MM-DD') as "day",
+          to_char(accepted_at at time zone ${timezone}, 'YYYY-MM-DD') as "day",
           delivery_id as "deliveryId",
           to_char(accepted_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') as "acceptedAtText",
           input_text as "inputTokens",
@@ -250,7 +280,7 @@ async function foldApproximatedReports(
       throw new Error("Agent usage reports need per-row parsing but the window returned none");
     }
     for (const row of batch) {
-      const counts = deliveryUsageTokenCounts(input.provider, row.inputTokens, row.cachedInputTokens, row.outputTokens);
+      const counts = deliveryUsageTokenCounts(provider, row.inputTokens, row.cachedInputTokens, row.outputTokens);
       const point = daily.get(row.day);
       if (!point) throw new Error("Agent usage date falls outside the requested window");
       if (counts.measured) {
@@ -268,14 +298,15 @@ async function foldApproximatedReports(
 }
 
 /**
- * Reads the window as UTC day buckets. Callers must pass one authorized, fixed read snapshot so the
- * aggregate and the fallback rows describe the same set of deliveries (see
+ * Reads the window as calendar day buckets in `input.timezone` (defaulting to UTC). Callers must pass one
+ * authorized, fixed read snapshot so the aggregate and the fallback rows describe the same set of deliveries (see
  * `docs/system/database-read-write-standards.md`, RD1).
  */
 export async function readAgentUsageDaily(
   executor: QueryExecutor,
   input: AgentUsageDailyReadInput,
 ): Promise<AgentUsageDailyRead> {
+  const timezone = input.timezone ?? "UTC";
   const window = sql`b.agent_id = ${input.agentId}::uuid
     and d.accepted_at >= ${input.startedAt.toISOString()}::timestamptz
     and d.accepted_at <= ${input.endedAt.toISOString()}::timestamptz`;
@@ -284,7 +315,7 @@ export async function readAgentUsageDaily(
   const dayRows = (await executor.execute(sql`
     ${usageWindowSql(window)}
     select
-      to_char(accepted_at at time zone 'UTC', 'YYYY-MM-DD') as "day",
+      to_char(accepted_at at time zone ${timezone}, 'YYYY-MM-DD') as "day",
       count(*)::text as "tasks",
       count(*) filter (where failed)::text as "failed",
       count(*) filter (where canonical
@@ -313,14 +344,7 @@ export async function readAgentUsageDaily(
     daily: [],
   };
   const daily = new Map<string, AgentUsageDetail["daily"][number]>();
-  const firstDate = Date.UTC(
-    input.startedAt.getUTCFullYear(),
-    input.startedAt.getUTCMonth(),
-    input.startedAt.getUTCDate(),
-  );
-  const lastDate = Date.UTC(input.endedAt.getUTCFullYear(), input.endedAt.getUTCMonth(), input.endedAt.getUTCDate());
-  for (let timestamp = firstDate; timestamp <= lastDate; timestamp += 24 * 60 * 60 * 1_000) {
-    const date = new Date(timestamp).toISOString().slice(0, 10);
+  for (const date of usageCalendarDates(input.startedAt, input.endedAt, timezone)) {
     daily.set(date, emptyUsageDay(date));
   }
 
@@ -352,7 +376,7 @@ export async function readAgentUsageDaily(
     addUsageTokenCounts(result, { inputTokens: normalizedInputTokens, cachedInputTokens, outputTokens, tokens });
   }
 
-  await foldApproximatedReports(executor, input, window, daily, result, approximatedTasks);
+  await foldApproximatedReports(executor, input.provider, timezone, window, daily, result, approximatedTasks);
 
   result.daily = [...daily.values()];
   return result;

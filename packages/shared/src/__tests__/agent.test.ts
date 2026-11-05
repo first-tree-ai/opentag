@@ -11,6 +11,7 @@ import {
   AgentRuntimeTestResponseSchema,
   AgentSummarySchema,
   AgentUsageDetailSchema,
+  AgentUsageQuerySchema,
   AgentUsageWindowDaysSchema,
   CreateAgentRequestSchema,
   ListAgentsResponseSchema,
@@ -19,6 +20,7 @@ import {
   requestsAgentActivityQueuedCount,
   requestsAgentActivityTaskCount,
   UpdateAgentRequestSchema,
+  UsageTimezoneSchema,
 } from "../agent.js";
 import { AgentNameSchema as BrowserAgentNameSchema } from "../browser.js";
 import {
@@ -355,6 +357,17 @@ describe("Agent contracts", () => {
     ).toThrow();
     expect([7, 30, 90].map((days) => AgentUsageWindowDaysSchema.parse(days))).toEqual([7, 30, 90]);
     expect(() => AgentUsageWindowDaysSchema.parse(14)).toThrow();
+    expect(AgentUsageQuerySchema.parse({ days: "30" })).toEqual({ days: 30, timezone: "UTC" });
+    expect(AgentUsageQuerySchema.parse({ days: 7, timezone: "Asia/Shanghai" })).toEqual({
+      days: 7,
+      timezone: "Asia/Shanghai",
+    });
+    expect(UsageTimezoneSchema.parse("UTC")).toBe("UTC");
+    expect(UsageTimezoneSchema.parse("America/New_York")).toBe("America/New_York");
+    expect(() => UsageTimezoneSchema.parse("+08:00")).toThrow("Expected a valid IANA timezone identifier");
+    expect(() => UsageTimezoneSchema.parse("-05:00")).toThrow("Expected a valid IANA timezone identifier");
+    expect(() => UsageTimezoneSchema.parse("Mars/Phobos")).toThrow("Expected a valid IANA timezone identifier");
+    expect(() => UsageTimezoneSchema.parse("")).toThrow();
   });
 
   it("rejects inconsistent detailed usage relationships", () => {

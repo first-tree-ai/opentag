@@ -255,6 +255,7 @@ import {
   normalizeError,
   routeTemplate,
 } from "./observability/diagnostics.js";
+import { viewerTimezone } from "./query/keys.js";
 
 interface RuntimeSchema<T> {
   safeParse(
@@ -410,8 +411,9 @@ export class BrowserApi {
     readonly diagnosticReporter: DiagnosticReporter = new ConsoleDiagnosticReporter(),
   ) {}
 
-  cloudUsage(windowDays: CloudUsageWindowDays) {
-    return this.request(`${CLOUD_USAGE_PATH}?windowDays=${windowDays}`, CloudUsageSummarySchema);
+  cloudUsage(windowDays: CloudUsageWindowDays, timezone = viewerTimezone()) {
+    const query = new URLSearchParams({ windowDays: String(windowDays), timezone });
+    return this.request(`${CLOUD_USAGE_PATH}?${query.toString()}`, CloudUsageSummarySchema);
   }
 
   cloudBilling() {
@@ -581,8 +583,12 @@ export class BrowserApi {
     });
   }
 
-  agentUsage(agentId: string, windowDays: AgentUsageWindowDays): Promise<AgentUsageDetail> {
-    return this.request(agentUsagePath(agentId, windowDays), AgentUsageDetailSchema);
+  agentUsage(
+    agentId: string,
+    windowDays: AgentUsageWindowDays,
+    timezone = viewerTimezone(),
+  ): Promise<AgentUsageDetail> {
+    return this.request(agentUsagePath(agentId, windowDays, timezone), AgentUsageDetailSchema);
   }
 
   agentConfig(agentId: string): Promise<AgentAdminConfig> {

@@ -245,13 +245,16 @@ describe("command policy branches", () => {
 
 describe("CLI process entrypoint", () => {
   it("handles successful parsing and generic errors without leaking raw details", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-cli-entry-"));
     const previousArgv = process.argv;
+    const previousHome = process.env.OPENTAG_HOME;
     const previousExitCode = process.exitCode;
     const stdout = vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
       vi.resetModules();
       vi.doMock("../cli/program.js", () => ({ createProgram: () => ({ parseAsync: async () => undefined }) }));
+      process.env.OPENTAG_HOME = home;
       process.argv = ["node", "opentag"];
       await import("../cli/index.js");
       expect(process.exitCode).toBe(previousExitCode);
@@ -270,15 +273,20 @@ describe("CLI process entrypoint", () => {
       expect(stderr).not.toHaveBeenCalledWith(expect.stringContaining("private-secret"));
     } finally {
       process.argv = previousArgv;
+      if (previousHome === undefined) delete process.env.OPENTAG_HOME;
+      else process.env.OPENTAG_HOME = previousHome;
       process.exitCode = previousExitCode;
       stdout.mockRestore();
       stderr.mockRestore();
       vi.resetModules();
+      await rm(home, { recursive: true, force: true });
     }
   });
 
   it("maps Commander usage failures to exit code two", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-cli-entry-"));
     const previousArgv = process.argv;
+    const previousHome = process.env.OPENTAG_HOME;
     const previousExitCode = process.exitCode;
     const exit = vi.spyOn(process, "exit").mockImplementation((code?: string | number | null) => {
       process.exitCode = typeof code === "number" ? code : undefined;
@@ -293,14 +301,18 @@ describe("CLI process entrypoint", () => {
           },
         }),
       }));
+      process.env.OPENTAG_HOME = home;
       process.argv = ["node", "opentag"];
       await import("../cli/index.js");
       expect(exit).toHaveBeenCalledWith(2);
     } finally {
       process.argv = previousArgv;
+      if (previousHome === undefined) delete process.env.OPENTAG_HOME;
+      else process.env.OPENTAG_HOME = previousHome;
       process.exitCode = previousExitCode;
       exit.mockRestore();
       vi.resetModules();
+      await rm(home, { recursive: true, force: true });
     }
   });
 

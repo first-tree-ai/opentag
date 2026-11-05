@@ -5,9 +5,9 @@ import {
   type TurnFailureReason,
 } from "@opentag/shared/browser";
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { formatDateTime, formatRelativeTime, initials } from "../i18n/format.js";
+import { formatDateTime, formatRelativeTime } from "../i18n/format.js";
 import * as m from "../paraglide/messages.js";
-import { Button, Icon, StatusIndicator, Text } from "../ui/design-system.js";
+import { Button, Icon, StatusIndicator, Text, Tooltip } from "../ui/design-system.js";
 import { AgentAvatar } from "./agents/agent-avatar.js";
 import { TaskActivityTimeline } from "./task-activity-timeline.js";
 import { TaskAttachments } from "./task-attachments.js";
@@ -169,37 +169,31 @@ export function TaskActivity({
 /**
  * The internal Sessions the Task's Session created, earliest first and ended ones included: what
  * each was asked to do (its title, or its id when it has none), whether it is still active, and
- * when it last did something.
+ * when it last did something. The id says nothing to most readers, so it waits in the title's tooltip
+ * for whoever is diagnosing the run.
  */
 function TaskInternalSessionsList({ sessions, footer }: { sessions: TaskInternalSessionItem[]; footer?: ReactNode }) {
   return (
     <section
       aria-labelledby="task-internal-sessions-title"
-      className="grid grid-cols-1 gap-2 rounded-lg border border-kumo-line bg-kumo-base p-4"
+      className="grid grid-cols-1 gap-3"
       data-ui="task-internal-sessions"
     >
-      <Text as="h3" id="task-internal-sessions-title" variant="heading">
+      <Text as="h3" headingSize="body" id="task-internal-sessions-title" variant="heading">
         {m.tasks_internal_sessions_heading()}
       </Text>
-      <ul className="grid grid-cols-1 divide-y divide-kumo-line">
+      <ul className="grid grid-cols-1 divide-y divide-kumo-line border-y border-kumo-line">
         {sessions.map((session) => {
           const activityAt = session.lastActivityAt ?? session.endedAt ?? session.createdAt;
           const preview = session.title?.trim() || session.runtimeModel || session.id;
           return (
             <li
               key={session.id}
-              className="flex flex-wrap items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0 text-sm"
+              className="flex items-center justify-between gap-3 py-3 text-sm"
               data-ui="task-internal-session-row"
             >
-              <div className="flex min-w-0 flex-1 items-center gap-2">
-                <span className="min-w-0 truncate font-medium text-kumo-default" title={preview}>
-                  {preview}
-                </span>
-                {preview !== session.id ? (
-                  <span className="truncate text-xs text-kumo-subtle">{session.id}</span>
-                ) : null}
-              </div>
-              <div className="flex items-center gap-3">
+              <TaskInternalSessionTitle id={session.id} preview={preview} />
+              <div className="flex shrink-0 items-center gap-3">
                 <InternalSessionStatus session={session} />
                 <time
                   className="whitespace-nowrap text-xs text-kumo-subtle"
@@ -215,6 +209,41 @@ function TaskInternalSessionsList({ sessions, footer }: { sessions: TaskInternal
       </ul>
       {footer}
     </section>
+  );
+}
+
+/** Two lines where a narrow row would leave a single line only a few words, one line otherwise. */
+const internalSessionTitleClassName =
+  "min-w-0 flex-1 line-clamp-2 wrap-anywhere text-kumo-default @min-[40rem]/content:line-clamp-1";
+
+/**
+ * Hover and keyboard focus open the tooltip with the full title and the id. A tooltip is not exposed
+ * to assistive technology on its own, so the id is also part of the title's text for screen readers.
+ * A row named by its id has nothing more to show, so it is plain text rather than a focus stop.
+ */
+function TaskInternalSessionTitle({ id, preview }: { id: string; preview: string }) {
+  if (preview === id) return <span className={internalSessionTitleClassName}>{preview}</span>;
+  const idLabel = m.tasks_internal_session_id({ id });
+  return (
+    <Tooltip
+      content={
+        <span className="grid max-w-md gap-1 wrap-anywhere">
+          <span>{preview}</span>
+          <span>{idLabel}</span>
+        </span>
+      }
+      render={
+        // `relative` keeps the absolutely placed screen-reader text inside the clipped title; at its static position past the title's end it would widen the content region.
+        <span
+          className={`${internalSessionTitleClassName} relative rounded-sm focus-visible:outline-2 focus-visible:outline-kumo-focus`}
+          // biome-ignore lint/a11y/noNoninteractiveTabindex: The tooltip holds the id and full title, and keyboard users must be able to open it.
+          tabIndex={0}
+        />
+      }
+    >
+      {preview}
+      <span className="sr-only"> {idLabel}</span>
+    </Tooltip>
   );
 }
 
@@ -307,18 +336,17 @@ function TaskRequest({ turn, id }: { turn: TaskTurn; id: string }) {
       data-ui="task-message-request"
       data-task-entry-id={id}
     >
-      <span
-        className="grid size-8 place-items-center rounded-md bg-kumo-tint text-xs font-medium ring-1 ring-inset ring-kumo-line/60"
-        aria-hidden="true"
-      >
-        {initials(author)}
-      </span>
-      <div className="grid min-w-0 gap-2">
+      <AgentAvatar displayName={author} className="size-8 text-xs font-medium text-kumo-strong" />
+      <div className="grid min-w-0 grid-cols-1 gap-2">
         <header className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1" data-ui="task-message-author">
           <strong className="min-w-0 wrap-anywhere text-sm font-medium">{author}</strong>
           <small className="text-xs text-kumo-subtle">{formatDateTime(turn.message.occurredAt)}</small>
         </header>
-        <div className="grid min-w-0 gap-3 rounded-xl bg-kumo-recessed p-4 ring-1 ring-inset ring-kumo-line/60 shadow-2xs">
+        {/* The fill follows the message, so a one-line request does not read as a wide empty panel. */}
+        <div
+          className="grid w-fit min-w-0 max-w-full gap-3 rounded-xl bg-kumo-recessed p-4"
+          data-ui="task-message-request-body"
+        >
           {turn.message.fallbackText || attachments.length === 0 ? (
             <TaskMessageBody format="plain_text" text={turn.message.fallbackText} />
           ) : null}

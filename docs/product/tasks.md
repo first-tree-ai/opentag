@@ -223,7 +223,10 @@ content formatting. Wide code, native message payloads and message tables scroll
 keyboard-focusable regions. The detail page uses the same content width as the other Agent pages: the
 title, the horizontal row of Task facts and the conversation all span the full content frame, so the
 page reads as one surface for diagnosing the run, with its status on one line above the record, instead
-of a narrow chat column beside empty space. Message
+of a narrow chat column beside empty space. Within that full-width conversation, a request's grey fill
+follows the width of its message: a long message still spreads across the frame, and Agent replies have
+no fill. Why: a one-line request in a frame-wide panel read as a large empty box, while narrowing the
+conversation itself would bring back the empty space beside it. Message
 order, paging and scroll anchoring are unchanged.
 
 ## Cancelling a queued Task
@@ -289,9 +292,16 @@ optional in the shared schema, so a reader still accepts an older Server's rows.
 The Web Task detail lists the internal Sessions above the conversation, under an **Internal
 Sessions** heading, from the `/detail/internal-sessions` section under the canonical Task id. It
 shows the first page and loads the next one on **Load more internal Sessions**. Each row shows the
-Session's title, or its model or id when it has none, with its id beside a title. It reads
-**Active** until the Session ends and **Ended** afterwards, and shows the relative time of its
-latest activity. A long title truncates on its line and never widens the page. The section appears only when the Task has internal Sessions. A page that cannot
+Session's title, or its model or id when it has none. It reads **Active** until the Session ends and
+**Ended** afterwards, and shows the relative time of its latest activity; both stay fixed at the
+right. A long title never widens the page: it stays on one line on wide containers and takes at most
+two lines on narrow ones, because one line beside the status left only a few words of what the row
+exists to say. The id is not shown on a titled row: hovering or focusing the title opens a tooltip
+with the full title and id, and screen readers get the id with the title. Why: the id only helps
+someone diagnosing a run, and beside every title it took the room the title needs. Touch screens have
+neither hover nor keyboard focus, so the id is not available there; that is accepted because the
+reader does not need it to follow the Task. A row named by its id is plain text with no tooltip or
+focus stop, because it has nothing more to show. The section appears only when the Task has internal Sessions. A page that cannot
 be read says so in the section's place and leaves the conversation in place. Collaboration messages
 are not shown.
 

@@ -146,7 +146,9 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | TK-04 | Each reply once | Task with Agent replies | Each reply appears once in the timeline, without per-message status labels | Core | unit: `features/task-conversation.test.tsx`, `features/task-outgoing-replies.test.tsx` |
 | TK-05 | Cancel a Task | Cancel a queued Task (only queued Tasks offer Cancel) | Asks to confirm; the status reads "已取消" / "Cancelled" (not Completed) and the Task still appears under the Completed filter | Edge | unit: `features/task-cancel.test.tsx`, `features/tasks-page.test.tsx` |
 | TK-06 | Narrow Agent workspace | Agent home, Tasks, and Skills in a narrow Agent workspace | Stay usable without overflow | Edge | smoke: `app.spec.ts` |
-| TK-07 | Long internal Session title | Task with an internal Session whose title fills 120 characters, at 390, 1440, and 2000px; reopen it from the list | The title truncates on its line; Status and the row's status stay in view; the content never scrolls sideways | Edge | smoke: `task-detail-layout-smoke.spec.ts` |
+| TK-07 | Long internal Session title | Task with an internal Session whose title fills 120 characters, at 390, 1440, and 2000px; reopen it from the list | The title stops at two lines at 390px and one line at 1440 and 2000px; Status and the row's status stay in view; the content never scrolls sideways | Edge | smoke: `task-detail-layout-smoke.spec.ts` |
+| TK-08 | Internal Session rows | Task with internal Sessions; hover a title, then reach it by keyboard | Heading is no larger than the Task title; rows sit between rules with no card; the id appears only in the tooltip, which hover and keyboard focus both open; a row named by its id is plain text with no focus stop | Core | smoke: `task-detail-layout-smoke.spec.ts`; unit: `features/tasks-page.test.tsx` |
+| TK-09 | Request message fill | Task with a one-line request and a long request | Each grey fill follows its message and has no border or shadow; the long one spreads across the frame; the sender's avatar is round like the Agent's | Edge | smoke: `task-detail-layout-smoke.spec.ts` |
 
 ## Account
 

@@ -63,6 +63,7 @@
   "tasks_included_in_active_work": "此消息已加入 Agent 的进行中工作。",
   "tasks_internal_session_active": "活跃",
   "tasks_internal_session_ended": "已结束",
+  "tasks_internal_session_id": "会话 ID：{id}",
   "tasks_internal_sessions_failed": "内部会话加载失败。",
   "tasks_internal_sessions_heading": "内部会话",
   "tasks_jump_to_latest": "跳到最新",

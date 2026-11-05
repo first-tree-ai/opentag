@@ -247,7 +247,9 @@ describe("PostgresRuntimeCustodyStore", () => {
       resultHash: "result-retained",
     };
     await store.beginDeliveryDispatch(fixture.direct, directHash, fixture.dispatchContext);
-    await store.claimRetainedReports(request, [claim, { ...claim, deliveryId: randomUUID() }], fixture.context);
+    await expect(
+      store.claimRetainedReports(request, [claim, { ...claim, deliveryId: randomUUID() }], fixture.context),
+    ).resolves.toEqual([claim]);
     expect(await store.getDelivery(fixture.deliveryId)).toMatchObject({
       turnId: "turn-retained",
       instanceId: fixture.instanceId,
@@ -279,7 +281,7 @@ describe("PostgresRuntimeCustodyStore", () => {
       .update(sessionPlacements)
       .set({ generation: 2 })
       .where(eq(sessionPlacements.sessionId, fixture.sessionId));
-    await expect(store.claimRetainedReports(request, [claim], fixture.context)).resolves.toBeUndefined();
+    await expect(store.claimRetainedReports(request, [claim], fixture.context)).resolves.toEqual([]);
   });
 
   it("reads accepted deliveries and records turn reports idempotently", async () => {

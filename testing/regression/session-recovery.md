@@ -39,6 +39,23 @@ the same Session after the daemon is back, its input begins with
    restarted or upgraded", with no error card and no creator notice. A second upgrade during the same Run also
    continues it.
 
+## Retained report replay after reconnect
+
+1. On the authorized test Computer, disconnect its runtime transport after a Turn finishes locally
+   but before the Server records its report. Reconnect the daemon with its retained report intact.
+2. Expected: a recovery reconcile may return `ready` or `stopped` with a retained report. Once the
+   Server claims that exact delivery and Turn, it waits with `IM_DELIVERY_RECOVERY_REPORTING` and
+   emits no `IM_DELIVERY_RECOVERY_AWAITING_REPORT` error during the gap before report arrival.
+   The report settles the original Turn once, the working reaction clears, and no replacement Run starts.
+3. Replay the same report again. Expected: it is acknowledged as already recorded, with no second
+   settlement or additional reply. If the report arrives before recovery deferral, the terminal
+   state remains intact.
+4. In the controlled protocol test harness, repeat with no manifest, a mismatched dispatch, input,
+   generation, Turn or result hash, and a valid retained report for another delivery. Expected:
+   an unreported `ready`/`stopped` response still diagnoses the current missing report; no input is
+   redispatched. Cancellation and failed reconcile completion preserve custody and still accept
+   the authentic report through its normal path.
+
 ## Retries run out
 
 1. Repeat the crash case, and kill the daemon again within a minute or so of each resume; start it again each time. Wait

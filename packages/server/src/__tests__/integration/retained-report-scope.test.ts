@@ -76,7 +76,7 @@ it.each(["dispatch", "input", "generation", "agent", "computer", "ended-session"
       await h.client.database.update(sessions).set({ endedAt: new Date() }).where(eq(sessions.id, h.f.sessionId));
     }
     const before = await h.read();
-    await h.custody.claimRetainedReports(request, [claim], context);
+    await expect(h.custody.claimRetainedReports(request, [claim], context)).resolves.toEqual([]);
     expect(await h.read()).toEqual(before);
   },
 );
@@ -89,7 +89,9 @@ it("cannot claim another Account's delivery through an owned Session", async () 
     .where(eq(imBindings.id, owned.f.bindingId));
   const foreign = await prepared();
   const before = await foreign.read();
-  await owned.custody.claimRetainedReports(owned.request, [foreign.claim], owned.f.context);
+  await expect(owned.custody.claimRetainedReports(owned.request, [foreign.claim], owned.f.context)).resolves.toEqual(
+    [],
+  );
   expect(await foreign.read()).toEqual(before);
   expect((await owned.read()).state).toBe("pending");
 });
@@ -109,7 +111,7 @@ it.each(["pending", "expired", "accepted"] as const)(
       );
     }
     const context = { ...h.f.context, instanceId: randomUUID() };
-    await h.custody.claimRetainedReports(h.request, [h.claim], context);
+    await expect(h.custody.claimRetainedReports(h.request, [h.claim], context)).resolves.toEqual([h.claim]);
     expect(await h.read()).toMatchObject({
       state: "accepted",
       turnId: h.report.turnId,
@@ -143,7 +145,7 @@ it("acknowledges an exact terminal replay from a new instance without reclaiming
   const before = await h.read();
   const context = { ...h.f.context, instanceId: randomUUID() };
   const feedback = await h.client.database.select().from(imFeedbackTargets);
-  await h.custody.claimRetainedReports(h.request, [h.claim], context);
+  await expect(h.custody.claimRetainedReports(h.request, [h.claim], context)).resolves.toEqual([]);
   expect(await h.custody.recordTurn(h.report, context)).toBe("already_recorded");
   expect(await h.read()).toEqual(before);
   expect(await h.client.database.select().from(imFeedbackTargets)).toEqual(feedback);

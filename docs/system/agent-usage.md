@@ -90,15 +90,51 @@ The Agent list reports whether an Agent is working or merely idle from Turns tha
 reported yet. A working Agent also carries `runningTaskCount`, the number of open Tasks (Sessions) holding such a
 Turn, so several Turns in one Task count once; the list row and the Agent home show that count. The count lets a
 reader see at a glance which Agents are busy and how busy without opening each one; it shows on every row, since work
-in progress is a fact whatever the status. An idle Agent shows no activity detail, so an idle Ready Agent reads just
-Ready: a "Waiting" detail only repeated what Ready already says, and read as the Agent being stuck waiting. Queued Tasks are not counted: the row reports work that has started.
-The list and detail responses include `runningTaskCount` only for a client that sends
-`x-opentag-agent-activity-task-count: 1`; the Web App sends it. Older clients validate the working activity strictly,
-so they keep receiving the shape they were released with.
-Two reads answer that question over the Agent's IM bindings, and
-`im_message_deliveries_unreported_accepted_idx` — partial on `state = 'accepted' and reported_at is null` — is the
-access path for both. Without it the reads join every Session of a binding to reach an answer, which is
-proportional to the Agent's history rather than to the Turns actually outstanding.
+in progress is a fact whatever the status. An idle Agent with nothing queued shows no activity detail, so an idle Ready
+Agent reads just Ready: a "Waiting" detail only repeated what Ready already says, and read as the Agent being stuck
+waiting.
+
+Every activity state also carries `queuedTaskCount` when it is positive: the number of Tasks waiting for delivery. A
+Task is one chat Session, or a whole private chat across its Sessions. It waits when one of its live Sessions, on a binding that is not disabled,
+holds a pending delivery that counts for the Task and none of its Sessions has a Turn running. A pending delivery counts
+when it addresses the Agent directly, or when it is an execution of a Task somebody addressed: not the channel Session's
+observer copy of a message a Thread Session owns, in a Session with a direct delivery or a Thread whose root was addressed.
+A Turn runs while it is accepted, unreported, before its deadline, and the Session's latest acceptance. The row and the Agent home show the count as
+"N tasks waiting" on every status, beside any running count. Why: queued work behind an offline Computer, a paused
+Agent, or a runtime problem is exactly what an admin needs to see to judge that the Agent is stuck; without it the row
+read as quiet.
+
+The qualification and running rules are the Task list's own, shared from `services/tasks/task-sql.ts`, so the count
+matches its Queued status. The Task list stays the authority for one Task's status.
+
+Clients declare each count separately: `x-opentag-agent-activity-task-count: 1` receives `runningTaskCount`, and
+`x-opentag-agent-activity-queued-count: 1` receives `queuedTaskCount`. The Web App sends both. Older clients validate the
+activity strictly, so each keeps receiving the shape it was released with. Why two headers: a released Server recognizes
+only the exact value `1` of the first, so a newer Web that changed it would lose the running count from that Server.
+
+The two running reads use `im_message_deliveries_unreported_accepted_idx` — partial on `state = 'accepted' and
+reported_at is null` — as their access path. Without it the reads join every Session of a binding to reach an answer,
+which is proportional to the Agent's history rather than to the Turns actually outstanding.
+
+The queued read is one statement in the same snapshot. It reads the listed Agents' live channel and thread Sessions binding by binding
+through `sessions_active_channel_unique` and `sessions_active_thread_unique`, so Internal Sessions are not read when
+these indexes are chosen, and probes each Session's waiting deliveries through `im_message_deliveries_overflow_idx`, whose
+leading columns reach them directly, however long the Session's history is. Each probe stays correlated to its Session
+(`offset 0`), so the planner cannot hash it against every Account's deliveries. A waiting Task then checks its own
+Sessions for a running Turn, so the read does not touch other Accounts' Turns; that check reads the waiting Session's
+accepted deliveries, however many. The read turns JIT off for its transaction: every probe is costed as if it found
+work, so an Account with many Agents passed the JIT threshold, and compiling a read of a few milliseconds took hundreds.
+
+The read has no recency window. Why: a Session with a valid pending delivery may have no recent message by any clock with
+an index. `occurred_at` is the provider's and can already be old when a valid request arrives, and `received_at`, which
+sets the delivery's deadline, has no index. A window would show a false zero for that work.
+
+There is no hard limit on an Account's Agents or an Agent's Sessions. Channel and thread Sessions stay live until their
+binding is disabled or their Agent is transferred, and nothing deletes them, so the Sessions this read probes grow with
+conversation history. In `all_message` mode every new thread in a group adds one. That is accepted at current scale:
+thousands of Sessions per Account stay far inside the 500 ms single-query budget. [Issue
+#1319](https://github.com/first-tree-ai/opentag/issues/1319) tracks the delivery key and index that would replace the
+read, and when to add them.
 
 The list reads the Agent projection, the activity, and the 30-day usage totals in one read-only `repeatable read`
 snapshot for the same reason as the detail read: the Agent query is the authorization, and the reads it enables are

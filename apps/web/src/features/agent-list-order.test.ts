@@ -408,6 +408,22 @@ describe("Agent availability model and presentation", () => {
         availability: { ...base.availability, state: "action_required", reason: "computer_offline" },
       } as never),
     ).toEqual({ detail: "2 tasks running", label: "Computer offline", tone: "warning" });
+    // Queued Tasks show whatever the status, so work piling up behind an offline Computer is visible.
+    expect(
+      agentCardStatus({
+        ...base,
+        activity: { state: "idle", queuedTaskCount: 2 },
+        evidenceConfirmed: true,
+        availability: { ...base.availability, state: "action_required", reason: "computer_offline" },
+      } as never),
+    ).toEqual({ detail: "2 tasks waiting", label: "Computer offline", tone: "warning" });
+    expect(
+      agentCardStatus({
+        ...base,
+        activity: { state: "working", startedAt: new Date().toISOString(), runningTaskCount: 1, queuedTaskCount: 1 },
+        evidenceConfirmed: true,
+      } as never),
+    ).toEqual({ detail: "1 task running · 1 task waiting", label: "Ready", tone: "success" });
     expect(
       agentCardStatus({
         ...base,

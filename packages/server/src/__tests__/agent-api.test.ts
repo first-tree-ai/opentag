@@ -1,4 +1,5 @@
 import {
+  AGENT_ACTIVITY_QUEUED_COUNT_HEADER,
   AGENT_ACTIVITY_TASK_COUNT_HEADER,
   accountAgentCreationIntentPath,
   agentByIdPath,
@@ -406,6 +407,40 @@ describe("Agent HTTP API", () => {
       headers: { ...authorization, [AGENT_ACTIVITY_TASK_COUNT_HEADER]: "1" },
     });
     expect(current.json().activity).toEqual(working);
+  });
+
+  it("returns each activity count only to clients that declared it", async () => {
+    const service = agentService();
+    const queued = {
+      state: "working" as const,
+      startedAt: agentDetail.updatedAt,
+      runningTaskCount: 1,
+      queuedTaskCount: 2,
+    };
+    service.getById.mockResolvedValue({ ...agentDetail, activity: queued });
+    const { app } = appWith(service);
+    const read = (headers: Record<string, string>) =>
+      app.inject({ method: "GET", url: agentByIdPath(agentId), headers: { ...authorization, ...headers } });
+    const running = { [AGENT_ACTIVITY_TASK_COUNT_HEADER]: "1" };
+    const waiting = { [AGENT_ACTIVITY_QUEUED_COUNT_HEADER]: "1" };
+
+    expect((await read({})).json().activity).toEqual({ state: "working", startedAt: agentDetail.updatedAt });
+    expect((await read(running)).json().activity).toEqual({
+      state: "working",
+      startedAt: agentDetail.updatedAt,
+      runningTaskCount: 1,
+    });
+    expect((await read(waiting)).json().activity).toEqual({
+      state: "working",
+      startedAt: agentDetail.updatedAt,
+      queuedTaskCount: 2,
+    });
+    expect((await read({ ...running, ...waiting })).json().activity).toEqual(queued);
+    // An unknown version is not a declaration.
+    expect((await read({ [AGENT_ACTIVITY_TASK_COUNT_HEADER]: "2" })).json().activity).toEqual({
+      state: "working",
+      startedAt: agentDetail.updatedAt,
+    });
   });
 
   it("preserves malformed JSON as a typed client error", async () => {

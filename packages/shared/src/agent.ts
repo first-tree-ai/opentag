@@ -175,39 +175,65 @@ export const AgentUsageQuerySchema = z
   })
   .strict();
 
+/**
+ * Tasks with a message still waiting to be delivered to the Computer, counted as the Task list's
+ * "Queued" status counts them. Present only when positive; older Servers omit it.
+ */
+const queuedTaskCount = z.number().int().safe().positive().optional();
+
 export const AgentListActivitySchema = z.discriminatedUnion("state", [
-  z.object({ state: z.literal("idle") }).strict(),
-  z.object({ state: z.literal("unknown") }).strict(),
+  z.object({ state: z.literal("idle"), queuedTaskCount }).strict(),
+  z.object({ state: z.literal("unknown"), queuedTaskCount }).strict(),
   z
     .object({
       state: z.literal("working"),
       startedAt: z.string().datetime(),
       /** Tasks with a Turn the Computer accepted and has not reported yet. Older Servers omit it. */
       runningTaskCount: z.number().int().safe().positive().optional(),
+      queuedTaskCount,
     })
     .strict(),
 ]);
 
 /**
- * Clients that render running Task counts send this header with the version below. `runningTaskCount`
- * is additive to a strict object, so a client that does not ask for it never receives it: older
- * clients validate the working activity strictly and would reject the field.
+ * Clients that render the running Task count send this header. The count is additive to a strict object, so only a
+ * client that declared it receives it: older clients validate the activity strictly and would reject a field they do
+ * not know. Released Servers recognize exactly this value, so it must not change.
  */
 export const AGENT_ACTIVITY_TASK_COUNT_HEADER = "x-opentag-agent-activity-task-count";
 export const AGENT_ACTIVITY_TASK_COUNT_VERSION = "1";
+
+/**
+ * Clients that render the queued Task count send this header as well. It is separate so a newer Web still receives the
+ * running count from a Server that does not know the queued count.
+ */
+export const AGENT_ACTIVITY_QUEUED_COUNT_HEADER = "x-opentag-agent-activity-queued-count";
+export const AGENT_ACTIVITY_QUEUED_COUNT_VERSION = "1";
 
 export function requestsAgentActivityTaskCount(value: string | string[] | undefined): boolean {
   return (Array.isArray(value) ? value[0] : value) === AGENT_ACTIVITY_TASK_COUNT_VERSION;
 }
 
-/** The activity a client receives: the count only for a client that declared it can read it. */
+export function requestsAgentActivityQueuedCount(value: string | string[] | undefined): boolean {
+  return (Array.isArray(value) ? value[0] : value) === AGENT_ACTIVITY_QUEUED_COUNT_VERSION;
+}
+
+/** The activity a client receives: only the counts that client declared it can read. */
 export function projectAgentActivityForClient(
   activity: z.infer<typeof AgentListActivitySchema>,
   includeTaskCount: boolean,
+  includeQueuedCount = false,
 ): z.infer<typeof AgentListActivitySchema> {
-  if (includeTaskCount || activity.state !== "working" || activity.runningTaskCount === undefined) return activity;
-  const { runningTaskCount: _count, ...legacy } = activity;
-  return legacy;
+  let projected = activity;
+  if (!includeQueuedCount && projected.queuedTaskCount !== undefined) {
+    const { queuedTaskCount: _queued, ...rest } = projected;
+    projected = rest;
+  }
+  if (!includeTaskCount && projected.state === "working" && projected.runningTaskCount !== undefined) {
+    const { runningTaskCount: _count, ...legacy } = projected;
+    projected = legacy;
+  }
+  return projected;
 }
 
 export const AgentDetailSchema = AgentSummarySchema.extend({

@@ -110,7 +110,7 @@ export function messageOwnerTaskId(messageAlias: string): SQL {
  * revision of its message superseded does not, and neither does the channel Session's ambient
  * observer copy of a message a thread Session owns. `sessionAlias` is the delivery's Task Session.
  */
-function isExecution(deliveryAlias: string, sessionAlias: string): SQL {
+export function isExecution(deliveryAlias: string, sessionAlias: string, probe: SQL = sql``): SQL {
   const d = sql.raw(deliveryAlias);
   const ss = sql.raw(sessionAlias);
   return sql`not (${d}.state = 'expired' and ${d}.reason = ${SUPERSEDED_REVISION})
@@ -123,6 +123,7 @@ function isExecution(deliveryAlias: string, sessionAlias: string): SQL {
         inner join sessions os on os.id = owner.session_id
         where owner.message_id = ${d}.message_id
           and os.kind = 'thread'
+        ${probe}
       )
     )`;
 }
@@ -132,7 +133,7 @@ function isExecution(deliveryAlias: string, sessionAlias: string): SQL {
  * addressed directly is still a Task then, because the conversation continues the request that
  * started it. A superseded revision of the root's delivery does not count.
  */
-function threadRootAddressed(sessionAlias: string): SQL {
+export function threadRootAddressed(sessionAlias: string, probe: SQL = sql``): SQL {
   const ts = sql.raw(sessionAlias);
   return sql`${ts}.kind = 'thread'
     and ${ts}.conversation_kind <> 'dm'
@@ -147,6 +148,7 @@ function threadRootAddressed(sessionAlias: string): SQL {
         and rm.channel_id = ${ts}.channel_id
         and rm.external_message_id = ${threadRootExternalId(sessionAlias)}
         and rm.direction = 'inbound'
+      ${probe}
     )`;
 }
 
@@ -162,7 +164,7 @@ function threadRootAddressed(sessionAlias: string): SQL {
  * outside `isExecution`, whose negated comparison is null for it (every writer that expires a
  * delivery records a reason).
  */
-function liveDeliveryExists(sessionAlias: string, attention: "direct" | "ambient"): SQL {
+export function liveDeliveryExists(sessionAlias: string, attention: "direct" | "ambient", suffix: SQL = sql``): SQL {
   const s = sql.raw(sessionAlias);
   const probe = (bounds: SQL) => sql`exists (
     select 1
@@ -170,6 +172,7 @@ function liveDeliveryExists(sessionAlias: string, attention: "direct" | "ambient
     where d.session_id = ${s}.id
       and d.attention = ${sql.raw(`'${attention}'`)}
       and ${bounds}
+    ${suffix}
   )`;
   return sql`(
     ${probe(sql`d.state in (${UNEXPIRED_STATES})`)}

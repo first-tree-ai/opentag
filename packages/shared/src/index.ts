@@ -16,6 +16,8 @@ export {
   ListAccountComputersResponseSchema,
 } from "./account.js";
 export {
+  AGENT_ACTIVITY_QUEUED_COUNT_HEADER,
+  AGENT_ACTIVITY_QUEUED_COUNT_VERSION,
   AGENT_ACTIVITY_TASK_COUNT_HEADER,
   AGENT_ACTIVITY_TASK_COUNT_VERSION,
   AGENT_NAME_PATTERN,
@@ -72,6 +74,7 @@ export {
   RebindAgentComputerRequestSchema,
   type ReceiveMode,
   ReceiveModeSchema,
+  requestsAgentActivityQueuedCount,
   requestsAgentActivityTaskCount,
   type UpdateAgentRequest,
   UpdateAgentRequestSchema,

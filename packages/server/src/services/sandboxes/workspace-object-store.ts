@@ -334,7 +334,7 @@ function snapshotsEqual(snapshot: StoredSnapshot, object: WorkspaceObject): bool
 function validateWriteInput(input: WorkspaceObjectWriteInput): void {
   if (!input || typeof input !== "object") fail("invalid_input", "Workspace write input is required");
   if (!Number.isSafeInteger(input.bytes) || input.bytes < 1 || input.bytes > RUNNER_WORKSPACE_ARCHIVE_MAX_BYTES) {
-    fail("invalid_input", "Workspace archive byte length is zero or outside the 128 MiB bound");
+    fail("invalid_input", "Workspace archive byte length is zero or outside the 512 MiB bound");
   }
   if (!SHA256_PATTERN.test(input.sha256)) fail("invalid_input", "Workspace archive sha256 is not a hex digest");
   if (!MD5_PATTERN.test(input.md5)) fail("invalid_input", "Workspace archive md5 is not a base64 digest");

@@ -162,9 +162,10 @@ overwrite or automatic empty fallback is allowed.
 ## Resource and rollout limits
 
 The fixed configuration remains 1 vCPU / 1 GiB. Archive processing streams rather than buffering
-the whole payload. Initial safety limits are 128 MiB compressed, 256 MiB expanded, and 50,000
-entries; exceeding a limit fails saving/restoring explicitly. Temporary files also consume the
-Instance's memory-backed filesystem, so these limits are not a guarantee against workload OOM.
+the whole payload. Safety limits are 512 MiB compressed, 512 MiB expanded, and 50,000 entries;
+exceeding a limit fails saving/restoring explicitly. The workspace and temporary archive files both
+consume the Instance's memory-backed filesystem, so these limits are not a guarantee against workload
+OOM: a workspace near the limit plus its archive can approach the Instance's full 1 GiB.
 The Cloud system prompt explains these limits and directs disposable dependency caches/build output
 outside the saved workspace; those files must be recreated on subsequent Turns.
 Relative workspace symlinks are supported. Hard links (including internal hard links), unsafe
@@ -177,7 +178,7 @@ Existing E3/E4 allocations are not automatically migrated: a previously allocate
 an archive is rejected before creating a replacement Instance. Initial acceptance uses a new Session; retaining an existing live
 workspace requires a separate migration procedure before switching its Runner.
 Existing storage configuration and allocation identity are reused. The ingress/reverse proxy must
-allow the archive body size (128 MiB) and the transfer deadline (120 seconds); verify these values
+allow the archive body size (512 MiB) and the transfer deadline (120 seconds); verify these values
 in staging before enabling E5. Workspace HTTP requests and the Runner WSS connection must
 reach the same Server process while connection ownership is held in the in-memory Runner hub.
 Local tests do not prove the

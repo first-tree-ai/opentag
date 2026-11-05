@@ -5,7 +5,11 @@ import type { BackgroundFailureSupervisor } from "../observability/background-fa
 import type { ReadyRunnerAllocation } from "../services/sandboxes/sandbox-runner-service.js";
 import type { CloudSessionAllocationPort, ImDeliveryDiagnosticReporter } from "./im-delivery-worker.types.js";
 
-const CLOUD_READINESS_RETRY_CODES = ["IM_DELIVERY_CLOUD_ENVIRONMENT_NOT_READY", "IM_DELIVERY_CLOUD_RUNNER_NOT_READY"];
+const CLOUD_READINESS_RETRY_CODES = [
+  "IM_DELIVERY_CLOUD_ENVIRONMENT_STARTING",
+  "IM_DELIVERY_CLOUD_ENVIRONMENT_NOT_READY",
+  "IM_DELIVERY_CLOUD_RUNNER_NOT_READY",
+];
 
 export function isCloudReadinessRetry(code: string): boolean {
   return CLOUD_READINESS_RETRY_CODES.includes(code);

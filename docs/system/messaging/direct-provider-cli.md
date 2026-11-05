@@ -47,7 +47,7 @@ restart rules. Previously recorded Turn text is left in the conversation history
 
 ## Provider CLI lifecycle
 
-Managed artifact downloads allow at most four GET attempts for HTTP 408, 429, 500, 502, 503 and 504 and selected transient
+Managed artifact downloads allow at most four download attempts for HTTP 408, 429, 500, 502, 503 and 504 and selected transient
 connection errors. The 5-, 10- and 20-second retry waits share the caller's download deadline (120 seconds for installation)
 with all requests, HTTPS redirects and body reads. Cancellation interrupts both reads and waits and preserves the caller's
 reason. Permanent HTTP or TLS failures, unsafe redirects, size violations and digest mismatches do not trigger retries.

@@ -12,7 +12,7 @@ succeeds. A version tag is never overwritten; a retry can reuse an existing imag
 `Runner Toolchain` remains the independent, offline-only PR build check.
 
 Pinned Runner tool downloads retry only HTTP 408, 429, 500, 502, 503 and 504 and selected transient connection errors.
-Each artifact has at most four GET attempts, with waits of 5, 10 and 20 seconds inside one 120-second deadline covering
+Each artifact has at most four download attempts, with waits of 5, 10 and 20 seconds inside one 120-second deadline covering
 requests, redirects and body reads. Cancellation stops requests and waits. Permanent errors, size violations and digest
 mismatches fail immediately; retries never relax the reviewed versions, sizes or SHA256 checks. Provider CLI installation
 owns its download retries, with no additional retry loop in Runner assembly. The Native Proxy workflow uses the same

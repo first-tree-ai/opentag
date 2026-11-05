@@ -1,7 +1,8 @@
 import type { RuntimeCredentialProvider, RuntimeExecutionSource } from "@opentag/shared";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { DatabaseClient } from "../db/client.js";
 import {
+  agents,
   computers,
   imBindings,
   imMessageDeliveries,
@@ -119,21 +120,41 @@ export class PostgresRuntimeExecutionAuthority implements RuntimeExecutionAuthor
     ) {
       return { status: "authorized" };
     }
-    // The dispatch/accept race is expected: the Client prepares provider access as the Turn
-    // starts. A live, not-yet-accepted delivery yields a bounded retryable not_ready; anything
-    // else (terminal, steered, foreign) is plainly invalid.
+    // Acceptance may commit after the custody read. Observe its state and full identity together.
     const [row] = await this.#database
-      .select({ state: imMessageDeliveries.state, turnId: imMessageDeliveries.turnId })
+      .select({
+        state: imMessageDeliveries.state,
+        inputHash: imMessageDeliveries.inputHash,
+        turnId: imMessageDeliveries.turnId,
+        sessionId: imMessageDeliveries.sessionId,
+        agentId: agents.id,
+        computerId: computers.id,
+        instanceId: imMessageDeliveries.reportOwnerInstanceId,
+        placementGeneration: imMessageDeliveries.placementGeneration,
+      })
       .from(imMessageDeliveries)
-      .where(
-        and(
-          eq(imMessageDeliveries.id, source.deliveryId),
-          eq(imMessageDeliveries.sessionId, context.sessionId),
-          inArray(imMessageDeliveries.state, ["pending", "expired"]),
-        ),
-      )
+      .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .innerJoin(agents, eq(agents.id, imBindings.agentId))
+      .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
+      .where(and(eq(imMessageDeliveries.id, source.deliveryId), eq(imMessageDeliveries.sessionId, context.sessionId)))
       .limit(1);
-    return row ? { status: "not_ready" } : { status: "invalid" };
+    if (!row) return { status: "invalid" };
+    if (row.state === "pending" || row.state === "expired") return { status: "not_ready" };
+    if (
+      row.state === "accepted" &&
+      row.inputHash &&
+      row.turnId === source.turnId &&
+      row.sessionId === context.sessionId &&
+      row.agentId === context.agentId &&
+      row.computerId === context.computerId &&
+      row.instanceId === context.instanceId &&
+      row.placementGeneration === context.placementGeneration
+    ) {
+      return { status: "authorized" };
+    }
+    return { status: "invalid" };
   }
 
   /**

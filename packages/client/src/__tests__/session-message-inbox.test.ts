@@ -538,6 +538,8 @@ describe("SessionMessageInbox", () => {
       admission: new AdmissionController(),
       credentialEnvironment: credentialEnvironment(),
       imCredentialGrantVersion: () => 2,
+      // A fixed clock: the delay is computed from two readings of it.
+      now: () => 1_000,
       onRunOutcome,
       persistence: new MemoryRuntimeDurabilityStore(),
       sessionCollaborationVersion: () => 4,

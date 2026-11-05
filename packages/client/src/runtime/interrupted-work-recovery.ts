@@ -201,7 +201,7 @@ export class InterruptedWorkRecovery implements InterruptedTurnResumer {
       return;
     }
     const turn = unresolved?.unresolvedTurn;
-    if (!turn || turn.turnId !== record.turnId || turn.deliveryId !== record.deliveryId) {
+    if (!unresolved || !turn || turn.turnId !== record.turnId || turn.deliveryId !== record.deliveryId) {
       // The Turn was recorded (or replaced) before the record could be removed.
       await this.#options.retries.remove(record.sessionId, record.turnId).catch(() => undefined);
       return;

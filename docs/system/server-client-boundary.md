@@ -112,7 +112,10 @@ are acceptable: the Provider may or may not have persisted the interrupted turn.
   is steered; when it cannot be (storage failure, or more than 16 steered
   messages), the steer is deferred and the Server delivers the message after
   the Turn. A retry replays only captured steers with a durable steer receipt,
-  that is, the ones the Server settled with this Turn. A Session message's
+  that is, the ones the Server settled with this Turn. When a Turn has captured
+  steers and its Session binding is unreadable or no longer holds the Turn, the
+  receipts are unknown, so no retry runs and the original failure is reported
+  rather than completing without acknowledged input. A Session message's
   interruption is kept on its durable inbox record, updated in place so the
   inbox order survives a restart; the Server-backed durability adapter does not
   store it, so a recovered Run there is retried as a crash.

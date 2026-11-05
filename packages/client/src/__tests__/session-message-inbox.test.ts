@@ -1137,7 +1137,10 @@ describe("SessionMessageInbox", () => {
     const recovery = new InterruptedWorkRecovery({
       bindingStore: {
         read: async () =>
-          ({ unresolvedTurn: { turnId: "turn-1", deliveryId: imRequest.deliveryId, phase: "running" } }) as never,
+          ({
+            recentRecordedInputs: [],
+            unresolvedTurn: { turnId: "turn-1", deliveryId: imRequest.deliveryId, phase: "running" },
+          }) as never,
       },
       connection: {
         capabilityVersion: (capability) => (capability === RUNTIME_CAPABILITY.sessionRecovery ? 1 : undefined),

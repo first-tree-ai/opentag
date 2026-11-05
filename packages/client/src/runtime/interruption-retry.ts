@@ -257,14 +257,15 @@ export function parseTurnRetryRecord(value: unknown): TurnRetryRecord {
 /**
  * The captured steers that the Server settled with the root Turn: only those with a durable steer
  * receipt in the Session binding. A captured steer whose provider steer or receipt failed was answered
- * `deferred`, so the Server still owns it and the retry must not replay it.
+ * `deferred`, so the Server still owns it and the retry must not replay it. The caller must hold the
+ * binding: an unreadable or missing binding says nothing about the receipts and must stop the retry.
  */
 export function acknowledgedSteers(
   steers: readonly RuntimeImSteerRequest[],
-  binding: { recentRecordedInputs: ReadonlyArray<{ kind: string; deliveryId: string; turnId: string }> } | undefined,
+  binding: { recentRecordedInputs: ReadonlyArray<{ kind: string; deliveryId: string; turnId: string }> },
 ): RuntimeImSteerRequest[] {
   const receipts = new Set(
-    (binding?.recentRecordedInputs ?? [])
+    binding.recentRecordedInputs
       .filter((entry) => entry.kind === "steer")
       .map((entry) => `${entry.deliveryId}:${entry.turnId}`),
   );

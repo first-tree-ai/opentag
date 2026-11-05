@@ -177,20 +177,63 @@ describe("AgentTurnRunner automatic retry", () => {
     expect(h.submit).toHaveBeenCalledOnce();
   });
 
-  it("retries without steered input when the steer receipts cannot be read", async () => {
+  it.each([
+    ["cannot be read", "unreadable"],
+    ["is missing", "missing"],
+    ["no longer holds the Turn", "replaced"],
+  ] as const)("reports the failure instead of retrying when the Session binding %s", async (_name, scenario) => {
     const h = runnerHarness();
     h.request.runtime.budget = { maxDurationMs: 20 };
     const steer = steerRequest(h.request, "steered in");
     h.records.set(h.request.sessionId, { ...turnRetryRecord(h.request, "turn-1"), steers: [steer] });
     h.receipts.push({ kind: "steer", deliveryId: steer.deliveryId, turnId: "turn-1" });
-    h.bindingRead.mockRejectedValueOnce(new Error("disk"));
+    if (scenario === "unreadable") h.bindingRead.mockRejectedValueOnce(new Error("disk"));
+    if (scenario === "missing") h.bindingRead.mockResolvedValueOnce(undefined);
+    if (scenario === "replaced") {
+      h.bindingRead.mockResolvedValueOnce({ recentRecordedInputs: [], unresolvedTurn: undefined });
+    }
+    h.prompt.mockImplementationOnce(abortedOnSignal);
+    h.runner.start(owner(h.request));
+    await h.runner.settled();
+    // The attempt that held the steer is the only one: no retry can run without the acknowledged input.
+    expect(h.prompt).toHaveBeenCalledOnce();
+    expect(h.create).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ outcome: "failed", errorReason: "turn_timeout" }),
+      3,
+    );
+    expect(h.logs).toContainEqual(
+      expect.objectContaining({ fields: expect.objectContaining({ code: "TURN_RETRY_STEER_RECEIPTS_UNAVAILABLE" }) }),
+    );
+  });
+
+  it("retries without consulting the binding when no steer was captured", async () => {
+    const h = runnerHarness();
+    h.request.runtime.budget = { maxDurationMs: 20 };
+    h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
+    h.bindingRead.mockRejectedValue(new Error("disk"));
     h.prompt
       .mockImplementationOnce(abortedOnSignal)
       .mockImplementationOnce(async () => ({ runId: "turn-1", status: "completed", output: [] }));
     h.runner.start(owner(h.request));
     await h.runner.settled();
     expect(h.prompt).toHaveBeenCalledTimes(2);
-    expect(promptItems(h.prompt, 1).at(-1)?.text).not.toContain("steered in");
+    expect(h.bindingRead).not.toHaveBeenCalled();
+    expect(h.create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ outcome: "completed" }), 3);
+  });
+
+  it("retries without a captured steer whose receipt is absent from a readable binding", async () => {
+    const h = runnerHarness();
+    h.request.runtime.budget = { maxDurationMs: 20 };
+    const steer = steerRequest(h.request, "deferred, still the Server's");
+    h.records.set(h.request.sessionId, { ...turnRetryRecord(h.request, "turn-1"), steers: [steer] });
+    h.prompt
+      .mockImplementationOnce(abortedOnSignal)
+      .mockImplementationOnce(async () => ({ runId: "turn-1", status: "completed", output: [] }));
+    h.runner.start(owner(h.request));
+    await h.runner.settled();
+    expect(h.prompt).toHaveBeenCalledTimes(2);
+    expect(promptItems(h.prompt, 1).at(-1)?.text).not.toContain("deferred, still the Server's");
+    expect(h.create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ outcome: "completed" }), 3);
   });
 
   it("reports the failure when the one retry also times out", async () => {
@@ -511,6 +554,44 @@ describe("AgentTurnRunner steer custody", () => {
       f.recovery.stop();
     },
   );
+
+  it("leaves the Turn to report recovery when a restart cannot read its Session binding", async () => {
+    const request = delivery();
+    const steer = steerRequest(request, "acknowledged");
+    const f = recoveryFixture();
+    f.records.set(request.sessionId, { ...turnRetryRecord(request, "turn-1"), steers: [steer] });
+    f.unresolved.set(request.sessionId, {
+      turnId: "turn-1",
+      deliveryId: request.deliveryId,
+      phase: "running",
+      recentRecordedInputs: [{ kind: "steer", deliveryId: steer.deliveryId, turnId: "turn-1" }],
+    });
+    vi.spyOn(f.unresolved, "has").mockImplementationOnce(() => {
+      throw new Error("disk");
+    });
+    await f.recovery.start();
+    f.version = 1;
+    expect(f.recovery.isPendingRetry(request.sessionId, "turn-1")).toBe(false);
+    expect(f.recovery.resume(request.sessionId, { deliveryId: request.deliveryId, turnId: "turn-1" })).toBe(false);
+    expect(f.custody.resume).not.toHaveBeenCalled();
+    expect(f.records.get(request.sessionId)?.retries).toBe(0);
+    f.recovery.stop();
+  });
+
+  it("does not resume a captured steer's Turn after a restart when its Session binding is missing", async () => {
+    const request = delivery();
+    const f = recoveryFixture();
+    f.records.set(request.sessionId, {
+      ...turnRetryRecord(request, "turn-1"),
+      steers: [steerRequest(request, "acknowledged")],
+    });
+    await f.recovery.start();
+    f.version = 1;
+    expect(f.recovery.resume(request.sessionId, { deliveryId: request.deliveryId, turnId: "turn-1" })).toBe(false);
+    expect(f.custody.resume).not.toHaveBeenCalled();
+    expect(f.records.has(request.sessionId)).toBe(false);
+    f.recovery.stop();
+  });
 
   it("replays an acknowledged steer after a restart", async () => {
     const request = delivery();
@@ -939,7 +1020,9 @@ function runnerHarness(options: { restartRetry?: boolean | (() => boolean) } = {
   const recordSteer = vi.fn(async (steer: RuntimeImSteerRequest) => {
     receipts.push({ kind: "steer", deliveryId: steer.deliveryId, turnId: steer.expectedTurnId });
   });
-  const bindingRead = vi.fn(async () => ({ recentRecordedInputs: receipts }));
+  const bindingRead = vi.fn<
+    () => Promise<{ recentRecordedInputs: typeof receipts; unresolvedTurn: { turnId: string } | undefined } | undefined>
+  >(async () => ({ recentRecordedInputs: receipts, unresolvedTurn: { turnId: "turn-1" } }));
   const runner = new AgentTurnRunner({
     bindingStore: {
       updateUnresolved,
@@ -977,6 +1060,7 @@ function runnerHarness(options: { restartRetry?: boolean | (() => boolean) } = {
     retries,
     receipts,
     bindingRead,
+    logs,
     recordSteer,
     runner,
     runtime,

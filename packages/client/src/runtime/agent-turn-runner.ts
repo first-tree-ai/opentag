@@ -674,7 +674,18 @@ export class AgentTurnRunner {
     const { agentId, sessionId } = turn.owner.request;
     const spent = await this.#retries.update(sessionId, turn.owner.turnId, spendRetry).catch(() => undefined);
     if (!spent) return false;
+    if (spent.steers.length === 0) return true;
+    // Only the binding that still holds this Turn can say which steers it owns. Without it an
+    // acknowledged steer cannot be told from an unacknowledged one, so a retry could silently drop
+    // input the Server settled with this Turn: report the failure instead.
     const binding = await this.#bindingStore.read(agentId, sessionId).catch(() => undefined);
+    if (binding?.unresolvedTurn?.turnId !== turn.owner.turnId) {
+      this.#logger.warn(
+        { code: "TURN_RETRY_STEER_RECEIPTS_UNAVAILABLE", sessionId, turnId: turn.owner.turnId },
+        "Turn automatic retry refused: steer receipts are unavailable",
+      );
+      return false;
+    }
     turn.steers = acknowledgedSteers(spent.steers, binding);
     return true;
   }

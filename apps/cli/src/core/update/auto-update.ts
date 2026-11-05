@@ -21,6 +21,7 @@ export interface PortableAutoUpdateOptions {
   home: string;
   installMode: Extract<InstallMode, { mode: "portable" }>;
   protectedWork(): ProtectedWorkCount;
+  canInterruptWork(): boolean;
   quiesce(): () => void;
   /** Called after a successful install so the daemon can stop and exit with the reserved code. */
   onHandoff(): void | Promise<void>;
@@ -95,6 +96,7 @@ export function createPortableAutoUpdater(options: PortableAutoUpdateOptions): U
     currentVersion: CLI_VERSION,
     logger,
     protectedWork: options.protectedWork,
+    canInterruptWork: options.canInterruptWork,
     quiesce: options.quiesce,
     executeUpdate: async (target) => {
       await installTarget(target);

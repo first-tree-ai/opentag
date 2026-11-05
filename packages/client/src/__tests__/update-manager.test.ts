@@ -16,6 +16,8 @@ interface Harness {
   isQuiesced(): boolean;
   resumes: number;
   setProtectedWork(total: number): void;
+  setRecoverable(recoverable: boolean): void;
+  quiescedDuringInstall: boolean[];
   flushSleep(): void;
   settle(): Promise<void>;
   failNextInstall(reason: string): void;
@@ -36,6 +38,8 @@ function harness(
   const entries: Parameters<typeof recordingLogger>[0] = [];
   const sleepers: Array<() => void> = [];
   let protectedTotal = 0;
+  let recoverable = false;
+  const quiescedDuringInstall: boolean[] = [];
   let handoffs = 0;
   let quiesced = false;
   let resumes = 0;
@@ -45,6 +49,7 @@ function harness(
     currentVersion: overrides.currentVersion ?? "0.0.2-staging.1.1",
     logger: recordingLogger(entries),
     protectedWork: () => ({ total: protectedTotal }),
+    canInterruptWork: () => recoverable,
     quiesce: () => {
       quiesced = true;
       return () => {
@@ -54,6 +59,7 @@ function harness(
       };
     },
     executeUpdate: async (target) => {
+      quiescedDuringInstall.push(quiesced);
       if (nextFailure) {
         const reason = nextFailure;
         nextFailure = undefined;
@@ -93,6 +99,10 @@ function harness(
     setProtectedWork: (total) => {
       protectedTotal = total;
     },
+    setRecoverable: (value) => {
+      recoverable = value;
+    },
+    quiescedDuringInstall,
     flushSleep: () => {
       for (const resolve of sleepers.splice(0)) resolve();
     },
@@ -365,7 +375,48 @@ describe("UpdateManager", () => {
     }
   });
 
-  it("waits indefinitely for protected work with no force timeout", async () => {
+  it("interrupts running work instead of waiting, keeping admission open until the handoff", async () => {
+    const h = harness();
+    h.setRecoverable(true);
+    h.setProtectedWork(2);
+    h.manager.observe(target("0.0.3-staging.1.1"));
+    await h.settle();
+    expect(h.installs).toEqual(["0.0.3-staging.1.1"]);
+    expect(h.quiescedDuringInstall).toEqual([false]);
+    expect(h.handoffs).toBe(1);
+    expect(h.isQuiesced()).toBe(true);
+    expect(h.state()).toMatchObject({ state: "installed", target: "0.0.3-staging.1.1" });
+  });
+
+  it("leaves running work and admission alone when the install fails", async () => {
+    const h = harness();
+    h.setRecoverable(true);
+    h.setProtectedWork(2);
+    h.failNextInstall("checksum mismatch");
+    h.manager.observe(target("0.0.3-staging.1.1"));
+    await h.settle();
+    expect(h.handoffs).toBe(0);
+    expect(h.isQuiesced()).toBe(false);
+    expect(h.resumes).toBe(0);
+    expect(h.state()?.state).toBe("blocked");
+  });
+
+  it("stops waiting for protected work once interrupted work becomes recoverable", async () => {
+    const h = harness();
+    h.setProtectedWork(2);
+    h.manager.observe(target("0.0.3-staging.1.1"));
+    await h.settle();
+    expect(h.state()?.state).toBe("awaiting_protected_work");
+    expect(h.installs).toEqual([]);
+
+    h.setRecoverable(true);
+    h.flushSleep();
+    await h.settle();
+    expect(h.installs).toEqual(["0.0.3-staging.1.1"]);
+    expect(h.handoffs).toBe(1);
+  });
+
+  it("waits with no force timeout while interrupted work could not be recovered", async () => {
     const h = harness();
     h.setProtectedWork(2);
     h.manager.observe(target("0.0.3-staging.1.1"));

@@ -1502,6 +1502,39 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     expect(reconcilerClose).toHaveBeenCalledOnce();
   });
 
+  it("lets an upgrade interrupt work only while the Server negotiated Session recovery", () => {
+    let version: number | undefined;
+    const runtimeFor = (connection: unknown) =>
+      new ComposedClientRuntime(
+        {} as never,
+        {
+          admission: {},
+          bindingStore: {},
+          custody: {},
+          credentialEnvironment: {},
+          reconciler: {},
+          sessionMessageInbox: {},
+          reportOwner: {},
+          runner: {},
+          runtimeManager: {},
+          workspace: {},
+          refreshCapability: async () => undefined,
+          capabilityRefreshIntervalMs: 10,
+          capabilityAbort: new AbortController(),
+          connection,
+        } as never,
+      );
+    const runtime = runtimeFor({
+      capabilityVersion: (capability: string) =>
+        capability === RUNTIME_CAPABILITY.sessionRecovery ? version : undefined,
+      subscribeBusinessFrames: () => () => undefined,
+    });
+    expect(runtime.canRecoverInterruptedWork()).toBe(false);
+    version = 1;
+    expect(runtime.canRecoverInterruptedWork()).toBe(true);
+    expect(runtimeFor(undefined).canRecoverInterruptedWork()).toBe(false);
+  });
+
   it("aggregates protected work from every authoritative owner", () => {
     const admission = { pause: vi.fn(), resume: vi.fn() };
     const runtime = new ComposedClientRuntime(

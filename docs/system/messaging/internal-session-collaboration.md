@@ -127,8 +127,8 @@ existing thread scope. Internal targets never receive provider credentials or ou
 `accepted` and `session list` describe delivery only. When an internal Session's Run ends without completing, the
 Server tells the Session that created it (`created_by_session_id`):
 
-- Local: a message gets at most one automatic retry, and only after a recoverable interruption — a daemon crash or
-  restart while its Run was in flight, `turn_timeout`, or a model HTTP 429 — as described in
+- Local: a message gets at most one automatic retry, and only after a recoverable interruption — a daemon crash,
+  restart or upgrade while its Run was in flight, `turn_timeout`, or a model HTTP 429 — as described in
   [Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work). The retried Run
   starts with the continuation notice and the original message. Every other failure, and a failure of the retry, is
   terminal (a timed-out retry reports `turn_timeout`; a retry interrupted by another crash reports `run_interrupted`).

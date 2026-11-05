@@ -380,6 +380,7 @@ async function attachAutoUpdater(
     home: context.home,
     installMode,
     protectedWork: () => runtime.protectedWork(),
+    canInterruptWork: () => runtime.canRecoverInterruptedWork(),
     quiesce: () => runtime.quiesceForUpdate(),
     onHandoff: () => {
       context.state.handoffRequested = true;

@@ -445,10 +445,10 @@ export class ComposedClientRuntime {
   }
 
   /**
-   * Authoritative protected-work snapshot for the automatic-upgrade gate. The Session module owns
-   * the bounded lifetime of every counted unit (Turn budgets, delivery deadlines, report retries
-   * with terminal outcomes), so a caller may wait on `total === 0` indefinitely without adding a
-   * force timeout of its own.
+   * Authoritative protected-work snapshot for the automatic-upgrade wait, used only while
+   * `canRecoverInterruptedWork` is false. The Session module owns the bounded lifetime of every
+   * counted unit (Turn budgets, delivery deadlines, report retries with terminal outcomes), so a
+   * caller may wait on `total === 0` without adding a force timeout of its own.
    */
   protectedWork(): ProtectedWorkSnapshot {
     const reconcilerWork = this.reconciler.protectedWorkSnapshot();
@@ -472,10 +472,20 @@ export class ComposedClientRuntime {
   }
 
   /**
-   * Close admission before the updater reads its zero-work snapshot. Already accepted Session
-   * messages may still reserve capacity and drain; every new direct or Session delivery receives a
-   * retryable `client_busy` result. The returned release function is used only when the attempt is
-   * abandoned or fails — a successful install stays quiesced until supervisor handoff.
+   * Whether the Server on the current connection can prepare interrupted work after a restart. It
+   * lets an upgrade interrupt running Sessions instead of waiting for them. A disconnected Client
+   * answers false, because it cannot know what the Server negotiates next.
+   */
+  canRecoverInterruptedWork(): boolean {
+    return this.#connection?.capabilityVersion(RUNTIME_CAPABILITY.sessionRecovery) === 1;
+  }
+
+  /**
+   * Close admission before an update hands off, or before the updater reads its zero-work snapshot.
+   * Already accepted Session messages may still reserve capacity and drain; every new direct or
+   * Session delivery receives a retryable `client_busy` result. The returned release function is
+   * used only when the attempt is abandoned or fails — a successful install stays quiesced until
+   * supervisor handoff.
    */
   quiesceForUpdate(): () => void {
     this.#admission.pause();

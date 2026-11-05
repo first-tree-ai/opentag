@@ -312,6 +312,34 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
   });
 
+  it("runs a message replayed after a client_busy refusal", async () => {
+    const admission = new AdmissionController();
+    const prompt = vi.fn(async () => ({ runId: "run", status: "completed" as const, output: [] }));
+    const inbox = new SessionMessageInbox({
+      admission,
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      sessionCollaborationVersion: () => 3,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+    });
+    const request = delivery({ text: "replayed after the pause" });
+    const refused = { status: "rejected", reason: "client_busy" };
+
+    admission.pause();
+    await expect(inbox.accept(request)).resolves.toMatchObject(refused);
+    await expect(inbox.accept({ ...request, requestId: randomUUID() })).resolves.toMatchObject(refused);
+    admission.resume();
+    await expect(inbox.accept({ ...request, requestId: randomUUID() })).resolves.toMatchObject({ status: "accepted" });
+
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce());
+    await inbox.settled();
+    inbox.stop();
+  });
+
   it("rejects accepted work when the durable admission write fails", async () => {
     const logger = { warn: vi.fn() };
     const persistence = {
@@ -340,6 +368,12 @@ describe("SessionMessageInbox", () => {
       expect.objectContaining({ code: "SESSION_MESSAGE_PERSISTENCE_FAILED", messageId: request.messageId }),
       "Session message persistence failed",
     );
+    expect(inbox.pendingCount).toBe(0);
+    // A replay must not claim acceptance for a message that was never queued.
+    await expect(inbox.accept({ ...request, requestId: randomUUID() })).resolves.toMatchObject({
+      status: "rejected",
+      reason: "provider_unavailable",
+    });
     expect(inbox.pendingCount).toBe(0);
     inbox.stop();
   });

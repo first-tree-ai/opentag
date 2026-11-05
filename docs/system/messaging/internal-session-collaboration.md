@@ -60,6 +60,18 @@ conversation-kind and thread scope enter this lock chain; foreign-scope targets 
 an unlocked read. Create retries first read the immutable target hint for that message and creator;
 the later message lock and input-conflict checks remain authoritative. There is no automatic database retry.
 
+A temporary refusal returns `unreachable` with its cause as the code. `client_busy` means the Client is not admitting new
+work: an upgrade is switching over, the Client is stopping, or the bounded FIFO is full. The Cloud Runner reports the same
+code. `session_busy` and `agent_busy` map to their own codes, though the Local inbox does not return them today. Messages
+recorded before this split keep `capacity`.
+
+The Server does not hold or replay a refused message (decision by yuezengwu, 2026-11-05,
+[#1327](https://github.com/first-tree-ai/opentag/issues/1327)). The Client keeps the upgrade switch window as small as it
+can instead. A sender retries with the same `--message-id`, and the inbox evaluates that replay again rather than answering
+from memory, so the message runs once admission reopens. A permanent rejection stays rejected on replay. A scheduled
+message has no sender to retry it, so one refused in that window stays `unreachable` and the next occurrence is the next
+chance; this is an accepted cost. The Client logs every refused Session message with its reason.
+
 `session list` returns direct children by default, ordered by recent message activity. Pages default to 20 items and
 are capped at 100; `--cursor` continues a page, `--recursive` includes descendants, `--since` filters recent activity,
 and `--json` returns `{ items, nextCursor }`. There is no unbounded `--all` mode. The page returns active children

@@ -858,7 +858,7 @@ export class CloudSessionCollaborationOwner {
   ): Promise<CloudSessionMessageOutcome> {
     if (receipt.status === "rejected") {
       return receipt.reason === "client_busy"
-        ? { status: "unreachable", code: "capacity" }
+        ? { status: "unreachable", code: "client_busy" }
         : { status: "rejected", code: receipt.reason };
     }
     const connection = this.#fence.connectionForSandbox(sandbox.id);

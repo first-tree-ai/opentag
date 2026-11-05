@@ -208,10 +208,28 @@ export class ClientRuntime {
         },
       );
       await this.#connection.send(result, { priority: "result", signal: this.#abort.signal });
+      this.#logSessionMessageRejection(frame, result);
       return;
     }
     if (frame.type === "im:credential:result") return;
     await this.#handleResidualFrame(frame);
+  }
+
+  #logSessionMessageRejection(frame: SessionMessageDeliveryRequestV3, result: SessionMessageDeliveryResult): void {
+    if (result.status !== "rejected") return;
+    this.#logger.warn(
+      {
+        agentId: frame.agentId,
+        messageId: frame.messageId,
+        placementGeneration: frame.placementGeneration,
+        reason: result.reason,
+        requestId: frame.requestId,
+        scheduled: frame.scheduledOrigin !== undefined,
+        sessionId: frame.targetSessionId,
+        status: result.status,
+      },
+      "Session message rejected",
+    );
   }
 
   async #setupSlack(frame: SlackAutoSetupRuntimeRequest): Promise<void> {

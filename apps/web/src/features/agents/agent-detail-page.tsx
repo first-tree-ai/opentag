@@ -8,7 +8,7 @@ import { useAccount } from "../session/session-context.js";
 import { AgentTasksSection } from "../tasks-page.js";
 import { AgentAvatar } from "./agent-avatar.js";
 import type { AgentDetailView } from "./agent-model.js";
-import { agentMessagingStatus, agentRecoveryMessage, agentStatusPresentation } from "./agent-presentation.js";
+import { agentCardStatus, agentMessagingStatus } from "./agent-presentation.js";
 import { useAgentDetailView } from "./agent-queries.js";
 import { agentDetailLink, agentSettingsLink } from "./agent-routes.js";
 import { AgentSchedulesSection } from "./agent-schedules-section.js";
@@ -31,9 +31,8 @@ export function AgentDetailPage({
     <AsyncState state={state}>
       {(agent) => (
         <section className="grid gap-6">
-          <AgentObjectHeader agent={agent} showBackLink={false} showHandle={false} />
+          <AgentObjectHeader agent={agent} showBackLink={false} showHandle={false} showOverviewStatus />
           <div className="grid gap-6">
-            <AgentLifecycleNotice agent={agent} />
             {/*
              * Usage and status share a row: neither fills the width on its own, and a failed
              * dependency belongs beside the work it is stopping rather than in a banner above it.
@@ -55,16 +54,40 @@ export function AgentDetailPage({
   );
 }
 
+const HEADER_LAYOUT = {
+  overview: {
+    root: "@container/agent-header grid gap-4",
+    content: "grid items-start gap-x-3 gap-y-1.5 @min-[24rem]/agent-header:grid-cols-[minmax(0,1fr)_auto]",
+    identity: "flex min-w-0 items-start gap-3",
+    actions:
+      "flex flex-wrap items-center justify-self-end gap-3 @min-[24rem]/agent-header:col-start-2 @min-[24rem]/agent-header:row-start-1",
+  },
+  legacy: {
+    root: "grid gap-4",
+    content: "flex flex-wrap items-start justify-between gap-4",
+    identity: "flex min-w-0 flex-1 basis-64 items-start gap-4",
+    actions: "ml-auto flex shrink-0 flex-wrap items-center justify-end gap-3",
+  },
+} as const;
+
+function agentHeaderHandle(agent: AgentDetailView, showHandle: boolean) {
+  if (!showHandle || (agent.messaging.kind === "ready" && agent.messaging.value?.provider === "slack"))
+    return undefined;
+  return agent.name;
+}
+
 export function AgentObjectHeader({
   agent,
   backToSettings,
   showBackLink = true,
   showHandle = true,
+  showOverviewStatus = false,
 }: {
   agent: AgentDetailView;
   backToSettings?: boolean;
   showBackLink?: boolean;
   showHandle?: boolean;
+  showOverviewStatus?: boolean;
 }) {
   const { me } = useAccount();
   const showCreator = agent.createdBy.userId !== me.user.id;
@@ -72,12 +95,10 @@ export function AgentObjectHeader({
    * Legacy capability pages retain their internal identity hint. The overview uses the
    * connected Bot's identity in its Messaging row instead of implying this handle is an IM address.
    */
-  const handle =
-    !showHandle || (agent.messaging.kind === "ready" && agent.messaging.value?.provider === "slack")
-      ? undefined
-      : agent.name;
+  const handle = agentHeaderHandle(agent, showHandle);
+  const layout = showOverviewStatus ? HEADER_LAYOUT.overview : HEADER_LAYOUT.legacy;
   return (
-    <header className="grid gap-4">
+    <header className={layout.root}>
       {showBackLink ? (
         <Link
           className="inline-flex w-fit items-center gap-2 text-sm text-kumo-link"
@@ -87,8 +108,8 @@ export function AgentObjectHeader({
           {backToSettings ? agent.displayName : m.agents_title()}
         </Link>
       ) : null}
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="flex min-w-0 flex-1 basis-64 items-start gap-4">
+      <div className={layout.content}>
+        <div className={layout.identity}>
           <AgentAvatar displayName={agent.displayName} avatarPath={agent.avatarPath} className="size-11" />
           <div className="grid min-w-0 gap-1.5">
             {/* A long name keeps the header to two lines; the full name stays in the heading's text
@@ -104,7 +125,12 @@ export function AgentObjectHeader({
             ) : null}
           </div>
         </div>
-        <div className="ml-auto flex shrink-0 flex-wrap items-center justify-end gap-3">
+        {showOverviewStatus ? (
+          <div className="min-w-0 pl-14 @min-[24rem]/agent-header:col-span-2">
+            <AgentOverviewStatus agent={agent} />
+          </div>
+        ) : null}
+        <div className={layout.actions}>
           {!backToSettings ? (
             <Link
               className={buttonClassName({ variant: "outline" })}
@@ -120,27 +146,30 @@ export function AgentObjectHeader({
   );
 }
 
-/**
- * The Agent's own lifecycle, which no dependency row can carry. Computer and Messaging state their
- * own failures in the status card, but a paused Agent has nothing wrong with either -- it was
- * turned off -- so without this the home reports a healthy Computer and channel and never mentions
- * that the Agent is not running.
- */
-export function AgentLifecycleNotice({ agent }: { agent: AgentDetailView }) {
-  if (agent.availability.state !== "suspended") return null;
-  const status = agentStatusPresentation(agent);
+/** Reuse the roster's canonical verdict; activity supplements readiness only while actually working. */
+function AgentOverviewStatus({ agent }: { agent: AgentDetailView }) {
+  const status = agentCardStatus({ ...agent, evidenceConfirmed: agent.availability.state !== "unconfirmed" });
+  const detail =
+    agent.availability.state === "ready" && status.tone === "success" && agent.activity.state === "working"
+      ? status.detail
+      : undefined;
+  const paused = agent.status === "suspended";
   return (
     <section
-      className="flex flex-wrap items-center justify-between gap-4 rounded-lg bg-kumo-recessed p-4 ring ring-kumo-line"
+      className="grid min-w-0 gap-1.5 text-sm font-normal"
       aria-label={m.agents_lifecycle_aria({ status: status.label })}
-      data-ui="agent-lifecycle-notice"
+      data-ui="agent-overview-status"
     >
-      <div className="grid gap-1">
-        <StatusIndicator label={status.label} tone={status.tone} />
-        <p className="text-sm text-kumo-subtle">{agentRecoveryMessage()}</p>
+      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
+        <StatusIndicator
+          className="min-w-0 flex-wrap text-sm font-normal"
+          label={<span className="whitespace-normal text-sm font-normal">{status.label}</span>}
+          detail={detail ? <span data-ui="agent-overview-activity">{detail}</span> : undefined}
+          tone={status.tone}
+        />
+        {paused ? <ResumeAgentButton agentId={agent.id} /> : null}
       </div>
-      {/* The one thing to do about a paused Agent is to resume it, so the notice does that itself. */}
-      <ResumeAgentButton agentId={agent.id} />
+      {paused ? <p className="text-kumo-subtle">{m.agent_settings_status_paused_description()}</p> : null}
     </section>
   );
 }

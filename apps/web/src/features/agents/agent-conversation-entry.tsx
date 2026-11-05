@@ -35,7 +35,7 @@ export function AgentConversationEntry({ agent }: { agent: AgentDetailView }) {
   if (!enabled) return null;
   const binding = query.isSuccess ? query.data : undefined;
   return (
-    <div className="mt-2 grid min-w-0 justify-items-start gap-1 text-sm" data-ui="agent-bot-entry">
+    <div className="mt-2 flex min-w-0 flex-wrap items-start gap-x-3 gap-y-1 text-sm" data-ui="agent-bot-entry">
       {query.isPending ? <p role="status">{m.im_bot_entry_loading()}</p> : null}
       {!query.isPending && !binding ? (
         <p className="text-kumo-subtle">
@@ -89,7 +89,7 @@ function BotEntry({
           <Icon name="external-link" />
         </a>
       ) : null}
-      <Collapsible.Root className="min-w-0">
+      <Collapsible.Root className="min-w-0 max-w-full">
         <Collapsible.Trigger render={<Button variant="inline" className="min-h-11" />}>
           {href ? m.im_bot_entry_open_help() : m.im_bot_entry_find()}
           <Icon name="chevron-down" />

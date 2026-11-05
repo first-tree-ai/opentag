@@ -24,13 +24,18 @@ type AgentCardStatus = {
   tone: StatusTone;
 };
 
-export function agentCardStatus(agent: AgentListItem): AgentCardStatus {
+type AgentCardStatusSource = Pick<
+  AgentListItem,
+  "status" | "availability" | "activity" | "serverStatus" | "evidenceConfirmed"
+>;
+
+export function agentCardStatus(agent: AgentCardStatusSource): AgentCardStatus {
   const status = serverStatusPresentation(agent) ?? agentAvailabilityCardStatus(agent);
   const detail = agentActivityDetail(agent, status.tone === "success");
   return detail ? { ...status, detail } : status;
 }
 
-function agentAvailabilityCardStatus(agent: AgentListItem): AgentCardStatus {
+function agentAvailabilityCardStatus(agent: AgentCardStatusSource): AgentCardStatus {
   if (agent.status === "suspended" || agent.availability.state === "suspended") {
     return { label: m.agents_card_status_paused(), tone: "neutral" };
   }
@@ -73,7 +78,7 @@ export function agentActivityDetail(agent: Pick<AgentListItem, "activity">, read
   return activity.state === "idle" && ready ? m.agents_card_activity_waiting() : undefined;
 }
 
-function blockedAgentCardStatus(agent: AgentListItem): AgentCardStatus {
+function blockedAgentCardStatus(agent: AgentCardStatusSource): AgentCardStatus {
   if (agent.availability.reason === "computer_not_bound") {
     return { label: m.agents_card_status_no_computer(), tone: "neutral" };
   }
@@ -98,7 +103,7 @@ function blockedAgentCardStatus(agent: AgentListItem): AgentCardStatus {
   return { label: m.agents_card_status_messaging_connection_failed(), tone: "warning" };
 }
 
-function runtimeAgentCardStatus(agent: AgentListItem): AgentCardStatus {
+function runtimeAgentCardStatus(agent: AgentCardStatusSource): AgentCardStatus {
   const { provider, status } = agent.availability.dependencies.runtime;
   const providerName = runtimeProviderName(provider);
   if (status === "checking") {

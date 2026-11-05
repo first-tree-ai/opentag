@@ -231,16 +231,14 @@ describe("Agent home status card", () => {
     });
   }
 
-  it("shows the running-Task line the Agent list shows, as its own first row", async () => {
+  it("keeps work out of the dependency card and suppresses activity while not ready", async () => {
     stubActivity({ state: "working", startedAt: TIME, runningTaskCount: 2 });
     await renderAgentHome();
     const status = await screen.findByRole("region", { name: "Agent status" });
-    await waitFor(() =>
-      expect(status.querySelector('[data-ui="agent-status-activity"]')?.textContent).toBe("2 tasks running"),
-    );
     const rows = [...status.querySelectorAll("li")].map((row) => row.getAttribute("data-ui"));
-    expect(rows[0]).toBe("agent-status-work");
-    expect(status.querySelector('[data-ui="agent-status-work"]')?.textContent).toContain("Work");
+    expect(rows).toEqual(["agent-status-computer", "agent-status-message-channel"]);
+    expect(status.querySelector('[data-ui="agent-status-work"]')).toBeNull();
+    expect(document.querySelector('[data-ui="agent-overview-activity"]')).toBeNull();
   });
 
   it("adds no row for an idle Agent that is not ready, as the list row says nothing then", async () => {

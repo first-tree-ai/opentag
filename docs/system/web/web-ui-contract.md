@@ -272,7 +272,13 @@ status, add a Refreshing status hold, or start a preparation POST on entry. Norm
 request deduplication and error presentation remain. Offline overrides other dependencies. First
 credential initialization is neutral for at most 15 seconds; completed failures, stale reports and
 check timeouts name the problem. Rechecks retain the last complete result at the Server. The
-Agent's Work row still describes running Tasks separately from availability.
+Overview name area shows the canonical overall verdict once, below the Agent name. A ready, working Agent adds
+the existing running-Task count or elapsed detail; idle and unknown activity never add Waiting. Initializing and
+problem verdicts keep the Server's priority and wording. Paused status, the receiving explanation and the existing
+Resume control stay in the name area without a duplicate lifecycle banner. The right-hand card contains only
+Computer and Messaging identity, connection facts, existing recovery, and the healthy Bot use entry; it has no Work
+row. The Bot action and closed fallback share a wrapping line, preserving 44px targets and natural growth when help
+opens. Shared legacy headers, lists and their existing presentation rules are unchanged.
 
 Dependency rows use the causal status reason. Computer, runtime and initializing verdicts
 leave messaging unconfirmed and offer no messaging repair; they do not establish a separate

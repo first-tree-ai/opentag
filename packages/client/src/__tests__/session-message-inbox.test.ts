@@ -573,6 +573,74 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
   });
 
+  it("gives a Session message's retry and resumed Run only what is left of its budget", async () => {
+    const BUDGET = 600_000;
+    let now = 1_000;
+    const budgets: number[] = [];
+    const retries: Array<() => void> = [];
+    const prompt = vi.fn(async () => {
+      if (prompt.mock.calls.length > 1) return { runId: "run", status: "completed" as const, output: [] };
+      now += 60_000;
+      return {
+        runId: "run",
+        status: "failed" as const,
+        output: [],
+        error: { code: "provider_rate_limited", message: "429" },
+      };
+    });
+    const store = new MemoryRuntimeDurabilityStore();
+    const options = {
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      now: () => now,
+      persistence: store,
+      sessionCollaborationVersion: () => 4,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+      scheduler: {
+        schedule: (_delay: number, task: () => void) => {
+          retries.push(task);
+          return { cancel: () => undefined };
+        },
+      },
+      timeoutScheduler: {
+        schedule: (delay: number) => {
+          budgets.push(delay);
+          return { cancel: () => undefined };
+        },
+      },
+    };
+    const inbox = new SessionMessageInbox(options);
+    const base = delivery({ text: "budgeted" });
+    const request = { ...base, runtime: { ...base.runtime, budget: { maxDurationMs: BUDGET } } };
+    await inbox.accept(request);
+    await inbox.settled();
+    expect(budgets).toEqual([BUDGET]);
+    // The 429 backoff is not run time.
+    now += 30_000;
+    retries[0]?.();
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(2));
+    await inbox.settled();
+    expect(budgets).toEqual([BUDGET, BUDGET - 60_000]);
+    inbox.stop();
+
+    // A later daemon resuming the Run keeps the remaining budget too; the downtime is not counted.
+    const key = `${request.targetSessionId}:${request.messageId}`;
+    const [stored] = (await store.list<typeof request>("session-message")).filter((record) => record.key === key);
+    await store.write({ ...(stored as DurableWorkRecord<typeof request>), status: "running", ranMs: 200_000 });
+    now += 3_600_000;
+    budgets.length = 0;
+    const resumed = new SessionMessageInbox({ ...options, admission: new AdmissionController() });
+    await resumed.ready();
+    await resumed.settled();
+    expect(budgets).toEqual([BUDGET - 200_000]);
+    resumed.stop();
+  });
+
   it("never lets a failing outcome reporter change the inbox state machine", async () => {
     const warn = vi.fn();
     for (const onRunOutcome of [

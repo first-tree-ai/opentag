@@ -223,12 +223,13 @@ included; see [Agent, Session, and Computer model](../agent-session-computer-mod
 ## Automatic retry before a notice
 
 On a Local Computer a Session message running on its own gets at most 2 automatic retries after a crash, power loss,
-restart, upgrade, or model HTTP 429; a retry that ran for at least 5 minutes resets the count. Reaching the Run's duration
-limit (`turn_timeout`) and non-recoverable failures are not retried, and the five-attempt inbox retry is gone. The retried
-Run starts with the continuation notice and the original message. A retry after a model HTTP 429 stays in place: the Run
-keeps holding the Session through the backoff, so no other work overtakes it. The creator receives the notice only when the
-message finally fails, so the superior hears about a timeout directly. After a daemon restart, each interrupted Session's
-message runs once the Server has prepared the Session again, before the Session's queued messages. See
+restart, upgrade, or model HTTP 429; a retry that actually ran for at least 5 minutes resets the count. The Run's duration
+limit counts actual running time across its retries and resumes. Reaching it (`turn_timeout`) and non-recoverable failures
+are not retried, and the five-attempt inbox retry is gone. The retried Run starts with the continuation notice and the
+original message. A retry after a model HTTP 429 stays in place: the Run keeps holding the Session through the backoff, so
+no other work overtakes it. The creator receives the notice only when the message finally fails, so the superior hears about
+a timeout directly. After a daemon restart, each interrupted Session's message runs once the Server has prepared the Session
+again, before the Session's queued messages. See
 [Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work).
 
 ### Session messages steered into an IM Turn
@@ -248,8 +249,8 @@ shares the count of the Turn it joined, so they retry together and fail together
   run as their own Runs, in order and with a fresh count, as they do when the runtime cannot steer. If the Turn cannot be
   resumed, the existing fallback applies: the waiting messages fail.
 - **Running out of retries, `turn_timeout`, or any other failure** ends the Turn, and the messages in it fail with it. When
-  the count runs out at a restart, the messages steered into that Turn fail rather than run again; queued messages run on
-  their own.
+  the count runs out at a restart, the messages steered into that Turn fail rather than run again; a message whose failure
+  cannot be written yet stays queued and does not run. Queued messages run on their own.
 
 A message stays queued and waits for the Turn to end when the runtime cannot steer or refuses the steer, when the Turn
 already carries 16 Session messages, or when a visible Session has no IM outbox context.

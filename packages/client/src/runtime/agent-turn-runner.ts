@@ -39,13 +39,14 @@ import {
   acknowledgedSteers,
   buildContinuationNotice,
   type Interruption,
+  MAX_AUTOMATIC_RETRIES,
   MAX_RECORDED_STEERS,
   nextRetry,
   RATE_LIMIT_RETRY_DELAY_MS,
-  type RetryCount,
   recoverableFailure,
   type TurnRetryRecord,
   type TurnRetryStore,
+  trackRunTime,
 } from "./interruption-retry.js";
 import {
   budgetTurnReportHashInput,
@@ -76,7 +77,7 @@ import { TurnTraceBuffer } from "./trace-buffer.js";
 import { TurnActivityReporter } from "./turn-activity-reporter.js";
 import type { LiveTurnOwner, TurnCustodyOwner } from "./turn-custody-owner.js";
 import type { TurnReportOwner } from "./turn-report-owner.js";
-import { abortExpiredTurn, retryTimeoutMs, turnTimeoutMs } from "./turn-timeout.js";
+import { abortExpiredTurn, remainingBudgetMs, turnTimeoutMs } from "./turn-timeout.js";
 
 export { turnTimeoutMs } from "./turn-timeout.js";
 
@@ -188,6 +189,8 @@ interface RunningTurn {
   arrivals: Map<string, number>;
   /** Set once the Turn's outcome is decided; a message acknowledged later follows its own receipt. */
   finalized: boolean;
+  /** Run time of the latest attempt that is not recorded yet. */
+  unrecordedRunMs: number;
   /** Messages an earlier attempt held, replayed in the current attempt's input. */
   steers: readonly SteeredInput[];
 }
@@ -279,6 +282,7 @@ export class AgentTurnRunner {
       joining: new Map(),
       arrivals: new Map(),
       finalized: false,
+      unrecordedRunMs: 0,
       steers: options.steers ?? [],
     };
     turn.promise = this.#run(turn, abort.signal)
@@ -624,11 +628,16 @@ export class AgentTurnRunner {
     };
     this.#logger.info(fields, "Turn started");
     const timeout = new AbortController();
-    // The automatic retry gets a fresh execution budget; the ingress deadline bounded only the first attempt.
-    const timeoutMs = interruption ? retryTimeoutMs(owner.request) : turnTimeoutMs(owner.request, startedAt);
+    // The ingress deadline bounds only the first attempt; later ones get what is left of the Run's budget.
+    const timeoutMs = interruption
+      ? remainingBudgetMs(owner.request.runtime.budget?.maxDurationMs, await this.#ranMs(turn))
+      : turnTimeoutMs(owner.request, startedAt);
     turn.expiresAt = new Date(startedAt + timeoutMs).toISOString();
     const timer = setTimeout(() => timeout.abort("turn_timeout"), timeoutMs);
     timer.unref();
+    const runTime = trackRunTime(this.#now, (ranMs) =>
+      this.#retries.update(owner.request.sessionId, owner.turnId, (record) => withRunTime(record, ranMs)),
+    );
     if (!interruption) abortExpiredTurn(owner.request, startedAt, timeout);
     const expiredBeforeStart = timeout.signal.aborted;
     const signal = AbortSignal.any([shutdownSignal, timeout.signal]);
@@ -712,6 +721,7 @@ export class AgentTurnRunner {
       /* v8 ignore next -- credential teardown is best-effort. */
       await this.#credentialEnvironment.cleanup(owner.request.sessionId, preparedExecutionId).catch(() => undefined);
       clearTimeout(timer);
+      turn.unrecordedRunMs = await runTime.finish();
     }
     if (completion.outcome === "completed") {
       this.#logger.info(
@@ -745,20 +755,32 @@ export class AgentTurnRunner {
     const interruption: Interruption = { reason, at: new Date(this.#now()).toISOString() };
     let record: Awaited<ReturnType<TurnRetryStore["update"]>>;
     try {
-      record = await this.#retries.update(turn.owner.request.sessionId, turn.owner.turnId, (current) => ({
-        ...current,
-        interruption,
-      }));
+      // The count is decided now: the backoff before a retry is not run time.
+      record = await this.#retries.update(turn.owner.request.sessionId, turn.owner.turnId, (current) => {
+        const ran = withRunTime(current, turn.unrecordedRunMs);
+        if (restart) return { ...ran, interruption };
+        const { count } = nextRetry({ count: ran.retries, ranMs: ran.retryRanMs });
+        return { ...ran, retries: count, retryRanMs: 0, interruption };
+      });
     } catch {
       return undefined;
     }
     if (!record) return undefined;
     // The restarted daemon counts a process interruption and decides whether the Turn resumes.
     if (restart) return "deferred";
-    return nextRetry(retryCount(record), this.#now()).exhausted ? undefined : interruption;
+    return record.retries > MAX_AUTOMATIC_RETRIES ? undefined : interruption;
   }
 
-  /** Durably spend the Turn's one automatic retry before it starts; false leaves the failure reported. */
+  /** What the Turn has actually run so far, across its attempts. */
+  async #ranMs(turn: RunningTurn): Promise<number> {
+    const { sessionId } = turn.owner.request;
+    const record = await this.#retries
+      .update(sessionId, turn.owner.turnId, (current) => current)
+      .catch(() => undefined);
+    return record?.ranMs ?? 0;
+  }
+
+  /** The retry starts: its interruption is done with. False leaves the failure reported. */
   async #claimRetry(turn: RunningTurn): Promise<boolean> {
     const { sessionId } = turn.owner.request;
     // No new steer joins once the attempt ended, but one in flight may still be acknowledged: its
@@ -771,9 +793,7 @@ export class AgentTurnRunner {
       return false;
     }
     await this.#returnUnstartedSessionMessages(turn);
-    const spent = await this.#retries
-      .update(sessionId, turn.owner.turnId, (record) => spendRetry(record, this.#now()))
-      .catch(() => undefined);
+    const spent = await this.#retries.update(sessionId, turn.owner.turnId, withoutInterruption).catch(() => undefined);
     if (!spent) return false;
     const steers = spent.steers.length === 0 ? [] : await this.#acknowledgedImSteers(turn, spent);
     if (!steers) return false;
@@ -1153,17 +1173,13 @@ const NO_TURN_RETRIES: NonNullable<AgentTurnRunnerOptions["retries"]> = {
   update: async () => undefined,
 };
 
-function retryCount(record: TurnRetryRecord): RetryCount {
-  return {
-    count: record.retries,
-    ...(record.retryStartedAt !== undefined ? { startedAt: record.retryStartedAt } : {}),
-  };
+function withRunTime(record: TurnRetryRecord, ranMs: number): TurnRetryRecord & { retryRanMs: number } {
+  return { ...record, ranMs: (record.ranMs ?? 0) + ranMs, retryRanMs: (record.retryRanMs ?? 0) + ranMs };
 }
 
-/** Only called once `nextRetry` said a retry is left, so this one starts now. */
-function spendRetry(record: TurnRetryRecord, now: number): TurnRetryRecord {
+function withoutInterruption(record: TurnRetryRecord): TurnRetryRecord {
   const { interruption: _interruption, ...rest } = record;
-  return { ...rest, retries: nextRetry(retryCount(record), now).count, retryStartedAt: now };
+  return rest;
 }
 
 /**

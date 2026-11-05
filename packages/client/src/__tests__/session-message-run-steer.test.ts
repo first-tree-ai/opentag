@@ -8,6 +8,7 @@ import {
   type DurableWorkRecord,
   MemoryRuntimeDurabilityStore,
   type RuntimeDurabilityStore,
+  type RuntimeRetryScheduler,
 } from "../runtime/runtime-durability.js";
 import { SessionMessageInbox, type SessionMessageRunOutcomeEvent } from "../runtime/session-message-inbox.js";
 import { SessionMessageRun, sessionMessageOfRun, sessionMessageRunId } from "../runtime/session-message-run.js";
@@ -85,6 +86,7 @@ function makeInbox(
     outcomes?: SessionMessageRunOutcomeEvent[];
     now?: () => number;
     rateLimitRetryDelayMs?: number;
+    timeoutScheduler?: RuntimeRetryScheduler;
   } = {},
 ) {
   const inbox = new SessionMessageInbox({
@@ -115,6 +117,7 @@ function makeInbox(
     },
     steerRetryMs: 2,
     ...(options.now ? { now: options.now } : {}),
+    ...(options.timeoutScheduler ? { timeoutScheduler: options.timeoutScheduler } : {}),
   });
   inboxes.push(inbox);
   return inbox;
@@ -190,7 +193,7 @@ describe("a Session message steered into a Session message Run", () => {
     expect(steers[0]?.runId).toBe(state.activeRunId);
     await vi.waitFor(() => expect(inbox.getState(third.messageId)?.status).toBe("running"));
     expect(inbox.getState(second.messageId)).toMatchObject({ status: "running", joinedRunId: state.activeRunId });
-    expect(inbox.queuedCount).toBe(0);
+    await vi.waitFor(() => expect(inbox.queuedCount).toBe(0));
     attempt.finish();
     await inbox.settled();
     expect(attempts).toHaveLength(1);
@@ -394,6 +397,48 @@ describe("the retry of a Session message Run", () => {
     expect(inbox.getState(second.messageId)?.status).toBe("succeeded");
   });
 
+  it("shares the Run's actual run time: a retry keeps the remaining budget, and a long one resets the count", async () => {
+    let now = 1_000;
+    const budgets: number[] = [];
+    const timeoutScheduler: RuntimeRetryScheduler = {
+      schedule(delay) {
+        // The waiting message re-checks on its own short timer.
+        if (delay > 2) budgets.push(delay);
+        return { cancel: () => undefined };
+      },
+    };
+    const { attempts, runtime, steers } = harness();
+    const inbox = makeInbox(runtime, { now: () => now, timeoutScheduler });
+    const { message } = conversation();
+    const first = {
+      ...message("first"),
+      runtime: { ...message("first").runtime, budget: { maxDurationMs: 3_600_000 } },
+    } as SessionMessageDeliveryRequestV3;
+    await inbox.accept(first);
+    const attempt = await started(attempts, 1);
+    const second = message("second");
+    await inbox.accept(second);
+    await vi.waitFor(() => expect(steers).toHaveLength(1));
+    await vi.waitFor(() => expect(inbox.getState(second.messageId)?.status).toBe("running"));
+    now += 60_000;
+    attempt.finish(rateLimited);
+    const retry = await started(attempts, 2);
+    expect(budgets).toEqual([3_600_000, 3_540_000]);
+    expect(inbox.getState(first.messageId)).toMatchObject({ attempts: 1, ranMs: 60_000 });
+    // The steered message has no run time or count of its own while it is in the Run.
+    expect(inbox.getState(second.messageId)?.ranMs).toBeUndefined();
+    now += 300_000;
+    retry.finish(rateLimited);
+    const third = await started(attempts, 3);
+    expect(budgets.at(-1)).toBe(3_240_000);
+    // The second retry ran five minutes, so this failure starts the count again rather than spending it.
+    expect(inbox.getState(first.messageId)?.attempts).toBe(1);
+    expect(bodies(third.texts, "first", "second")).toEqual(["first", "second"]);
+    third.finish();
+    await inbox.settled();
+    expect(inbox.getState(second.messageId)?.status).toBe("succeeded");
+  });
+
   it("fails every message with the Run when the shared count runs out", async () => {
     const { attempts, runtime, steers } = harness();
     const outcomes: SessionMessageRunOutcomeEvent[] = [];
@@ -532,7 +577,7 @@ describe("a Session message Run after a crash or restart", () => {
     const { message } = conversation();
     const [lead, steered, queued] = [message("lead"), message("steered"), message("queued")];
     const persistence = await crashed([
-      record(lead, "running", { attempts: MAX_AUTOMATIC_RETRIES, retryStartedAt: 1_000 }),
+      record(lead, "running", { attempts: MAX_AUTOMATIC_RETRIES }),
       record(steered, "running", { joinedRunId: sessionMessageRunId(lead.messageId) }),
       record(queued, "accepted"),
     ]);

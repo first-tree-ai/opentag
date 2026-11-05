@@ -21,7 +21,7 @@ import {
  * authenticates the allocation-scoped bootstrap bearer token in `onRequest` — before any content
  * parser runs — and the service derives the storage identity from the database, so a caller can
  * never supply a path, a URI, or another Session's storage. The archive body is streamed straight
- * into the object store (never whole-body buffered), bounded by the shared 128 MiB ceiling and an
+ * into the object store (never whole-body buffered), bounded by the shared 512 MiB ceiling and an
  * exact Content-Length contract. Errors are stable and redacted: no credential, header, body, or
  * upstream Google response content is logged or echoed.
  */
@@ -150,7 +150,7 @@ export function registerRunnerWorkspaceRoutes(
 ): void {
   void app.register(async (scope) => {
     // Stream the archive body through untouched: the parser hands the request stream itself to
-    // the handler, so up to 128 MiB never buffers in this process.
+    // the handler, so up to 512 MiB never buffers in this process.
     scope.addContentTypeParser(OCTET_STREAM, (_request, payload, done) => {
       done(null, payload);
     });

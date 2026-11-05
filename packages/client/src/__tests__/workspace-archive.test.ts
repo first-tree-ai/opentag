@@ -206,8 +206,8 @@ async function populateWorkspace(workspace: string): Promise<void> {
 
 describe("workspace archive limits", () => {
   it("exposes the documented safety ceilings", () => {
-    expect(WORKSPACE_ARCHIVE_MAX_BYTES).toBe(128 * 1024 * 1024);
-    expect(WORKSPACE_MAX_BYTES).toBe(256 * 1024 * 1024);
+    expect(WORKSPACE_ARCHIVE_MAX_BYTES).toBe(512 * 1024 * 1024);
+    expect(WORKSPACE_MAX_BYTES).toBe(512 * 1024 * 1024);
     expect(WORKSPACE_MAX_ENTRIES).toBe(50_000);
   });
 });

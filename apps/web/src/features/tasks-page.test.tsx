@@ -1500,9 +1500,15 @@ describe("Tasks view", () => {
     expect(sessionsRequest).toHaveBeenCalledWith(sessionId, undefined);
     expect(list.querySelectorAll('[data-ui="task-internal-session-row"]')).toHaveLength(2);
     expect(within(list).getByText("Review the failing deployment")).toBeTruthy();
-    expect(within(list).getByText("55555555-5555-4555-8555-555555555555")).toBeTruthy();
+    // The id waits in the tooltip, and screen readers get it with the title.
+    const titled = within(list).getByText("Review the failing deployment");
+    expect(titled.getAttribute("tabindex")).toBe("0");
+    expect(within(titled).getByText("Session ID: 55555555-5555-4555-8555-555555555555").className).toContain("sr-only");
     // Without a title or model the row names the Session by its id.
-    expect(within(list).getByText("66666666-6666-4666-8666-666666666666")).toBeTruthy();
+    // It has nothing more to show, so it is plain text with no focus stop or tooltip.
+    const named = within(list).getByText("66666666-6666-4666-8666-666666666666");
+    expect(named.getAttribute("tabindex")).toBeNull();
+    expect(within(list).queryByText("Session ID: 66666666-6666-4666-8666-666666666666")).toBeNull();
     expect(within(list).getByText("Active")).toBeTruthy();
     expect(within(list).getByText("Ended")).toBeTruthy();
 

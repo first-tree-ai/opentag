@@ -4,6 +4,7 @@ import { useState } from "react";
 import { browserApi } from "../../api.js";
 import { formatCompactNumber, formatNumber } from "../../i18n/format.js";
 import * as m from "../../paraglide/messages.js";
+import { queryKeys, viewerTimezone } from "../../query/keys.js";
 import { liveResourceQueryOptions } from "../../query/live.js";
 import { Banner, Empty, LayerCard, Text } from "../../ui/design-system.js";
 import { Metric, TokenTrendChart, UsageWindowSelect } from "../agent-usage.js";
@@ -11,9 +12,10 @@ import { Page } from "../layout/page.js";
 
 export function CloudUsagePage() {
   const [windowDays, setWindowDays] = useState<CloudUsageWindowDays>(30);
+  const timezone = viewerTimezone();
   const query = useQuery({
-    queryKey: ["cloud-usage", windowDays],
-    queryFn: () => browserApi.cloudUsage(windowDays),
+    queryKey: queryKeys.cloudUsage(windowDays, timezone),
+    queryFn: () => browserApi.cloudUsage(windowDays, timezone),
     ...liveResourceQueryOptions,
   });
   return (

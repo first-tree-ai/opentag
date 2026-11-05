@@ -478,9 +478,9 @@ describe("renderManagedSystemPrompt Cloud environment", () => {
     expect(prompt).toContain("## Cloud execution context");
     expect(prompt).toContain("Session-scoped Cloud Sandbox");
     expect(prompt).toContain("recover from the last successful save");
-    expect(prompt).toContain("256 MiB");
+    expect(prompt).toContain("512 MiB of file content");
     expect(prompt).toContain("50,000 entries");
-    expect(prompt).toContain("128 MiB");
+    expect(prompt).toContain("512 MiB compressed archive");
     expect(prompt).toContain("Hard links, sockets, FIFOs");
     expect(prompt).toContain("execution-scoped and short-lived");
     expect(prompt).not.toContain("## Agent Home");

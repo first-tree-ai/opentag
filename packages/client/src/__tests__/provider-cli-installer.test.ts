@@ -1,7 +1,8 @@
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  createProviderCliFetcher,
   ProviderCliInstallError,
   ProviderCliInstaller,
   readProviderCliSelection,
@@ -299,5 +300,66 @@ describe("selection store", () => {
       `${JSON.stringify({ ...base, selection: { ...base.selection, executablePath: "relative/lark-cli" } })}\n`,
     );
     await expect(readProviderCliSelection(layout, "feishu")).rejects.toMatchObject({ name: "RuntimeStorageError" });
+  });
+});
+
+describe("download retry publication safety", () => {
+  it("cleans exhausted staging without touching an existing version or selection", async () => {
+    const layout = await makeLayout();
+    const old = makeFixtureCatalog({ provider: "feishu", version: "1.0.92", baseUrl: "https://releases.example.test" });
+    const first = await new ProviderCliInstaller({
+      layout,
+      platform: PLATFORM,
+      arch: ARCH,
+      fetcher: async () => old.archive,
+    }).install(old.entry, "feishu");
+    const selection = await writeProviderCliSelection(
+      layout,
+      "feishu",
+      {
+        kind: "managed",
+        artifactId: first.artifactId,
+        version: first.version,
+        targetPath: first.executablePath,
+        fingerprint: `v1:${old.artifact.executableSha256}`,
+      },
+      undefined,
+      new Date("2026-08-30T00:00:00Z"),
+    );
+    const next = makeFixtureCatalog({
+      provider: "feishu",
+      version: "1.0.93",
+      baseUrl: "https://releases.example.test",
+    });
+    let started!: () => void;
+    const downloading = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const transport = vi.fn(async () => new Response(null, { status: 504 }));
+    const bounded = createProviderCliFetcher(transport as typeof fetch);
+    vi.useFakeTimers();
+    try {
+      const installer = new ProviderCliInstaller({
+        layout,
+        platform: PLATFORM,
+        arch: ARCH,
+        fetcher: (options) => {
+          started();
+          return bounded(options);
+        },
+      });
+      const outcome = installer.install(next.entry, "feishu").catch((error) => error);
+      await downloading;
+      await vi.advanceTimersByTimeAsync(35_000);
+      expect(await outcome).toMatchObject({ code: "install_incomplete", message: expect.stringContaining("HTTP 504") });
+      expect(transport).toHaveBeenCalledTimes(4);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(await readdir(layout.staging)).toEqual([]);
+      expect(await readFile(first.executablePath, "utf8")).toBe(old.executableContent);
+      expect(await readProviderCliSelection(layout, "feishu")).toEqual(selection);
+      expect(await readdir(join(layout.versions, "feishu"))).toEqual(["1.0.92"]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

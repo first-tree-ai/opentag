@@ -48,6 +48,7 @@ import type { McpCredentialCipher } from "../mcp/mcp-credential-cipher.js";
 import { resolveAgentRuntimeConfig } from "../runtime-config/index.js";
 import type { CloudModelCatalog } from "../sandboxes/cloud-model-catalog.js";
 import { markEndedDescendantsInactive } from "../sessions/session-closure.js";
+import { readQueuedTaskCounts } from "./agent-queued-tasks.js";
 import { AgentTransferError, type AgentTransferInput, type AgentTransferResult } from "./agent-transfer.js";
 import {
   deliveryUsageTokenCounts,
@@ -60,7 +61,7 @@ import { AgentServiceError, resourceNotFound } from "./errors.js";
 
 type AgentRow = typeof agents.$inferSelect;
 type AgentRuntimeConfigRow = typeof agentRuntimeConfigs.$inferSelect;
-type QueryExecutor = Pick<DatabaseClient, "select" | "selectDistinct" | "selectDistinctOn">;
+type QueryExecutor = Pick<DatabaseClient, "execute" | "select" | "selectDistinct" | "selectDistinctOn">;
 
 const AGENT_ACTIVITY_REPORT_DELIVERY_SLACK_HOURS = 1;
 const MILLISECONDS_PER_HOUR = 60 * 60 * 1_000;
@@ -558,6 +559,7 @@ export class AgentService {
   async #readActivityByAgent(
     executor: QueryExecutor,
     agentIds: readonly string[],
+    now: Date,
     recoveryStartedAt: Date,
   ): Promise<Map<string, AgentListActivity>> {
     // One row per working Agent: its open Tasks (Sessions) and the latest accepted Turn among them.
@@ -598,9 +600,15 @@ export class AgentService {
         ),
       );
 
+    const queuedByAgent = await readQueuedTaskCounts(executor, agentIds, now);
+
     const activityByAgent = projectActivityByAgent(activityRows);
     for (const row of staleActivityRows) {
       if (!activityByAgent.has(row.agentId)) activityByAgent.set(row.agentId, { state: "unknown" });
+    }
+    for (const [agentId, queuedTaskCount] of queuedByAgent) {
+      const activity = activityByAgent.get(agentId) ?? { state: "idle" };
+      activityByAgent.set(agentId, { ...activity, queuedTaskCount });
     }
     return activityByAgent;
   }
@@ -653,7 +661,7 @@ export class AgentService {
         if (summaries.length === 0) return { summaries, activityByAgent: new Map(), usageRows: [] };
         await this.#afterReadAuthorization?.("list");
         const agentIds = summaries.map((agent) => agent.id);
-        const activityByAgent = await this.#readActivityByAgent(transaction, agentIds, recoveryStartedAt);
+        const activityByAgent = await this.#readActivityByAgent(transaction, agentIds, now, recoveryStartedAt);
         const usageRows = await readAgentUsageSummaries(transaction, {
           agentIds,
           startedAt: usageStartedAt,
@@ -753,8 +761,9 @@ export class AgentService {
     return this.#database.transaction(
       async (transaction) => {
         const agent = await this.#readAgentSummary(transaction, callerUserId, agentId);
-        const recoveryStartedAt = new Date(this.#now().getTime() - AGENT_ACTIVITY_RECOVERY_WINDOW_MS);
-        const activityByAgent = await this.#readActivityByAgent(transaction, [agentId], recoveryStartedAt);
+        const now = this.#now();
+        const recoveryStartedAt = new Date(now.getTime() - AGENT_ACTIVITY_RECOVERY_WINDOW_MS);
+        const activityByAgent = await this.#readActivityByAgent(transaction, [agentId], now, recoveryStartedAt);
         return { ...agent, activity: activityByAgent.get(agentId) ?? { state: "idle" } };
       },
       { isolationLevel: "repeatable read", accessMode: "read only" },

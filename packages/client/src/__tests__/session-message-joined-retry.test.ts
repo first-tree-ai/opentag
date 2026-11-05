@@ -393,25 +393,52 @@ describe("a Session message's one retry when it joins a Run with none left", () 
     await first.stop();
   });
 
-  it("stays queued, not steered, when the spend cannot be written", async () => {
+  it("is steered anyway, with a warning, when the spend cannot be written", async () => {
     const s = await system();
     s.prompt.mockImplementationOnce(attempt(s, "turn_timeout")).mockImplementationOnce(attempt(s, "completed"));
     await s.startTurn();
     s.endAttempt();
     await vi.waitFor(() => expect(s.prompt).toHaveBeenCalledTimes(2));
-    // The runtime refuses to take the message until the failing write has been tried.
+    // Queued first, so the write that fails is the spend, not the acceptance.
     s.runtime.state.phase = "idle";
-    const message = s.message("write failed");
+    const message = s.message("spend failed");
     await s.inbox.accept(message);
     s.failNextWrite();
     s.runtime.state.phase = "running";
-    await vi.waitFor(() => expect(s.writeFailures()).toBe(1));
-    // No provider call for the failed write; the next try spends and steers.
-    await vi.waitFor(() => expect(s.runtime.steer).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(s.inbox.getState(message.messageId)?.status).toBe("running"));
+    expect(s.writeFailures()).toBe(1);
+    expect(s.runtime.steer).toHaveBeenCalledOnce();
+    expect(s.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "SESSION_MESSAGE_RETRY_SPEND_FAILED", messageId: message.messageId }),
+      expect.any(String),
+    );
+    // The `running` write that follows carries the spend, so nothing further is lost.
     expect((await s.stored(message))?.attempts).toBe(1);
-    s.endAttempt();
-    await s.runner.settled();
     await s.stop();
+  });
+
+  it("can get one more delivery after a crash when neither write reached the disk, the accepted cost", async () => {
+    const first = await system();
+    first.prompt.mockImplementationOnce(attempt(first, "turn_timeout")).mockImplementationOnce(hangs(first));
+    await first.startTurn();
+    first.endAttempt();
+    await vi.waitFor(() => expect(first.prompt).toHaveBeenCalledTimes(2));
+    first.runtime.state.phase = "idle";
+    const message = first.message("nothing written");
+    await first.inbox.accept(message);
+    first.failWrites(2);
+    first.runtime.state.phase = "running";
+    await vi.waitFor(() => expect(first.writeFailures()).toBe(2));
+    expect(first.runtime.steer).toHaveBeenCalledOnce();
+    expect((await first.stored(message))?.attempts).toBe(0);
+
+    const second = await system({ home: first.home, request: first.request });
+    second.prompt.mockImplementation(second.finishes);
+    await second.inbox.ready();
+    await vi.waitFor(() => expect(second.inbox.getState(message.messageId)?.status).toBe("succeeded"));
+    expect(second.prompt).toHaveBeenCalledOnce();
+    await second.stop();
+    await first.stop();
   });
 
   it("gives the retry back when the steer is refused after the spend", async () => {
@@ -1121,6 +1148,7 @@ async function system(
     retries,
     recovery,
     prompt,
+    logger,
     create,
     receipts,
     onRunOutcome,

@@ -1,4 +1,5 @@
 import {
+  AGENT_ACTIVITY_QUEUED_COUNT_HEADER,
   AGENT_ACTIVITY_TASK_COUNT_HEADER,
   AGENT_AVATAR_TEMPLATE,
   AGENT_BY_ID_TEMPLATE,
@@ -29,6 +30,7 @@ import {
   ContextTreeOperationResponseSchema,
   projectAgentActivityForClient,
   RebindAgentComputerRequestSchema,
+  requestsAgentActivityQueuedCount,
   requestsAgentActivityTaskCount,
   UpdateAgentRequestSchema,
 } from "@opentag/shared";
@@ -116,9 +118,10 @@ export function registerAgentRoutes(
     const { agentId } = parseRequest(AgentParamsSchema, request.params);
     const detail = await agentService.getById(authenticatedUserId(request), agentId);
     const includeTaskCount = requestsAgentActivityTaskCount(request.headers[AGENT_ACTIVITY_TASK_COUNT_HEADER]);
+    const includeQueuedCount = requestsAgentActivityQueuedCount(request.headers[AGENT_ACTIVITY_QUEUED_COUNT_HEADER]);
     const response = AgentDetailSchema.parse({
       ...detail,
-      activity: projectAgentActivityForClient(detail.activity, includeTaskCount),
+      activity: projectAgentActivityForClient(detail.activity, includeTaskCount, includeQueuedCount),
       ...(slackOAuthAvailable === undefined ? {} : { slackOAuthAvailable }),
     });
     return reply.code(200).send(response);

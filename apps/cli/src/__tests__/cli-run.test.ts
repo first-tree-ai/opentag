@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -100,15 +101,18 @@ describe("runCli", () => {
     expect(report).not.toHaveBeenCalled();
   });
 
-  it("exits with code 0 without writing stderr or reporting when a command throws EPIPE", async () => {
-    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+  it("exits with code 0 without writing stderr or reporting when a command's stdout write throws EPIPE", async () => {
     const epipe = Object.assign(new Error("write EPIPE"), { code: "EPIPE", errno: -32, syscall: "write" });
+    vi.spyOn(process.stdout, "write").mockImplementation(() => {
+      throw epipe;
+    });
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     const program = programWith((root) => {
       root
         .command("pipe-closed")
-        .description("test-only command whose output hits EPIPE")
+        .description("test-only command whose stdout write hits EPIPE")
         .action(async () => {
-          throw epipe;
+          process.stdout.write("hello\n");
         });
     });
 
@@ -117,6 +121,35 @@ describe("runCli", () => {
     await expect(exitCode).resolves.toBe(0);
     expect(stderr).not.toHaveBeenCalled();
     expect(report).not.toHaveBeenCalled();
+    expect(exit).not.toHaveBeenCalled();
+  });
+
+  it("reports and exits with code 1 when a command throws a non-output EPIPE (such as a child stdin pipe failure)", async () => {
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const child = spawnSync(process.execPath, ["-e", "process.exit(0)"], {
+      input: Buffer.alloc(4 * 1024 * 1024),
+      timeout: 2000,
+    });
+    const childStdinEpipe =
+      child.error ?? Object.assign(new Error("write EPIPE"), { code: "EPIPE", errno: -32, syscall: "write" });
+    const program = programWith((root) => {
+      root
+        .command("child-stdin-epipe")
+        .description("test-only command whose child stdin pipe hits EPIPE")
+        .action(async () => {
+          throw childStdinEpipe;
+        });
+    });
+
+    const { exitCode, exit, report } = run(program, ["child-stdin-epipe"]);
+
+    await expect(exitCode).resolves.toBe(1);
+    expect(report).toHaveBeenCalledExactlyOnceWith(
+      childStdinEpipe,
+      expect.objectContaining({ code: "EPIPE", category: "internal" }),
+      expect.objectContaining({ command: "child-stdin-epipe" }),
+    );
+    expect(String(stderr.mock.calls[0]?.[0])).toMatch(/^EPIPE: .*EPIPE/u);
     expect(exit).not.toHaveBeenCalled();
   });
 

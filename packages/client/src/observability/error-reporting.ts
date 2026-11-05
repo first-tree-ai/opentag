@@ -134,12 +134,19 @@ function describeFailure(error: unknown): Record<string, unknown> {
   return { errorMessage: String(error) };
 }
 
+const OUTPUT_BROKEN_PIPE_SYMBOL = Symbol.for("opentag.outputBrokenPipe");
+
 function isBrokenPipeError(error: unknown): boolean {
   const seen = new Set<unknown>();
   let current: unknown = error;
   while (current !== null && typeof current === "object" && !seen.has(current)) {
     seen.add(current);
-    if ((current as { code?: unknown }).code === "EPIPE") return true;
+    if (
+      (current as { code?: unknown }).code === "EPIPE" &&
+      (current as { [OUTPUT_BROKEN_PIPE_SYMBOL]?: unknown })[OUTPUT_BROKEN_PIPE_SYMBOL] === true
+    ) {
+      return true;
+    }
     current = (current as { cause?: unknown }).cause;
   }
   return false;
@@ -149,9 +156,11 @@ function isBrokenPipeError(error: unknown): boolean {
  * Report an uncaught exception or unhandled rejection, then end the process the way Node would have.
  *
  * Node's default for both is to print the failure and exit with code 1; installing a listener
- * suppresses that, so this does the same after a bounded wait for the report. A broken output pipe
- * (`EPIPE`) means a downstream reader closed early rather than a crash, so it exits cleanly with 0
- * without logging, printing, or reporting. Returns the function that removes both listeners.
+ * suppresses that, so this does the same after a bounded wait for the report. A broken CLI output
+ * pipe (`EPIPE` marked at the owned `stdout`/`stderr` boundary) means a downstream reader closed
+ * early rather than a crash, so it exits cleanly with 0 without logging, printing, or reporting;
+ * non-output `EPIPE` errors (such as a child process `stdin` pipe) still follow the normal crash
+ * path. Returns the function that removes both listeners.
  */
 export function installProcessErrorReporting(options: ProcessErrorReportingOptions): () => void {
   const target = options.target ?? process;

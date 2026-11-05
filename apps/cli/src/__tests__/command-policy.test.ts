@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { type ClientLogger, OpenTagApiError } from "@opentag/client";
 import { describe, expect, it, vi } from "vitest";
 import { buildChildEnvironment } from "../core/command/environment.js";
@@ -7,7 +8,9 @@ import {
   commandExitCode,
   EXIT_CODES,
   executeCommand,
+  hasBrokenPipeCode,
   isBrokenPipeError,
+  markOutputBrokenPipeError,
   observeCommandFailures,
   presentCommand,
   toCommandError,
@@ -162,12 +165,17 @@ describe("CLI command result policy", () => {
     expect(stderr.join(" ")).toContain("request request-file-1");
   });
 
-  it("treats broken-pipe (EPIPE) errors as a clean exit without stderr output, error logs, or failure observers", async () => {
-    const epipe = Object.assign(new Error("write EPIPE"), { code: "EPIPE", errno: -32, syscall: "write" });
+  it("treats output-marked broken-pipe (EPIPE) errors as a clean exit without stderr output, error logs, or failure observers, while preserving failure semantics for non-output EPIPE", async () => {
+    const epipe = markOutputBrokenPipeError(
+      Object.assign(new Error("write EPIPE"), { code: "EPIPE", errno: -32, syscall: "write" }),
+    );
     const wrappedEpipe = new Error("downstream closed", { cause: epipe });
+    const unmarkedEpipe = Object.assign(new Error("write EPIPE"), { code: "EPIPE", errno: -32, syscall: "write" });
     const circular: { cause?: unknown; code?: string } = {};
     circular.cause = circular;
 
+    expect(hasBrokenPipeCode(unmarkedEpipe)).toBe(true);
+    expect(isBrokenPipeError(unmarkedEpipe)).toBe(false);
     expect(isBrokenPipeError(epipe)).toBe(true);
     expect(isBrokenPipeError(wrappedEpipe)).toBe(true);
     expect(isBrokenPipeError(circular)).toBe(false);
@@ -182,6 +190,15 @@ describe("CLI command result policy", () => {
     });
     expect(commandExitCode(commandError)).toBe(EXIT_CODES.success);
 
+    const nonOutputCommandError = toCommandError(unmarkedEpipe);
+    expect(nonOutputCommandError).toMatchObject({
+      code: "EPIPE",
+      category: "internal",
+      retryability: "never",
+      phase: "unknown",
+    });
+    expect(commandExitCode(nonOutputCommandError)).toBe(EXIT_CODES.failure);
+
     const stderr: string[] = [];
     expect(
       presentCommand(
@@ -191,17 +208,21 @@ describe("CLI command result policy", () => {
     ).toBe(EXIT_CODES.success);
     expect(stderr).toEqual([]);
 
+    const stdoutThrownEpipe = Object.assign(new Error("write EPIPE"), { code: "EPIPE", errno: -32, syscall: "write" });
     expect(
       presentCommand(
         { ok: true, value: "hello", exitCode: EXIT_CODES.success },
         {
           stdout: () => {
-            throw epipe;
+            throw stdoutThrownEpipe;
           },
           stderr: (chunk) => stderr.push(chunk),
         },
       ),
     ).toBe(EXIT_CODES.success);
+    expect(isBrokenPipeError(stdoutThrownEpipe)).toBe(true);
+
+    const stderrThrownEpipe = Object.assign(new Error("write EPIPE"), { code: "EPIPE", errno: -32, syscall: "write" });
     expect(
       presentCommand(
         {
@@ -214,11 +235,12 @@ describe("CLI command result policy", () => {
         },
         {
           stderr: () => {
-            throw epipe;
+            throw stderrThrownEpipe;
           },
         },
       ),
     ).toBe(EXIT_CODES.success);
+    expect(isBrokenPipeError(stderrThrownEpipe)).toBe(true);
     expect(() =>
       presentCommand(
         { ok: true, value: "hello", exitCode: EXIT_CODES.success },
@@ -252,6 +274,26 @@ describe("CLI command result policy", () => {
       expect(stderr).toEqual([]);
       expect(errorLog).not.toHaveBeenCalled();
       expect(observed).not.toHaveBeenCalled();
+
+      const child = spawnSync(process.execPath, ["-e", "process.exit(0)"], {
+        input: Buffer.alloc(4 * 1024 * 1024),
+        timeout: 2000,
+      });
+      const childStdinEpipe = child.error ?? unmarkedEpipe;
+      expect((childStdinEpipe as NodeJS.ErrnoException).code).toBe("EPIPE");
+      expect(isBrokenPipeError(childStdinEpipe)).toBe(false);
+
+      await expect(
+        executeCommand(
+          async () => {
+            throw childStdinEpipe;
+          },
+          { logger, stderr: (chunk) => stderr.push(chunk) },
+        ),
+      ).resolves.toBe(EXIT_CODES.failure);
+      expect(stderr.join("")).toMatch(/^EPIPE: .*EPIPE/u);
+      expect(errorLog).toHaveBeenCalledTimes(1);
+      expect(observed).toHaveBeenCalledTimes(1);
     } finally {
       detach();
     }

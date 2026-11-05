@@ -5,7 +5,9 @@ import {
   CommandError,
   commandExitCode,
   EXIT_CODES,
+  hasBrokenPipeCode,
   isBrokenPipeError,
+  markOutputBrokenPipeError,
   observeCommandFailures,
   presentCommand,
   toCommandError,
@@ -19,20 +21,45 @@ import { createProgram } from "./program.js";
 
 export interface OutputErrorStream {
   on(event: "error", listener: (error: unknown) => void): unknown;
+  write?: ((...args: never[]) => unknown) | undefined;
 }
 
 const guardedOutputStreams = new WeakSet<OutputErrorStream>();
+const guardedOutputWrites = new WeakMap<OutputErrorStream, unknown>();
+
+function guardOutputStreamWrite(stream: OutputErrorStream): void {
+  if (typeof stream.write !== "function") return;
+  if (guardedOutputWrites.get(stream) === stream.write) return;
+  const currentWrite = stream.write as (...args: unknown[]) => unknown;
+  const guardedWrite = function (this: unknown, ...args: unknown[]) {
+    try {
+      return currentWrite.apply(this ?? stream, args);
+    } catch (error) {
+      if (hasBrokenPipeCode(error)) {
+        markOutputBrokenPipeError(error);
+      }
+      throw error;
+    }
+  };
+  stream.write = guardedWrite as OutputErrorStream["write"];
+  guardedOutputWrites.set(stream, stream.write);
+}
 
 /**
  * Ignore `EPIPE` on an output stream when a downstream pipe consumer (`head`, `grep -q`) closes
- * early. Installed once per stream and left attached because Node's async `WriteWrap.onWriteComplete`
- * can emit `"error"` on the next tick after `runCli` has already returned.
+ * early, and mark synchronous `EPIPE` write throws as originating from this output boundary.
+ * The `"error"` listener is installed once per stream and left attached because Node's async
+ * `WriteWrap.onWriteComplete` can emit `"error"` on the next tick after `runCli` has already returned.
  */
 export function ignoreBrokenPipeOnStream(stream: OutputErrorStream): void {
+  guardOutputStreamWrite(stream);
   if (guardedOutputStreams.has(stream)) return;
   guardedOutputStreams.add(stream);
   stream.on("error", (error: unknown) => {
-    if (isBrokenPipeError(error)) return;
+    if (hasBrokenPipeCode(error)) {
+      markOutputBrokenPipeError(error);
+      return;
+    }
     throw error;
   });
 }

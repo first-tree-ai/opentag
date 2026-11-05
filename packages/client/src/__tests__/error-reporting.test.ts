@@ -237,13 +237,25 @@ describe("installProcessErrorReporting", () => {
     await vi.waitFor(() => expect(exit).toHaveBeenCalledWith(1));
   });
 
-  it("exits cleanly with code 0 without logging, printing, or reporting on EPIPE", () => {
+  it("exits cleanly with code 0 without logging, printing, or reporting on output-marked EPIPE, while still reporting non-output EPIPE", async () => {
+    const outputBrokenPipeSymbol = Symbol.for("opentag.outputBrokenPipe");
     for (const [origin, failure] of [
-      ["uncaughtException", Object.assign(new Error("write EPIPE"), { code: "EPIPE", errno: -32, syscall: "write" })],
+      [
+        "uncaughtException",
+        Object.assign(new Error("write EPIPE"), {
+          code: "EPIPE",
+          errno: -32,
+          syscall: "write",
+          [outputBrokenPipeSymbol]: true,
+        }),
+      ],
       [
         "unhandledRejection",
         new Error("wrapped broken pipe", {
-          cause: Object.assign(new Error("write EPIPE"), { code: "EPIPE" }),
+          cause: Object.assign(new Error("write EPIPE"), {
+            code: "EPIPE",
+            [outputBrokenPipeSymbol]: true,
+          }),
         }),
       ],
     ] as const) {
@@ -262,5 +274,28 @@ describe("installProcessErrorReporting", () => {
       expect(entries).toEqual([]);
       uninstall();
     }
+
+    const nonOutputTarget = new EventEmitter();
+    const { entries: nonOutputEntries, logger: nonOutputLogger } = recordingLogger();
+    const nonOutputReport = vi.fn().mockResolvedValue({ ok: true });
+    const nonOutputExit = vi.fn();
+    const nonOutputPrint = vi.fn();
+    const uninstallNonOutput = installProcessErrorReporting({
+      report: nonOutputReport,
+      logger: nonOutputLogger,
+      target: nonOutputTarget,
+      exit: nonOutputExit,
+      print: nonOutputPrint,
+      waitMs: 50,
+    });
+    const nonOutputEpipe = Object.assign(new Error("write EPIPE"), { code: "EPIPE", errno: -32, syscall: "write" });
+
+    nonOutputTarget.emit("uncaughtException", nonOutputEpipe);
+    await vi.waitFor(() => expect(nonOutputExit).toHaveBeenCalledWith(1));
+
+    expect(nonOutputReport).toHaveBeenCalledExactlyOnceWith(nonOutputEpipe, "uncaughtException");
+    expect(nonOutputPrint).toHaveBeenCalledExactlyOnceWith(nonOutputEpipe);
+    expect(nonOutputEntries).toHaveLength(1);
+    uninstallNonOutput();
   });
 });

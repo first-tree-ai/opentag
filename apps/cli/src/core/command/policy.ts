@@ -73,8 +73,10 @@ export type CommandExecutionOptions<T> = CommandPresentationOptions<T> & {
   phase?: CommandPhase;
 };
 
-/** Whether an error (or any cause in its chain) is a broken-pipe write (`EPIPE`) from a closed downstream reader. */
-export function isBrokenPipeError(error: unknown): boolean {
+const OUTPUT_BROKEN_PIPE_SYMBOL = Symbol.for("opentag.outputBrokenPipe");
+
+/** Whether an error (or any cause in its chain) carries `code === "EPIPE"`. */
+export function hasBrokenPipeCode(error: unknown): boolean {
   const seen = new Set<unknown>();
   let current: unknown = error;
   while (current !== null && typeof current === "object" && !seen.has(current)) {
@@ -85,14 +87,59 @@ export function isBrokenPipeError(error: unknown): boolean {
   return false;
 }
 
+/**
+ * Mark an `EPIPE` error (and any `EPIPE` cause in its chain) as originating from a CLI
+ * `stdout`/`stderr` write or stream error boundary. Only errors marked at an owned output boundary
+ * are treated as clean downstream pipe closures; non-output `EPIPE` failures (such as a child
+ * process `stdin` pipe) remain reportable internal errors.
+ */
+export function markOutputBrokenPipeError<T>(error: T): T {
+  if (!hasBrokenPipeCode(error)) return error;
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (current !== null && typeof current === "object" && !seen.has(current)) {
+    seen.add(current);
+    if (current === error || (current as { code?: unknown }).code === "EPIPE") {
+      Object.defineProperty(current, OUTPUT_BROKEN_PIPE_SYMBOL, {
+        value: true,
+        configurable: true,
+      });
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return error;
+}
+
+/**
+ * Whether an error (or any cause in its chain) is a broken-pipe write (`EPIPE`) confirmed at the
+ * CLI `stdout`/`stderr` output boundary.
+ */
+export function isBrokenPipeError(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (current !== null && typeof current === "object" && !seen.has(current)) {
+    seen.add(current);
+    if (
+      (current as { code?: unknown }).code === "EPIPE" &&
+      (current as { [OUTPUT_BROKEN_PIPE_SYMBOL]?: unknown })[OUTPUT_BROKEN_PIPE_SYMBOL] === true
+    ) {
+      return true;
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 /** Convert errors from Commander, Zod, the API, and Node into one local contract. */
 export function toCommandError(error: unknown, phase: CommandPhase = "unknown"): CommandError {
   if (error instanceof CommandError) return error;
   if (isBrokenPipeError(error)) {
-    return new CommandError(
-      { code: "EPIPE", category: "cancelled", retryability: "never", phase: "shutdown" },
-      "The output stream was closed by the reader",
-      { cause: error },
+    return markOutputBrokenPipeError(
+      new CommandError(
+        { code: "EPIPE", category: "cancelled", retryability: "never", phase: "shutdown" },
+        "The output stream was closed by the reader",
+        { cause: error },
+      ),
     );
   }
   if (isZodError(error)) {
@@ -231,7 +278,10 @@ function writeOutputLine(writer: (chunk: string) => void, output: string): "writ
     writer(`${output}\n`);
     return "written";
   } catch (error) {
-    if (isBrokenPipeError(error)) return "epipe";
+    if (hasBrokenPipeCode(error)) {
+      markOutputBrokenPipeError(error);
+      return "epipe";
+    }
     throw error;
   }
 }
@@ -370,7 +420,7 @@ function isZodError(
 }
 
 export function commandExitCode(error: CommandError): CommandExitCode {
-  if (error.code === "EPIPE") return EXIT_CODES.success;
+  if (isBrokenPipeError(error)) return EXIT_CODES.success;
   if (error.category === "validation") return EXIT_CODES.usage;
   if (error.category === "unavailable" || error.category === "timeout" || error.category === "dependency") {
     return EXIT_CODES.serviceUnavailable;

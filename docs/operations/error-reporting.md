@@ -154,10 +154,12 @@ back to the package version.
 **CLI and daemon.** The CLI entry point (`apps/cli/src/cli/index.ts`) reports a command failure after presenting
 it, and only when the failure describes the program rather than the caller: categories `internal`, `dependency`,
 and `protocol`. Validation, authentication, authorization, not-found, configuration, and cancellation outcomes
-are answers, not defects, and are not reported. A broken output pipe (`EPIPE`) when a downstream reader such as
-`head` or `grep -q` closes early is likewise the caller ending the stream rather than a failure: `process.stdout`
-and `process.stderr` ignore `EPIPE` stream errors, and both the command presentation path and the process-level
-handlers exit cleanly with code 0 without writing to stderr or reporting. The same entry point installs
+are answers, not defects, and are not reported. A broken output pipe (`EPIPE`) on the CLI's own `stdout` or
+`stderr` when a downstream reader such as `head` or `grep -q` closes early is likewise the caller ending the
+stream rather than a failure: `process.stdout` and `process.stderr` ignore `EPIPE` stream errors, and both the
+command presentation path and the process-level handlers exit cleanly with code 0 without writing to stderr or
+reporting when `EPIPE` originates at the CLI `stdout`/`stderr` boundary (`EPIPE` from child process `stdin` or
+other operation/transport pipes remains a reportable failure). The same entry point installs
 `process.on("uncaughtException")` and `process.on("unhandledRejection")` handlers (`installProcessErrorReporting`
 in `@opentag/client`) that log through the client logger, wait at most two seconds for the report, write the
 failure to stderr and wait for that write to drain (at most one second, so a piped stderr keeps the output), and

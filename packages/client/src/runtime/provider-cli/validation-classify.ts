@@ -212,8 +212,14 @@ function isRateLimitFailure(type: string | undefined, subtype: string | undefine
     type === "rate_limited" ||
     subtype === "rate_limit" ||
     subtype === "rate_limited" ||
-    String(code) === "429"
+    String(code) === "429" ||
+    isFeishuRateLimitCode(code)
   );
+}
+
+/** Feishu's application rate limit, which it can answer with any HTTP status. */
+export function isFeishuRateLimitCode(code: unknown): boolean {
+  return String(code) === "99991400";
 }
 
 function isProviderFailure(

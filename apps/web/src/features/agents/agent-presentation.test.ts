@@ -16,6 +16,7 @@ import {
   agentComputerStatus,
   agentMessagingStatus,
   agentRowAction,
+  agentRuntimeIssue,
   agentSetupContinuation,
   agentStatusPresentation,
   computerRecoveryMessage,
@@ -382,4 +383,97 @@ describe("Server status reasons across the list and dependency rows", () => {
       if (states[reason] === "action_required") expect(["warning", "danger"]).toContain(messaging.tone);
     },
   );
+
+  /*
+   * The action each Server verdict offers on a list row. The card names the Server verdict, so the
+   * action must answer that verdict rather than the legacy reason it projects to: a credential check
+   * that failed after setup finished projects to `handoff_unavailable`, which setup also owns.
+   */
+  const rowActions: Record<AgentStatusReason, string | undefined> = {
+    computer_not_bound: "Continue setup",
+    computer_access_required: undefined,
+    computer_offline: "Restore connection",
+    agent_paused: undefined,
+    runtime_unavailable: "Continue setup",
+    runtime_check_timed_out: undefined,
+    self_check_report_stale: undefined,
+    first_validation: undefined,
+    legacy_checking: undefined,
+    im_not_connected: "Continue setup",
+    im_provisioning: "Continue setup",
+    im_reauthorization_required: "Update permissions",
+    im_error: "Reconnect channel",
+    messaging_cli_unavailable: "Fix messaging",
+    messaging_cli_check_timed_out: undefined,
+    credential_validation_failed: "Reconnect channel",
+    credential_validation_timeout: undefined,
+    credential_rate_limited: undefined,
+  };
+  const messagingRepairs = new Set<AgentStatusReason>([
+    "im_reauthorization_required",
+    "im_error",
+    "messaging_cli_unavailable",
+    "credential_validation_failed",
+  ]);
+  const finishedSetupVerdicts = new Set<AgentStatusReason>([
+    "runtime_check_timed_out",
+    "self_check_report_stale",
+    "messaging_cli_unavailable",
+    "messaging_cli_check_timed_out",
+    "credential_validation_failed",
+    "credential_validation_timeout",
+    "credential_rate_limited",
+  ]);
+  it.each(cases)("offers the row action that matches $reason with binding=$hasBinding", ({ reason, hasBinding }) => {
+    const agent = boundAgent();
+    const detail = applyAgentStatus(agent, statusForReason(agent, reason, hasBinding));
+    const action = agentRowAction(listed(detail));
+    expect(action?.label).toBe(rowActions[reason]);
+    if (messagingRepairs.has(reason)) {
+      expect(action?.link).toEqual({
+        params: { agentId, section: "messaging" },
+        to: "/agents/$agentId/settings/$section",
+      });
+    }
+    if (finishedSetupVerdicts.has(reason)) {
+      // Neither the list nor the Agent page may send a finished setup back to setup.
+      expect(agentSetupContinuation(detail)).toBeUndefined();
+      expect(agentMessagingStatus(detail).action?.label).not.toBe("Continue setup");
+      expect(agentMessagingStatus(detail).action?.label).toBe(
+        rowActions[reason] === "Restore connection" ? undefined : rowActions[reason],
+      );
+      expect(agentRuntimeIssue(detail)?.action).toBeUndefined();
+    }
+  });
+
+  it.each(["feishu", "slack"] as const)(
+    "repairs a failed credential check on a %s Agent that finished setup, instead of continuing setup",
+    (provider) => {
+      // Reproduces the reported list: an Agent connected long ago whose credential check failed.
+      const agent = boundAgent();
+      const status = statusForReason(agent, "credential_validation_failed", true);
+      const binding = status.messaging ? { ...status.messaging, provider } : null;
+      const detail = applyAgentStatus(agent, { ...status, messaging: binding });
+      const list = listed(detail);
+      expect(agentCardStatus(list)).toMatchObject({ label: "Messaging credential check failed", tone: "warning" });
+      expect(agentRowAction(list)).toEqual({
+        label: "Reconnect channel",
+        link: { params: { agentId, section: "messaging" }, to: "/agents/$agentId/settings/$section" },
+      });
+      expect(agentMessagingStatus(detail)).toMatchObject({
+        action: { label: "Reconnect channel" },
+        label: "Cannot receive messages",
+      });
+    },
+  );
+
+  it("keeps continuing setup for an Agent whose messaging was never connected", () => {
+    const agent = boundAgent();
+    const list = listed(applyAgentStatus(agent, statusForReason(agent, "im_not_connected", false)));
+    expect(agentCardStatus(list)).toMatchObject({ label: "Messaging not connected" });
+    expect(agentRowAction(list)).toEqual({
+      label: "Continue setup",
+      link: { search: { agentId }, to: "/agents/setup" },
+    });
+  });
 });

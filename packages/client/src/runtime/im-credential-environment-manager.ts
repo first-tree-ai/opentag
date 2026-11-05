@@ -45,12 +45,19 @@ export interface ImCredentialGrantSubject {
 }
 
 export interface PreparedImCredentialEnvironment {
+  readonly executionId: string;
   readonly environmentManifest: string;
   readonly outboxContext?: RuntimeImOutboxContext;
   readonly path: string;
   readonly provider: "feishu" | "slack";
   /** Private Slack CLI config leaf for this Session; omitted for Feishu. */
   readonly slackConfigDir?: string;
+}
+
+interface LegacyPreparation {
+  readonly executionId: string;
+  readonly signal: AbortSignal | undefined;
+  prepared?: PreparedImCredentialEnvironment;
 }
 
 export class ImCredentialEnvironmentManager {
@@ -66,7 +73,8 @@ export class ImCredentialEnvironmentManager {
   readonly #writeEnvironmentFile: NonNullable<ImCredentialEnvironmentManagerOptions["writeEnvironmentFile"]>;
   readonly #pending = new Map<string, PendingGrant>();
   readonly #activeSessions = new Set<string>();
-  readonly #activeSlackConfigDirs = new Map<string, string>();
+  readonly #preparations = new Map<string, LegacyPreparation>();
+  readonly #sessionOperations = new Map<string, Promise<void>>();
   readonly #unsubscribe: () => void;
   #closed = false;
 
@@ -93,45 +101,75 @@ export class ImCredentialEnvironmentManager {
   }
 
   activeSlackConfigDirForSession(sessionId: string): string | undefined {
-    return this.#activeSlackConfigDirs.get(sessionId);
+    return this.#livePreparation(sessionId)?.slackConfigDir;
+  }
+
+  outboxContextForSession(sessionId: string): RuntimeImOutboxContext | undefined {
+    return this.#livePreparation(sessionId)?.outboxContext;
+  }
+
+  #livePreparation(sessionId: string): PreparedImCredentialEnvironment | undefined {
+    const active = this.#preparations.get(sessionId);
+    return this.#closed || active?.signal?.aborted ? undefined : active?.prepared;
   }
 
   async prepare(request: ImCredentialGrantSubject, signal?: AbortSignal): Promise<PreparedImCredentialEnvironment> {
     if (this.#closed) throw new ImCredentialEnvironmentError("client_shutdown");
+    if (signal?.aborted) throw new ImCredentialEnvironmentError("aborted");
+    const active: LegacyPreparation = { executionId: randomUUID(), signal };
+    this.#preparations.set(request.sessionId, active);
+    return this.#withSession(request.sessionId, () => this.#prepare(request, active));
+  }
+
+  async #prepare(
+    request: ImCredentialGrantSubject,
+    active: LegacyPreparation,
+  ): Promise<PreparedImCredentialEnvironment> {
+    const { sessionId } = request;
+    const { executionId, signal } = active;
     try {
       const startupFailure = await this.#startupCleanup;
       if (startupFailure) throw startupFailure;
+      this.#assertCurrent(sessionId, active);
+      if (this.#activeSessions.has(sessionId)) await this.#cleanupArtifacts(sessionId);
+      this.#assertCurrent(sessionId, active);
       const result = await this.#requestGrant(request, signal);
       if (result.status === "rejected") throw new ImCredentialEnvironmentError(result.code);
-      this.#activeSessions.add(request.sessionId);
+      this.#assertCurrent(sessionId, active);
+      this.#activeSessions.add(sessionId);
       await ensurePrivateDirectory(this.#home, this.#root);
-      const path = this.pathForSession(request.sessionId);
+      const path = this.pathForSession(sessionId);
+      let environment: Record<string, string | undefined>;
+      let slackConfigDir: string | undefined;
       if (result.grant.provider === "feishu") {
-        const environment = await this.#feishuEnvironment(request.sessionId, result.grant, signal);
-        await this.#writeEnvironmentFile(path, serializeEnvironment(environment, this.#platform), 0o600);
-        return {
-          path,
-          environmentManifest: await this.#writeManifest(request.sessionId, environment),
-          provider: result.grant.provider,
-          ...(result.outboxContext ? { outboxContext: result.outboxContext } : {}),
-        };
+        environment = await this.#feishuEnvironment(sessionId, result.grant, signal);
+      } else {
+        const slack = await this.#slackEnvironment(sessionId, result.grant);
+        environment = slack.environment;
+        slackConfigDir = slack.configDir;
       }
-      const slack = await this.#slackEnvironment(request.sessionId, result.grant);
-      await this.#writeEnvironmentFile(path, serializeEnvironment(slack.environment, this.#platform), 0o600);
-      this.#activeSlackConfigDirs.set(request.sessionId, slack.configDir);
-      return {
+      this.#assertCurrent(sessionId, active);
+      await this.#writeEnvironmentFile(path, serializeEnvironment(environment, this.#platform), 0o600);
+      this.#assertCurrent(sessionId, active);
+      const environmentManifest = await this.#writeManifest(sessionId, executionId, environment);
+      this.#assertCurrent(sessionId, active);
+      const prepared: PreparedImCredentialEnvironment = {
+        executionId,
         path,
-        environmentManifest: await this.#writeManifest(request.sessionId, slack.environment),
+        environmentManifest,
         provider: result.grant.provider,
-        slackConfigDir: slack.configDir,
+        ...(slackConfigDir ? { slackConfigDir } : {}),
         ...(result.outboxContext ? { outboxContext: result.outboxContext } : {}),
       };
+      active.prepared = prepared;
+      return prepared;
     } catch (error) {
+      if (this.#preparations.get(sessionId) === active) this.#preparations.delete(sessionId);
       this.#logger.debug(
         { code: "credential_materialization_failed", error: String(error) },
         "Provider credential environment materialization failed",
       );
-      await this.cleanup(request.sessionId).catch((cleanupError: unknown) => {
+      await this.#cleanupArtifacts(sessionId).catch((cleanupError: unknown) => {
         this.#logger.debug(
           {
             code: "credential_cleanup_after_failure_failed",
@@ -144,9 +182,33 @@ export class ImCredentialEnvironmentManager {
     }
   }
 
-  async cleanup(sessionId: string): Promise<void> {
+  #assertCurrent(sessionId: string, active: LegacyPreparation): void {
+    if (this.#closed) throw new ImCredentialEnvironmentError("client_shutdown");
+    if (active.signal?.aborted) throw new ImCredentialEnvironmentError("aborted");
+    if (this.#preparations.get(sessionId) !== active) throw new ImCredentialEnvironmentError("preparation_superseded");
+  }
+
+  async cleanup(sessionId: string, executionId?: string): Promise<void> {
+    if (executionId !== undefined && this.#preparations.get(sessionId)?.executionId !== executionId) return;
+    this.#preparations.delete(sessionId);
+    return this.#withSession(sessionId, () => this.#cleanupArtifacts(sessionId));
+  }
+
+  #withSession<T>(sessionId: string, task: () => Promise<T>): Promise<T> {
+    const result = (this.#sessionOperations.get(sessionId) ?? Promise.resolve()).then(task);
+    const settled = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.#sessionOperations.set(sessionId, settled);
+    void settled.then(() => {
+      if (this.#sessionOperations.get(sessionId) === settled) this.#sessionOperations.delete(sessionId);
+    });
+    return result;
+  }
+
+  async #cleanupArtifacts(sessionId: string): Promise<void> {
     const slackConfigDir = this.#slackConfigDirPath(sessionId);
-    this.#activeSlackConfigDirs.delete(sessionId);
     const results = await Promise.allSettled([
       this.#removePath(this.pathForSession(sessionId), { force: true }),
       this.#removePath(this.#artifactPath(`${sessionId}.json`), { force: true }),
@@ -164,6 +226,7 @@ export class ImCredentialEnvironmentManager {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#preparations.clear();
     this.#unsubscribe();
     for (const [requestId, pending] of this.#pending) {
       clearTimeout(pending.timer);
@@ -171,17 +234,22 @@ export class ImCredentialEnvironmentManager {
       this.#pending.delete(requestId);
     }
     const startupFailure = await this.#startupCleanup;
+    await Promise.all(this.#sessionOperations.values());
     await Promise.all([...this.#activeSessions].map((sessionId) => this.cleanup(sessionId)));
     if (startupFailure) throw startupFailure;
   }
 
-  async #writeManifest(sessionId: string, environment: Readonly<Record<string, string | undefined>>): Promise<string> {
+  async #writeManifest(
+    sessionId: string,
+    executionId: string,
+    environment: Readonly<Record<string, string | undefined>>,
+  ): Promise<string> {
     const path = this.#artifactPath(`${sessionId}.json`);
     await this.#writeEnvironmentFile(
       path,
       JSON.stringify({
         schemaVersion: 1,
-        executionId: randomUUID(),
+        executionId,
         environment: Object.fromEntries(Object.entries(environment).map(([key, value]) => [key, value ?? null])),
       }),
       0o600,

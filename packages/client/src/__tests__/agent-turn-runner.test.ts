@@ -1321,6 +1321,7 @@ describe("AgentTurnRunner", () => {
 
     runner.start(liveOwner(delivery()));
     await runner.settled();
+    expect(environment.cleanup).not.toHaveBeenCalled();
     expect(logs).toContainEqual(
       expect.objectContaining({
         level: "warn",
@@ -1483,6 +1484,14 @@ describe("AgentTurnRunner", () => {
     const driftedPlanPrepare = vi.fn(async () => {
       throw new ProviderCliTurnPlanError("artifact_drifted", "fingerprint changed");
     });
+    const driftedCredentials = {
+      prepare: vi.fn(async () => ({
+        path: "/tmp/provider-env.sh",
+        provider: "feishu" as const,
+        executionId: "exec-drifted",
+      })),
+      cleanup: vi.fn(async () => undefined),
+    };
     const drifted = new AgentTurnRunner({
       bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
       connection: { send: vi.fn(async () => undefined) },
@@ -1496,10 +1505,7 @@ describe("AgentTurnRunner", () => {
         cwd: () => "/workspace",
         sessionKind: () => "visible",
       } as unknown as SessionRuntimeManager,
-      credentialEnvironment: {
-        prepare: vi.fn(async () => ({ path: "/tmp/provider-env.sh", provider: "feishu" as const })),
-        cleanup: vi.fn(async () => undefined),
-      },
+      credentialEnvironment: driftedCredentials,
       turnPlan: {
         prepare: driftedPlanPrepare,
         cleanup: vi.fn(async () => undefined),
@@ -1507,6 +1513,7 @@ describe("AgentTurnRunner", () => {
     });
     drifted.start(liveOwner({ ...delivery(), deliveryId: "delivery-drift" }));
     await drifted.settled();
+    expect(driftedCredentials.cleanup).toHaveBeenCalledExactlyOnceWith("session-1", "exec-drifted");
     expect(driftedPlanPrepare).toHaveBeenCalledWith(
       expect.objectContaining({ provider: "feishu" }),
       expect.any(AbortSignal),

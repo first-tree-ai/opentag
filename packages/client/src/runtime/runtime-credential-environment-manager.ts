@@ -96,7 +96,7 @@ export interface PreparedMcpGatewayLaunch {
 export interface PreparedRuntimeCredentialEnvironment {
   /** Local-only exact proxy socket for this execution. Cloud uses its mounted bridge. */
   readonly allowedUnixSockets?: readonly string[];
-  /** Present in proxy mode; exact-execution cleanup token. */
+  /** Exact preparation/execution cleanup token in either credential mode. */
   readonly executionId?: string;
   /** Execution environment manifest merged by the Turn launcher. */
   readonly environmentManifest?: string;
@@ -171,21 +171,15 @@ interface ActiveProxyExecution {
   readonly webSocketDirectory?: string;
 }
 
-interface ActiveLegacyExecution {
-  readonly signal: AbortSignal | undefined;
-  outboxContext?: RuntimeImOutboxContext;
-}
-
 /**
  * Runtime credential environment lifecycle with explicit proxy mode. Proxy mode opens
  * a trusted execution through the control connection, holds short-lived capabilities
  * only inside the trusted Relay, and materializes execution-local handles, CA, CLI
  * config, and shims for the Sandbox. Legacy mode delegates credential materialization
- * to the existing IM manager and tracks its live non-secret outbox context.
+ * and live non-secret outbox context to the existing IM manager.
  */
 export class RuntimeCredentialEnvironmentManager {
   readonly #legacy?: ImCredentialEnvironmentManager;
-  readonly #legacyExecutions = new Map<string, ActiveLegacyExecution>();
   readonly #logger: Pick<ClientLogger, "debug" | "warn">;
   readonly #mode: RuntimeCredentialMode;
   readonly #options: RuntimeCredentialEnvironmentManagerOptions;
@@ -277,8 +271,7 @@ export class RuntimeCredentialEnvironmentManager {
   /** IM outbox context of the Session's live execution, so input steered into it names the same target. */
   outboxContextForSession(sessionId: string): RuntimeImOutboxContext | undefined {
     if (this.#mode === "legacy") {
-      const active = this.#legacyExecutions.get(sessionId);
-      return active?.signal?.aborted ? undefined : active?.outboxContext;
+      return this.#requireLegacy().outboxContextForSession(sessionId);
     }
     return this.#proxyExecutions.get(sessionId)?.outboxContext;
   }
@@ -298,17 +291,8 @@ export class RuntimeCredentialEnvironmentManager {
     signal?: AbortSignal,
   ): Promise<PreparedRuntimeCredentialEnvironment> {
     if (this.#mode === "legacy") {
-      if (this.#closed) throw new ImCredentialEnvironmentError("client_shutdown");
-      const active: ActiveLegacyExecution = { signal };
-      this.#legacyExecutions.set(request.sessionId, active);
-      try {
-        const prepared = await this.#requireLegacy().prepare(request, signal);
-        if (this.#legacyExecutions.get(request.sessionId) === active) active.outboxContext = prepared.outboxContext;
-        return { ...prepared, providers: [prepared.provider] };
-      } catch (error) {
-        if (this.#legacyExecutions.get(request.sessionId) === active) this.#legacyExecutions.delete(request.sessionId);
-        throw error;
-      }
+      const prepared = await this.#requireLegacy().prepare(request, signal);
+      return { ...prepared, providers: [prepared.provider] };
     }
     return this.#prepareProxy(request, signal);
   }
@@ -361,8 +345,7 @@ export class RuntimeCredentialEnvironmentManager {
 
   async cleanup(sessionId: string, executionId?: string): Promise<void> {
     if (this.#mode === "legacy") {
-      this.#legacyExecutions.delete(sessionId);
-      return this.#requireLegacy().cleanup(sessionId);
+      return this.#requireLegacy().cleanup(sessionId, executionId);
     }
     const active = this.#proxyExecutions.get(sessionId);
     if (executionId !== undefined && active && active.executionId !== executionId) {
@@ -385,7 +368,6 @@ export class RuntimeCredentialEnvironmentManager {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
-    this.#legacyExecutions.clear();
     if (this.#mode === "legacy") return this.#requireLegacy().close();
     const startupFailure = await this.#startupCleanup;
     const sessions = [...this.#proxyExecutions.keys()];

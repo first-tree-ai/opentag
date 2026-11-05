@@ -19,19 +19,9 @@ const SessionCliTextSchema = z
     message: "Session message exceeds the 16 KiB limit",
   });
 
-/**
- * Version 5 UUIDs are reserved: the Server derives them for the messages it writes itself (Run outcome
- * notices, schedule occurrences), and `session_messages.id` is global, so a caller who computes one could
- * otherwise occupy the ID and suppress the real message. Every other UUID stays valid, including a retry.
- */
-const SessionCliMessageIdSchema = z
-  .string()
-  .uuid()
-  .refine((id) => id[14] !== "5", { message: "Version 5 UUIDs are reserved for messages the Server writes" });
-
 export const SessionCliCreateRequestSchema = z
   .object({
-    messageId: SessionCliMessageIdSchema,
+    messageId: z.string().uuid(),
     message: SessionCliTextSchema,
     model: RuntimeModelSchema.optional(),
     reasoningEffort: RuntimeReasoningEffortSchema.optional(),
@@ -41,7 +31,7 @@ export const SessionCliCreateRequestSchema = z
 
 export const SessionCliSendRequestSchema = z
   .object({
-    messageId: SessionCliMessageIdSchema,
+    messageId: z.string().uuid(),
     targetSessionId: z.string().uuid(),
     message: SessionCliTextSchema,
   })

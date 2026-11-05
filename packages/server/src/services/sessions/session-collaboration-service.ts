@@ -754,6 +754,7 @@ export class SessionCollaborationService {
         sourcePlacementGeneration: input.source.placementGeneration,
         targetSessionId: notice.recipientSessionId,
         content: renderRunOutcomeNotice(input),
+        serverDerivedId: true,
       });
       result = await this.#deliver(attempt, notice.recipientSessionId);
     } catch (error) {
@@ -1030,6 +1031,7 @@ function mapFailure(error: unknown): { status: "unreachable" | "rejected"; code:
   if (code === "SESSION_TARGET_UNAVAILABLE") return { status: "rejected", code: "target_unavailable" };
   if (code === "SESSION_SCOPE_MISMATCH") return { status: "rejected", code: "scope_mismatch" };
   if (code === "SESSION_MESSAGE_CONFLICT") return { status: "rejected", code: "message_conflict" };
+  if (code === "SESSION_MESSAGE_ID_RESERVED") return { status: "rejected", code: "message_id_reserved" };
   // Router model admission for a Cloud Session override: an unoffered model is a deterministic
   // rejection; an unconfirmable model list is transient and unreachable.
   if (code === "SESSION_MODEL_UNAVAILABLE") return { status: "rejected", code: "model_unavailable" };

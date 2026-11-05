@@ -4,8 +4,6 @@ import { gzipSync } from "node:zlib";
 import {
   type NormalizedInboundImEvent,
   SESSION_RUN_OUTCOME_NOTICE_HEADER,
-  SessionCliCreateRequestSchema,
-  SessionCliSendRequestSchema,
   type SessionReconcileRequest,
   type SessionReconcileResult,
 } from "@opentag/shared";
@@ -362,6 +360,7 @@ describe("SessionService with the unit database", () => {
           sourcePlacementGeneration: source.placement.generation,
           targetSessionId,
           content,
+          serverDerivedId: true,
         })
       ).message;
     };
@@ -395,6 +394,8 @@ describe("SessionService with the unit database", () => {
         outcome: "failed",
         reason: "provider_failed",
       }),
+      // A row like this can only predate the reserved ID space.
+      serverDerivedId: true,
     });
     await expect(resolve(child.session.id, borrowed.message.id)).resolves.toEqual(toRecipient(sibling.session.id));
 
@@ -463,16 +464,6 @@ describe("SessionService with the unit database", () => {
     const reported = await record(sender, randomUUID(), target.session.id, "the message that fails");
     const noticeId = runOutcomeNoticeMessageId(target.session.id, reported.message.id);
 
-    // The other Session computes the public ID and tries to take it through ordinary create and send.
-    expect(
-      SessionCliSendRequestSchema.safeParse({
-        messageId: noticeId,
-        targetSessionId: target.session.id,
-        message: "preclaim",
-      }).success,
-    ).toBe(false);
-    expect(SessionCliCreateRequestSchema.safeParse({ messageId: noticeId, message: "preclaim" }).success).toBe(false);
-
     const collaboration = new SessionCollaborationService({
       assembler: { assembleForSession: vi.fn().mockResolvedValue({}) } as never,
       domain: {
@@ -503,6 +494,26 @@ describe("SessionService with the unit database", () => {
           placementGeneration: target.placement.generation,
         },
       });
+    const ordinary = {
+      sessionId: other.session.id,
+      installationId: fixture.installationId,
+      computerId: fixture.computerId,
+      connectionInstanceId: fixture.instanceId,
+      placementGeneration: other.placement.generation,
+    } as never;
+    const sentCount = async () => (await db.database.select().from(sessionMessages)).length;
+
+    // The other Session computes the public ID and tries to take it through ordinary send and create.
+    const before = await sentCount();
+    await expect(
+      collaboration.send({ messageId: noticeId, targetSessionId: target.session.id, message: "preclaim" }, ordinary),
+    ).resolves.toMatchObject({ status: "rejected", code: "message_id_reserved" });
+    await expect(collaboration.create({ messageId: noticeId, message: "preclaim" }, ordinary)).resolves.toMatchObject({
+      status: "rejected",
+      code: "message_id_reserved",
+    });
+    expect(await sentCount()).toBe(before);
+
     await expect(notify(reported.message.id)).resolves.toBe("notified");
     const [notice] = await db.database.select().from(sessionMessages).where(eq(sessionMessages.id, noticeId));
     expect(notice).toMatchObject({ sourceSessionId: target.session.id, targetSessionId: sender.session.id });
@@ -510,13 +521,62 @@ describe("SessionService with the unit database", () => {
 
     // Why the rule is needed: a row already under that ID, recorded before it, still blocks that one notice.
     const blocked = await record(sender, randomUUID(), target.session.id, "another message that fails");
-    await record(
-      other,
-      runOutcomeNoticeMessageId(target.session.id, blocked.message.id),
-      target.session.id,
-      "older row",
-    );
+    const older = await record(other, randomUUID(), target.session.id, "older row");
+    await db.database
+      .update(sessionMessages)
+      .set({ id: runOutcomeNoticeMessageId(target.session.id, blocked.message.id) })
+      .where(eq(sessionMessages.id, older.message.id));
     await expect(notify(blocked.message.id)).resolves.toBe("ignored");
+
+    // A caller with an ordinary version 5 row from before the rule can still resolve an uncertain write.
+    const legacySendId = "5f3c2b1a-9d8e-5c7b-8a6f-1e2d3c4b5a69";
+    const legacySend = await record(other, randomUUID(), target.session.id, "sent before the upgrade");
+    await db.database
+      .update(sessionMessages)
+      .set({ id: legacySendId })
+      .where(eq(sessionMessages.id, legacySend.message.id));
+    const sent = await collaboration.send(
+      { messageId: legacySendId, targetSessionId: target.session.id, message: "sent before the upgrade" },
+      ordinary,
+    );
+    expect(sent).toMatchObject({ messageId: legacySendId, status: "accepted" });
+    await expect(
+      collaboration.send(
+        { messageId: legacySendId, targetSessionId: target.session.id, message: "different text" },
+        ordinary,
+      ),
+    ).resolves.toMatchObject({ status: "rejected", code: "message_conflict" });
+    // Another Session cannot use that retry to reach the row.
+    await expect(
+      collaboration.send(
+        { messageId: legacySendId, targetSessionId: target.session.id, message: "sent before the upgrade" },
+        {
+          ...(ordinary as object),
+          sessionId: sender.session.id,
+          placementGeneration: sender.placement.generation,
+        } as never,
+      ),
+    ).resolves.toMatchObject({ status: "rejected", code: "message_conflict" });
+
+    const creatorSource = {
+      sessionId: creator.session.id,
+      installationId: fixture.installationId,
+      computerId: fixture.computerId,
+      connectionInstanceId: fixture.instanceId,
+      placementGeneration: creator.placement.generation,
+    } as never;
+    const legacyCreateId = "6a1f0c2e-3b4d-5e6f-9a0b-1c2d3e4f5a6b";
+    const legacyCreated = await internal("created before the upgrade");
+    await db.database
+      .update(sessionMessages)
+      .set({ id: legacyCreateId })
+      .where(eq(sessionMessages.targetSessionId, legacyCreated.session.id));
+    await expect(
+      collaboration.create({ messageId: legacyCreateId, message: "created before the upgrade" }, creatorSource),
+    ).resolves.toMatchObject({ messageId: legacyCreateId, status: "accepted", sessionId: legacyCreated.session.id });
+    await expect(
+      collaboration.create({ messageId: legacyCreateId, message: "different text" }, creatorSource),
+    ).resolves.toMatchObject({ status: "rejected", code: "message_conflict" });
   });
 
   it("authorizes messages and rejects stale, unavailable, and mismatched authorities", async () => {

@@ -116,6 +116,8 @@ export interface AuthorizeAndRecordSessionMessageInput {
   sourcePlacementGeneration: number;
   targetSessionId: string;
   content: string;
+  /** The Server derived this ID itself, so it may record a new row in the reserved version 5 space. */
+  serverDerivedId?: boolean;
 }
 
 export interface AuthorizedSessionMessageRoute {
@@ -212,6 +214,19 @@ function toPlacement(row: PlacementRow): SessionPlacement {
     generation: row.generation,
     updatedAt: row.updatedAt.toISOString(),
   };
+}
+
+/**
+ * Version 5 UUIDs are the Server's own: it derives them for the messages it writes (Run outcome notices,
+ * schedule occurrences), and `session_messages.id` is global, so a caller who computes one could otherwise
+ * occupy the ID and suppress the real message. This applies to new rows only. A row already under such an ID
+ * goes through the normal identity check, so a caller can still resolve an uncertain write from before this
+ * rule with its original ID.
+ */
+function assertOrdinaryMessageIdFree(messageId: string): void {
+  if (messageId[14] === "5") {
+    throw new SessionServiceError("SESSION_MESSAGE_ID_RESERVED", "Version 5 message IDs are reserved for the Server");
+  }
 }
 
 export class SessionServiceError extends Error {
@@ -374,6 +389,7 @@ export class SessionService {
           attemptCount: attempt.attemptCount,
         };
       }
+      assertOrdinaryMessageIdFree(input.messageId);
       // Model admission runs only on the create path: a deduplicated replay returns its recorded
       // Session without re-validating, so a model the Router stopped offering (or a Router outage)
       // never breaks the idempotent retry of an already-created internal Session.
@@ -512,6 +528,7 @@ export class SessionService {
       if (message) {
         this.#assertMessageIdentity(message, input.sourceSessionId, input.targetSessionId, input.content);
       } else {
+        if (!input.serverDerivedId) assertOrdinaryMessageIdFree(input.messageId);
         const now = this.#now();
         [message] = await transaction
           .insert(sessionMessages)

@@ -54,27 +54,6 @@ describe("Runtime Session CLI routes", () => {
     expect(authenticate).toHaveBeenCalledWith("proof");
     expect(send).toHaveBeenCalledWith(expect.objectContaining({ messageId }), source);
 
-    // Version 5 IDs are the Server's own: neither ordinary entry records one.
-    create.mockClear();
-    send.mockClear();
-    const reservedId = "5f3c2b1a-9d8e-5c7b-8a6f-1e2d3c4b5a69";
-    const reservedSend = await app.inject({
-      method: "POST",
-      url: HTTP_PATHS.runtimeSessionMessages,
-      headers: { [SESSION_CLI_PROOF_HEADER]: "proof" },
-      payload: { messageId: reservedId, targetSessionId: randomUUID(), message: "preclaim" },
-    });
-    expect(reservedSend.statusCode).toBe(400);
-    const reservedCreate = await app.inject({
-      method: "POST",
-      url: HTTP_PATHS.runtimeInternalSessions,
-      headers: { [SESSION_CLI_PROOF_HEADER]: "proof" },
-      payload: { messageId: reservedId, message: "preclaim" },
-    });
-    expect(reservedCreate.statusCode).toBe(400);
-    expect(send).not.toHaveBeenCalled();
-    expect(create).not.toHaveBeenCalled();
-
     const listed = await app.inject({
       method: "GET",
       url: `${HTTP_PATHS.runtimeSessions}?recursive=true&limit=100`,

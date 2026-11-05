@@ -31,7 +31,7 @@ import { InboundReceiptPendingError } from "../services/im/inbound-admission.js"
 import type { CloudDeliveryOwner } from "../services/sandboxes/cloud-delivery-owner.js";
 import { CloudDeliveryDispatchError } from "../services/sandboxes/cloud-delivery-owner.js";
 import { CloudCapacityExceededError } from "../services/sandboxes/errors.js";
-import { loadSandboxRecordBySessionId } from "../services/sandboxes/owned-sandbox.js";
+import { loadSandboxRecordById, loadSandboxRecordBySessionId } from "../services/sandboxes/owned-sandbox.js";
 import { WORKSPACE_RECOVERY_RETRY_DELAY_MS } from "../services/sandboxes/sandbox-runner-service.js";
 import { appendPendingImBatch } from "./im-delivery-batch.js";
 import { ImDeliveryInputError, validateFreshImRequest } from "./im-delivery-content.js";
@@ -53,6 +53,8 @@ import type {
 
 export const STOPPED_CLOUD_RECONCILE_BATCH = 25;
 export const STOPPED_CLOUD_RECONCILE_INTERVAL_MS = 30_000;
+// Diagnostics only: five ordinary backoffs allow 60 seconds of startup before reporting a failure.
+const CLOUD_STARTUP_WAIT_ATTEMPTS = 5;
 
 /** A stopped Cloud row keeps its identity in every diagnostic it reports. */
 function stoppedRowContext(row: { id: string; agentId: string; computerId: string; attemptCount: number }) {
@@ -398,7 +400,13 @@ export class CloudDeliveryCoordinator {
       row.delivery.dispatchPayload === null &&
       sandbox.idleReclaimAt !== null &&
       sandbox.lastErrorCode === "workspace_save_failed";
-    return this.#convergeAllocation(attempt, row.agent.createdByUserId, sandbox.id, blocked, signal);
+    const expectedStartup =
+      row.delivery.dispatchRequestId === null &&
+      row.delivery.dispatchPayload === null &&
+      sandbox.idleReclaimAt === null &&
+      sandbox.lastErrorCode === null &&
+      attempt.attemptCount <= CLOUD_STARTUP_WAIT_ATTEMPTS;
+    return this.#convergeAllocation(attempt, row.agent.createdByUserId, sandbox.id, blocked, expectedStartup, signal);
   }
 
   /** Create the Session Sandbox through the existing SandboxService when it is missing. */
@@ -454,13 +462,16 @@ export class CloudDeliveryCoordinator {
     accountId: string,
     sandboxId: string,
     workspaceBlocked: boolean,
+    expectedStartup: boolean,
     signal: AbortSignal,
   ): Promise<boolean> {
     try {
       const outcome = await this.#options.cloudAllocation?.ensureEnvironmentAllocated({ accountId, sandboxId });
       if (signal.aborted) return false;
       if (outcome === "pending") {
-        await this.#options.recordFailure(attempt, "IM_DELIVERY_CLOUD_ENVIRONMENT_NOT_READY", {
+        const code = await this.#allocationWaitCode(sandboxId, expectedStartup);
+        if (signal.aborted) return false;
+        await this.#options.recordFailure(attempt, code, {
           retryDelayMs: workspaceBlocked
             ? WORKSPACE_RECOVERY_RETRY_DELAY_MS
             : cloudDispatchRetryDelayMs(attempt.attemptCount),
@@ -491,6 +502,14 @@ export class CloudDeliveryCoordinator {
       await this.#options.recordFailure(attempt, "IM_DELIVERY_CLOUD_ALLOCATION_FAILED");
       return false;
     }
+  }
+
+  async #allocationWaitCode(sandboxId: string, expectedStartup: boolean): Promise<string> {
+    if (!expectedStartup) return "IM_DELIVERY_CLOUD_ENVIRONMENT_NOT_READY";
+    const sandbox = await loadSandboxRecordById(this.#options.database, sandboxId);
+    return sandbox?.idleReclaimAt === null && sandbox.lastErrorCode === null
+      ? "IM_DELIVERY_CLOUD_ENVIRONMENT_STARTING"
+      : "IM_DELIVERY_CLOUD_ENVIRONMENT_NOT_READY";
   }
 
   /**
@@ -536,6 +555,8 @@ export class CloudDeliveryCoordinator {
     }
     const outcome = await owner.recoverAccepted(attempt.deliveryId);
     if (outcome === "pending") await this.#options.recordFailure(attempt, "IM_DELIVERY_CLOUD_REPORT_PENDING");
+    if (outcome === "running") await this.#options.recordFailure(attempt, "IM_DELIVERY_CLOUD_TURN_RUNNING");
+    if (outcome === "reporting") await this.#options.recordFailure(attempt, "IM_DELIVERY_CLOUD_REPORTING");
   }
 
   async #stoppedRows(

@@ -207,10 +207,25 @@ and retry fallback; repeated readiness reports on one connection do not repeated
 
 An allocation result of `pending` stops before Agent admission and Runner dispatch, and records
 `allocation_wait` as failed. Normal startup uses the existing two-to-thirty-second capped backoff.
+For the first five claims of an undispatched input, an allocation without an idle-reclaim claim or
+recorded Sandbox error uses `IM_DELIVERY_CLOUD_ENVIRONMENT_STARTING`: the retry log is `debug`,
+the operation outcome is `deferred`, and no Server error diagnostic is emitted. The next claim
+after those five backoffs (60 seconds on the ordinary schedule) uses the diagnostic
+`IM_DELIVERY_CLOUD_ENVIRONMENT_NOT_READY` if allocation is still pending. Existing Sandbox errors,
+idle-reclaim claims, and frozen dispatches retain failure diagnostics immediately.
 An undispatched input observed behind an automatic claim with `workspace_save_failed` instead
 retries after ten minutes through the same `next_attempt_at` field and readiness wakeup. The
 Sandbox snapshot only chooses a delay; current Account and dispatch authority are still checked.
 The original ingress TTL, ordering, correlation, accepted custody and reports remain authoritative.
+
+Accepted recovery distinguishes a confirmed live `started` answer under active authority and an
+active allocation (`IM_DELIVERY_CLOUD_TURN_RUNNING`) from an exact Runner's `reported` answer
+awaiting durable replay (`IM_DELIVERY_CLOUD_REPORTING`). Before the existing report-acceptance
+cutoff, these are `deferred` outcomes with `debug` retry logs and no Server error diagnostic.
+They retain the same attempt counter, capped retry schedule and custody until the actual report.
+Missing connections, unanswered or failed queries, paused/stopped `started` recovery, and overdue
+answers remain `IM_DELIVERY_CLOUD_REPORT_PENDING` failures. The overdue replay warning is unchanged.
+Distinct waiting codes ensure that a later fault is diagnosed even after repeated normal waits.
 
 Credential and model boundary: the #633 runtime-credential Relay stays in the trusted parent; the
 Sandbox receives only the read-only public material (CA certificate, opaque handles, CLI configuration) and never the platform master key, bootstrap

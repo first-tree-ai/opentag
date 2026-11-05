@@ -194,6 +194,8 @@ export type CloudSessionCancelOutcome = {
   status: "cancelled" | "no_connection" | "send_failed";
 };
 
+type CloudDeliveryRecoveryOutcome = "pending" | "running" | "reporting" | "resolved" | "noop";
+
 export class CloudDeliveryOwner {
   readonly #steering: CloudImSteering;
   readonly #credentials?: CloudDeliveryOwnerCredentialDeps;
@@ -1115,8 +1117,8 @@ export class CloudDeliveryOwner {
    * - a superseded generation or a durably stopped/released allocation settles exactly once as
    *   unknown/turn_state_unknown and is never replayed;
    * - a live allocation with a live exact connection queries the Runner's journal (`received`
-   *   re-verifies, `started` stays pending — it is a live phase, not a crash — and `reported` stays
-   *   pending because the Runner replays that report on the same socket; only an explicit `none`
+   *   re-verifies, `started` identifies running work, and `reported` identifies report replay on
+   *   the same socket; only an explicit `none`
    *   settles unknown);
    * - a live allocation with no connection stays pending while the allocation is physically
    *   present or its create outcome is still unverified, so a Server restart or transient
@@ -1128,7 +1130,7 @@ export class CloudDeliveryOwner {
    *   cutoff, not proof that no authentic report exists: the late report is answered `conflict` and
    *   cannot replace the terminal hash.
    */
-  async recoverAccepted(deliveryId: string): Promise<"pending" | "resolved" | "noop"> {
+  async recoverAccepted(deliveryId: string): Promise<CloudDeliveryRecoveryOutcome> {
     updateCurrentPerformanceContext({ deliveryId });
     const [row] = await this.#database
       .select()
@@ -1193,6 +1195,13 @@ export class CloudDeliveryOwner {
       : Number.POSITIVE_INFINITY;
   }
 
+  #activeRecoveryOutcome(
+    delivery: typeof imMessageDeliveries.$inferSelect,
+    phase: "received" | "started",
+  ): "running" | "pending" {
+    return phase === "started" && Date.now() < this.#acceptedReportDeadlineMs(delivery) ? "running" : "pending";
+  }
+
   /**
    * Classify the persisted allocation for an accepted turn: `settle` means a superseded/released/
    * absent allocation can never report again, `live` means the exact current allocation owns the
@@ -1240,7 +1249,7 @@ export class CloudDeliveryOwner {
   async #recoverLive(
     record: CloudConnectionRecord,
     delivery: typeof imMessageDeliveries.$inferSelect,
-  ): Promise<"pending" | "resolved" | "noop"> {
+  ): Promise<CloudDeliveryRecoveryOutcome> {
     const answer = await this.#queryRunner(record, {
       deliveryId: delivery.id,
       turnId: delivery.turnId as string,
@@ -1264,7 +1273,7 @@ export class CloudDeliveryOwner {
     if (authority === "paused" && lifecycle === "active") return "pending";
     if (authority === "active" && lifecycle === "active") {
       if (answer === "received") await this.#reverifyReceived(record, delivery);
-      return "pending";
+      return this.#activeRecoveryOutcome(delivery, answer);
     }
     // Stopped authority or retiring allocation: reuse the explicit-stop cancellation so the
     // authenticated current Runner settles the turn truthfully (its report lands through the
@@ -1286,7 +1295,8 @@ export class CloudDeliveryOwner {
     record: CloudConnectionRecord,
     delivery: typeof imMessageDeliveries.$inferSelect,
     answer: "none" | "received" | "started" | "reported" | undefined,
-  ): "pending" {
+  ): "pending" | "reporting" {
+    if (!this.#isExactConnection(record)) return "pending";
     const now = Date.now();
     if (now >= this.#acceptedReportDeadlineMs(delivery)) {
       const previous = this.#reportReplayWarnings.get(delivery.id);
@@ -1309,8 +1319,9 @@ export class CloudDeliveryOwner {
         },
         "Cloud Runner still holds a report the Server has not recorded past the acceptance cutoff",
       );
+      return "pending";
     }
-    return "pending";
+    return answer === "reported" ? "reporting" : "pending";
   }
 
   /** Exact current allocation lifecycle: preparing/ready is `active`, releasing is `retiring`. */

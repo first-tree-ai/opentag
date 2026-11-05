@@ -215,6 +215,80 @@ describe("idempotent create-mode Computer connect", () => {
     });
   });
 
+  it("repairs the original Computer while the local installation ID is intact, keeping its last-online time", async () => {
+    const f = await fixture();
+    const lastOnline = new Date(NOW.getTime() - 3 * 86_400_000);
+    await markOnline(f.first.computerId, lastOnline);
+
+    const result = await f.machine.exchangeConnectCode(
+      input((await f.machine.issueForAccount(f.accountId, {})).code, f.installationId, { reportOutcome: true }),
+    );
+
+    expect(result).toMatchObject({ outcome: "repaired", computerId: f.first.computerId });
+    const [row] = await unit.database.select().from(computers).where(eq(computers.id, f.first.computerId));
+    expect(row).toMatchObject({ lastSeenAt: lastOnline, currentInstanceId: null, connectedAt: null });
+    expect(await computerCount(f.accountId)).toBe(1);
+  });
+
+  it("keeps the last-online time through a targeted repair code", async () => {
+    const f = await fixture();
+    const lastOnline = new Date(NOW.getTime() - 3 * 86_400_000);
+    await markOnline(f.first.computerId, lastOnline);
+    const issued = await f.machine.issueForAccount(f.accountId, {
+      mode: "repair",
+      targetComputerId: f.first.computerId,
+    });
+
+    await f.machine.exchangeConnectCode(input(issued.code, f.installationId, { reportOutcome: true }));
+
+    const [row] = await unit.database.select().from(computers).where(eq(computers.id, f.first.computerId));
+    expect(row).toMatchObject({ lastSeenAt: lastOnline, currentInstanceId: null });
+  });
+
+  it("creates a new Computer when the local installation ID is lost, leaving the old one offline and untouched", async () => {
+    const f = await fixture();
+    const lastOnline = new Date(NOW.getTime() - 3 * 86_400_000);
+    await unit.database
+      .update(computers)
+      .set({ currentInstanceId: null, connectedAt: lastOnline, lastSeenAt: lastOnline })
+      .where(eq(computers.id, f.first.computerId));
+    const [before] = await unit.database.select().from(computers).where(eq(computers.id, f.first.computerId));
+    const credentialsBefore = await liveCredentialIds(f.first.computerId);
+    f.onCredentialRotated.mockClear();
+
+    // Same machine, name, platform, and architecture; only the local identity is gone.
+    const result = await f.machine.exchangeConnectCode(
+      input((await f.machine.issueForAccount(f.accountId, {})).code, randomUUID(), { reportOutcome: true }),
+    );
+
+    expect(result.outcome).toBe("created");
+    expect(result.computerId).not.toBe(f.first.computerId);
+    expect(await computerCount(f.accountId)).toBe(2);
+    const [after] = await unit.database.select().from(computers).where(eq(computers.id, f.first.computerId));
+    expect(after).toEqual(before);
+    expect(await liveCredentialIds(f.first.computerId)).toEqual(credentialsBefore);
+    expect(f.onCredentialRotated).not.toHaveBeenCalledWith(f.first.computerId, expect.anything());
+  });
+
+  it("creates a new Computer for another Account's code when the local identity is lost, without a conflict", async () => {
+    const f = await fixture();
+    const [before] = await unit.database.select().from(computers).where(eq(computers.id, f.first.computerId));
+    const [other] = await unit.database
+      .insert(users)
+      .values({ email: "other@example.com", displayName: "Other", createdAt: NOW, updatedAt: NOW })
+      .returning({ id: users.id });
+    if (!other) throw new Error("user insert returned no row");
+
+    const result = await f.machine.exchangeConnectCode(
+      input((await f.machine.issueForAccount(other.id, {})).code, randomUUID(), { reportOutcome: true }),
+    );
+
+    expect(result.outcome).toBe("created");
+    expect(await computerCount(other.id)).toBe(1);
+    const [after] = await unit.database.select().from(computers).where(eq(computers.id, f.first.computerId));
+    expect(after).toEqual(before);
+  });
+
   it("creates a new Computer for an installation whose previous Computer was deleted", async () => {
     const f = await fixture();
     await unit.database.update(computers).set({ deletedAt: NOW }).where(eq(computers.id, f.first.computerId));

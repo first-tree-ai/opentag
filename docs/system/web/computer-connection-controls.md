@@ -22,11 +22,15 @@ Each card shows the computer's identity, a connection status badge, and a More m
 | Confirmed condition | Badge | Card body |
 | --- | --- | --- |
 | Online | Online, with no action | None |
-| Offline | Offline, with when it was last online | Restore connection |
-| Disconnected | Disconnected | Restore connection |
+| Offline | Offline, with “Last online …” or “No last-online record” | Restore connection |
+| Disconnected | Disconnected, with “Last online …” or “No last-online record” | Restore connection |
 | Read unavailable | Status unavailable | Check status |
 
-“Status unavailable” expresses missing evidence, not another persisted connection condition.
+“Status unavailable” expresses missing evidence, not another persisted connection condition. Every offline or
+disconnected Local card says when it was last online, so two computers with the same name can be told apart. Without
+a timestamp it says “No last-online record” (暂无在线记录), not “Never connected”: earlier versions cleared the
+timestamp on every repair, so the data cannot tell a computer that never came online from one whose history was
+cleared, and the page neither guesses nor pretends.
 
 Every connect or repair command shows its code's expiry beside it. Why: a copied command is often run later, and the
 expiry tells the reader why an old copy no longer works.

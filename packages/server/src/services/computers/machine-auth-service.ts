@@ -87,7 +87,8 @@ export interface ComputerConnectExchangeResult extends ComputerAuthContext {
 
 /**
  * Answered only to a Client that sent `reportOutcome` and proved it holds the online Computer's current
- * credential: nothing changed, the code was not consumed, and no new token exists.
+ * credential: the credential is kept, so no new token exists, and the code is consumed by this Computer
+ * so the issuing page reaches its connected state.
  */
 export interface ComputerConnectAlreadyConnectedResult extends ComputerAuthContext {
   outcome: "already_connected";
@@ -336,7 +337,6 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
         clientVersion: input.clientVersion,
         currentInstanceId: null,
         connectedAt: null,
-        lastSeenAt: null,
         updatedAt: now,
       })
       .where(and(eq(computers.id, existing.id), eq(computers.ownerAccountId, accountId), eq(computers.kind, "local")))
@@ -512,7 +512,6 @@ export class MachineAuthService implements ComputerAuthVerifier, MachineConnectC
           clientVersion: input.clientVersion,
           currentInstanceId: null,
           connectedAt: null,
-          lastSeenAt: null,
           updatedAt: now,
         })
         .where(

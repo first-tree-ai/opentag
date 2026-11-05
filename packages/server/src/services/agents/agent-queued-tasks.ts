@@ -74,21 +74,8 @@ async function readWaitingAmbientSessions(
   return rows.map((row) => row.sessionId);
 }
 
-/**
- * How many Tasks of each Agent are waiting, read in steps inside the caller's snapshot: the Agents' live
- * Sessions, then those Sessions' pending and unreported deliveries, then the qualification of any pending
- * `ambient` delivery. A Task is one Session, or a whole private chat; it waits when one of its Sessions
- * holds a qualifying pending delivery and none holds a Turn still running. No Task rollup is read, so this
- * differs from the Task list in the two ways `docs/system/agent-usage.md` lists, and the read grows with
- * the Agents' live Sessions, which have no upper bound; the same page names the Issue tracking that.
- */
-export async function readQueuedTaskCounts(
-  executor: QueuedTaskExecutor,
-  agentIds: readonly string[],
-  now: Date,
-): Promise<Map<string, number>> {
-  const live = await readLiveSessions(executor, agentIds);
-  if (live.length === 0) return new Map();
+/** Which of these Sessions hold a qualifying pending delivery, and which hold a Turn still running. */
+async function readSessionWork(executor: QueuedTaskExecutor, sessionIds: readonly string[], now: Date) {
   const deliveries = await executor
     .select({
       id: imMessageDeliveries.id,
@@ -99,10 +86,7 @@ export async function readQueuedTaskCounts(
     .from(imMessageDeliveries)
     .where(
       and(
-        anyId(
-          imMessageDeliveries.sessionId,
-          live.map((session) => session.sessionId),
-        ),
+        anyId(imMessageDeliveries.sessionId, sessionIds),
         sql`(${imMessageDeliveries.state} = 'pending'
           or (${imMessageDeliveries.state} = 'accepted'
             and ${imMessageDeliveries.reportedAt} is null
@@ -120,21 +104,38 @@ export async function readQueuedTaskCounts(
   if (ambient.length > 0) {
     for (const sessionId of await readWaitingAmbientSessions(executor, ambient)) waiting.add(sessionId);
   }
+  return { waiting, running };
+}
 
-  const tasks = new Map<string, { agentId: string; waiting: boolean; running: boolean }>();
+/**
+ * How many Tasks of each Agent are waiting, read in steps inside the caller's snapshot: the Agents' live
+ * Sessions, then those Sessions' pending and unreported deliveries, then the qualification of any pending
+ * `ambient` delivery. A Task is one Session, or a whole private chat; it waits when one of its Sessions
+ * holds a qualifying pending delivery and none holds a Turn still running. No Task rollup is read, so this
+ * differs from the Task list in the two ways `docs/system/agent-usage.md` lists, and the read grows with
+ * the Agents' live Sessions, which have no upper bound; the same page names the Issue tracking that.
+ */
+export async function readQueuedTaskCounts(
+  executor: QueuedTaskExecutor,
+  agentIds: readonly string[],
+  now: Date,
+): Promise<Map<string, number>> {
+  const live = await readLiveSessions(executor, agentIds);
+  if (live.length === 0) return new Map();
+  const { waiting, running } = await readSessionWork(
+    executor,
+    live.map((session) => session.sessionId),
+    now,
+  );
+  const taskKey = (session: (typeof live)[number]) =>
+    session.conversationKind === "dm" ? `${session.agentId}:${session.channelId}` : session.sessionId;
+  const runningTasks = new Set(live.filter((session) => running.has(session.sessionId)).map(taskKey));
+  const waitingTasks = new Map<string, string>();
   for (const session of live) {
-    const isWaiting = waiting.has(session.sessionId);
-    const isRunning = running.has(session.sessionId);
-    if (!isWaiting && !isRunning) continue;
-    const key = session.conversationKind === "dm" ? `${session.agentId}:${session.channelId}` : session.sessionId;
-    const task = tasks.get(key) ?? { agentId: session.agentId, waiting: false, running: false };
-    task.waiting ||= isWaiting;
-    task.running ||= isRunning;
-    tasks.set(key, task);
+    const key = taskKey(session);
+    if (waiting.has(session.sessionId) && !runningTasks.has(key)) waitingTasks.set(key, session.agentId);
   }
   const counts = new Map<string, number>();
-  for (const task of tasks.values()) {
-    if (task.waiting && !task.running) counts.set(task.agentId, (counts.get(task.agentId) ?? 0) + 1);
-  }
+  for (const agentId of waitingTasks.values()) counts.set(agentId, (counts.get(agentId) ?? 0) + 1);
   return counts;
 }

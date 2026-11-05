@@ -143,6 +143,12 @@ Do not pass token, app, team, workspace, config, or update override flags.
 
 ## Expected Slack errors
 
+- With an authorized Cloud test Agent, send a message while its Sandbox cold-starts, then run a
+  Turn longer than 15 seconds. Initial allocation waits and confirmed `started`/`reported` recovery
+  use `debug` retry logs without Server error diagnostics; the real reply still arrives once.
+  Controlled allocation failure, workspace-save blockage, loss of the Runner/query response, and
+  waiting beyond the documented diagnostic bounds must remain visible as faults. Use the offline
+  Server tests for injected failures; do not disrupt a shared or production Runner.
 Provoke and confirm the Agent surfaces the provider error instead of inventing success:
 
 - `not_in_channel` on a confirmed public, task-relevant channel follows the single join-and-retry recovery above;

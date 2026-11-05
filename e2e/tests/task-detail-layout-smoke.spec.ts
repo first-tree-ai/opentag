@@ -1,13 +1,16 @@
 import { randomUUID } from "node:crypto";
 import type { Page } from "@playwright/test";
 import { baseURL } from "../playwright.config.js";
-import { expectNoPageOverflow } from "./browser-contract.js";
+import { expectAccessible, expectNoPageOverflow } from "./browser-contract.js";
 import { expect, smokeTest as test } from "./fixtures.js";
 
 const taskId = "10000000-0000-4000-8000-0000000000aa";
 // The Server bounds an internal Session title at 120 code points; wide characters are the worst case.
 const longTitle = "在协作群里构建完整的本地开发及测试环境，然后持续识别体验问题并提交修复。".repeat(4).slice(0, 120);
 const unbrokenText = `https://example.com/${"long-path-segment-".repeat(30)}`;
+const shortRequest = "Short request";
+const internalSessionId = "40000000-0000-4000-8000-0000000000aa";
+const untitledInternalSessionId = "40000000-0000-4000-8000-0000000000ab";
 
 async function createAgent(page: Page): Promise<string> {
   const cookies = await page.context().cookies();
@@ -66,8 +69,19 @@ async function installTask(page: Page, agentId: string): Promise<void> {
     absorbedBy: null,
     report: null,
   };
+  const shortTurn = {
+    ...turn,
+    deliveryId: "20000000-0000-4000-8000-0000000000ab",
+    message: {
+      ...turn.message,
+      id: "30000000-0000-4000-8000-0000000000ab",
+      externalMessageId: "layout-short-message",
+      fallbackText: shortRequest,
+      occurredAt: new Date(Date.now() - 30_000).toISOString(),
+    },
+  };
   const internalSession = {
-    id: "40000000-0000-4000-8000-0000000000aa",
+    id: internalSessionId,
     createdBySessionId: taskId,
     createdAt: at,
     endedAt: null,
@@ -76,12 +90,13 @@ async function installTask(page: Page, agentId: string): Promise<void> {
     title: longTitle,
     lastActivityAt: at,
   };
+  const untitledInternalSession = { ...internalSession, id: untitledInternalSessionId, title: null };
   const json = (body: unknown) => ({ contentType: "application/json", body: JSON.stringify(body) });
   await page.route(`**/api/v1/sessions/${taskId}/detail?**`, (route) =>
-    route.fulfill(json({ task, turns: { items: [turn], nextCursor: null } })),
+    route.fulfill(json({ task, turns: { items: [shortTurn, turn], nextCursor: null } })),
   );
   await page.route(`**/api/v1/sessions/${taskId}/detail/internal-sessions**`, (route) =>
-    route.fulfill(json({ items: [internalSession], nextCursor: null })),
+    route.fulfill(json({ items: [internalSession, untitledInternalSession], nextCursor: null })),
   );
   await page.route(`**/api/v1/sessions/${taskId}/replies**`, (route) =>
     route.fulfill(json({ items: [], nextCursor: null })),
@@ -102,6 +117,10 @@ async function expectContentNotScrolledSideways(page: Page): Promise<void> {
   expect(content.reachable, "content region reachable scrollLeft").toBe(0);
 }
 
+function titleLines(element: Element): number {
+  return Math.round(element.getBoundingClientRect().height / Number.parseFloat(getComputedStyle(element).lineHeight));
+}
+
 async function expectInsideArticle(page: Page, selector: string): Promise<void> {
   const [article, element] = await Promise.all([
     page.locator('[data-ui="task-conversation-page"]').boundingBox(),
@@ -118,13 +137,16 @@ for (const width of [390, 1440, 2000]) {
     test("keeps a long internal Session title from widening the page", async ({ page }) => {
       const agentId = await createAgent(page);
       await installTask(page, agentId);
-      const row = page.locator('[data-ui="task-internal-session-row"]');
+      const row = page.locator('[data-ui="task-internal-session-row"]').first();
       const detailURL = `/agents/${agentId}/tasks/${taskId}`;
 
       await page.goto(detailURL, { waitUntil: "networkidle" });
       await expect(row).toBeVisible();
       await expectContentNotScrolledSideways(page);
       await expectNoPageOverflow(page);
+      await expect
+        .poll(() => row.locator('[tabindex="0"]').evaluate(titleLines), { message: "title lines" })
+        .toBe(width === 390 ? 2 : 1);
       await expectInsideArticle(page, '[data-ui="task-thread"]');
       await expectInsideArticle(page, '[data-ui="task-internal-sessions"]');
       await expectInsideArticle(page, '[data-ui="task-message-request"]');
@@ -140,3 +162,51 @@ for (const width of [390, 1440, 2000]) {
     });
   });
 }
+
+test.describe("Task detail composition", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test("shows internal Sessions as ruled rows and sizes a request's fill to its message", async ({ page }) => {
+    const agentId = await createAgent(page);
+    await installTask(page, agentId);
+    await page.goto(`/agents/${agentId}/tasks/${taskId}`, { waitUntil: "networkidle" });
+
+    await expectAccessible(page);
+    const section = page.locator('[data-ui="task-internal-sessions"]');
+    const size = (selector: string) =>
+      page.locator(selector).evaluate((element) => Number.parseFloat(getComputedStyle(element).fontSize));
+    expect(await size('[data-ui="task-internal-sessions"] h3')).toBeLessThanOrEqual(await size("h1"));
+    await expect(section).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+
+    // The id waits in the tooltip, which hover and keyboard focus both open.
+    const idLabel = `Session ID: ${internalSessionId}`;
+    const tooltip = page.getByText(idLabel, { exact: true }).and(page.locator(":not(.sr-only)"));
+    const title = section.getByText(longTitle, { exact: false }).first();
+    await expect(title).toHaveCSS("font-weight", "400");
+    await expect(tooltip).toHaveCount(0);
+    await title.hover();
+    await expect(tooltip).toBeVisible();
+    await page.mouse.move(0, 0);
+    await page.keyboard.press("Escape");
+    await expect(tooltip).toHaveCount(0);
+    await title.focus();
+    await page.keyboard.press("Shift+Tab");
+    await page.keyboard.press("Tab");
+    await expect(title).toBeFocused();
+    await expect(tooltip).toBeVisible();
+
+    // A row named by its id has nothing more to show, so it stays out of the keyboard order.
+    await expect(section.getByText(untitledInternalSessionId, { exact: true })).not.toHaveAttribute("tabindex", /.*/);
+
+    const bodies = page.locator('[data-ui="task-message-request-body"]');
+    const longBox = await bodies.filter({ hasText: "long-path-segment" }).boundingBox();
+    const shortBody = bodies.filter({ hasText: shortRequest });
+    const shortBox = await shortBody.boundingBox();
+    if (!longBox || !shortBox) throw new Error("Expected both requests to have layout boxes");
+    expect(shortBox.width).toBeLessThan(longBox.width / 2);
+    await expect(shortBody).toHaveCSS("box-shadow", "none");
+
+    const requestAvatar = page.locator('[data-ui="task-message-request"] > span').first();
+    await expect(requestAvatar).toHaveClass(/rounded-full/);
+  });
+});

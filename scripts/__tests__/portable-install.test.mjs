@@ -554,3 +554,176 @@ test("portable installer refuses an unwritable install location before downloadi
     }
   });
 });
+
+function installCurlResetWrapper({ root, failAttemptsByPattern }) {
+  const realCurl = spawnSync("sh", ["-c", "command -v curl"], { encoding: "utf8" }).stdout.trim();
+  assert.ok(realCurl.length > 0, "curl must be available on PATH to test the curl retry wrapper");
+  const wrapperBinDir = join(root, "curl-wrapper-bin");
+  const stateDir = join(root, "curl-wrapper-state");
+  mkdirSync(wrapperBinDir, { recursive: true });
+  mkdirSync(stateDir, { recursive: true });
+  const rulesPath = join(stateDir, "rules.json");
+  writeFileSync(rulesPath, JSON.stringify(failAttemptsByPattern));
+
+  // Simulates curl failing mid-transfer with exit 56 (CURLE_RECV_ERROR: Connection reset by peer)
+  // after writing a partial target file. Also verifies the caller cleaned up any partial file from a
+  // prior attempt before invoking curl again.
+  writeExecutable(
+    join(wrapperBinDir, "curl"),
+    `#!/bin/sh
+set -eu
+dest=""
+url=""
+prev=""
+for arg in "$@"; do
+  if [ "$prev" = "-o" ]; then
+    dest="$arg"
+    prev=""
+    continue
+  fi
+  case "$arg" in
+    -o) prev="-o" ;;
+    http://*|https://*) url="$arg" ;;
+  esac
+done
+if [ -n "$dest" ] && [ -e "$dest" ]; then
+  echo "curl wrapper: destination file already exists before attempt: $dest" >&2
+  exit 99
+fi
+action="$(node -e '
+const fs = require("node:fs");
+const path = require("node:path");
+const [stateDir, rulesPath, url] = process.argv.slice(1);
+const rules = JSON.parse(fs.readFileSync(rulesPath, "utf8"));
+const logPath = path.join(stateDir, "attempts.log");
+fs.appendFileSync(logPath, url + "\\n");
+const attempts = fs.readFileSync(logPath, "utf8").trim().split("\\n").filter((line) => line === url).length;
+for (const [pattern, failCount] of Object.entries(rules)) {
+  if (url.includes(pattern) && attempts <= failCount) {
+    process.stdout.write("fail");
+    process.exit(0);
+  }
+}
+process.stdout.write("pass");
+' "${stateDir}" "${rulesPath}" "$url")"
+if [ "$action" = "fail" ]; then
+  if [ -n "$dest" ]; then
+    printf 'partial-bytes-before-connection-reset' > "$dest"
+  fi
+  echo "curl: (56) Recv failure: Connection reset by peer" >&2
+  exit 56
+fi
+exec "${realCurl}" "$@"
+`,
+  );
+  return {
+    attemptsFor(substring) {
+      const logPath = join(stateDir, "attempts.log");
+      if (!existsSync(logPath)) return 0;
+      return readFileSync(logPath, "utf8")
+        .trim()
+        .split("\n")
+        .filter((line) => line.includes(substring)).length;
+    },
+    env: {
+      OPENTAG_PORTABLE_DOWNLOAD_RETRY_DELAY: "0",
+      PATH: `${wrapperBinDir}:${process.env.PATH ?? ""}`,
+    },
+  };
+}
+
+test("portable installer retries curl exit 56 (Connection reset by peer) and cleans up partial files", {
+  skip: platform === null,
+}, async () => {
+  await withReleaseServer(async ({ baseUrl, releaseRoot, requests, root }) => {
+    const version = "0.0.2-staging.1.1";
+    buildRelease({ baseUrl, releaseRoot, version });
+    const wrapper = installCurlResetWrapper({
+      root,
+      failAttemptsByPattern: {
+        "latest.json": 1,
+        ".tar.gz": 2,
+      },
+    });
+
+    const result = await runInstaller({ baseUrl, env: wrapper.env, root });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, /openTag 0\.0\.2-staging\.1\.1 installed at/);
+    assert.equal(
+      wrapper.attemptsFor("latest.json"),
+      2,
+      "latest.json should succeed on attempt 2 after 1 exit-56 reset",
+    );
+    assert.equal(
+      wrapper.attemptsFor(".tar.gz"),
+      3,
+      "payload tarball should succeed on attempt 3 after 2 exit-56 resets",
+    );
+    assert.equal(tarballRequests(requests, version), 1, "only the final retry reaches the HTTP server");
+
+    const installed = spawnSync(join(root, "bin", binName), ["--version"], { encoding: "utf8" });
+    assert.equal(installed.status, 0, installed.stderr);
+    assert.equal(installed.stdout.trim(), version);
+  });
+});
+
+test("portable installer propagates curl exit 56 after exhausting all outer retry attempts", {
+  skip: platform === null,
+}, async () => {
+  await withReleaseServer(async ({ baseUrl, releaseRoot, root }) => {
+    const version = "0.0.2-staging.1.1";
+    buildRelease({ baseUrl, releaseRoot, version });
+    const wrapper = installCurlResetWrapper({
+      root,
+      failAttemptsByPattern: {
+        ".tar.gz": 10,
+      },
+    });
+
+    const result = await runInstaller({ baseUrl, env: wrapper.env, root });
+    assert.equal(result.status, 56, `${result.stdout}\n${result.stderr}`);
+    assert.equal(wrapper.attemptsFor(".tar.gz"), 4, "download_to must attempt the download 4 times before giving up");
+    assert.match(result.stderr, /Installation failed at step 3\/6\. Nothing was activated/);
+    assert.ok(!existsSync(join(root, "bin", binName)), "a failed download must not publish a shim");
+  });
+});
+
+test("portable release smoke retries curl exit 56 when fetching the channel installer and pointer", {
+  skip: platform === null,
+}, async () => {
+  await withReleaseServer(async ({ baseUrl, releaseRoot, root }) => {
+    const version = "0.0.2-staging.1.1";
+    buildRelease({ baseUrl, releaseRoot, version });
+    copyFileSync(installerPath, join(releaseRoot, channel, "install.sh"));
+
+    const scriptsDir = join(root, "scripts");
+    const portableDir = join(scriptsDir, "portable");
+    mkdirSync(portableDir, { recursive: true });
+    const releasePath = join(portableDir, "release-gcs.sh");
+    copyFileSync(join(repoRoot, "scripts", "portable", "release-gcs.sh"), releasePath);
+    symlinkSync(join(repoRoot, "scripts", "channel-config.mjs"), join(scriptsDir, "channel-config.mjs"));
+    writeExecutable(join(portableDir, "upload-gcs.sh"), "#!/bin/sh\nexit 0\n");
+
+    const wrapper = installCurlResetWrapper({
+      root,
+      failAttemptsByPattern: {
+        "/install.sh": 2,
+        "/latest.json": 1,
+        ".tar.gz": 2,
+      },
+    });
+
+    const result = await runScript(
+      "bash",
+      [releasePath, "--channel", channel, "--version", version, "--download-base-url", baseUrl, "--skip-build"],
+      {
+        ...process.env,
+        ...wrapper.env,
+      },
+    );
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    assert.match(result.stdout, /public install smoke test passed for staging 0\.0\.2-staging\.1\.1/);
+    assert.equal(wrapper.attemptsFor("/install.sh"), 3);
+    assert.equal(wrapper.attemptsFor(".tar.gz"), 3);
+  });
+});

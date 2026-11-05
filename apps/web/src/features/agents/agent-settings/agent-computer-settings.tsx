@@ -62,7 +62,6 @@ export function AgentComputerSettings({
             >
               {actionLabel}
             </Link>
-            <ConnectAnotherComputerLink agentId={agent.id} />
           </div>
         </section>
       ) : (
@@ -139,7 +138,7 @@ function computerConnection(agent: AgentDetailView): ComputerConnection {
 }
 
 function computerActionLabel(connection: ComputerConnection): string {
-  if (connection === "disconnected") return m.computer_reconnect();
-  if (connection === "offline") return m.computer_recovery_heading();
+  // One name for the one fix, whether the computer went offline or was disconnected.
+  if (connection === "disconnected" || connection === "offline") return m.computer_recovery_heading();
   return m.computer_manage();
 }

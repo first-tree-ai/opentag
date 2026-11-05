@@ -20,9 +20,14 @@ import {
   providerCliArtifactFailureIsManual,
   publicProviderCliArtifactReason,
   RUNTIME_CAPABILITY,
+  RUNTIME_CREDENTIAL_CHECK_INTERVAL_MS,
   RUNTIME_PROVIDER_CLI_REQUIREMENT_OPERATION,
   RUNTIME_PROVIDER_CLI_VALIDATION_GRANT_TTL_MS,
   RUNTIME_PROVIDER_CLI_VALIDATION_MAX_RETRIES,
+  type RuntimeCredentialFailureHint,
+  RuntimeCredentialFailureHintSchema,
+  type RuntimeSelfCheckReport,
+  RuntimeSelfCheckReportSchema,
 } from "@opentag/shared";
 import type { ConnectionRegistry } from "./connection-registry.js";
 import { ProviderCliPreparationOwner } from "./provider-cli-preparation-owner.js";
@@ -88,7 +93,12 @@ interface CurrentRequest {
   credentialGeneration: number;
   expectedIdentity: ProviderCliExpectedIdentity;
   grantConsumed: boolean;
+  forceCredentialCheck: boolean;
+  nextCredentialCheckAt: number;
+  hintNotBefore?: number;
   grantExpiresAt?: number;
+  credentialCheckDeadlineAt?: number;
+  cooldownUntil?: number;
   grantIssue?: Promise<void>;
   grantRepairStopped: boolean;
   grantRequestId?: string;
@@ -144,6 +154,7 @@ export class ProviderCliReconcileOwner {
   readonly #random: () => number;
   readonly #registry: ConnectionRegistry;
   readonly #inflightFresh = new Map<string, Promise<void>>();
+  readonly #grantIssues = new Map<string, Promise<void>>();
   readonly #inflightPrepare = new Map<string, Promise<void>>();
   readonly #requests = new Map<string, CurrentRequest>();
   readonly #requestGates = new Map<string, Promise<void>>();
@@ -151,6 +162,9 @@ export class ProviderCliReconcileOwner {
   readonly #observedGeneration = new Map<string, number>();
   readonly #transitionEpoch = new Map<string, number>();
   readonly #tasks = new Set<Promise<void>>();
+  #credentialTimer?: ReturnType<typeof setTimeout>;
+  #credentialPump?: Promise<void>;
+  readonly #manualCheckNotBefore = new Map<string, number>();
   #closing: Promise<void> | undefined;
   #closed = false;
 
@@ -181,6 +195,10 @@ export class ProviderCliReconcileOwner {
   businessOptions(): RuntimeBusinessOptions {
     return {
       parse: (input) => {
+        const selfCheck = RuntimeSelfCheckReportSchema.safeParse(input);
+        if (selfCheck.success) return selfCheck.data;
+        const hint = RuntimeCredentialFailureHintSchema.safeParse(input);
+        if (hint.success) return hint.data;
         const artifact = ProviderCliArtifactStatusFrameSchema.safeParse(input);
         if (artifact.success) return artifact.data;
         const preparation = ProviderCliPrewarmResultFrameSchema.safeParse(input);
@@ -189,6 +207,10 @@ export class ProviderCliReconcileOwner {
         return result.success ? result.data : undefined;
       },
       laneKey: (frame) => {
+        if (frame.type === "runtime:self-check:report")
+          return `self-check:${(frame as RuntimeSelfCheckReport).selfCheckId}`;
+        if (frame.type === "runtime:credential-failure")
+          return `credential-hint:${(frame as RuntimeCredentialFailureHint).integrationId}`;
         const typed = frame as
           | ProviderCliArtifactStatusFrame
           | ProviderCliPrewarmResultFrame
@@ -202,6 +224,8 @@ export class ProviderCliReconcileOwner {
           : this.#track(
               this.#handle(
                 frame as
+                  | RuntimeSelfCheckReport
+                  | RuntimeCredentialFailureHint
                   | ProviderCliArtifactStatusFrame
                   | ProviderCliPrewarmResultFrame
                   | ProviderCliValidationResultFrame,
@@ -222,6 +246,7 @@ export class ProviderCliReconcileOwner {
     const agentSeq = new Map(this.#agentReconcileSeq);
     await this.#resetComputer(input.computerId);
     await this.#preparation.inspect(input);
+    await this.#requestSelfCheck(input.computerId, input.instanceId);
     if (this.#closed) return;
     const requirements = await this.#bindings.listActiveProviderCliRequirements(input.computerId);
     if (!this.#connectionMatches(input.computerId, input.instanceId, input.installationId)) return;
@@ -311,9 +336,14 @@ export class ProviderCliReconcileOwner {
     runtimeProvider: AgentRuntimeProvider;
   }): Promise<void> {
     if (this.#closed) throw new Error("The Computer preparation owner is closed");
+    for (const [scope, until] of this.#manualCheckNotBefore)
+      if (until <= this.#now()) this.#manualCheckNotBefore.delete(scope);
     const key = `${input.computerId}:${input.agentId}`;
+    if (this.#selfCheckingComputer(input.computerId) && (this.#manualCheckNotBefore.get(key) ?? 0) > this.#now())
+      return;
     const existing = this.#inflightPrepare.get(key);
     if (existing) return existing;
+    if (this.#selfCheckingComputer(input.computerId)) this.#manualCheckNotBefore.set(key, this.#now() + 30_000);
     const task = this.#prepareComputer(input).finally(() => {
       if (this.#inflightPrepare.get(key) === task) this.#inflightPrepare.delete(key);
     });
@@ -329,6 +359,11 @@ export class ProviderCliReconcileOwner {
     const instanceId = this.#registry.currentInstanceId(input.computerId);
     const installationId = this.#registry.installationId(input.computerId);
     if (!instanceId || !installationId) throw new Error("The Computer runtime is not connected");
+    if (this.#selfCheckingComputer(input.computerId)) {
+      await this.#requestSelfCheck(input.computerId, instanceId);
+      await this.#retryActiveRequirements({ ...input, installationId, instanceId });
+      return;
+    }
     await this.#preparation.prepare({ ...input, installationId, instanceId }, (signal) =>
       this.#retryActiveRequirements(
         {
@@ -385,7 +420,7 @@ export class ProviderCliReconcileOwner {
   }
 
   async ensureActiveReadiness(input: { agentId: string; computerId: string }): Promise<void> {
-    if (this.#closed) return;
+    if (this.#closed || this.#selfCheckingComputer(input.computerId)) return;
     const key = `${input.computerId}:${input.agentId}`;
     const existing = this.#inflightFresh.get(key);
     if (existing) return existing;
@@ -396,9 +431,41 @@ export class ProviderCliReconcileOwner {
     await task;
   }
 
+  async ensureLegacyReadinessForComputer(computerId: string): Promise<void> {
+    if (this.#closed || this.#selfCheckingComputer(computerId)) return;
+    const key = `${computerId}:all`;
+    const existing = this.#inflightFresh.get(key);
+    if (existing) return existing;
+    const task = this.#refreshActiveReadiness({ computerId }).finally(() => {
+      if (this.#inflightFresh.get(key) === task) this.#inflightFresh.delete(key);
+    });
+    this.#inflightFresh.set(key, task);
+    await task;
+  }
+
+  onCredentialFailure(input: { agentId: string; bindingId: string; credentialGeneration: string }): void {
+    for (const current of this.#requests.values()) {
+      if (
+        current.agentId !== input.agentId ||
+        current.integrationId !== input.bindingId ||
+        String(current.credentialGeneration) !== input.credentialGeneration.split(":")[0] ||
+        !this.#selfCheckingComputer(current.computerId) ||
+        (current.hintNotBefore ?? 0) > this.#now()
+      )
+        continue;
+      current.hintNotBefore = this.#now() + 30_000;
+      void this.#track(this.#recheckCredential(current)).catch(() =>
+        this.#failCredential(current, "provider_unreachable"),
+      );
+    }
+  }
+
   close(): Promise<void> {
     if (this.#closing) return this.#closing;
     this.#closed = true;
+    if (this.#credentialTimer) clearTimeout(this.#credentialTimer);
+    this.#credentialTimer = undefined;
+    this.#manualCheckNotBefore.clear();
     const preparation = this.#preparation.close();
     for (const key of [...this.#requests.keys()]) void this.#retireRequest(key);
     this.#closing = this.#drain(preparation);
@@ -481,6 +548,7 @@ export class ProviderCliReconcileOwner {
       installationId,
       instanceId,
       requirement,
+      !options.resetBudget,
     );
     if (existing && existing.requestId !== current.requestId) {
       await this.#sendCancel(existing);
@@ -498,12 +566,27 @@ export class ProviderCliReconcileOwner {
     installationId: string,
     instanceId: string,
     requirement: ProviderCliRequirementSnapshot,
+    reuseCredential: boolean,
   ): CurrentRequest {
     if (existing?.retryTimer) {
       clearTimeout(existing.retryTimer);
       existing.retryTimer = undefined;
       existing.artifactRetryPending = false;
     }
+    const retained = this.#registry
+      .providerCliCredentialReadiness(computerId, this.#now())
+      .find(
+        ({ observation }) =>
+          observation.agentId === requirement.agentId &&
+          observation.integrationId === requirement.integrationId &&
+          observation.credentialGeneration === requirement.credentialGeneration &&
+          (observation.status === "ready" || observation.status === "needs_attention"),
+      );
+    const reusable =
+      reuseCredential &&
+      this.#selfCheckingComputer(computerId) &&
+      retained &&
+      this.#now() - retained.observedAt < RUNTIME_CREDENTIAL_CHECK_INTERVAL_MS;
     const current: CurrentRequest = {
       agentId: requirement.agentId,
       artifactRepairStopped: prior?.artifactRepairStopped ?? false,
@@ -513,6 +596,9 @@ export class ProviderCliReconcileOwner {
       credentialGeneration: requirement.credentialGeneration,
       expectedIdentity: requirement.expectedIdentity,
       grantConsumed: false,
+      forceCredentialCheck: !reusable,
+      nextCredentialCheckAt: (reusable ? retained.observedAt : this.#now()) + RUNTIME_CREDENTIAL_CHECK_INTERVAL_MS,
+      cooldownUntil: existing?.cooldownUntil,
       grantRepairStopped: prior?.grantRepairStopped ?? false,
       grantRetryAttempt: prior?.grantRetryAttempt ?? 0,
       instanceId,
@@ -523,6 +609,7 @@ export class ProviderCliReconcileOwner {
       snapshot: requirement,
     };
     this.#requests.set(key, current);
+    this.#armCredentialTimer();
     this.#observedGeneration.set(
       key,
       Math.max(this.#observedGeneration.get(key) ?? 0, requirement.credentialGeneration),
@@ -674,9 +761,30 @@ export class ProviderCliReconcileOwner {
   }
 
   async #handle(
-    frame: ProviderCliArtifactStatusFrame | ProviderCliPrewarmResultFrame | ProviderCliValidationResultFrame,
+    frame:
+      | ProviderCliArtifactStatusFrame
+      | ProviderCliPrewarmResultFrame
+      | ProviderCliValidationResultFrame
+      | RuntimeSelfCheckReport
+      | RuntimeCredentialFailureHint,
     context: RuntimeBusinessContext,
   ): Promise<undefined> {
+    if (frame.type === "runtime:self-check:report") return this.#handleSelfCheckReport(frame, context);
+    if (frame.type === "runtime:credential-failure") {
+      const current = this.#requests.get(requestKey(context.computerId, frame.integrationId));
+      if (
+        context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.selfCheckHeartbeat] !== 1 ||
+        !current ||
+        current.instanceId !== context.instanceId ||
+        current.agentId !== frame.agentId ||
+        current.credentialGeneration !== frame.credentialGeneration ||
+        (current.hintNotBefore ?? 0) > this.#now()
+      )
+        return undefined;
+      current.hintNotBefore = this.#now() + 30_000;
+      await this.#recheckCredential(current);
+      return undefined;
+    }
     if (frame.type === "provider-cli:prewarm:result") {
       this.#preparation.complete(context.computerId, context.instanceId, frame);
       return undefined;
@@ -773,13 +881,46 @@ export class ProviderCliReconcileOwner {
     );
   }
 
+  #handleSelfCheckReport(frame: RuntimeSelfCheckReport, context: RuntimeBusinessContext): undefined {
+    if (context.negotiatedCapabilities?.[RUNTIME_CAPABILITY.selfCheckHeartbeat] === 1) {
+      const accepted = this.#registry.recordSelfCheck(
+        context.computerId,
+        context.instanceId,
+        context.connectionId,
+        frame,
+        context.receivedAt,
+        context.receivedMonotonicAt,
+      );
+      if (accepted)
+        for (const current of this.#requests.values()) {
+          if (
+            current.computerId !== context.computerId ||
+            !current.forceCredentialCheck ||
+            !this.#artifactIsReady(current)
+          )
+            continue;
+          void this.#issueGrant(current).catch(() => this.#failCredential(current, "provider_unreachable"));
+        }
+    }
+    return undefined;
+  }
+
   async #handleValidation(
     current: CurrentRequest | undefined,
     frame: ProviderCliValidationResultFrame,
     context: RuntimeBusinessContext,
   ): Promise<undefined> {
     if (!this.#acceptsGrantResult(current, frame, context)) return undefined;
-    if (frame.status === "retrying") return this.#handleRetryingValidation(current, frame, context);
+    if (frame.status === "retrying") {
+      if (this.#selfCheckingComputer(current.computerId)) {
+        this.#failCredential(current, frame.reason === "rate_limited" ? "rate_limited" : "provider_unreachable");
+        return undefined;
+      }
+      return this.#handleRetryingValidation(current, frame, context);
+    }
+    current.forceCredentialCheck = false;
+    current.credentialCheckDeadlineAt = undefined;
+    current.grantConsumed = true;
     this.#registry.setProviderCliCredentialObservation(
       context.computerId,
       context.instanceId,
@@ -796,6 +937,7 @@ export class ProviderCliReconcileOwner {
     );
     if (frame.status === "ready") this.#endFailureEpisode(current);
     if (frame.status === "needs_attention") current.grantRepairStopped = true;
+    this.#armCredentialTimer();
     return undefined;
   }
 
@@ -840,17 +982,30 @@ export class ProviderCliReconcileOwner {
 
   async #issueGrant(current: CurrentRequest): Promise<void> {
     if (current.grantIssue) return current.grantIssue;
-    const task = this.#track(this.#performIssueGrant(current)).finally(() => {
+    const key = requestKey(current.computerId, current.integrationId);
+    const previous = this.#grantIssues.get(key);
+    const task = this.#track(
+      Promise.resolve(previous)
+        .catch(() => undefined)
+        .then(() => this.#performIssueGrant(current)),
+    ).finally(() => {
       if (current.grantIssue === task) current.grantIssue = undefined;
+      if (this.#grantIssues.get(key) === task) this.#grantIssues.delete(key);
     });
     current.grantIssue = task;
+    this.#grantIssues.set(key, task);
     await task;
   }
 
   async #performIssueGrant(current: CurrentRequest): Promise<void> {
     if (this.#requests.get(requestKey(current.computerId, current.integrationId)) !== current) return;
     if (this.#shouldSkipGrant(current)) return;
+    const episodeDeadline = this.#now() + this.#grantTtlMs;
     if (!this.#artifactIsReady(current)) return;
+    if (this.#selfCheckingComputer(current.computerId)) {
+      current.credentialCheckDeadlineAt = episodeDeadline;
+      this.#armCredentialTimer();
+    }
     const computerKind = (await this.#bindings.computerKind?.(current.computerId)) ?? "local";
     if (this.#closed || this.#requests.get(requestKey(current.computerId, current.integrationId)) !== current) return;
     const proxyMode = this.#proxyMode(current.computerId, current.instanceId);
@@ -864,8 +1019,23 @@ export class ProviderCliReconcileOwner {
       ? await this.#issueProxyValidationRun(current)
       : await this.#issueLegacyValidationGrant(current);
     if (!frame) return;
+    if (this.#selfCheckingComputer(current.computerId) && current.credentialCheckDeadlineAt !== episodeDeadline) return;
+    await this.#sendValidationGrant(current, frame, episodeDeadline);
+  }
+
+  async #sendValidationGrant(
+    current: CurrentRequest,
+    frame: Omit<ProviderCliValidationRunFrame, "requestId"> | Omit<ProviderCliValidationGrantFrame, "requestId">,
+    episodeDeadline: number,
+  ): Promise<void> {
     const requestId = randomUUID();
-    const expiresAt = Date.parse(frame.expiresAt);
+    const expiresAt = this.#selfCheckingComputer(current.computerId)
+      ? Math.min(Date.parse(frame.expiresAt), episodeDeadline)
+      : Date.parse(frame.expiresAt);
+    if (expiresAt <= this.#now()) {
+      this.#failCredential(current, "provider_unreachable", true);
+      return;
+    }
     current.grantRequestId = requestId;
     current.grantExpiresAt = expiresAt;
     current.grantConsumed = false;
@@ -882,7 +1052,8 @@ export class ProviderCliReconcileOwner {
       },
       this.#now(),
     );
-    const outbound = { ...frame, requestId };
+    const outbound = { ...frame, requestId, expiresAt: new Date(expiresAt).toISOString() };
+    this.#armCredentialTimer();
     try {
       await this.#registry.send(current.computerId, current.instanceId, outbound);
     } catch {
@@ -970,6 +1141,7 @@ export class ProviderCliReconcileOwner {
   }
 
   #stopGrantRepair(current: CurrentRequest, reason: "upgrade_required" | "identity_mismatch"): void {
+    current.forceCredentialCheck = false;
     current.grantRepairStopped = true;
     this.#registry.setProviderCliCredentialObservation(
       current.computerId,
@@ -987,9 +1159,17 @@ export class ProviderCliReconcileOwner {
     );
   }
 
+  #grantPending(current: CurrentRequest): boolean {
+    return Boolean(current.grantRequestId && !current.grantConsumed && (current.grantExpiresAt ?? 0) > this.#now());
+  }
+
   #shouldSkipGrant(current: CurrentRequest): boolean {
+    if ((current.cooldownUntil ?? 0) > this.#now()) return true;
+    if (this.#selfCheckingComputer(current.computerId) && current.forceCredentialCheck) {
+      return this.#grantPending(current);
+    }
     if (current.grantRepairStopped) return true;
-    if (current.grantRequestId && !current.grantConsumed && (current.grantExpiresAt ?? 0) > this.#now()) return true;
+    if (this.#grantPending(current)) return true;
     if (current.grantRequestId && !current.grantConsumed && (current.grantExpiresAt ?? 0) <= this.#now()) {
       current.grantConsumed = true;
       this.#scheduleGrantRetry(current, "provider_unreachable");
@@ -1015,6 +1195,10 @@ export class ProviderCliReconcileOwner {
   }
 
   #scheduleGrantRetry(current: CurrentRequest, reason: "rate_limited" | "provider_unreachable"): void {
+    if (this.#selfCheckingComputer(current.computerId)) {
+      this.#failCredential(current, reason);
+      return;
+    }
     if (current.grantRetryAttempt >= this.#maxRetries) {
       current.grantRepairStopped = true;
       this.#registry.setProviderCliCredentialObservation(
@@ -1238,21 +1422,125 @@ export class ProviderCliReconcileOwner {
     return true;
   }
 
-  async #refreshActiveReadiness(input: { agentId: string; computerId: string }): Promise<void> {
+  #selfCheckingComputer(computerId: string): boolean {
+    const instanceId = this.#registry.currentInstanceId(computerId);
+    return Boolean(
+      instanceId && this.#registry.supportsCapability(computerId, instanceId, RUNTIME_CAPABILITY.selfCheckHeartbeat),
+    );
+  }
+
+  async #requestSelfCheck(computerId: string, instanceId: string): Promise<void> {
+    const request = this.#registry.requestSelfCheck(computerId, instanceId, this.#now());
+    if (request) await this.#registry.send(computerId, instanceId, request);
+  }
+
+  #failCredential(current: CurrentRequest, reason: "rate_limited" | "provider_unreachable", timedOut = false): void {
+    if (this.#requests.get(requestKey(current.computerId, current.integrationId)) !== current) return;
+    current.credentialCheckDeadlineAt = undefined;
+    if (reason === "rate_limited") current.cooldownUntil = this.#now() + RUNTIME_CREDENTIAL_CHECK_INTERVAL_MS;
+    current.grantConsumed = true;
+    current.forceCredentialCheck = false;
+    current.grantRepairStopped = true;
+    this.#registry.setProviderCliCredentialObservation(
+      current.computerId,
+      current.instanceId,
+      {
+        agentId: current.agentId,
+        integrationId: current.integrationId,
+        provider: current.provider,
+        credentialGeneration: current.credentialGeneration,
+        requestId: current.grantRequestId ?? current.requestId,
+        status: "needs_attention",
+        reason,
+        timedOut,
+      },
+      this.#now(),
+    );
+    this.#armCredentialTimer();
+  }
+
+  async #recheckCredential(current: CurrentRequest): Promise<void> {
+    if (this.#closed || !this.#connectionMatches(current.computerId, current.instanceId, current.installationId))
+      return;
+    if (current.grantIssue || (current.cooldownUntil ?? 0) > this.#now()) {
+      current.nextCredentialCheckAt = Math.max(
+        this.#now() + RUNTIME_CREDENTIAL_CHECK_INTERVAL_MS,
+        current.cooldownUntil ?? 0,
+      );
+      return;
+    }
+    if (current.grantRequestId && !current.grantConsumed && (current.grantExpiresAt ?? 0) > this.#now()) return;
+    current.nextCredentialCheckAt = this.#now() + RUNTIME_CREDENTIAL_CHECK_INTERVAL_MS;
+    current.forceCredentialCheck = true;
+    current.grantRepairStopped = false;
+    current.grantRequestId = undefined;
+    current.grantConsumed = false;
+    current.grantRetryAttempt = 0;
+    await this.#issueGrant(current);
+  }
+
+  #armCredentialTimer(): void {
+    if (this.#credentialTimer) clearTimeout(this.#credentialTimer);
+    this.#credentialTimer = undefined;
     if (this.#closed) return;
-    const seq = this.#currentAgentReconcile(input.computerId, input.agentId);
+    const due = [...this.#requests.values()]
+      .filter((current) => this.#selfCheckingComputer(current.computerId))
+      .flatMap((current) => [
+        current.nextCredentialCheckAt,
+        ...(current.credentialCheckDeadlineAt ? [current.credentialCheckDeadlineAt] : []),
+        ...(current.grantRequestId && !current.grantConsumed && current.grantExpiresAt ? [current.grantExpiresAt] : []),
+      ]);
+    if (!due.length) return;
+    this.#credentialTimer = setTimeout(
+      () => {
+        this.#credentialTimer = undefined;
+        if (this.#credentialPump || this.#closed) return;
+        const pump = this.#track(this.#pollCredentialChecks());
+        this.#credentialPump = pump;
+        void pump
+          .finally(() => {
+            if (this.#credentialPump === pump) this.#credentialPump = undefined;
+            this.#armCredentialTimer();
+          })
+          .catch(() => undefined);
+      },
+      Math.max(1, Math.min(...due) - this.#now()),
+    );
+    this.#credentialTimer.unref();
+  }
+
+  async #pollCredentialChecks(): Promise<void> {
+    for (const current of this.#requests.values()) {
+      if (!this.#selfCheckingComputer(current.computerId)) continue;
+      if (current.credentialCheckDeadlineAt !== undefined && current.credentialCheckDeadlineAt <= this.#now())
+        this.#failCredential(current, "provider_unreachable", true);
+      if (current.grantRequestId && !current.grantConsumed && (current.grantExpiresAt ?? Infinity) <= this.#now()) {
+        this.#failCredential(current, "provider_unreachable", true);
+      }
+      if (current.nextCredentialCheckAt <= this.#now()) {
+        try {
+          await this.#recheckCredential(current);
+        } catch {
+          this.#failCredential(current, "provider_unreachable");
+        }
+      }
+    }
+  }
+
+  async #refreshActiveReadiness(input: { agentId?: string; computerId: string }): Promise<void> {
+    if (this.#closed) return;
+    const seq = new Map(this.#agentReconcileSeq);
     const instanceId = this.#registry.currentInstanceId(input.computerId);
     if (!instanceId) return;
     const installationId = this.#registry.installationId(input.computerId);
     if (!installationId) return;
     const now = this.#now();
     const requirements = (await this.#bindings.listActiveProviderCliRequirements(input.computerId)).filter(
-      (requirement) => requirement.agentId === input.agentId,
+      (requirement) => input.agentId === undefined || requirement.agentId === input.agentId,
     );
-    if (!this.#isAgentReconcileCurrent(input.computerId, input.agentId, seq)) return;
     if (!this.#connectionMatches(input.computerId, instanceId, installationId)) return;
     if (requirements.length === 0) {
-      await this.#retireAgentOnComputer(input.agentId, input.computerId);
+      if (input.agentId) await this.#retireAgentOnComputer(input.agentId, input.computerId);
       return;
     }
     if (!this.#registry.supportsCapability(input.computerId, instanceId, RUNTIME_CAPABILITY.providerCliReconcile)) {
@@ -1261,6 +1549,7 @@ export class ProviderCliReconcileOwner {
     const artifacts = this.#registry.providerCliArtifactReadiness(input.computerId, now);
     const credentials = this.#registry.providerCliCredentialReadiness(input.computerId, now);
     for (const requirement of requirements) {
+      if (!this.#agentReconcileUnchanged(input.computerId, requirement.agentId, seq)) continue;
       await this.#refreshRequirement(input.computerId, installationId, instanceId, requirement, artifacts, credentials);
     }
   }

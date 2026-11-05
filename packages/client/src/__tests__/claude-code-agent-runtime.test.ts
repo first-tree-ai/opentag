@@ -143,7 +143,7 @@ describe("ClaudeCodeAgentRuntime", () => {
 
     expect(runtime).toBeInstanceOf(ClaudeCodeAgentRuntime);
     expect(runtime.manifest).toEqual(CLAUDE_CODE_AGENT_RUNTIME_MANIFEST);
-    expect(runtime.capabilities).toEqual({ steer: "unsupported", interactions: "supported" });
+    expect(runtime.capabilities).toEqual({ steer: "supported", interactions: "supported" });
     expect(runtime.binding).toEqual({
       providerId: "claude-code",
       schemaVersion: 1,
@@ -407,6 +407,230 @@ describe("ClaudeCodeAgentRuntime", () => {
     expect(claudeCodeAgentRuntimeEnvironment()).toEqual(process.env);
   });
 });
+
+describe("ClaudeCodeAgentRuntime steer", () => {
+  it("steers input into the running query and reports one terminal across continued results", async () => {
+    const events: AgentRuntimeEvent[] = [];
+    const steerable = new SteerableClaudeCodeProcess();
+    const runtime = await steerableFactory(steerable).create(createRequest((event) => void events.push(event)));
+    try {
+      const run = runtime.prompt({ runId: "steer-run", input: input("first") });
+      await runtime.steer({ expectedRunId: "steer-run", input: input("second") });
+      expect(steerable.steered).toEqual([
+        {
+          type: "user",
+          uuid: expect.stringMatching(/^[0-9a-f-]{36}$/),
+          message: { role: "user", content: [{ type: "text", text: "second" }] },
+          parent_tool_use_id: null,
+        },
+      ]);
+      expect(events).toContainEqual({ type: "input_accepted", runId: "steer-run", input: input("second") });
+      // Claude Code answered the first input, then processes the queued steer and answers again.
+      steerable.emit(result("first answer", 1, 0.01, 5), false);
+      steerable.emit({ type: "system", subtype: "init", session_id: SESSION_ID });
+      steerable.emit(result("second answer", 2, 0.02, 7), true);
+      steerable.finish();
+      await expect(run).resolves.toMatchObject({
+        status: "completed",
+        output: [
+          { type: "text", text: "first answer" },
+          { type: "text", text: "second answer" },
+        ],
+        usage: { inputTokens: 2, outputTokens: 12 },
+      });
+      expect(events.filter((event) => event.type === "run_completed")).toHaveLength(1);
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("reports the latest cumulative cost while summing per-turn usage and turns across steered results", async () => {
+    const steerable = new SteerableClaudeCodeProcess();
+    const spawned: (readonly string[])[] = [];
+    const runtime = await new ClaudeCodeAgentRuntimeFactory({
+      createSessionId: () => SESSION_ID,
+      createProcess: (_cwd, args) => {
+        spawned.push(args);
+        return steerable;
+      },
+    }).create(createRequest(() => undefined));
+    try {
+      const run = runtime.prompt({ runId: "cost-run", input: input("first") });
+      await runtime.steer({ expectedRunId: "cost-run", input: input("second") });
+      // total_cost_usd is the process's running total in streaming-input mode; usage is per turn.
+      steerable.emit(result("first answer", 1, 1, 5), false);
+      steerable.emit(result("second answer", 2, 2, 7), true);
+      steerable.finish();
+      await expect(run).resolves.toMatchObject({
+        status: "completed",
+        usage: { inputTokens: 2, outputTokens: 12 },
+        providerDiagnostics: { numTurns: 3, totalCostUsd: 2 },
+      });
+      // The next Run spawns a fresh resumed process, so its cumulative cost has no in-process baseline.
+      const next = runtime.prompt({ runId: "next-run", input: input("third") });
+      await vi.waitFor(() => expect(spawned).toHaveLength(2));
+      expect(spawned[1]).toEqual(expect.arrayContaining(["--resume", SESSION_ID]));
+      steerable.emit(result("third answer", 1, 2.5, 3), true);
+      steerable.finish();
+      await expect(next).resolves.toMatchObject({
+        status: "completed",
+        usage: { inputTokens: 1, outputTokens: 3 },
+        providerDiagnostics: { numTurns: 1, totalCostUsd: 2.5 },
+      });
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("merges continued results that carry partial usage", async () => {
+    const steerable = new SteerableClaudeCodeProcess();
+    const runtime = await steerableFactory(steerable).create(createRequest(() => undefined));
+    try {
+      const run = runtime.prompt({ runId: "partial-run", input: input("first") });
+      await runtime.steer({ expectedRunId: "partial-run", input: input("second") });
+      steerable.emit({ type: "result", subtype: "success", session_id: SESSION_ID, is_error: false }, false);
+      steerable.emit(
+        {
+          type: "result",
+          subtype: "success",
+          session_id: SESSION_ID,
+          is_error: false,
+          result: "only answer",
+          usage: { cache_read_input_tokens: 4 },
+        },
+        true,
+      );
+      steerable.finish();
+      await expect(run).resolves.toMatchObject({
+        status: "completed",
+        output: [{ type: "text", text: "only answer" }],
+        usage: { cachedInputTokens: 4 },
+      });
+      const empty = runtime.prompt({ runId: "empty-run", input: input("first") });
+      await runtime.steer({ expectedRunId: "empty-run", input: input("second") });
+      steerable.emit({ type: "result", subtype: "success", session_id: SESSION_ID, is_error: false }, false);
+      steerable.emit({ type: "result", subtype: "success", session_id: SESSION_ID, is_error: false }, true);
+      steerable.finish();
+      await expect(empty).resolves.toMatchObject({ status: "completed", output: [] });
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("waits for a starting process before writing steer input", async () => {
+    const steerable = new SteerableClaudeCodeProcess();
+    let releaseBridge!: () => void;
+    const bridgeGate = new Promise<void>((resolve) => {
+      releaseBridge = resolve;
+    });
+    const runtime = await steerableFactory(steerable, async (...args) => {
+      await bridgeGate;
+      return startClaudeCodeHostedToolBridge(...args);
+    }).create(createRequest(() => undefined));
+    try {
+      const run = runtime.prompt({ runId: "starting-run", input: input("first") });
+      const steer = runtime.steer({ expectedRunId: "starting-run", input: input("early") });
+      expect(steerable.steered).toHaveLength(0);
+      releaseBridge();
+      await steer;
+      expect(steerable.steered).toHaveLength(1);
+      steerable.emit(result("done", 1, 0.01, 1), true);
+      steerable.finish();
+      await expect(run).resolves.toMatchObject({ status: "completed" });
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("rejects steer after the terminal result or when the process refuses the input", async () => {
+    const steerable = new SteerableClaudeCodeProcess();
+    const runtime = await steerableFactory(steerable).create(createRequest(() => undefined));
+    try {
+      const run = runtime.prompt({ runId: "late-run", input: input("first") });
+      await vi.waitFor(() => expect(steerable.executing).toBe(true));
+      steerable.refuse = true;
+      await expect(runtime.steer({ expectedRunId: "late-run", input: input("refused") })).rejects.toMatchObject({
+        code: "run_mismatch",
+      });
+      steerable.refuse = false;
+      steerable.emit(result("done", 1, 0.01, 1), true);
+      await expect(runtime.steer({ expectedRunId: "late-run", input: input("late") })).rejects.toMatchObject({
+        code: "run_mismatch",
+      });
+      steerable.finish();
+      await expect(run).resolves.toMatchObject({ status: "completed", output: [{ type: "text", text: "done" }] });
+      // A result that outlives its Run claims nothing.
+      steerable.emit(result("stray", 1, 0, 0), true);
+    } finally {
+      await runtime.close();
+    }
+  });
+});
+
+class SteerableClaudeCodeProcess implements ClaudeCodeProcessClient {
+  readonly steered: Readonly<Record<string, unknown>>[] = [];
+  executing = false;
+  refuse = false;
+  #onMessage?: (message: Readonly<Record<string, unknown>>, terminal?: boolean) => void;
+  #finish?: () => void;
+
+  execute(
+    _input: Readonly<Record<string, unknown>>,
+    onMessage: (message: Readonly<Record<string, unknown>>, terminal?: boolean) => void,
+  ): Promise<ClaudeCodeProcessResult> {
+    this.#onMessage = onMessage;
+    this.executing = true;
+    onMessage({ type: "system", subtype: "init", session_id: SESSION_ID });
+    return new Promise((resolve) => {
+      this.#finish = () => resolve({ stderr: "" });
+    });
+  }
+
+  emit(message: Readonly<Record<string, unknown>>, terminal?: boolean): void {
+    this.#onMessage?.(message, terminal);
+  }
+
+  finish(): void {
+    this.#finish?.();
+  }
+
+  async steer(message: Readonly<Record<string, unknown>> & { readonly uuid: string }): Promise<{ started(): boolean }> {
+    if (this.refuse) throw new Error("closed");
+    this.steered.push(message);
+    return { started: () => true };
+  }
+
+  async interrupt(): Promise<void> {}
+
+  async close(): Promise<void> {
+    this.#finish?.();
+  }
+}
+
+function steerableFactory(
+  process: SteerableClaudeCodeProcess,
+  startHostedToolBridge?: typeof startClaudeCodeHostedToolBridge,
+): ClaudeCodeAgentRuntimeFactory {
+  return new ClaudeCodeAgentRuntimeFactory({
+    createSessionId: () => SESSION_ID,
+    createProcess: () => process,
+    ...(startHostedToolBridge ? { startHostedToolBridge } : {}),
+  });
+}
+
+function result(text: string, numTurns: number, cost: number, outputTokens: number): Record<string, unknown> {
+  return {
+    type: "result",
+    subtype: "success",
+    session_id: SESSION_ID,
+    is_error: false,
+    result: text,
+    num_turns: numTurns,
+    total_cost_usd: cost,
+    permission_denials: [],
+    usage: { input_tokens: 1, output_tokens: outputTokens },
+  };
+}
 
 type Scenario = "complete" | "error" | "foreign" | "hold" | "approval";
 

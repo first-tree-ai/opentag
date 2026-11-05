@@ -1,5 +1,10 @@
 import type { NormalizedMessage } from "@larksuiteoapi/node-sdk";
-import { computeTurnResultHash, type TurnReportRequest, TurnReportRequestSchema } from "@opentag/shared";
+import {
+  computeTurnResultHash,
+  type NormalizedInboundImEvent,
+  type TurnReportRequest,
+  TurnReportRequestSchema,
+} from "@opentag/shared";
 import { eq, sql } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
@@ -14,6 +19,8 @@ import {
   sessionMessages,
   sessions,
 } from "../../db/schema/index.js";
+import { resolveSessionTaskAnchor } from "../../runtime-credentials/index.js";
+import { ImMessageInbox } from "../../services/im/im-message-inbox.js";
 import { normalizeFeishuMessage } from "../../services/im-bindings/feishu/adapter.js";
 import { normalizeSlackEnvelope } from "../../services/im-bindings/slack/adapter.js";
 import { TaskQueryError, TaskService } from "../../services/tasks/index.js";
@@ -357,9 +364,117 @@ describe("Task cancel under a row lock", () => {
       await value.sql.end();
     }
   }, 20_000);
+
+  it("serializes a cancel with IM admission into the same Session, so a 200 never leaves a queued delivery", async () => {
+    // The reported interleaving: a worker holds pending row A, the cancel waits for it, and a new
+    // message is admitted into the same Session meanwhile. The cancel must not withdraw A, leave the
+    // new delivery queued and still answer 200. The admission goes through the real inbound path on
+    // its own pool, so it takes the binding lock every production admission takes.
+    const value = await fixture();
+    await value.database
+      .update(imBindings)
+      .set({
+        status: "active",
+        externalAppId: "app",
+        externalBotId: "bot",
+        credentialSchemaVersion: 1,
+        credentialGeneration: 1,
+        encryptedCredential: "unit-only-unused",
+        activatedAt: new Date(),
+      })
+      .where(eq(imBindings.id, value.binding.id));
+    const admitter = createDatabaseClient(databaseUrl);
+    const observer = postgres(databaseUrl, { max: 1, onnotice: () => undefined });
+    const first = await new ImMessageInbox(value.database).ingest(value.binding.id, 1, dmEvent("race-admit-a"));
+    const deliveryA = first.deliveryIds[0];
+    if (!deliveryA || !first.messageId) throw new Error("The first admission queued no delivery");
+    const lock = await holdDeliveryLock(deliveryA, async () => undefined);
+    try {
+      const racing = value.service.cancel(value.bootstrap.userId, first.messageId);
+      // The cancel holds the binding and waits for row A.
+      await waitForBlockedStatements(observer, 1);
+      let admitted = false;
+      const second = new ImMessageInbox(admitter.database)
+        .ingest(value.binding.id, 1, dmEvent("race-admit-b"))
+        .then((result) => {
+          admitted = true;
+          return result;
+        });
+      // The admission waits for the cancel's binding lock instead of inserting beside it.
+      await waitForBlockedStatements(observer, 2, '"im_bindings"');
+      expect(admitted).toBe(false);
+      await lock.commit();
+      await expect(racing).resolves.toMatchObject({ status: "cancelled" });
+      const later = await second;
+      const deliveryB = later.deliveryIds[0];
+      if (!deliveryB) throw new Error("The second admission queued no delivery");
+      expect(await deliveryState(value, deliveryA)).toEqual({ state: "expired", reason: "cancelled" });
+      // The message admitted behind the cancel is a new request in the queue, not a survivor of it.
+      expect(await deliveryState(value, deliveryB)).toEqual({ state: "pending", reason: null });
+      // Both requests went into the one Session the cancel was serialized against.
+      const rows = await value.database
+        .select({ sessionId: imMessageDeliveries.sessionId })
+        .from(imMessageDeliveries)
+        .where(sql`${imMessageDeliveries.id} in (${deliveryA}::uuid, ${deliveryB}::uuid)`);
+      expect(new Set(rows.map((row) => row.sessionId)).size).toBe(1);
+    } finally {
+      await lock.commit();
+      await lock.end();
+      await observer.end();
+      await admitter.sql.end();
+      await value.sql.end();
+    }
+  }, 30_000);
 });
 
-describe("Task topic queries", () => {
+/** A private-chat message in a conversation of its own, admitted through the inbound path. */
+function dmEvent(id: string): NormalizedInboundImEvent {
+  return {
+    providerEventId: `event-${id}`,
+    externalAppId: "app",
+    externalTeamId: "team",
+    providerContext: { provider: "feishu", chatType: "p2p" },
+    conversation: { externalId: "oc_admission_race", kind: "dm" },
+    message: {
+      externalId: `om_${id}`,
+      revisionKey: "1",
+      operation: "created",
+      author: { externalId: "ou_debug", kind: "human" },
+      occurredAt: new Date(),
+      content: {
+        version: 1,
+        fallbackText: `Request ${id}`,
+        blocks: [{ type: "text", text: `Request ${id}` }],
+        truncated: false,
+      },
+      resources: [],
+    },
+    mentions: [],
+  };
+}
+
+/**
+ * Wait until `count` backends are blocked behind another backend's lock, one of them running a
+ * statement that contains `fragment` when given. Long statements are truncated in
+ * `pg_stat_activity`, so the count rather than the text identifies the cancel.
+ */
+async function waitForBlockedStatements(observer: postgres.Sql, count: number, fragment?: string): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  for (;;) {
+    const [row] = await observer`
+      select
+        count(*)::int as blocked,
+        count(*) filter (where ${fragment ?? ""} = '' or position(${fragment ?? ""} in query) > 0)::int as matching
+      from pg_stat_activity
+      where datname = current_database() and cardinality(pg_blocking_pids(pid)) > 0
+    `;
+    if ((row?.blocked ?? 0) >= count && (row?.matching ?? 0) > 0) return;
+    if (Date.now() > deadline) throw new Error(`Fewer than ${count} statements waited for a lock`);
+    await wait(50);
+  }
+}
+
+describe("Task queries", () => {
   it.each(["running", "expired", "ended", "superseded"] as const)(
     "projects %s liveness consistently into Task detail",
     async (state) => {
@@ -477,7 +592,7 @@ describe("Task topic queries", () => {
         nextCursor: null,
         tasks: [
           {
-            id: value.message.id,
+            id: value.session.id,
             title: "Please debug this Turn.",
             status: "completed",
             agent: { id: value.agent.id, displayName: "Atlas" },
@@ -621,7 +736,7 @@ describe("Task topic queries", () => {
         cursor: firstPage.nextCursor,
         limit: 1,
       });
-      expect(secondPage.tasks.map((task) => task.id)).toEqual([secondMessage.id]);
+      expect(secondPage.tasks.map((task) => task.id)).toEqual([secondSession.id]);
       expect(secondPage.nextCursor).toBeNull();
 
       const [followUpMessage] = await value.database
@@ -1100,7 +1215,7 @@ describe("Task cursor precision", () => {
           placementGeneration: 1,
           expiresAt: new Date("2026-08-28T02:00:00.000Z"),
         });
-        created.push({ at: instant.at, id: message.id });
+        created.push({ at: instant.at, id: chat.id });
       }
 
       const ids = await walk(
@@ -1113,7 +1228,7 @@ describe("Task cursor precision", () => {
         },
         (task) => task.id,
       );
-      // Newest first, with the equal-time pair ordered by the anchor id descending.
+      // Newest first, with the equal-time pair ordered by the Task id descending.
       expect(ids.slice(0, 4)).toEqual(
         [...created]
           .sort((left, right) =>
@@ -1122,7 +1237,129 @@ describe("Task cursor precision", () => {
           .map((row) => row.id),
       );
       // The fixture's own Task is older still.
-      expect(ids.at(-1)).toBe(value.message.id);
+      expect(ids.at(-1)).toBe(value.session.id);
+    } finally {
+      await value.sql.end();
+    }
+  });
+});
+
+describe("Session footer links and Task detail", () => {
+  /** A group channel Session in the fixture's binding, and one inbound message delivered to it. */
+  async function groupSession(value: Awaited<ReturnType<typeof fixture>>) {
+    const [channel] = await value.database
+      .insert(sessions)
+      .values({
+        imBindingId: value.binding.id,
+        channelId: "oc_group",
+        conversationKind: "channel",
+        kind: "channel",
+        createdAt: new Date("2026-08-27T02:00:00.000Z"),
+      })
+      .returning();
+    if (!channel) throw new Error("Group channel Session fixture was not created");
+    return channel;
+  }
+
+  async function deliver(
+    value: Awaited<ReturnType<typeof fixture>>,
+    sessionId: string,
+    externalMessageId: string,
+    attention: "direct" | "ambient",
+    occurredAt: Date,
+  ) {
+    const [message] = await value.database
+      .insert(imMessages)
+      .values({
+        imBindingId: value.binding.id,
+        providerEventId: `event-${externalMessageId}`,
+        channelId: "oc_group",
+        externalMessageId,
+        providerRevisionKey: "1",
+        operation: "created",
+        direction: "inbound",
+        authorKind: "human",
+        authorExternalId: "ou_group",
+        authorDisplayName: "Mia",
+        content: { version: 1, fallbackText: `Message ${externalMessageId}`, blocks: [], truncated: false },
+        providerContext: { provider: "feishu", chatType: "group" },
+        occurredAt,
+      })
+      .returning();
+    if (!message) throw new Error("Group message fixture was not created");
+    await value.database.insert(imMessageDeliveries).values({
+      messageId: message.id,
+      sessionId,
+      attention,
+      state: "accepted",
+      placementGeneration: 1,
+      inputHash: "c".repeat(64),
+      turnId: `turn-${externalMessageId}`,
+      reportOwnerInstanceId: crypto.randomUUID(),
+      acceptedAt: occurredAt,
+      expiresAt: new Date(occurredAt.getTime() + 86_400_000),
+    });
+    return message;
+  }
+
+  async function internalSession(
+    value: Awaited<ReturnType<typeof fixture>>,
+    createdBySessionId: string,
+    channelId: string,
+  ) {
+    const [internal] = await value.database
+      .insert(sessions)
+      .values({
+        imBindingId: value.binding.id,
+        channelId,
+        conversationKind: "channel",
+        kind: "internal",
+        createdBySessionId,
+        createdAt: new Date("2026-08-27T03:00:00.000Z"),
+      })
+      .returning();
+    if (!internal) throw new Error("Internal Session fixture was not created");
+    return internal;
+  }
+
+  it("keeps a plain footer exactly when Task detail answers 404, and links when it resolves", async () => {
+    const value = await fixture();
+    try {
+      // An ambient-only group channel Session: stored and owned, but not a Task.
+      const channel = await groupSession(value);
+      await deliver(value, channel.id, "om_overheard", "ambient", new Date("2026-08-27T02:01:00.000Z"));
+      const internal = await internalSession(value, channel.id, "oc_group");
+      const nested = await internalSession(value, internal.id, "oc_group");
+      for (const sessionId of [channel.id, internal.id, nested.id]) {
+        await expect(resolveSessionTaskAnchor(value.database, { sessionId })).resolves.toEqual({ kind: "plain" });
+        await expect(value.service.detail(value.bootstrap.userId, sessionId)).rejects.toMatchObject({
+          code: "RESOURCE_NOT_FOUND",
+          statusCode: 404,
+        });
+      }
+      // List eligibility is unchanged: the ambient-only Session is not listed.
+      const listed = await value.service.list(value.bootstrap.userId, { limit: 50 });
+      expect(listed.tasks.map((task) => task.id)).toEqual([value.session.id]);
+
+      // An eligible private-chat Task and an internal Session rooted at it link, and the link resolves.
+      const dmInternal = await internalSession(value, value.session.id, "oc_debug");
+      for (const sessionId of [value.session.id, dmInternal.id]) {
+        await expect(resolveSessionTaskAnchor(value.database, { sessionId })).resolves.toEqual({
+          kind: "link",
+          taskAnchorId: sessionId,
+        });
+        expect((await value.service.detail(value.bootstrap.userId, sessionId)).task.id).toBe(value.session.id);
+      }
+
+      // Once somebody addresses the Agent in the group, the same Sessions qualify and link together.
+      await deliver(value, channel.id, "om_addressed", "direct", new Date("2026-08-27T02:05:00.000Z"));
+      for (const sessionId of [channel.id, internal.id, nested.id]) {
+        await expect(resolveSessionTaskAnchor(value.database, { sessionId })).resolves.toEqual({
+          kind: "link",
+          taskAnchorId: sessionId,
+        });
+        expect((await value.service.detail(value.bootstrap.userId, sessionId)).task.id).toBe(channel.id);
+      }
     } finally {
       await value.sql.end();
     }

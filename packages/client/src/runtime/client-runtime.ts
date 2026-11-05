@@ -1,4 +1,9 @@
-import type { SlackAutoSetupRuntimeRequest, SlackAutoSetupRuntimeResult, TurnActivityResult } from "@opentag/shared";
+import type {
+  SessionMessageOutcomeResult,
+  SlackAutoSetupRuntimeRequest,
+  SlackAutoSetupRuntimeResult,
+  TurnActivityResult,
+} from "@opentag/shared";
 import {
   type AgentRuntimeOptions,
   type AgentRuntimeOptionsRequestFrame,
@@ -47,6 +52,7 @@ type ResidualBusinessFrame = Extract<
       | "agent-runtime:test:cancel"
       | "turn:report:result"
       | "approval:decision"
+      | "session:message:outcome:result"
       | "turn:activity:result";
   }
 >;
@@ -65,6 +71,7 @@ export interface ClientRuntimeOptions {
   handleDelivery?(request: DirectImMessageDeliveryRequest): Promise<DeliveryDecision> | DeliveryDecision;
   handleSteer?(request: RuntimeImSteerRequest): Promise<RuntimeImSteerResult> | RuntimeImSteerResult;
   handleTurnActivityResult?(result: TurnActivityResult): void;
+  handleSessionMessageOutcomeResult?(result: SessionMessageOutcomeResult): void;
   handleTurnReportResult?(result: TurnReportResult): Promise<void> | void;
   handleSessionMessageDelivery?(
     request: SessionMessageDeliveryRequestV3,
@@ -122,9 +129,8 @@ export class ClientRuntime {
   }
 
   async #handleBusinessFrame(input: unknown): Promise<void> {
-    const parsed = ServerRuntimeBusinessFrameSchema.safeParse(input);
-    if (!parsed.success || this.#abort.signal.aborted) return;
-    const frame = parsed.data;
+    const frame = ownedBusinessFrame(input, this.#abort.signal.aborted);
+    if (!frame) return;
     if (frame.type === "session:reconcile") {
       const fields = {
         agentId: frame.agentId,
@@ -252,6 +258,7 @@ export class ClientRuntime {
       return;
     }
     if (frame.type === "turn:activity:result") this.#options.handleTurnActivityResult?.(frame);
+    if (frame.type === "session:message:outcome:result") this.#options.handleSessionMessageOutcomeResult?.(frame);
     if (frame.type === "turn:report:result") await this.#options.handleTurnReportResult?.(frame);
   }
 
@@ -321,4 +328,10 @@ function rejectedDelivery(request: DirectImMessageDeliveryRequest, reason: Input
     status: "rejected",
     reason,
   };
+}
+
+function ownedBusinessFrame(input: unknown, aborted: boolean) {
+  const parsed = ServerRuntimeBusinessFrameSchema.safeParse(input);
+  if (!parsed.success || aborted || parsed.data.type === "runtime:self-check") return undefined;
+  return parsed.data;
 }

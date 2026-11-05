@@ -81,6 +81,7 @@ function mcpCredentialOptions(mounts: McpUsableMountReader | undefined): { mcp?:
 }
 
 export async function createPlatformRuntime(options: {
+  onCredentialFailure?: import("./runtime-credentials/index.js").RuntimeCredentialServicesOptions["onCredentialFailure"];
   slackWorkingStatus?: boolean;
   config: ServerConfig;
   database: DatabaseClient;
@@ -121,6 +122,7 @@ export async function createPlatformRuntime(options: {
   const controlAuthority = createCloudControlAuthority(options);
   const credentials = createRuntimeCredentialServices({
     slackWorkingStatus: options.slackWorkingStatus,
+    onCredentialFailure: options.onCredentialFailure,
     publicOrigin: options.config.publicUrl,
     database: options.database,
     cipher: options.cipher,

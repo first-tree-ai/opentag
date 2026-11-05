@@ -131,12 +131,14 @@ export function AgentManageSettings({
         >
           <div className="flex justify-start @min-[44rem]/content:justify-end">
             <Button
+              aria-busy={busy || undefined}
               aria-describedby={statusDescriptionId}
               className="w-full @min-[44rem]/content:w-auto"
-              disabled={busy}
               ref={pauseButtonRef}
               variant={active ? "secondary" : "primary"}
               onClick={() => {
+                // Stays enabled while busy so keyboard focus is kept; repeats are ignored instead.
+                if (busy) return;
                 if (working) {
                   setConfirmationError(undefined);
                   setConfirmation("pause");

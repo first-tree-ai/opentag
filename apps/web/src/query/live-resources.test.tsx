@@ -183,6 +183,7 @@ afterEach(() => {
 
 beforeEach(() => {
   vi.spyOn(browserApi, "taskReplies").mockResolvedValue({ items: [], nextCursor: null });
+  vi.spyOn(browserApi, "taskInternalSessions").mockResolvedValue({ items: [], nextCursor: null });
 });
 
 describe("shared live resource queries", () => {

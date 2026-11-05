@@ -17,6 +17,7 @@ import { AgentService } from "../../services/agents/index.js";
 import { disableImBindingInTransaction } from "../../services/im-bindings/disable-im-binding.js";
 import { SessionService } from "../../services/sessions/session-service.js";
 import { deferred } from "../support/deferred.js";
+import { transferLegacyAgentFixture } from "../support/legacy-agent-fixture.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 const NOW = new Date("2026-04-02T09:00:00.000Z");
@@ -257,7 +258,7 @@ describe("Session closure maintenance", () => {
     if (!target[0]) throw new Error("Target account fixture missing");
 
     await fixture.agents.suspendById(fixture.owner.userId, fixture.agentId);
-    const result = await fixture.agents.transferToAccount({
+    const result = await transferLegacyAgentFixture(database.database, {
       agentId: fixture.agentId,
       slack: "disable",
       targetAccountId: target[0].id,

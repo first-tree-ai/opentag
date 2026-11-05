@@ -239,6 +239,84 @@ it("releases final admission before a stopped result and preserves a later reuse
   await expect(f.proofs.authenticate(proof.token)).resolves.toMatchObject({ agentId: f.agent.id });
 });
 
+it.each(["Agent", "placement"])("rechecks %s authority after an actual final admission lock wait", async (change) => {
+  const prepared = deferred(),
+    admit = deferred(),
+    locked = deferred(),
+    release = deferred();
+  const f = await fixture(undefined, {
+    afterPrepare: async () => {
+      prepared.resolve();
+      await admit.promise;
+    },
+  });
+  const holder = anotherClient(),
+    observer = anotherClient();
+  const diagnostics: string[] = [];
+  const stopping = stoppingService(f, diagnostics).suspendById(f.account.id, f.agent.id);
+  await prepared.promise;
+  const holding = holder.sql.begin(async (sql) => {
+    if (change === "Agent") await sql`update agents set status='active', revision=revision+1 where id=${f.agent.id}`;
+    else await sql`update session_placements set generation=generation+1 where session_id=${f.session.id}`;
+    locked.resolve();
+    await release.promise;
+  });
+  try {
+    await locked.promise;
+    admit.resolve();
+    await blockedOn(observer, change === "Agent" ? "agents" : "session_placements");
+    expect(f.frames).toHaveLength(0);
+    release.resolve();
+    await holding;
+    await stopping;
+    expect(f.frames).toHaveLength(0);
+    expect(diagnostics).toEqual([]);
+    expect(await observer.database.select().from(sessionCliProofs)).toHaveLength(1);
+    expect(await f.client.sql`select 1 as healthy`).toEqual([{ healthy: 1 }]);
+  } finally {
+    admit.resolve();
+    release.resolve();
+    await holding;
+    await stopping;
+  }
+});
+
+it.each([false, true])("preserves a newer proof after cleanup waits on placement, replacement=%s", async (replace) => {
+  const f = await fixture();
+  const holder = anotherClient(),
+    observer = anotherClient(),
+    locked = deferred(),
+    release = deferred();
+  const diagnostics: string[] = [];
+  const stopping = stoppingService(f, diagnostics).suspendById(f.account.id, f.agent.id);
+  await f.sent.promise;
+  const holding = holder.sql.begin(async (sql) => {
+    await sql`select session_id from session_placements where session_id=${f.session.id} for update`;
+    await sql`update session_cli_proofs set updated_at=updated_at + interval '1 second',
+      proof_id=case when ${replace} then ${randomUUID()}::uuid else proof_id end where session_id=${f.session.id}`;
+    locked.resolve();
+    await release.promise;
+  });
+  let result: Promise<void> | undefined;
+  try {
+    await locked.promise;
+    result = f.respond();
+    await blockedOn(observer, "session_placements");
+    release.resolve();
+    await holding;
+    await result;
+    await stopping;
+    expect(diagnostics).toEqual([]);
+    expect(await observer.database.select().from(sessionCliProofs)).toHaveLength(1);
+    await healthyAfterStop(f);
+  } finally {
+    release.resolve();
+    await holding;
+    await result;
+    await stopping;
+  }
+});
+
 it("finishes a confirmed stop while provider cancel and socket callbacks remain pending", async () => {
   const release = deferred(),
     cancelSent = deferred();
@@ -324,27 +402,31 @@ it.each([
       const control = f.client.sql`select 1 as healthy`.then((rows) => ({ rows, ms: performance.now() - controlAt }));
       expect((await stopping).status).toBe("suspended");
       const elapsedMs = performance.now() - start;
+      const stopQueries = queries;
       expect((await control).rows).toEqual([{ healthy: 1 }]);
       await f.domain.close();
-      expect(errors).toEqual([]);
-      expect(diagnostics).toEqual([]);
-      expect(f.frames).toHaveLength(count);
-      expect(f.preparation).toMatchObject({ started: count, active: 0, peak: 16 });
-      expect(await f.client.database.select().from(sessionCliProofs)).toHaveLength(0);
-      await healthyAfterStop(f);
+      const remainingProofs = await f.client.database.select().from(sessionCliProofs);
       console.log(
-        "LC_R1_FIXED",
+        "LC_STOP_DISPATCH",
         JSON.stringify({
           count,
           poolMax,
           elapsedMs,
-          sqlCount: queries,
+          sqlCount: stopQueries,
           peakPreparation: f.preparation.peak,
           stopped: f.frames.length,
-          remainingProofs: 0,
+          remainingProofs: remainingProofs.length,
+          diagnostics,
           samePoolControlMs: (await control).ms,
         }),
       );
+      expect(errors).toEqual([]);
+      expect(diagnostics).toEqual([]);
+      expect(f.frames).toHaveLength(count);
+      expect(f.preparation).toMatchObject({ started: count, active: 0, peak: 16 });
+      expect(stopQueries).toBeLessThanOrEqual(count * 5 + 32);
+      expect(remainingProofs).toHaveLength(0);
+      await healthyAfterStop(f);
     } finally {
       f.client.sql.options.debug = debug;
     }

@@ -19,6 +19,7 @@ import { ImOutboundCapture } from "../../services/im/im-outbound-capture.js";
 import { ImBindingService } from "../../services/im-bindings/im-binding-service.js";
 import { SessionCliProofService } from "../../services/sessions/session-cli-proof-service.js";
 import { TaskService } from "../../services/tasks/task-service.js";
+import { transferLegacyAgentFixture } from "../support/legacy-agent-fixture.js";
 import { startMigratedTestDatabase } from "./migrated-test-database.js";
 
 let pg: Awaited<ReturnType<typeof startMigratedTestDatabase>>;
@@ -246,6 +247,14 @@ it("does not add a new owner's confirmed reply to an old Account's authorized sn
     })
     .returning();
   assert(binding);
+  // The private chat's Task is its channel Session, created before anything was sent.
+  await writer.database.insert(sessions).values({
+    imBindingId: binding.id,
+    channelId: "C0CHAT",
+    conversationKind: "dm",
+    kind: "channel",
+    createdAt: new Date(Date.now() - 60_000),
+  });
   const [message] = await writer.database
     .insert(imMessages)
     .values({
@@ -276,7 +285,7 @@ it("does not add a new owner's confirmed reply to an old Account's authorized sn
   const reading = service.listReplies(oldOwner, message.id, { limit: 10 });
   try {
     await entered.promise;
-    await agents.transferToAccount({ agentId: agent.id, targetAccountId: newOwner, slack: "keep" });
+    await transferLegacyAgentFixture(writer.database, { agentId: agent.id, targetAccountId: newOwner, slack: "keep" });
     await new ImOutboundCapture(writer.database).capture({
       bindingId: binding.id,
       provider: "slack",
@@ -302,7 +311,7 @@ it("does not add a new owner's confirmed reply to an old Account's authorized sn
   ).toContain("new owner reply");
 });
 
-it("keeps Agent detail activity in the authorized snapshot across a real transfer", async () => {
+it("keeps Agent detail activity in the authorized snapshot across a historical ownership change", async () => {
   const reader = client();
   const writer = client();
   const oldOwner = await account(writer.database);
@@ -327,7 +336,11 @@ it("keeps Agent detail activity in the authorized snapshot across a real transfe
   try {
     await entered.promise;
     await agents.suspendById(oldOwner, agent.id);
-    await agents.transferToAccount({ agentId: agent.id, targetAccountId: newOwner, slack: "disable" });
+    await transferLegacyAgentFixture(writer.database, {
+      agentId: agent.id,
+      targetAccountId: newOwner,
+      slack: "disable",
+    });
     await agents.reactivateById(newOwner, agent.id);
     const [binding] = await writer.database
       .insert(imBindings)
@@ -389,7 +402,7 @@ it("keeps Agent detail activity in the authorized snapshot across a real transfe
 });
 
 it.each(["getForAgent", "getConfigForAgent", "readSetupForAgent"] as const)(
-  "keeps IM owner snapshot in %s across a real transfer",
+  "keeps IM owner snapshot in %s across a historical ownership change",
   async (method) => {
     const reader = client();
     const writer = client();
@@ -425,7 +438,11 @@ it.each(["getForAgent", "getConfigForAgent", "readSetupForAgent"] as const)(
     try {
       await entered.promise;
       await agents.suspendById(oldOwner, agent.id);
-      await agents.transferToAccount({ agentId: agent.id, targetAccountId: newOwner, slack: "disable" });
+      await transferLegacyAgentFixture(writer.database, {
+        agentId: agent.id,
+        targetAccountId: newOwner,
+        slack: "disable",
+      });
       await agents.reactivateById(newOwner, agent.id);
       await writer.database
         .insert(imBindings)

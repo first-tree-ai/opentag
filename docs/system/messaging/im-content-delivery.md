@@ -75,7 +75,10 @@ reasons may change after a provider edit; frozen member IDs, source IDs, Session
 remain the recovery authority.
 
 The first batch starts a Turn. Further batches steer that same running Turn as soon as its active
-connection can accept input, preserving order without waiting for Turn completion. A new request
+connection can accept input, preserving order without waiting for Turn completion. Claude Code
+receives steered input as a stream-json user message on the running process: it joins at the next
+tool boundary, or runs right after the current `result` when no tool call is left, and the Turn
+reports once after the last steered input has started and produced a result. A new request
 requires fresh authority after a known starting/not-running response. An unconfirmed native result
 remains correlated through reconnect. If its Root ends before a receipt proves delivery, it becomes
 an explicit `steer_state_unknown` failure; an exact late successful receipt can still settle it.

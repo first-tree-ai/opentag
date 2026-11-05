@@ -2,7 +2,10 @@ import {
   computeDirectInputHash,
   computeLegacyDirectInputHash,
   type DirectImMessageDeliveryRequest,
+  DirectImMessageDeliveryRequestSchema,
 } from "@opentag/shared";
+import type { agents, imMessageDeliveries, sessionPlacements, sessions } from "../db/schema/index.js";
+import type { DeliveryAttempt } from "./im-delivery-worker.types.js";
 
 /** Frozen layouts that historical clients pinned before the current direct-input hash. */
 const LEGACY_LAYOUTS = ["0.1.0", "self-configuration"] as const;
@@ -25,4 +28,37 @@ export function matchPinnedDirectInputHash(
     }
   }
   return undefined;
+}
+
+/** Verify the original dispatch identity without preparing new business or rewriting old hashes. */
+export async function validateRecoveryPayload(
+  row: {
+    delivery: typeof imMessageDeliveries.$inferSelect;
+    session: typeof sessions.$inferSelect;
+    agent: typeof agents.$inferSelect;
+    placement: typeof sessionPlacements.$inferSelect;
+  },
+  attempt: DeliveryAttempt,
+  recordFailure: (attempt: DeliveryAttempt, code: string) => Promise<void>,
+): Promise<boolean> {
+  if (row.delivery.dispatchPayload === null) return true;
+  const pinned = DirectImMessageDeliveryRequestSchema.safeParse(row.delivery.dispatchPayload);
+  const pinnedInputHash = pinned.success
+    ? matchPinnedDirectInputHash(pinned.data, row.delivery.dispatchInputHash)
+    : undefined;
+  if (
+    !pinned.success ||
+    pinned.data.deliveryId !== row.delivery.id ||
+    pinned.data.imMessageId !== row.delivery.messageId ||
+    pinned.data.sessionId !== row.session.id ||
+    pinned.data.agentId !== row.agent.id ||
+    pinned.data.placementGeneration !== row.placement.generation ||
+    pinned.data.requestId !== row.delivery.dispatchRequestId ||
+    pinnedInputHash !== row.delivery.dispatchInputHash ||
+    pinnedInputHash !== row.delivery.inputHash
+  ) {
+    await recordFailure(attempt, "IM_DELIVERY_RECOVERY_PAYLOAD_INVALID");
+    return false;
+  }
+  return true;
 }

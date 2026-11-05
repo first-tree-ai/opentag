@@ -370,6 +370,11 @@
       "idx": 73,
       "tag": "0073_im-feedback",
       "sha256": "5adaa54e78c71059171eba508eaa39036fb15428816e6542469d14b0ea971e2f"
+    },
+    {
+      "idx": 74,
+      "tag": "0074_im_feedback_message_format",
+      "sha256": "3df92e19abc93e4ebdd33d98176bd4d4ba042b4e5f938c70610fd1d28a2730dc"
     }
   ]
 }

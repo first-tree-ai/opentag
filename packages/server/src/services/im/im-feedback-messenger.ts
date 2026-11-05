@@ -4,7 +4,7 @@ import { createFeishuHttpInstance, feishuDomainForWorkspaceBrand } from "../im-b
 import type { ImBindingService } from "../im-bindings/im-binding-service.js";
 import { SLACK_WEB_CLIENT_OPTIONS } from "../im-bindings/slack/default-api-client.js";
 import { type ExternalCallPolicy, ExternalCallPolicyError } from "./external-call-policy.js";
-import { renderFeedbackCard } from "./im-feedback-card.js";
+import { renderFeedbackCard, renderFeedbackText } from "./im-feedback-card.js";
 import type { FeedbackAction, FeedbackTarget, ImFeedbackStore, SlackFeedbackScope } from "./im-feedback-store.js";
 
 export class FeedbackProviderError extends Error {
@@ -209,6 +209,8 @@ export class ImFeedbackMessenger implements FeedbackTransport {
       return await this.#run(
         `${target.provider}.feedback.post`,
         async (signal) => {
+          const text =
+            target.messageFormat === "text_v1" ? renderFeedbackText(target, this.publicUrl, action) : undefined;
           const card = renderFeedbackCard(target, this.publicUrl, action);
           if (target.provider === "slack") {
             const { api } = await this.#slack(target, signal);
@@ -216,7 +218,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
               api.chat.postMessage({
                 channel: target.channelId,
                 thread_ts: target.threadKey ?? target.inputExternalId,
-                ...card.slack,
+                ...(text ? { text, unfurl_links: false, unfurl_media: false } : card.slack),
               }),
             );
             if (!r.ok || !r.ts || r.channel !== target.channelId)
@@ -226,7 +228,11 @@ export class ImFeedbackMessenger implements FeedbackTransport {
           const { api } = await this.#feishu(target, signal);
           const r = await api.im.v1.message.reply({
             path: { message_id: target.inputExternalId },
-            data: { msg_type: "interactive", content: card.feishu, uuid: target.providerRequestId },
+            data: {
+              msg_type: text ? "text" : "interactive",
+              content: text ? JSON.stringify({ text }) : card.feishu,
+              uuid: target.providerRequestId,
+            },
           });
           if (r.code !== 0 || !r.data?.message_id || r.data.chat_id !== target.channelId)
             throw new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false);
@@ -259,6 +265,8 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     await this.#run(
       `${target.provider}.feedback.update`,
       async (signal) => {
+        const text =
+          target.messageFormat === "text_v1" ? renderFeedbackText(target, this.publicUrl, action) : undefined;
         const card = renderFeedbackCard(target, this.publicUrl, action);
         if (target.provider === "slack") {
           const { api } = await this.#slack(target, signal);
@@ -266,17 +274,22 @@ export class ImFeedbackMessenger implements FeedbackTransport {
             api.chat.update({
               channel: target.channelId,
               ts: cardMessageId,
-              text: card.slack.text,
-              blocks: card.slack.blocks,
+              text: text ?? card.slack.text,
+              ...(text ? {} : { blocks: card.slack.blocks }),
             }),
           );
           if (!r.ok) throw new FeedbackProviderError("IM_FEEDBACK_UPDATE_FAILED", false);
         } else {
           const { api } = await this.#feishu(target, signal);
-          const r = await api.im.v1.message.patch({
-            path: { message_id: cardMessageId },
-            data: { content: card.feishu },
-          });
+          const r = text
+            ? await api.im.v1.message.update({
+                path: { message_id: cardMessageId },
+                data: { msg_type: "text", content: JSON.stringify({ text }) },
+              })
+            : await api.im.v1.message.patch({
+                path: { message_id: cardMessageId },
+                data: { content: card.feishu },
+              });
           if (r.code !== 0) throw new FeedbackProviderError("IM_FEEDBACK_UPDATE_FAILED", false);
         }
       },
@@ -307,7 +320,11 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     if (!r.ok) throw new FeedbackProviderError("IM_FEEDBACK_READBACK_FAILED", false);
     const ids = (r.messages ?? [])
       .filter(
-        (m) => m.user === material.botUserId && m.blocks?.some((b) => b.block_id === `opentag_feedback:${target.id}`),
+        (m) =>
+          m.user === material.botUserId &&
+          (target.messageFormat === "text_v1"
+            ? m.text?.includes(new URL(`/im-feedback/${encodeURIComponent(target.id)}`, this.publicUrl).href)
+            : m.blocks?.some((b) => b.block_id === `opentag_feedback:${target.id}`)),
       )
       .flatMap((m) => (m.ts ? [m.ts] : []));
     return { ids, ...(r.response_metadata?.next_cursor ? { cursor: r.response_metadata.next_cursor } : {}) };

@@ -9,6 +9,7 @@ import {
   type RuntimeImSteerResult,
   type SessionMessageDeliveryRequest,
   type SessionMessageDeliveryResult,
+  type SessionMessageOutcomeReport,
   type SessionReconcileRequest,
   type SessionReconcileResult,
   type TurnActivityRequest,
@@ -93,6 +94,45 @@ describe("RuntimeDomainOwner", () => {
     }
   });
 
+  it.each([undefined, 3, 4])("gates Session Run outcome reports on collaboration version %s", async (version) => {
+    const onSessionMessageOutcome = vi.fn(async () => "notified" as const);
+    const h = await ownerFixture(1_000, { onSessionMessageOutcome });
+    const frame: SessionMessageOutcomeReport = {
+      type: "session:message:outcome",
+      requestId: randomUUID(),
+      messageId: randomUUID(),
+      targetSessionId: randomUUID(),
+      agentId: randomUUID(),
+      placementGeneration: 1,
+      outcome: "timed_out",
+      reason: "turn_timeout",
+    };
+    try {
+      const context: RuntimeBusinessContext = {
+        ...h.context,
+        negotiatedCapabilities: version ? { [RUNTIME_CAPABILITY.sessionCollaboration]: version } : {},
+      };
+      const supported = version === 4;
+      expect(await h.owner.handle(frame, context)).toEqual({
+        type: "session:message:outcome:result",
+        requestId: frame.requestId,
+        messageId: frame.messageId,
+        status: supported ? "notified" : "unsupported_capability",
+      });
+      expect(onSessionMessageOutcome).toHaveBeenCalledTimes(supported ? 1 : 0);
+      if (supported) expect(onSessionMessageOutcome).toHaveBeenCalledWith(frame, context);
+      // A superseded connection can never notify on the child's behalf.
+      expect(await h.owner.handle(frame, { ...context, instanceId: randomUUID() })).toMatchObject({
+        status: "stale_generation",
+      });
+      expect(onSessionMessageOutcome).toHaveBeenCalledTimes(supported ? 1 : 0);
+      // A processing failure answers retry so the Client keeps the report.
+      expect(h.owner.businessOptions().failureResult(frame as never)).toMatchObject({ status: "retry" });
+    } finally {
+      h.owner.close();
+    }
+  });
+
   it.each([undefined, 1, 2, 3])("gates provider failure categories on report capability %s", async (version) => {
     const fixture = await ownerFixture();
     try {
@@ -144,6 +184,95 @@ describe("RuntimeDomainOwner", () => {
       } finally {
         fixture.owner.close();
       }
+    },
+  );
+
+  it.each([false, true])(
+    "joins an admitted reconcile send before cancelling its waiter (abort during send=%s)",
+    async (duringSend) => {
+      const f = await ownerFixture();
+      const send = deferred<void>();
+      const abort = new AbortController();
+      const reason = new Error("reconcile cancelled");
+      vi.spyOn(f.registry, "send").mockImplementation(async () => {
+        if (duringSend) abort.abort(reason);
+        await send.promise;
+      });
+      let settled = false;
+      const pending = f.owner
+        .requestReconcile(
+          f.computerId,
+          f.instanceId,
+          reconcileRequest(f.computerId),
+          undefined,
+          undefined,
+          abort.signal,
+          { joinSettlement: true },
+        )
+        .catch((error: unknown) => {
+          settled = true;
+          return error;
+        });
+      abort.abort(reason);
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      let closed = false;
+      const closing = f.owner.close().then(() => {
+        closed = true;
+      });
+      await Promise.resolve();
+      expect(closed).toBe(false);
+      send.resolve();
+      await expect(pending).resolves.toBe(reason);
+      await closing;
+      expect(closed).toBe(true);
+    },
+  );
+
+  it.each([false, true])(
+    "joins admitted reconcile result processing through cancellation (native deadline=%s)",
+    async (nativeDeadline) => {
+      const f = await ownerFixture(nativeDeadline ? 25 : 1_000);
+      const entered = deferred<void>();
+      const finish = deferred<void>();
+      vi.spyOn(f.custody, "claimRetainedReports").mockImplementation(async () => {
+        entered.resolve();
+        await finish.promise;
+      });
+      const abort = new AbortController();
+      const request = reconcileRequest(f.computerId);
+      let settled = false;
+      const pending = f.owner
+        .requestReconcile(f.computerId, f.instanceId, request, undefined, undefined, abort.signal, {
+          joinSettlement: true,
+        })
+        .then(
+          (result) => {
+            settled = true;
+            return result;
+          },
+          (error: unknown) => {
+            settled = true;
+            return error;
+          },
+        );
+      const result = {
+        type: "session:reconcile:result" as const,
+        requestId: request.requestId,
+        sessionId: request.sessionId,
+        placementGeneration: request.placementGeneration,
+        status: "ready" as const,
+      };
+      const processing = f.owner.handle(result, f.context);
+      await entered.promise;
+      abort.abort(new Error("cancelled during completion"));
+      if (nativeDeadline) await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(settled).toBe(false);
+      finish.resolve();
+      await processing;
+      if (nativeDeadline) await expect(pending).resolves.toMatchObject({ code: "timeout" });
+      else await expect(pending).resolves.toEqual(result);
+      await f.owner.close();
     },
   );
 

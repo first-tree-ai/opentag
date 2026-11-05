@@ -11,9 +11,8 @@
  * Custom Slack Apps additionally read their authenticated configuration endpoint; that entry is
  * independent of first-party OAuth availability and does not extend the setup action contract.
  * The actions map one-to-one onto the shared contract. Messaging can be started only from a
- * not-configured snapshot; a current binding is reauthorized (or, for Feishu, replaced) in place;
- * moving to a different Provider is an explicit unbind followed by the fresh choice the cleared
- * snapshot then offers. There is no direct switch.
+ * not-configured snapshot; a current binding is reauthorized in place. Existing Computer, runtime
+ * Provider and messaging identities cannot be replaced; empty configuration can finish creation.
  */
 
 import type {
@@ -24,11 +23,13 @@ import type {
   ProviderCliHandoffProgress,
 } from "@opentag/shared/browser";
 import { useQueryClient } from "@tanstack/react-query";
+import { Link } from "@tanstack/react-router";
 import { type ComponentProps, type ReactNode, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useAgentSetupStageReport } from "../analytics/milestones.js";
 import { AGENT_SETUP_READ_TIMEOUT_MS, ApiError, browserApi, CancelledRequestError, withDeadline } from "../api.js";
 import { AgentComputerChoice, type AgentComputerInventoryAdapter } from "../features/agents/agent-computer-choice.js";
 import { platformLabel } from "../features/agents/agent-presentation.js";
+import { agentCreateLink } from "../features/agents/agent-routes.js";
 import {
   type ComputerConnectAdapter,
   createAgentTargetedComputerConnectAdapter,
@@ -1360,7 +1361,6 @@ function ComputerSetupSection({
     );
   }
   if (computer.kind === "requires-rebind") {
-    const canBind = snapshot.actions.some((action) => action.kind === "bind-computer");
     return (
       <section className="otv2-computer-step flex flex-col" data-state={computer.kind} data-ui="agent-setup-computer">
         <ComputerStepHeader />
@@ -1377,14 +1377,9 @@ function ComputerSetupSection({
               name: snapshot.agent.displayName,
             })}
           </p>
-          {canBind ? (
-            <AgentComputerChoice
-              adapter={computerConnectAdapter}
-              agentId={agentId}
-              inventoryAdapter={computerAdapter?.inventory}
-              onBound={afterBind}
-            />
-          ) : null}
+          <Link {...agentCreateLink()} className={buttonClassName({ variant: "primary" })}>
+            {m.agents_new_agent()}
+          </Link>
         </div>
       </section>
     );
@@ -2084,6 +2079,15 @@ function BlockedMessaging({
 }) {
   const [unbindAsked, setUnbindAsked] = useState(false);
   const unbindButtonRef = useRef<HTMLButtonElement>(null);
+  if (messaging.errorCode === "IM_BINDING_IDENTITY_DISCONNECTED")
+    return (
+      <div className="grid gap-3" data-ui="agent-setup-messaging-disconnected">
+        <p>{m.im_identity_disconnected()}</p>
+        <Link {...agentCreateLink()} className={buttonClassName({ variant: "primary" })}>
+          {m.agents_new_agent()}
+        </Link>
+      </div>
+    );
   const binding = currentBindingOf(messaging);
   const switchBlocker = snapshot.blockers.find(
     (blocker): blocker is Extract<AgentSetupSnapshot["blockers"][number], { code: "messaging-unbind-required" }> =>
@@ -2097,10 +2101,6 @@ function BlockedMessaging({
       action.provider === binding.provider &&
       action.bindingId === binding.bindingId,
   );
-  const replace = snapshot.actions.find(
-    (action): action is Extract<AgentSetupAction, { kind: "replace-messaging" }> =>
-      action.kind === "replace-messaging" && binding !== undefined && action.bindingId === binding.bindingId,
-  );
   const unbind = snapshot.actions.find(
     (action): action is Extract<AgentSetupAction, { kind: "unbind-messaging" }> =>
       action.kind === "unbind-messaging" &&
@@ -2108,7 +2108,7 @@ function BlockedMessaging({
       action.provider === binding.provider &&
       action.bindingId === binding.bindingId,
   );
-  const hasActions = [unbind, replace, reauthorize, snapshot.actions.find(isFeishuStartAction)].some(Boolean);
+  const hasActions = [unbind, reauthorize, snapshot.actions.find(isFeishuStartAction)].some(Boolean);
   const busy = controller.busyKey !== undefined;
   return (
     <div className="otv2-messaging-recovery" data-ui="agent-setup-messaging-recovery">
@@ -2153,16 +2153,6 @@ function BlockedMessaging({
             </div>
           ) : null}
           <div className="otv2-messaging-recovery__actions" data-ui="agent-setup-messaging-recovery-actions">
-            {replace ? (
-              <Button
-                disabled={busy}
-                loading={controller.busyKey?.kind === "replace-messaging"}
-                onClick={() => void controller.act(replace)}
-                variant="secondary"
-              >
-                {m.im_change_bot()}
-              </Button>
-            ) : null}
             <RetryInitialAuthorization controller={controller} snapshot={snapshot} />
             {reauthorize ? (
               <Button
@@ -2182,6 +2172,7 @@ function BlockedMessaging({
       {unbind && unbindAsked ? (
         <UnbindMessagingDialog
           action={unbind}
+          configured={messaging.credentialGeneration !== 0}
           busyKey={controller.busyKey}
           error={controller.actionError}
           onAct={controller.act}
@@ -2222,12 +2213,14 @@ function RetryInitialAuthorization({
  */
 function UnbindMessagingDialog({
   action,
+  configured = true,
   busyKey,
   error,
   onAct,
   onClose,
   returnFocusRef,
 }: {
+  readonly configured?: boolean;
   readonly action: Extract<AgentSetupAction, { kind: "unbind-messaging" }>;
   readonly busyKey: AgentSetupAction | undefined;
   readonly error: string | undefined;
@@ -2240,7 +2233,7 @@ function UnbindMessagingDialog({
   return (
     <Dialog
       busy={busy}
-      description={m.im_disconnect_description({ providerName })}
+      description={configured ? m.im_disconnect_description({ providerName }) : m.im_cancel_initial_setup_description()}
       returnFocusRef={returnFocusRef}
       role="alertdialog"
       title={m.im_disconnect_title({ providerName })}

@@ -4,6 +4,12 @@ export const RUNTIME_ID_MAX_BYTES = 128;
 export const RUNTIME_INSTRUCTIONS_MAX_BYTES = 24 * 1024;
 export const RUNTIME_DEFAULT_MAX_DURATION_MS = 30 * 60 * 1_000;
 export const RUNTIME_MAX_DURATION_MS = 24 * 60 * 60 * 1_000;
+/**
+ * Minimum Run budget for an internal Session that was created without `--max-duration-ms`.
+ * Delegated work (for example coding) usually runs longer than an IM reply, so internal Sessions
+ * do not inherit the shorter IM default; a larger Agent configuration still applies.
+ */
+export const RUNTIME_INTERNAL_SESSION_DEFAULT_MAX_DURATION_MS = 2 * 60 * 60 * 1_000;
 // Changing this policy requires a migration that advances every active Agent runtime config revision.
 export const OPENTAG_PLATFORM_INSTRUCTIONS = "You run inside OpenTag. IM output is never sent automatically.";
 /**

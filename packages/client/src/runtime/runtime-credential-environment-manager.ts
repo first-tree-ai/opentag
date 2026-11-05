@@ -268,6 +268,11 @@ export class RuntimeCredentialEnvironmentManager {
     return { ...environment, ...providerRoutingEnvironment(environment) };
   }
 
+  /** IM outbox context of the Session's live execution, so input steered into it names the same target. */
+  outboxContextForSession(sessionId: string): RuntimeImOutboxContext | undefined {
+    return this.#proxyExecutions.get(sessionId)?.outboxContext;
+  }
+
   /** Current execution id for a Session, when a proxy execution is active. */
   executionIdForSession(sessionId: string): string | undefined {
     return this.#proxyExecutions.get(sessionId)?.executionId;
@@ -579,7 +584,7 @@ export class RuntimeCredentialEnvironmentManager {
       ...(this.#options.generateCa ? { generateCa: this.#options.generateCa } : {}),
       localHandleFor: (provider) => {
         try {
-          return (provider === "github" ? contextTreeGateway?.relay : relay)?.localHandleFor(provider);
+          return (provider === "github" ? contextTreeGateway?.relayFor(provider) : relay)?.localHandleFor(provider);
         } catch {
           return undefined;
         }
@@ -587,12 +592,16 @@ export class RuntimeCredentialEnvironmentManager {
       logger: this.#logger,
       materialDir: layout.executionDir,
       openStream: (request) => {
-        const owner = request.provider === "github" ? contextTreeGateway?.relay : relay;
+        const owner =
+          request.provider === "github" ? contextTreeGateway?.relayFor(request.provider, request.localHandle) : relay;
         if (!owner) throw new Error("Provider unavailable");
         return owner.openProviderStream(request);
       },
       verifyHandle: (provider, handle) =>
-        (provider === "github" ? contextTreeGateway?.relay : relay)?.verifyLocalHandle(provider, handle) ?? false,
+        (provider === "github" ? contextTreeGateway?.relayFor(provider, handle) : relay)?.verifyLocalHandle(
+          provider,
+          handle,
+        ) ?? false,
     });
   }
 

@@ -214,8 +214,14 @@ export function isAgentSectionActive(
   section: "home" | "instructions" | "context-tree" | "integrations" | "mcp" | "skills" | "tasks" | "usage",
 ): boolean {
   const root = `/agents/${agentId}`;
-  if (section === "home") return isAgentHome(pathname, agentId);
+  // Settings opens from the Overview and has no item of its own, so the Overview stays current there.
+  if (section === "home") return isAgentHome(pathname, agentId) || isAgentSettings(pathname, agentId);
   return pathname === `${root}/${section}` || pathname.startsWith(`${root}/${section}/`);
+}
+
+function isAgentSettings(pathname: string, agentId: string): boolean {
+  const settings = `/agents/${agentId}/settings`;
+  return pathname === settings || pathname.startsWith(`${settings}/`);
 }
 
 function isAgentHome(pathname: string, agentId: string): boolean {

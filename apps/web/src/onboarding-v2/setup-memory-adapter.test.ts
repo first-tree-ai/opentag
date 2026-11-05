@@ -1,8 +1,8 @@
 /**
  * The in-memory Agent Setup model: every read must be a snapshot the real Server could legally
  * have sent, and every write must move the model through the canonical transitions — a Provider
- * can be started only from not-configured, a current binding is reauthorized or replaced in place,
- * and a different Provider is reached only by unbinding first.
+ * can be started only from not-configured, a current binding is repaired in place,
+ * and a disconnected configured identity requires a new Agent.
  */
 
 import {
@@ -41,6 +41,19 @@ async function currentMessagingExpectation(
 }
 
 describe("createMemorySetupAdapter", () => {
+  it.each(["feishu", "slack"] as const)("does not reopen a disconnected %s identity", async (provider) => {
+    const agent = setupAgent();
+    const { adapter } = createMemorySetupAdapter({ agent, messaging: { kind: "bound", provider, reachable: true } });
+    const current = await adapter.readSnapshot(agent.id);
+    if (current.messaging.kind !== "ready") throw new Error("Missing binding fixture");
+    await adapter.unbindMessaging(agent.id, provider, current.messaging.bindingId);
+    const disconnected = await adapter.readSnapshot(agent.id);
+    expect(disconnected.messaging).toMatchObject({ kind: "blocked", errorCode: "IM_BINDING_IDENTITY_DISCONNECTED" });
+    expect(disconnected.actions).toEqual([]);
+    await expect(adapter.startFeishuAttempt(agent.id, "create", { kind: "unbound" })).rejects.toThrow(/new Agent/);
+    await expect(adapter.startSlackInstall(agent.id, "create", { kind: "unbound" })).rejects.toThrow(/new Agent/);
+  });
+
   it("uses a non-runnable production-shaped Computer command in the Lab", async () => {
     const memory = createMemorySetupAdapter({ agent: setupAgent({ computer: null }) });
 
@@ -85,7 +98,7 @@ describe("createMemorySetupAdapter", () => {
     expect(rebindSnapshot.stage).toBe("needs-computer");
     expect(rebindSnapshot.computer).toMatchObject({ kind: "requires-rebind", computerId: SETUP_COMPUTER_ID });
     expect(rebindSnapshot.blockers).toEqual([{ code: "computer-rebind-required" }]);
-    expect(rebindSnapshot.actions).toEqual([{ kind: "bind-computer" }]);
+    expect(rebindSnapshot.actions).toEqual([]);
 
     const offline = createMemorySetupAdapter({ agent: setupAgent(), computerOnline: false });
     const offlineSnapshot = await offline.adapter.readSnapshot(SETUP_AGENT_ID);
@@ -210,7 +223,6 @@ describe("createMemorySetupAdapter", () => {
     const credentialGeneration = ready.messaging.kind === "ready" ? ready.messaging.credentialGeneration : undefined;
     expect(ready.actions).toEqual([
       { kind: "reauthorize-messaging", provider: "feishu", bindingId, credentialGeneration },
-      { kind: "replace-messaging", provider: "feishu", bindingId, credentialGeneration },
       { kind: "unbind-messaging", provider: "feishu", bindingId },
     ]);
   });
@@ -304,9 +316,9 @@ describe("createMemorySetupAdapter", () => {
     expect(snapshot.actions).toEqual([{ kind: "unbind-messaging", provider: "feishu", bindingId }]);
   });
 
-  it("refuses a direct cross-Provider install until the current binding is unbound", async () => {
+  it("refuses a cross-Provider install before and after disconnection", async () => {
     const agent = setupAgent();
-    const { adapter, controls } = createMemorySetupAdapter({
+    const { adapter } = createMemorySetupAdapter({
       agent,
       messaging: { kind: "bound", provider: "feishu", reachable: true },
     });
@@ -318,25 +330,9 @@ describe("createMemorySetupAdapter", () => {
 
     await adapter.unbindMessaging(agent.id, "feishu", bindingId);
     const cleared = await adapter.readSnapshot(agent.id);
-    expect(cleared.messaging).toEqual({ kind: "not-configured" });
-    expect(cleared.actions).toEqual([
-      { kind: "start-messaging", provider: "slack" },
-      { kind: "start-messaging", provider: "feishu" },
-    ]);
-
-    const url = await adapter.startSlackInstall(agent.id, "create", { kind: "unbound" });
-    expect(url).toContain("https://slack.com/");
-    const installing = await adapter.readSnapshot(agent.id);
-    expect(installing.messaging).toMatchObject({ kind: "authorizing", provider: "slack" });
-
-    controls.completeSlackInstall();
-    const handoff = await adapter.readSnapshot(agent.id);
-    expect(handoff.messaging).toMatchObject({ kind: "waiting-handoff", provider: "slack" });
-
-    controls.completeHandoff();
-    const ready = await adapter.readSnapshot(agent.id);
-    expect(ready.messaging).toMatchObject({ kind: "ready", provider: "slack" });
-    expect(ready.stage).toBe("ready");
+    expect(cleared.messaging).toMatchObject({ kind: "blocked", errorCode: "IM_BINDING_IDENTITY_DISCONNECTED" });
+    expect(cleared.actions).toEqual([]);
+    await expect(adapter.startSlackInstall(agent.id, "create", { kind: "unbound" })).rejects.toThrow(/new Agent/);
   });
 
   it("rejects writes that do not name the current attempt or binding", async () => {

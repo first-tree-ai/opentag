@@ -139,8 +139,6 @@ or Cloud preparation already made for it. A single exit in a fixed place, the to
 step-by-step Back and a separate Set up later that each led somewhere different. The Agent list is where every
 unfinished setup can be resumed.
 
-> **Planned — not yet implemented.** Tracking: #1215
-
 After setup the same holds for an Agent's Computer, runtime, and messaging channel. They cannot be moved; to change
 one, the person creates a new Agent and adds it to the conversation. Why: an Agent's Sessions are bound to that
 channel, runtime, and the Computer's local storage, so a move is costly and risky (see
@@ -210,6 +208,29 @@ Running, queued and unknown work also requires confirmation before save/release 
 rows without a recorded save failure use a plain save/release label. Discard confirmation explains unsaved-file loss and that external effects are not undone. A
 failed inventory read never becomes an empty list, and revoked access hides cached resources.
 
+## Agent home and settings index
+
+- **Settings has no navigation item of its own.** It opens from the Overview's Settings button, so the Overview stays
+  current in the Agent navigation on every settings page, and each settings page's back link reads **Back to
+  Overview** (**返回概览**) or **Back to Agent settings**. Why: a navigation with nothing current leaves the reader
+  unsure where they are, and a back link carrying a long Agent name wrapped on phones while the name sat beside it.
+- **The Agent's state reads the same everywhere:** **Running · Receiving messages** (**运行中 · 正在接收消息**) or
+  **Paused · Not receiving messages** (**已暂停 · 不接收消息**), and the pause page describes it in the same terms.
+  Why: "active" and "requests" named the same state differently, and requests are not a product concept; people send
+  the Agent messages.
+- **A settings row whose state the reader can fix carries the same single fix as the Agent list and home**, as its
+  own named link beside the row: an offline or disconnected Computer offers **Restore connection** (**恢复连接**),
+  which opens that Computer's card with its command window already shown, and a runtime problem shows the same label
+  as the list (for example "Pi isn't installed") with **Continue setup**. The row itself still opens its settings page.
+  Why: the settings index otherwise read healthy while the list and home showed a problem, and four different words
+  for one fix made it look like four different actions.
+- **A Cloud Computer is named "Cloud" (云端)** on the home, the settings index, and the Computer page, without a
+  machine name or platform, which are openTag's choice and nothing the reader acts on.
+- **The home's Task list asks for work only when work can arrive.** With no messaging app connected, its empty state
+  offers the status card's own **Connect messaging app** (**连接消息应用**) link instead of asking the reader to message
+  the Agent, and **View all** appears only once there is a Task. Why: an Agent without a channel cannot receive the
+  message the old empty state asked for, and View all opened the same empty list.
+
 ## Paused Agent settings
 
 Pausing an Agent does not change which settings its current Account owner can read. Name, Messaging, Computer,
@@ -218,7 +239,7 @@ Agent status card, and Agent list use the existing channel identity and binding 
 an Agent precisely to inspect its configuration or prepare a change, and a configuration they cannot see gives them
 nothing to decide from. A failed read stays unavailable; it is never presented as a missing or successful connection.
 
-Messaging settings are read-only while paused. Connection, replacement, reauthorization, credential updates,
+Messaging settings are read-only while paused. Connection, reauthorization, credential updates,
 disconnection, activation checks, cancellation, and message-trigger changes are disabled with a localized reason.
 Read-only controls keep their action labels; being paused does not show an operation as busy or in progress.
 Saved Feishu attempts and Slack configuration details remain readable without starting setup or refreshing CLI
@@ -236,35 +257,38 @@ The same route outlet remains mounted across those changes. Agent roster rows st
 Every roster row whose blocked state the reader can fix offers exactly one action link to where it gets fixed:
 setup-owned reasons (no Computer, runtime missing, unavailable, or needing sign-in, messaging not finished, or
 delivery failing) use **Continue setup**; messaging that needs new permissions uses **Update permissions**; a
-disconnected or failed channel uses **Reconnect channel**; an offline Computer uses **Restore connection**. A paused
+recoverable channel failure uses **Reconnect channel**; an offline Computer uses **Restore connection**. A configured
+messaging identity that has been disconnected offers **New Agent**, because the identity cannot be replaced. A paused
 Agent and states that resolve on their own offer no action. A fixable row without a way out reads as a dead end next
 to rows that have one, so every fixable state carries the same single link.
 
-Agent roster status stays steady through background refreshes. Transient evidence (a refresh that failed, a
-paused offline read, delivery credentials being re-verified, or a runtime Provider probe still running) does not
-replace a row's last settled status; the row keeps it until the next settled answer. A check with no settled answer
-behind it reads as a neutral **Checking**, never Ready: right after a load the first check can still find a problem,
-and a row that flips from Ready to that problem seconds later has told the reader something false. Unreadable
-evidence with nothing settled reads as Status unavailable. A confirmed problem replaces Ready as soon as it is read.
-A confirmed problem also outranks a check: while a runtime Provider check is still running, a messaging binding the
-same read confirmed as needing new permissions, failed, or turned off is the row's status, with its action. Why: the
-check is not an answer, and showing Checking over a problem already known delays both the fact and its fix. A
-confirmed runtime problem still comes first, as the dependency the Agent needs before messaging matters. When a row's evidence stays transient for a full refresh interval, that row
-alone adds a quiet **Refreshing status** note under its held status; there is no page-level notice. A flickering
-status or a page-wide error reads as an outage when only one Agent's check is late, so the list keeps what it last
-knew and flags only the row whose answer is overdue. The Agent's own
-page keeps the exact current dependency states. Its status card starts with a **Work** row carrying the same
-running-Task or **Waiting** line as the list row, so the home answers what the Agent is doing as the list does; as its
-own row it never reads as a fact about the Computer or messaging below it. The Server already bounds what it holds: a local Computer without a
-heartbeat for 90 seconds reads as offline, and runtime and messaging observations expire on their own TTLs, so held
-list statuses converge on the Server's next settled answer.
+Agent list and detail availability use the Server's current status snapshot. A foreground page polls
+`GET /api/v1/agents/status?ids=...` every ten seconds, batching up to 100 unique visible Agent IDs per
+request; hidden tabs do not poll. The Account identity list negotiates this resource with
+`x-opentag-agent-status: 1` and an optional `statusVersion: 1` response. Older Servers retain the
+existing read path. New status reads replace the per-Agent Computer, binding and handoff fanout.
+Other ordinary live resources keep their existing cadence and cache policy.
 
-> **Planned — not yet implemented.** Tracking: #1215
+The Server reads Agent ownership, owned Computers, and binding/installation scope with at most three
+batch SELECTs in one short read-only Repeatable Read transaction. A missing or foreign ID refuses
+the whole batch as 404. A changed live connection fence retries the whole snapshot once, then
+returns a conflict. Responses are private and non-cacheable and contain no credential material.
 
-Agent status will come straight from the Server, which derives it on read; see
-[Agent status pipeline](../runtime/computer-status-pipeline.md). The Web keeps no hold and no **Refreshing status**
-note, and refetches Agent status every 10 seconds while the tab is in the foreground. This replaces the held-status
-behaviour described above.
+The browser renders the current Server verdict directly. It does not retain a previous settled
+status, add a Refreshing status hold, or start a preparation POST on entry. Normal query cache,
+request deduplication and error presentation remain. Offline overrides other dependencies. First
+credential initialization is neutral for at most 15 seconds; completed failures, stale reports and
+check timeouts name the problem. Rechecks retain the last complete result at the Server. The
+Agent's Work row still describes running Tasks separately from availability.
+
+Dependency rows use the causal status reason. Computer, runtime and initializing verdicts
+leave messaging unconfirmed and offer no messaging repair; they do not establish a separate
+channel failure even when a binding exists. Only messaging verdicts can offer messaging recovery.
+An unconfigured channel remains neutral and reads Not connected. A paused Agent's readable stored
+binding state remains visible without a messaging recovery action; Computer offline still voids it.
+
+See [Agent status pipeline](../runtime/computer-status-pipeline.md) for the single-replica evidence
+model. Older Servers without negotiated metadata use the legacy read path.
 
 UI changes must be checked at these representative widths when the surface can render there:
 
@@ -297,9 +321,12 @@ openTag Web targets WCAG 2.2 AA for product UI:
 - non-essential animation and transition are removed when `prefers-reduced-motion: reduce` is active;
 - a control that changes in place keeps keyboard focus: a switch or button is not disabled while its write is
   pending (it ignores repeat input and reports busy instead), because disabling the focused element drops focus
-  to the page; and
+  to the page;
 - a step change inside one route, such as the next Agent Setup step, moves focus to the new step's heading, as a
-  route change does.
+  route change does;
+- a save bar that goes away after its changes are saved or discarded moves focus that was on it to the first control
+  of its form, such as the Name field; and
+- Pause or Resume Agent keeps focus on the same button while pending; it then reads Resume or Pause.
 
 Automated axe checks are required for representative browser flows, but they do not replace keyboard testing or review
 of contrast, focus order, accessible names, and task completion.
@@ -469,11 +496,13 @@ copy into the message catalog as if it were an omission; the exception and its r
 A state uses one label everywhere it appears. For example, a messaging binding that needs new permissions reads
 "Messaging permissions need updating" (需要更新消息权限) on the Agent list, the Agent page, the settings index, and the
 messaging page, with the single action Update permissions. Page subtitles, field helpers, and notes appear only when they
-add information the title or control does not already give. So the Tasks, messaging, Computer, Usage, and Account pages carry no
+add information the title or control does not already give. So the Tasks, messaging, Computer, Memory, Usage, and Account pages carry no
 subtitle, and Account shows the sign-in email as plain text without explanatory helpers. The Soul editor's description
 holds only the formatting hint while editing. The Model page shows one line by the model field only when the computer's
-model list can't be read. Usage notes unreported Tasks as a muted line under the totals, not a warning banner.
-Self-configuration sits on the Model page beside Ask for approval, with the other rules about what the Agent may do on
+model list can't be read; when the runtime's suggested models are still offered, the line says the computer's
+models couldn't be confirmed and to choose one or "Custom model ID…", rather than claiming there is no list. Usage notes unreported Tasks as a muted line under the totals, not a warning banner.
+Settings pages hold their content in the same surface as Name and Model, the messaging page included, so the pages
+read as one set. Self-configuration sits on the Model page beside Ask for approval, with the other rules about what the Agent may do on
 its own. Why: repeated or differing wording makes one state read as several, and copy that restates the page is more
 to read with nothing more to act on.
 

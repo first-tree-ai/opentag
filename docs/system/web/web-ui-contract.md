@@ -251,7 +251,7 @@ presentation.
 A healthy overview keeps a lightweight **Open in Feishu/Slack** action in its Messaging row for
 returning users. It uses the existing provider handoff contract: Slack's App/Team redirect and
 the Feishu Bot AppLink only for a confirmed Feishu brand. Unknown and Lark brands never inherit a
-guessed route. Short Bot-name search and copying help stays collapsed by default; clipboard
+guessed route. A confirmed Lark identity keeps the Lark brand in both languages. Short Bot-name search and copying help stays collapsed by default; clipboard
 failure explains manual copying, and missing identity points to Messaging settings. Opening a
 provider URL does not establish its native private-conversation destination or message delivery.
 

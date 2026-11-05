@@ -146,6 +146,23 @@ describe("returning to the overview's Bot", () => {
     expect(screen.getByText("Search for “Actual team Bot” in Feishu.")).toBeTruthy();
   });
 
+  it("keeps the confirmed Lark brand in Chinese search help without inventing a direct link", async () => {
+    await withLocaleAsync("zh", async () => {
+      const current = binding();
+      if (current.identity.provider !== "feishu") throw new Error("Expected Feishu fixture");
+      current.identity.teamBrand = "lark";
+      reads(current);
+      await renderInRouter(<AgentConversationEntry agent={view(current)} />);
+      const help = await screen.findByRole("button", { name: "查找 Bot" });
+      expect(screen.queryByRole("link")).toBeNull();
+      expect(help.getAttribute("aria-expanded")).toBe("false");
+      fireEvent.click(help);
+      expect(await screen.findByText("在 Lark 中搜索“Actual team Bot”。")).toBeTruthy();
+      expect(screen.queryByText(/在飞书中搜索/)).toBeNull();
+      expect(screen.queryByRole("link")).toBeNull();
+    });
+  });
+
   it("keeps a valid entry when the Bot name is missing, without inventing a search name", async () => {
     const current = { ...binding(), bot: { displayName: null, avatarUrl: null } };
     reads(current);

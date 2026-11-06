@@ -1423,15 +1423,16 @@ export class McpOAuthFlowService {
       });
       // Token rotation alone keeps each Agent's tool snapshot.
     } catch (error) {
+      const dispatched = wasRefreshDispatched(requestDispatched, error);
       this.#logger?.warn(
         {
           authorizationId,
           claimId,
-          code: refreshFailureCode(error, requestDispatched),
+          code: refreshFailureCode(error, dispatched),
         },
         "MCP refresh did not commit a credential",
       );
-      await this.#classifyRefreshFailure(authorizationId, claimId, error, this.#database, requestDispatched);
+      await this.#classifyRefreshFailure(authorizationId, claimId, error, this.#database, dispatched);
     }
   }
 
@@ -1511,23 +1512,17 @@ export class McpOAuthFlowService {
     claimId: string,
     error: unknown,
     executor: Pick<DatabaseClient, "update"> = this.#database,
-    requestDispatched = true,
+    dispatched = true,
   ): Promise<void> {
-    if (!requestDispatched && transientRefreshPreparation(error)) {
+    if (!dispatched && transientRefreshPreparation(error)) {
       await this.#releaseClaim(authorizationId, claimId, executor);
       return;
     }
     const now = this.#now();
     const detail = error instanceof McpServiceError ? error.detail : undefined;
     const upstreamError = typeof detail?.error === "string" ? detail.error : undefined;
-    const status = typeof detail?.status === "number" ? detail.status : undefined;
     const terminal = upstreamError === "invalid_grant" || upstreamError === "invalid_client";
-    const unknownOutcome =
-      requestDispatched &&
-      (!(error instanceof McpServiceError) ||
-        error.code === MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE ||
-        error.code === MCP_ERROR_CODES.UPSTREAM_ERROR ||
-        (status !== undefined && status >= 500));
+    const unknownOutcome = isUnknownRefreshOutcome(dispatched, error, detail);
     await executor
       .update(mcpServerAuthorizations)
       .set({
@@ -1562,6 +1557,22 @@ export class McpOAuthFlowService {
       })
       .where(and(eq(mcpServerAuthorizations.id, authorizationId), eq(mcpServerAuthorizations.refreshClaimId, claimId)));
   }
+}
+
+function wasRefreshDispatched(requestDispatched: boolean, error: unknown): boolean {
+  if (!requestDispatched) return false;
+  return !(error instanceof McpServiceError && error.detail?.dispatched === false);
+}
+
+function isUnknownRefreshOutcome(
+  dispatched: boolean,
+  error: unknown,
+  detail: Record<string, unknown> | undefined,
+): boolean {
+  if (!dispatched) return false;
+  if (!(error instanceof McpServiceError)) return true;
+  if (error.code === MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE || error.code === MCP_ERROR_CODES.UPSTREAM_ERROR) return true;
+  return typeof detail?.status === "number" && detail.status >= 500;
 }
 
 function transientRefreshPreparation(error: unknown): boolean {

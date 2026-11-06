@@ -535,6 +535,9 @@ export class McpAuthorizationService {
         cachedVersion: authorization.protocolVersion,
       });
     } catch (error) {
+      if (error instanceof McpServiceError && error.detail?.cause === "concurrency_limit") {
+        throw error;
+      }
       return await this.#persistProbeFailure(mcpServerId, agentId, error, false, expected);
     }
     if (result.probeState === "failed") {

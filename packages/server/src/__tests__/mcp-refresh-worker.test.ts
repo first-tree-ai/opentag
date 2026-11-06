@@ -15,6 +15,7 @@ import { McpCredentialCipher } from "../services/mcp/mcp-credential-cipher.js";
 import { FEISHU_MCP_ISSUER, FEISHU_TOKEN_ENDPOINT, McpOAuthClient } from "../services/mcp/mcp-oauth.js";
 import { McpOAuthFlowService } from "../services/mcp/mcp-oauth-flow-service.js";
 import type { McpProbe } from "../services/mcp/mcp-probe.js";
+import { McpProbe as RealMcpProbe } from "../services/mcp/mcp-probe.js";
 import {
   MCP_REFRESH_CONCURRENCY,
   McpRefreshWorker,
@@ -152,9 +153,69 @@ describe("McpRefreshWorker", () => {
     });
   });
 
-  it("runs pending probes and due OAuth refreshes with bounded concurrency and reuses OAuth metadata across a pass", async () => {
-    expect(MCP_REFRESH_CONCURRENCY).toBe(5);
-    const now = new Date("2026-04-20T12:00:00.000Z");
+  async function seedOAuthBindings(options: {
+    accountId: string;
+    cipher: McpCredentialCipher;
+    count: number;
+    issuer: string;
+    now: Date;
+    prefix: string;
+  }) {
+    const { accountId, cipher, count, issuer, now, prefix } = options;
+    for (let index = 0; index < count; index += 1) {
+      const agentId = randomUUID();
+      await unit.database.insert(agents).values({
+        id: agentId,
+        createdByUserId: accountId,
+        name: `agent-${prefix}-${index}-${agentId.slice(0, 6)}`,
+        displayName: `${prefix} Agent ${index}`,
+        runtimeProvider: "codex",
+      });
+      const [server] = await unit.database
+        .insert(mcpServers)
+        .values({
+          accountId,
+          name: `mcp-${prefix}-${index}`,
+          url: `https://mcp-${prefix}-${index}.example.com/mcp`,
+          defaultAuthKind: "oauth",
+        })
+        .returning();
+      const serverId = server?.id as string;
+      await unit.database.insert(agentMcpServers).values({ agentId, mcpServerId: serverId });
+      const sealed = cipher.encryptAuthorizationCredential(
+        { mcpServerId: serverId, agentId, authorizationServer: issuer },
+        { accessToken: `at-old-${index}`, refreshToken: `rt-old-${index}` },
+      );
+      await unit.database.insert(mcpServerAuthorizations).values({
+        agentId,
+        mcpServerId: serverId,
+        kind: "oauth",
+        status: "active",
+        authorizationServer: issuer,
+        oauthResource: `https://mcp-${prefix}-${index}.example.com/mcp`,
+        ciphertext: sealed.ciphertext,
+        keyId: sealed.keyId,
+        accessTokenExpiresAt: new Date(now.getTime() + 60_000),
+        probeState: "pending",
+      });
+    }
+  }
+
+  function isToolsListRequest(init?: RequestInit): boolean {
+    if (typeof init?.body !== "string") return false;
+    return (JSON.parse(init.body) as { method?: string }).method === "tools/list";
+  }
+
+  function jsonResponse(payload: unknown): Response {
+    return new Response(JSON.stringify(payload), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  it("runs >= 5 pending probes and due OAuth refreshes in the same Account at default concurrency and reuses OAuth metadata across a pass", async () => {
+    expect(MCP_REFRESH_CONCURRENCY).toBe(4);
+    const now = new Date();
     const accountId = randomUUID();
     await unit.database
       .insert(users)
@@ -171,61 +232,26 @@ describe("McpRefreshWorker", () => {
     });
 
     const cipher = new McpCredentialCipher(new ApplicationCipher(new Uint8Array(32).fill(7)));
-    const totalBindings = 4;
-    for (let index = 0; index < totalBindings; index += 1) {
-      const agentId = randomUUID();
-      await unit.database.insert(agents).values({
-        id: agentId,
-        createdByUserId: accountId,
-        name: `agent-conc-${index}-${agentId.slice(0, 6)}`,
-        displayName: `Concurrency Agent ${index}`,
-        runtimeProvider: "codex",
-      });
-      const [server] = await unit.database
-        .insert(mcpServers)
-        .values({
-          accountId,
-          name: `mcp-${index}`,
-          url: `https://mcp-${index}.example.com/mcp`,
-          defaultAuthKind: "oauth",
-        })
-        .returning();
-      await unit.database.insert(agentMcpServers).values({ agentId, mcpServerId: server?.id as string });
-      const sealed = cipher.encryptAuthorizationCredential(
-        { mcpServerId: server?.id as string, agentId, authorizationServer: issuer },
-        { accessToken: `at-old-${index}`, refreshToken: `rt-old-${index}` },
-      );
-      await unit.database.insert(mcpServerAuthorizations).values({
-        agentId,
-        mcpServerId: server?.id as string,
-        kind: "oauth",
-        status: "active",
-        authorizationServer: issuer,
-        oauthResource: `https://mcp-${index}.example.com/mcp`,
-        ciphertext: sealed.ciphertext,
-        keyId: sealed.keyId,
-        accessTokenExpiresAt: new Date(now.getTime() + 60_000),
-        probeState: "pending",
-      });
-    }
+    const totalBindings = 6;
+    await seedOAuthBindings({ accountId, cipher, count: totalBindings, issuer, now, prefix: "conc" });
 
     let metadataCalls = 0;
     let tokenCalls = 0;
     let activeTokenCalls = 0;
     let maxConcurrentTokenCalls = 0;
-    const fetchImpl = vi.fn(async (url: URL | string) => {
+    let activeProbes = 0;
+    let maxConcurrentProbes = 0;
+    let totalProbes = 0;
+    const fetchImpl = vi.fn(async (url: URL | string, init?: RequestInit) => {
       const urlStr = String(url);
       if (urlStr === asMetadataUrl) {
         metadataCalls += 1;
         await new Promise((resolve) => setTimeout(resolve, 15));
-        return new Response(
-          JSON.stringify({
-            issuer,
-            authorization_endpoint: `${issuer}/authorize`,
-            token_endpoint: tokenEndpoint,
-          }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        );
+        return jsonResponse({
+          issuer,
+          authorization_endpoint: `${issuer}/authorize`,
+          token_endpoint: tokenEndpoint,
+        });
       }
       if (urlStr === tokenEndpoint) {
         tokenCalls += 1;
@@ -233,17 +259,30 @@ describe("McpRefreshWorker", () => {
         maxConcurrentTokenCalls = Math.max(maxConcurrentTokenCalls, activeTokenCalls);
         await new Promise((resolve) => setTimeout(resolve, 25));
         activeTokenCalls -= 1;
-        return new Response(
-          JSON.stringify({
-            access_token: `at-new-${tokenCalls}`,
-            refresh_token: `rt-new-${tokenCalls}`,
-            token_type: "Bearer",
-            expires_in: 3600,
-          }),
-          { status: 200, headers: { "content-type": "application/json" } },
-        );
+        return jsonResponse({
+          access_token: `at-new-${tokenCalls}`,
+          refresh_token: `rt-new-${tokenCalls}`,
+          token_type: "Bearer",
+          expires_in: 3600,
+        });
       }
-      return new Response("", { status: 404 });
+      if (isToolsListRequest(init)) {
+        return jsonResponse({ jsonrpc: "2.0", id: 2, result: { tools: [] } });
+      }
+      totalProbes += 1;
+      activeProbes += 1;
+      maxConcurrentProbes = Math.max(maxConcurrentProbes, activeProbes);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      activeProbes -= 1;
+      return jsonResponse({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          supportedVersions: ["2026-07-28"],
+          capabilities: {},
+          _meta: { "io.modelcontextprotocol/serverInfo": { name: "mock-mcp", version: "1.0.0" } },
+        },
+      });
     }) as unknown as typeof globalThis.fetch;
 
     const fetcher = new McpOutboundFetcher({
@@ -253,25 +292,14 @@ describe("McpRefreshWorker", () => {
     });
     const oauth = new McpOAuthClient({ fetcher, publicUrl: "https://opentag.test", now: () => now });
     const servers = new McpServerService({ database: unit.database, now: () => now });
-
-    let activeProbes = 0;
-    let maxConcurrentProbes = 0;
-    let totalProbes = 0;
-    const authorization = {
-      probe: vi.fn(async (_accountId: string, agentId: string, mcpServerId: string) => {
-        totalProbes += 1;
-        activeProbes += 1;
-        maxConcurrentProbes = Math.max(maxConcurrentProbes, activeProbes);
-        await new Promise((resolve) => setTimeout(resolve, 25));
-        activeProbes -= 1;
-        await unit.database
-          .update(mcpServerAuthorizations)
-          .set({ probeState: "succeeded", updatedAt: now })
-          .where(eq(mcpServerAuthorizations.agentId, agentId));
-        return { probeState: "succeeded" as const, toolsCount: 0, mcpServerId };
-      }),
-    } as unknown as McpAuthorizationService;
-
+    const probe = new RealMcpProbe({ fetcher, now: () => now });
+    const authorization = new McpAuthorizationService({
+      database: unit.database,
+      cipher,
+      servers,
+      probe,
+      now: () => now,
+    });
     const flows = new McpOAuthFlowService({
       database: unit.database,
       cipher,
@@ -281,7 +309,6 @@ describe("McpRefreshWorker", () => {
     });
     const worker = new McpRefreshWorker({
       authorization,
-      concurrency: 2,
       database: unit.database,
       flows,
       servers,
@@ -290,11 +317,123 @@ describe("McpRefreshWorker", () => {
 
     expect(await worker.runOnce()).toBe(totalBindings);
     expect(totalProbes).toBe(totalBindings);
-    expect(maxConcurrentProbes).toBe(2);
+    expect(maxConcurrentProbes).toBe(MCP_REFRESH_CONCURRENCY);
     expect(tokenCalls).toBe(totalBindings);
-    expect(maxConcurrentTokenCalls).toBe(2);
-    // All four concurrent/subsequent refreshes for the same issuer share a single well-known fetch.
+    expect(maxConcurrentTokenCalls).toBe(MCP_REFRESH_CONCURRENCY);
+    // All six refreshes for the same issuer share a single well-known fetch.
     expect(metadataCalls).toBe(1);
+
+    const rows = await unit.database.select().from(mcpServerAuthorizations);
+    expect(rows).toHaveLength(totalBindings);
+    for (const row of rows) {
+      expect(row.status).toBe("active");
+      expect(row.probeState).toBe("succeeded");
+      expect(row.refreshGeneration).toBe(1);
+      expect(row.ciphertext).toBeTruthy();
+    }
+  });
+
+  it("preserves credentials and pending probe state when an Account's outbound concurrency cap is reached", async () => {
+    const now = new Date();
+    const accountId = randomUUID();
+    await unit.database
+      .insert(users)
+      .values({ id: accountId, email: `${accountId}@example.test`, displayName: "Cap Owner" });
+
+    const issuer = "https://auth.example.com";
+    const asMetadataUrl = `${issuer}/.well-known/oauth-authorization-server`;
+    const tokenEndpoint = `${issuer}/token`;
+    await unit.database.insert(mcpClientRegistrations).values({
+      accountId,
+      authorizationServer: issuer,
+      source: "preregistered",
+      clientId: "shared-client",
+    });
+
+    const cipher = new McpCredentialCipher(new ApplicationCipher(new Uint8Array(32).fill(7)));
+    const totalBindings = 5;
+    await seedOAuthBindings({ accountId, cipher, count: totalBindings, issuer, now, prefix: "cap" });
+
+    const fetchImpl = vi.fn(async (url: URL | string, init?: RequestInit) => {
+      const urlStr = String(url);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      if (urlStr === asMetadataUrl) {
+        return jsonResponse({
+          issuer,
+          authorization_endpoint: `${issuer}/authorize`,
+          token_endpoint: tokenEndpoint,
+        });
+      }
+      if (urlStr === tokenEndpoint) {
+        return jsonResponse({
+          access_token: "at-new",
+          refresh_token: "rt-new",
+          token_type: "Bearer",
+          expires_in: 3600,
+        });
+      }
+      if (isToolsListRequest(init)) {
+        return jsonResponse({ jsonrpc: "2.0", id: 2, result: { tools: [] } });
+      }
+      return jsonResponse({
+        jsonrpc: "2.0",
+        id: 1,
+        result: {
+          supportedVersions: ["2026-07-28"],
+          capabilities: {},
+          _meta: { "io.modelcontextprotocol/serverInfo": { name: "mock-mcp", version: "1.0.0" } },
+        },
+      });
+    }) as unknown as typeof globalThis.fetch;
+
+    // Force per-Account concurrency rejections by capping the Account at 2 while worker concurrency is 5.
+    const fetcher = new McpOutboundFetcher({
+      allowLoopback: false,
+      fetch: fetchImpl,
+      maxConcurrentPerAccount: 2,
+      resolveAddresses: async () => ["93.184.216.34"],
+    });
+    const oauth = new McpOAuthClient({ fetcher, publicUrl: "https://opentag.test", now: () => now });
+    const servers = new McpServerService({ database: unit.database, now: () => now });
+    const probe = new RealMcpProbe({ fetcher, now: () => now });
+    const authorization = new McpAuthorizationService({
+      database: unit.database,
+      cipher,
+      servers,
+      probe,
+      now: () => now,
+    });
+    const flows = new McpOAuthFlowService({
+      database: unit.database,
+      cipher,
+      oauth,
+      servers,
+      now: () => now,
+    });
+    const worker = new McpRefreshWorker({
+      authorization,
+      concurrency: 5,
+      database: unit.database,
+      flows,
+      servers,
+      now: () => now,
+    });
+
+    await worker.runOnce();
+    const rows = await unit.database.select().from(mcpServerAuthorizations);
+    expect(rows).toHaveLength(totalBindings);
+    // Every row that was refused a local concurrency slot must remain active with its credential
+    // intact (never wiped as MCP_REFRESH_OUTCOME_UNKNOWN) and must not be marked probeState = "failed".
+    for (const row of rows) {
+      expect(row.status).toBe("active");
+      expect(row.failureCode).toBeNull();
+      expect(row.ciphertext).toBeTruthy();
+      expect(row.keyId).toBe("default");
+      expect(row.refreshClaimId).toBeNull();
+      expect(["pending", "succeeded"]).toContain(row.probeState);
+    }
+    expect(rows.some((row) => row.refreshGeneration === 0)).toBe(true);
+    expect(rows.some((row) => row.probeState === "pending")).toBe(true);
   });
 
   it("stops scheduling remaining items once stop() is called while awaiting in-flight work", async () => {
@@ -355,5 +494,83 @@ describe("McpRefreshWorker", () => {
 
     expect(await worker.runOnce()).toBe(0);
     expect(probeCalls).toBe(1);
+  });
+
+  it("drains sibling in-flight workers before settling runOnce() and stop() when one worker rejects", async () => {
+    const now = new Date("2026-04-20T12:00:00.000Z");
+    const accountId = randomUUID();
+    await unit.database
+      .insert(users)
+      .values({ id: accountId, email: `${accountId}@example.test`, displayName: "Drain Owner" });
+
+    for (let index = 0; index < 2; index += 1) {
+      const agentId = randomUUID();
+      await unit.database.insert(agents).values({
+        id: agentId,
+        createdByUserId: accountId,
+        name: `agent-drain-${index}-${agentId.slice(0, 6)}`,
+        displayName: `Drain Agent ${index}`,
+        runtimeProvider: "codex",
+      });
+      const [server] = await unit.database
+        .insert(mcpServers)
+        .values({
+          accountId,
+          name: `mcp-drain-${index}`,
+          url: `https://mcp-drain-${index}.example.com/mcp`,
+          defaultAuthKind: "bearer",
+        })
+        .returning();
+      await unit.database.insert(agentMcpServers).values({ agentId, mcpServerId: server?.id as string });
+      await unit.database.insert(mcpServerAuthorizations).values({
+        agentId,
+        mcpServerId: server?.id as string,
+        kind: "bearer",
+        status: "active",
+        ciphertext: "v2.default.x.y.z",
+        keyId: "default",
+        probeState: "pending",
+      });
+    }
+
+    let siblingSettled = false;
+    let siblingSettledWhenStopResolved = false;
+    let stopPromise: Promise<void> | undefined;
+    let callIndex = 0;
+    let worker!: McpRefreshWorker;
+    const authorization = {
+      probe: vi.fn(async () => {
+        callIndex += 1;
+        if (callIndex === 1) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+          throw new Error("probe failed");
+        }
+        stopPromise = worker
+          .stop()
+          .catch(() => undefined)
+          .then(() => {
+            siblingSettledWhenStopResolved = siblingSettled;
+          });
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        siblingSettled = true;
+      }),
+    } as unknown as McpAuthorizationService;
+
+    worker = new McpRefreshWorker({
+      authorization,
+      concurrency: 2,
+      database: unit.database,
+      flows: { refreshAuthorization: vi.fn() } as unknown as McpOAuthFlowService,
+      onError: () => {
+        throw new Error("onError callback threw");
+      },
+      servers: new McpServerService({ database: unit.database, now: () => now }),
+      now: () => now,
+    });
+
+    await expect(worker.runOnce()).rejects.toThrow("onError callback threw");
+    expect(siblingSettled).toBe(true);
+    await expect(stopPromise).resolves.toBeUndefined();
+    expect(siblingSettledWhenStopResolved).toBe(true);
   });
 });

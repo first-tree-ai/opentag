@@ -508,7 +508,7 @@ export class McpOAuthClient {
     if (issuer === FEISHU_MCP_ISSUER) {
       return cloneAuthorizationServerMetadata(FEISHU_OAUTH_METADATA);
     }
-    const cacheKey = `${accountId}\u0000${issuer}`;
+    const cacheKey = this.#metadataCacheKey(accountId, issuer);
     // Callers that pass an explicit abort signal (such as `start` with its discovery deadline)
     // revalidate against the live document and refresh the cache on success; background token
     // refresh and callback redemption reuse the bounded TTL cache and coalesce concurrent lookups.
@@ -803,7 +803,7 @@ export class McpOAuthClient {
       code_verifier: input.codeVerifier,
       resource: input.resource,
     });
-    return this.#tokenRequest(accountId, metadata.tokenEndpoint, body, input.client);
+    return this.#tokenRequest(accountId, metadata, body, input.client);
   }
 
   async refreshAccessToken(
@@ -816,12 +816,16 @@ export class McpOAuthClient {
       refresh_token: input.refreshToken,
       resource: input.resource,
     });
-    return this.#tokenRequest(accountId, metadata.tokenEndpoint, body, input.client);
+    return this.#tokenRequest(accountId, metadata, body, input.client);
+  }
+
+  #metadataCacheKey(accountId: string, issuer: string): string {
+    return `${accountId}\u0000${issuer}`;
   }
 
   async #tokenRequest(
     accountId: string,
-    tokenEndpoint: string,
+    metadata: McpAuthorizationServerMetadata,
     body: URLSearchParams,
     client: McpClientCredentials,
   ): Promise<McpTokenSet> {
@@ -838,24 +842,32 @@ export class McpOAuthClient {
         body.set("client_secret", client.clientSecret);
       }
     }
-    const response = await this.#fetcher.fetchOutbound(accountId, tokenEndpoint, {
-      method: "POST",
-      headers,
-      body: body.toString(),
-    });
-    if (response.status < 200 || response.status >= 300) {
-      let document: Record<string, unknown> = {};
-      if (response.text.trim().length > 0) {
-        try {
-          document = json(response);
-        } catch {
-          document = {};
+    try {
+      const response = await this.#fetcher.fetchOutbound(accountId, metadata.tokenEndpoint, {
+        method: "POST",
+        headers,
+        body: body.toString(),
+      });
+      if (response.status < 200 || response.status >= 300) {
+        let document: Record<string, unknown> = {};
+        if (response.text.trim().length > 0) {
+          try {
+            document = json(response);
+          } catch {
+            document = {};
+          }
         }
+        throw tokenRequestFailure(response.status, document);
       }
-      throw tokenRequestFailure(response.status, document);
+      const document = response.text.trim().length > 0 ? json(response) : {};
+      return parseTokenResponse(document, response.status);
+    } catch (error) {
+      // Evict the cached metadata on any token endpoint failure so a rotated or moved token
+      // endpoint is re-fetched from the discovery document on the next attempt rather than pinned
+      // for the remainder of the TTL.
+      this.#metadataCache.delete(this.#metadataCacheKey(accountId, metadata.issuer));
+      throw error;
     }
-    const document = response.text.trim().length > 0 ? json(response) : {};
-    return parseTokenResponse(document, response.status);
   }
 }
 

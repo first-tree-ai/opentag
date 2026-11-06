@@ -7,7 +7,7 @@ import type { McpServerService } from "./mcp-server-service.js";
 
 export const MCP_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 export const MCP_REFRESH_BATCH_SIZE = 100;
-export const MCP_REFRESH_CONCURRENCY = 5;
+export const MCP_REFRESH_CONCURRENCY = 4;
 /** Missing `expires_in` is treated as this lifetime, matching the general default. */
 const DEFAULT_EXPIRES_IN_SECONDS = 300;
 const MAX_LEAD_MS = 5 * 60 * 1000;
@@ -174,17 +174,25 @@ export class McpRefreshWorker {
   async #runWithConcurrency<T>(items: readonly T[], worker: (item: T) => Promise<void>): Promise<void> {
     if (items.length === 0 || this.#stopped) return;
     let nextIndex = 0;
+    let aborted = false;
     const workerCount = Math.min(this.#concurrency, items.length);
-    await Promise.all(
+    const outcomes = await Promise.allSettled(
       Array.from({ length: workerCount }, async () => {
-        while (!this.#stopped) {
+        while (!this.#stopped && !aborted) {
           const index = nextIndex;
           nextIndex += 1;
           const item = items[index];
           if (item === undefined) return;
-          await worker(item);
+          try {
+            await worker(item);
+          } catch (error) {
+            aborted = true;
+            throw error;
+          }
         }
       }),
     );
+    const rejected = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
+    if (rejected) throw rejected.reason;
   }
 }

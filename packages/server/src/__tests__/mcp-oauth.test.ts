@@ -1355,4 +1355,75 @@ describe("MCP authorization server metadata caching", () => {
       tokenEndpoint: `${AS}/token`,
     });
   });
+
+  it("evicts cached authorization server metadata when a token request fails so the next lookup re-fetches", async () => {
+    let metadataRequests = 0;
+    const fetchImpl = vi.fn(async (url: URL | string) => {
+      const urlStr = String(url);
+      if (urlStr === `${AS}/.well-known/oauth-authorization-server`) {
+        metadataRequests += 1;
+        return new Response(
+          JSON.stringify({
+            issuer: AS,
+            authorization_endpoint: `${AS}/authorize`,
+            token_endpoint: `${AS}/token-v${metadataRequests}`,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (urlStr === `${AS}/token-v1`) {
+        return new Response(JSON.stringify({ error: "server_error" }), {
+          status: 502,
+          headers: { "content-type": "application/json" },
+        });
+      }
+      if (urlStr === `${AS}/token-v2`) {
+        return new Response(
+          JSON.stringify({
+            access_token: "at-fresh",
+            refresh_token: "rt-fresh",
+            token_type: "Bearer",
+            expires_in: 3600,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("", { status: 404 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const fetcher = new McpOutboundFetcher({
+      allowLoopback: false,
+      fetch: fetchImpl,
+      resolveAddresses: async (): Promise<string[]> => ["93.184.216.34"],
+    });
+    const client = new McpOAuthClient({
+      fetcher,
+      publicUrl: PUBLIC_URL,
+      now: () => new Date("2026-04-20T12:00:00.000Z"),
+    });
+
+    const firstMeta = await client.authorizationServerMetadata(ACCOUNT, AS);
+    expect(firstMeta.tokenEndpoint).toBe(`${AS}/token-v1`);
+    expect(metadataRequests).toBe(1);
+
+    await expect(
+      client.refreshAccessToken(ACCOUNT, firstMeta, {
+        refreshToken: "rt-1",
+        client: { source: "cimd", clientId: "client-1", tokenEndpointAuthMethod: "none" },
+        resource: "https://mcp.example.com/mcp",
+      }),
+    ).rejects.toMatchObject({ code: MCP_ERROR_CODES.OAUTH_FAILED });
+
+    // Because the token request failed, the cached metadata entry was evicted and is re-fetched.
+    const secondMeta = await client.authorizationServerMetadata(ACCOUNT, AS);
+    expect(secondMeta.tokenEndpoint).toBe(`${AS}/token-v2`);
+    expect(metadataRequests).toBe(2);
+
+    const tokens = await client.refreshAccessToken(ACCOUNT, secondMeta, {
+      refreshToken: "rt-1",
+      client: { source: "cimd", clientId: "client-1", tokenEndpointAuthMethod: "none" },
+      resource: "https://mcp.example.com/mcp",
+    });
+    expect(tokens.accessToken).toBe("at-fresh");
+  });
 });

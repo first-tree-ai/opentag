@@ -20,8 +20,11 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 const INTERNAL = new Set([
   "constructor",
   "request",
+  "requestAccount",
   "requestOptional",
+  "requestOptionalAccount",
   "requestNoContent",
+  "requestNoContentAccount",
   "fetchWithRefresh",
   "apiError",
   "parseResponse",

@@ -8,15 +8,12 @@ import {
   RUNTIME_CLIENT_CAPABILITY_OFFERS,
   RUNTIME_CLIENT_CAPABILITY_TTL_MS,
   RUNTIME_MAX_FRAME_BYTES,
-  RUNTIME_PROTOCOL_V1,
   RUNTIME_PROTOCOL_V2,
   RUNTIME_PROTOCOL_VERSION,
-  RUNTIME_REQUIRED_SERVER_CAPABILITIES,
-  RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
   type RuntimeCapabilityOffers,
   type RuntimeChannelTarget,
   type RuntimeClientCapabilities,
-  RuntimeFrameEnvelopeSchema,
+  type RuntimeFrameEnvelopeSchema,
   type RuntimeImCliReadinessCollection,
   type RuntimeImCliReadinessObservation,
   type RuntimeNegotiatedCapabilities,
@@ -26,13 +23,11 @@ import {
   type RuntimeSelfCheckReport,
   requiredTurnReportVersion,
   runtimeFrameByteLength,
-  runtimeNegotiatedCapabilitiesEqual,
   runtimeWebSocketUrl,
   ServerRuntimeFrameSchema,
   type ServerWelcomeFrame,
 } from "@opentag/shared";
-import WebSocket, { type ClientOptions, type RawData } from "ws";
-import { OpenTagApiError } from "../api.js";
+import WebSocket, { type ClientOptions } from "ws";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import type { ComputerIdentity } from "./computer-identity.js";
 import {
@@ -46,12 +41,24 @@ import {
   runtimeConnectionErrorCategory,
 } from "./runtime-connection-errors.js";
 import {
+  buildAuthFrame,
+  buildRegisterFrame,
+  type ControlFrameHandlers,
+  classifyFatalRunError,
+  completeHeartbeatSuccess,
+  createHeartbeatRejectionError,
+  decodeIncomingFrameEnvelope,
+  dispatchInOrderControlFrame,
+  EXPECTED_CONTROL_FRAME_STATE,
+  evaluateHeartbeatPendingStatus,
+  hasStaleBusinessFrameFence,
+  hasStaleHeartbeatFence,
+  isValidV2RegistrationFrame,
   notifyTarget,
   parseServerBusinessFrame,
-  protocolRejectionFields,
   type RuntimeBusinessFrame,
-  rawDataBuffer,
-  safeJson,
+  type RuntimeConnectionLifecycleState,
+  type RuntimeTimerScheduler,
 } from "./runtime-connection-helpers.js";
 import {
   connectionErrorCategory,
@@ -86,13 +93,7 @@ const SERVER_CONTROL_FRAME_TYPES = new Set([
 
 const PRIORITIES = ["control", "result", "report", "trace"] as const;
 
-export type RuntimeConnectionState =
-  | "stopped"
-  | "connecting"
-  | "authenticating"
-  | "welcoming"
-  | "registering"
-  | "registered";
+export type RuntimeConnectionState = RuntimeConnectionLifecycleState;
 
 export type RuntimeSendPriority = (typeof PRIORITIES)[number];
 
@@ -109,10 +110,7 @@ export interface RuntimeQueueLimits {
   trace: number;
 }
 
-interface RuntimeScheduler {
-  clearTimeout(timer: ReturnType<typeof setTimeout>): void;
-  setTimeout(callback: () => void, milliseconds: number): ReturnType<typeof setTimeout>;
-}
+type RuntimeScheduler = RuntimeTimerScheduler;
 
 export interface RuntimeConnectionOptions {
   arch: string;
@@ -419,7 +417,7 @@ export class RuntimeConnection {
         });
       } catch (error) {
         if (this.#stopped || isAbortError(error)) break;
-        const fatalError = this.#classifyFatalRunError(error, attempt);
+        const fatalError = classifyFatalRunError(error, attempt, this.#state, this.#logger);
         if (fatalError) throw fatalError;
         attempt += 1;
         const delay = this.#computeRetryDelay(attempt);
@@ -430,39 +428,6 @@ export class RuntimeConnection {
         if (!(await this.#waitForRetryOrStop(delay))) break;
       }
     }
-  }
-
-  #classifyFatalRunError(error: unknown, attempt: number): RuntimeConnectionError | undefined {
-    if (error instanceof RuntimeConnectionError && error.fatal) {
-      this.#logger.error(
-        protocolRejectionFields(attempt, this.#state, error.message, error.category),
-        "Runtime connection was rejected",
-      );
-      return error;
-    }
-    if (error instanceof OpenTagApiError && !["transient", "rate_limit"].includes(error.category)) {
-      this.#logger.error(
-        { attempt: attempt + 1, category: error.category, state: this.#state },
-        "Runtime authentication failed",
-      );
-      return new RuntimeConnectionError(
-        `${error.message}; run opentag connect again`,
-        true,
-        "authentication_rejection",
-      );
-    }
-    if (error instanceof Error && error.message.includes("not logged in")) {
-      this.#logger.error(
-        { attempt: attempt + 1, category: "credential", state: this.#state },
-        "Runtime authentication failed",
-      );
-      return new RuntimeConnectionError(
-        `${error.message}; run opentag connect first`,
-        true,
-        "authentication_rejection",
-      );
-    }
-    return undefined;
   }
 
   #computeRetryDelay(attempt: number): number {
@@ -635,23 +600,9 @@ export class RuntimeConnection {
         if (settled || this.#stopped || this.#active !== socket) return;
         this.#setState("authenticating");
         authRequestId = randomUUID();
-        void this.#sendDirect(
-          socket,
-          protocolVersion === RUNTIME_PROTOCOL_V2
-            ? {
-                type: "auth",
-                requestId: authRequestId,
-                protocolVersion: RUNTIME_PROTOCOL_V2,
-                supportedProtocolVersions: RUNTIME_SUPPORTED_PROTOCOL_VERSIONS,
-                machineToken: this.#options.machineToken,
-              }
-            : {
-                type: "auth",
-                requestId: authRequestId,
-                protocolVersion: RUNTIME_PROTOCOL_V1,
-                machineToken: this.#options.machineToken,
-              },
-        ).catch((error: unknown) => finish(asError(error)));
+        void this.#sendDirect(socket, buildAuthFrame(authRequestId, protocolVersion, this.#options.machineToken)).catch(
+          (error: unknown) => finish(asError(error)),
+        );
       });
 
       const handleBusinessFrameCandidate = (
@@ -710,31 +661,24 @@ export class RuntimeConnection {
         welcome = frame;
         this.#setState("registering");
         registerRequestId = randomUUID();
-        const registration = {
-          type: "computer:register",
-          requestId: registerRequestId,
-          installationId: this.#options.computer.computerId,
-          instanceId,
-          displayName: this.#options.displayName,
-          platform: this.#options.platform,
-          arch: this.#options.arch,
-          clientVersion: this.#options.clientVersion,
-          capabilities: this.#currentCapabilities(),
-          ...(welcome.providerReadiness
-            ? { providerReadiness: this.#currentProviderReadiness(welcome.providerReadiness.providers) }
-            : {}),
-          imCliReadiness: this.#currentImCliReadiness(),
-        } as const;
         void this.#sendDirect(
           socket,
-          protocolVersion === RUNTIME_PROTOCOL_V2
-            ? {
-                ...registration,
-                protocolVersion: RUNTIME_PROTOCOL_V2,
-                supportedCapabilities: this.#supportedCapabilities,
-                requiredServerCapabilities: RUNTIME_REQUIRED_SERVER_CAPABILITIES,
-              }
-            : registration,
+          buildRegisterFrame({
+            requestId: registerRequestId,
+            protocolVersion,
+            installationId: this.#options.computer.computerId,
+            instanceId,
+            displayName: this.#options.displayName,
+            platform: this.#options.platform,
+            arch: this.#options.arch,
+            clientVersion: this.#options.clientVersion,
+            capabilities: this.#currentCapabilities(),
+            providerReadiness: welcome.providerReadiness
+              ? this.#currentProviderReadiness(welcome.providerReadiness.providers)
+              : undefined,
+            imCliReadiness: this.#currentImCliReadiness(),
+            supportedCapabilities: this.#supportedCapabilities,
+          }),
         ).catch((error: unknown) => finish(asError(error)));
       };
 
@@ -1098,137 +1042,4 @@ export class RuntimeConnection {
     }
     await waitForRuntimeTimer(milliseconds, signal, this.#scheduler);
   }
-}
-
-type ServerRuntimeFrame = ReturnType<typeof ServerRuntimeFrameSchema.parse>;
-
-const EXPECTED_CONTROL_FRAME_STATE: Record<Exclude<ServerRuntimeFrame["type"], "error">, RuntimeConnectionState> = {
-  "auth:result": "authenticating",
-  "server:welcome": "welcoming",
-  "computer:register:result": "registering",
-  "heartbeat:result": "registered",
-};
-
-function hasStaleBusinessFrameFence(
-  protocolVersion: RuntimeProtocolVersion,
-  envelopeConnectionId: string | undefined,
-  activeConnectionId: string | undefined,
-): boolean {
-  return protocolVersion === RUNTIME_PROTOCOL_V2 && envelopeConnectionId !== activeConnectionId;
-}
-
-function evaluateHeartbeatPendingStatus(
-  fixedCadence: boolean,
-  fixedHeartbeats: HeartbeatAcknowledgements,
-  requestId: string,
-  pendingHeartbeatRequestId: string | undefined,
-): { acknowledged: boolean; matchesPending: boolean } {
-  const acknowledged = fixedCadence && fixedHeartbeats.wasAcknowledged(requestId);
-  const matchesPending = fixedCadence
-    ? fixedHeartbeats.isPending(requestId) || acknowledged
-    : requestId === pendingHeartbeatRequestId;
-  return { acknowledged, matchesPending };
-}
-
-function createHeartbeatRejectionError(errorCode: string | undefined): RuntimeConnectionError {
-  const category = runtimeConnectionErrorCategory(errorCode, true, false);
-  return new RuntimeConnectionError(
-    `Runtime heartbeat failed: ${errorCode}`,
-    category !== "transient_connection",
-    category,
-  );
-}
-
-function completeHeartbeatSuccess(
-  fixedCadence: boolean,
-  fixedHeartbeats: HeartbeatAcknowledgements,
-  requestId: string,
-  scheduler: RuntimeScheduler,
-  heartbeatResultTimer: ReturnType<typeof setTimeout> | undefined,
-  scheduleHeartbeat: () => void,
-): void {
-  if (fixedCadence) {
-    fixedHeartbeats.acknowledge(requestId);
-  }
-  if (heartbeatResultTimer) scheduler.clearTimeout(heartbeatResultTimer);
-  if (!fixedCadence) scheduleHeartbeat();
-}
-
-interface ControlFrameHandlers {
-  onAuthResult: (frame: Extract<ServerRuntimeFrame, { type: "auth:result" }>) => void;
-  onWelcome: (frame: ServerWelcomeFrame) => void;
-  onRegisterResult: (frame: Extract<ServerRuntimeFrame, { type: "computer:register:result" }>) => void;
-  onHeartbeatResult: (frame: Extract<ServerRuntimeFrame, { type: "heartbeat:result" }>) => void;
-}
-
-function dispatchInOrderControlFrame(
-  frame: Exclude<ServerRuntimeFrame, { type: "error" }>,
-  handlers: ControlFrameHandlers,
-): void {
-  switch (frame.type) {
-    case "auth:result":
-      handlers.onAuthResult(frame);
-      return;
-    case "server:welcome":
-      handlers.onWelcome(frame);
-      return;
-    case "computer:register:result":
-      handlers.onRegisterResult(frame);
-      return;
-    case "heartbeat:result":
-      handlers.onHeartbeatResult(frame);
-      return;
-  }
-}
-
-function decodeIncomingFrameEnvelope(
-  data: RawData,
-  isBinary: boolean,
-):
-  | { ok: false; message: string; reason: string }
-  | { ok: true; decoded: unknown; envelope: ReturnType<typeof RuntimeFrameEnvelopeSchema.parse> } {
-  if (isBinary) {
-    return { ok: false, message: "The server sent a binary runtime frame", reason: "Binary frames are not supported" };
-  }
-  const buffer = rawDataBuffer(data);
-  if (buffer.byteLength > RUNTIME_MAX_FRAME_BYTES) {
-    return { ok: false, message: "The server sent an oversized runtime frame", reason: "Runtime frame is too large" };
-  }
-  const decoded = safeJson(buffer.toString("utf8"));
-  const envelope = RuntimeFrameEnvelopeSchema.safeParse(decoded);
-  if (!envelope.success) {
-    return { ok: false, message: "The server sent an invalid runtime frame", reason: "Invalid server frame" };
-  }
-  return { ok: true, decoded, envelope: envelope.data };
-}
-
-function isValidV2RegistrationFrame(
-  frame: Extract<ServerRuntimeFrame, { type: "computer:register:result" }>,
-  expectedNegotiatedCapabilities: RuntimeNegotiatedCapabilities | undefined,
-): frame is Extract<ServerRuntimeFrame, { type: "computer:register:result"; protocolVersion: 2 }> & {
-  connectionId: string;
-  negotiatedCapabilities: RuntimeNegotiatedCapabilities;
-} {
-  if (!("protocolVersion" in frame) || frame.protocolVersion !== RUNTIME_PROTOCOL_V2) {
-    return false;
-  }
-  if (!frame.connectionId || !frame.negotiatedCapabilities || !expectedNegotiatedCapabilities) {
-    return false;
-  }
-  return runtimeNegotiatedCapabilitiesEqual(frame.negotiatedCapabilities, expectedNegotiatedCapabilities);
-}
-
-function hasStaleHeartbeatFence(
-  protocolVersion: RuntimeProtocolVersion,
-  frame: Extract<ServerRuntimeFrame, { type: "heartbeat:result" }>,
-  connectionId: string | undefined,
-): boolean {
-  if (protocolVersion === RUNTIME_PROTOCOL_V2) {
-    return (
-      !("protocolVersion" in frame) ||
-      frame.protocolVersion !== RUNTIME_PROTOCOL_V2 ||
-      frame.connectionId !== connectionId
-    );
-  }
-  return "protocolVersion" in frame;
 }

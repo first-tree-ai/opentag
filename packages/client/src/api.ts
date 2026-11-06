@@ -1,11 +1,11 @@
 import {
+  type AccountApiEndpoint,
+  type AccountApiNoContentEndpoint,
   type AgentAdminConfig,
   AgentAdminConfigSchema,
   type AgentDetail,
-  AgentDetailSchema,
   type AgentRuntimeTestRequest,
   type AgentRuntimeTestResponse,
-  AgentRuntimeTestResponseSchema,
   type AgentSchedule,
   type AgentScheduleListResponse,
   AgentScheduleListResponseSchema,
@@ -13,38 +13,17 @@ import {
   AgentSchedulePreviewSchema,
   AgentScheduleSchema,
   type AgentUsageDetail,
-  AgentUsageDetailSchema,
   type AgentUsageWindowDays,
   type AttachMCPServerRequest,
-  accountComputerConnectCodePath,
-  agentByIdPath,
-  agentComputerRebindPath,
-  agentConfigPath,
-  agentFeishuSetupAttemptsPath,
-  agentImBindingConfigPath,
-  agentImBindingPath,
-  agentMcpAuthorizationOAuthPath,
-  agentMcpAuthorizationPath,
-  agentMcpProbePath,
-  agentMcpServerPath,
-  agentMcpServersPath,
-  agentReactivatePath,
-  agentRuntimeTestPath,
+  accountApiEndpoints,
   agentSkillBundlePath,
   agentSkillPath,
-  agentSkillPresetInstallPath,
-  agentSkillPresetsPath,
   agentSkillsPath,
-  agentSlackOAuthStartPath,
-  agentSuspendPath,
-  agentUsagePath,
   type ComputerConnectCodeExchangeRequest,
   type ComputerConnectCodeExchangeResponse,
   ComputerConnectCodeExchangeResponseSchema,
   type ComputerConnectCodeIssueResponse,
-  ComputerConnectCodeIssueResponseSchema,
   type ComputerConnectCodeStatus,
-  ComputerConnectCodeStatusSchema,
   type ConnectCodeExchangeResponse,
   ConnectCodeExchangeResponseSchema,
   type CreateAgentRequest,
@@ -57,53 +36,33 @@ import {
   type ErrorCode,
   ErrorEnvelopeSchema,
   type FeishuSetupAttempt,
-  FeishuSetupAttemptSchema,
-  feishuSetupAttemptPath,
   HTTP_PATHS,
   type ImBindingAdminDetail,
-  ImBindingAdminDetailSchema,
   type ImBindingDiagnostics,
-  ImBindingDiagnosticsSchema,
   type ImBindingSummary,
-  ImBindingSummarySchema,
   type InstallSkillPresetResponse,
   InstallSkillPresetResponseSchema,
-  imBindingDiagnosticsPath,
-  imBindingDisablePath,
   type ListAccountComputersResponse,
-  ListAccountComputersResponseSchema,
   type ListAgentMCPServersResponse,
   ListAgentMCPServersResponseSchema,
   type ListAgentSkillsResponse,
   ListAgentSkillsResponseSchema,
   type ListAgentsResponse,
-  ListAgentsResponseSchema,
   type ListAvailableMCPServersResponse,
   ListAvailableMCPServersResponseSchema,
   type ListMCPServersResponse,
-  ListMCPServersResponseSchema,
   type ListSkillPresetsResponse,
   ListSkillPresetsResponseSchema,
   type MCPAgentServer,
   MCPAgentServerSchema,
   type MCPProbeResponse,
-  MCPProbeResponseSchema,
   type MCPServer,
   type MCPServerDetail,
-  MCPServerDetailSchema,
-  MCPServerSchema,
   type MeResponse,
-  MeResponseSchema,
-  mcpServerPath,
-  mcpServersPath,
-  PROVIDER_CLI_REASON_V2_HEADER,
-  PROVIDER_READINESS_V1_HEADER,
-  PROVIDER_READINESS_V2_HEADER,
   type PreviewAgentScheduleRequest,
   type ProvisionSlackAgentRequest,
   type ProvisionSlackAgentResponse,
   ProvisionSlackAgentResponseSchema,
-  type RebindAgentComputerRequest,
   type RefreshTokenResponse,
   RefreshTokenResponseSchema,
   RUNTIME_AGENT_MCP_SERVER_DEFINITIONS_PATH,
@@ -150,16 +109,15 @@ import {
   type Skill,
   type SkillArchiveFormat,
   type SkillDetail,
-  SkillDetailSchema,
   SkillSchema,
   type StartMCPOAuthRequest,
   type StartMCPOAuthResponse,
   StartMCPOAuthResponseSchema,
   type StartSlackOAuthRequest,
   type StartSlackOAuthResponse,
-  StartSlackOAuthResponseSchema,
   type StructuredError,
   StructuredErrorSchema,
+  toAccountApiRequestInit,
   type UpdateAgentRequest,
   type UpdateAgentScheduleRequest,
   type UpdateMCPBindingRequest,
@@ -322,26 +280,11 @@ export class OpenTagApi {
   }
 
   me(accessToken: string, options?: RequestOptions): Promise<MeResponse> {
-    return this.#request(
-      HTTP_PATHS.me,
-      MeResponseSchema,
-      {
-        headers: { authorization: `Bearer ${accessToken}` },
-      },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.me(), options);
   }
 
   issueComputerConnectCode(accessToken: string, options?: RequestOptions): Promise<ComputerConnectCodeIssueResponse> {
-    return this.#request(
-      HTTP_PATHS.accountComputerConnectCodes,
-      ComputerConnectCodeIssueResponseSchema,
-      {
-        method: "POST",
-        headers: { authorization: `Bearer ${accessToken}` },
-      },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.issueComputerConnectCode(), options);
   }
 
   getComputerConnectCodeStatus(
@@ -349,65 +292,23 @@ export class OpenTagApi {
     connectCodeId: string,
     options?: RequestOptions,
   ): Promise<ComputerConnectCodeStatus> {
-    return this.#request(
-      accountComputerConnectCodePath(connectCodeId),
-      ComputerConnectCodeStatusSchema,
-      {
-        headers: { authorization: `Bearer ${accessToken}` },
-      },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.computerConnectCodeStatus(connectCodeId), options);
   }
 
   listAccountComputers(accessToken: string, options?: RequestOptions): Promise<ListAccountComputersResponse> {
-    return this.#request(
-      HTTP_PATHS.accountComputers,
-      ListAccountComputersResponseSchema,
-      {
-        headers: {
-          authorization: `Bearer ${accessToken}`,
-          [PROVIDER_READINESS_V1_HEADER]: "1",
-          [PROVIDER_READINESS_V2_HEADER]: "2",
-          [PROVIDER_CLI_REASON_V2_HEADER]: "2",
-        },
-      },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.listAccountComputers(), options);
   }
 
   createAgent(accessToken: string, input: CreateAgentRequest, options?: RequestOptions): Promise<AgentAdminConfig> {
-    return this.#request(
-      HTTP_PATHS.accountAgents,
-      AgentAdminConfigSchema,
-      {
-        method: "POST",
-        body: JSON.stringify(input),
-        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
-      },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.createAgent(input), options);
   }
 
   listAgents(accessToken: string, options?: RequestOptions): Promise<ListAgentsResponse> {
-    return this.#request(
-      HTTP_PATHS.accountAgents,
-      ListAgentsResponseSchema,
-      {
-        headers: { authorization: `Bearer ${accessToken}` },
-      },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.listAgents(), options);
   }
 
   getAgent(accessToken: string, agentId: string, options?: RequestOptions): Promise<AgentDetail> {
-    return this.#request(
-      agentByIdPath(agentId),
-      AgentDetailSchema,
-      {
-        headers: { authorization: `Bearer ${accessToken}` },
-      },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.getAgent(agentId), options);
   }
 
   getAgentUsage(
@@ -416,25 +317,11 @@ export class OpenTagApi {
     windowDays: AgentUsageWindowDays,
     options?: RequestOptions,
   ): Promise<AgentUsageDetail> {
-    return this.#request(
-      agentUsagePath(agentId, windowDays),
-      AgentUsageDetailSchema,
-      {
-        headers: { authorization: `Bearer ${accessToken}` },
-      },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.getAgentUsage(agentId, windowDays), options);
   }
 
   getAgentConfig(accessToken: string, agentId: string, options?: RequestOptions): Promise<AgentAdminConfig> {
-    return this.#request(
-      agentConfigPath(agentId),
-      AgentAdminConfigSchema,
-      {
-        headers: { authorization: `Bearer ${accessToken}` },
-      },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.getAgentConfig(agentId), options);
   }
 
   testAgentRuntime(
@@ -443,24 +330,11 @@ export class OpenTagApi {
     input: AgentRuntimeTestRequest,
     options?: RequestOptions,
   ): Promise<AgentRuntimeTestResponse> {
-    return this.#request(
-      agentRuntimeTestPath(agentId),
-      AgentRuntimeTestResponseSchema,
-      {
-        method: "POST",
-        body: JSON.stringify(input),
-        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
-      },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.testAgentRuntime(agentId, input), options);
   }
 
   rebindAgentComputer(accessToken: string, agentId: string, computerId: string): Promise<AgentAdminConfig> {
-    return this.#request(agentComputerRebindPath(agentId), AgentAdminConfigSchema, {
-      method: "POST",
-      body: JSON.stringify({ computerId } satisfies RebindAgentComputerRequest),
-      headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
-    });
+    return this.#requestAccount(accessToken, accountApiEndpoints.rebindAgentComputer(agentId, computerId));
   }
 
   updateAgent(
@@ -469,51 +343,19 @@ export class OpenTagApi {
     input: UpdateAgentRequest,
     options?: RequestOptions,
   ): Promise<AgentAdminConfig> {
-    return this.#request(
-      agentByIdPath(agentId),
-      AgentAdminConfigSchema,
-      {
-        method: "PATCH",
-        body: JSON.stringify(input),
-        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
-      },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.updateAgent(agentId, input), options);
   }
 
   suspendAgent(accessToken: string, agentId: string, options?: RequestOptions): Promise<AgentAdminConfig> {
-    return this.#request(
-      agentSuspendPath(agentId),
-      AgentAdminConfigSchema,
-      {
-        method: "POST",
-        headers: { authorization: `Bearer ${accessToken}` },
-      },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.suspendAgent(agentId), options);
   }
 
   reactivateAgent(accessToken: string, agentId: string, options?: RequestOptions): Promise<AgentAdminConfig> {
-    return this.#request(
-      agentReactivatePath(agentId),
-      AgentAdminConfigSchema,
-      {
-        method: "POST",
-        headers: { authorization: `Bearer ${accessToken}` },
-      },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.reactivateAgent(agentId), options);
   }
 
   deleteAgent(accessToken: string, agentId: string, options?: RequestOptions): Promise<void> {
-    return this.#requestNoContent(
-      agentByIdPath(agentId),
-      {
-        method: "DELETE",
-        headers: { authorization: `Bearer ${accessToken}` },
-      },
-      options,
-    );
+    return this.#requestNoContentAccount(accessToken, accountApiEndpoints.deleteAgent(agentId), options);
   }
 
   getAgentImBinding(
@@ -521,14 +363,7 @@ export class OpenTagApi {
     agentId: string,
     options?: RequestOptions,
   ): Promise<ImBindingSummary | undefined> {
-    return this.#requestOptional(
-      agentImBindingPath(agentId),
-      ImBindingSummarySchema,
-      {
-        headers: { authorization: `Bearer ${accessToken}` },
-      },
-      options,
-    );
+    return this.#requestOptionalAccount(accessToken, accountApiEndpoints.getAgentImBinding(agentId), options);
   }
 
   getAgentImBindingConfig(
@@ -536,14 +371,7 @@ export class OpenTagApi {
     agentId: string,
     options?: RequestOptions,
   ): Promise<ImBindingAdminDetail | undefined> {
-    return this.#requestOptional(
-      agentImBindingConfigPath(agentId),
-      ImBindingAdminDetailSchema,
-      {
-        headers: { authorization: `Bearer ${accessToken}` },
-      },
-      options,
-    );
+    return this.#requestOptionalAccount(accessToken, accountApiEndpoints.getAgentImBindingConfig(agentId), options);
   }
 
   createFeishuSetupAttempt(
@@ -552,27 +380,11 @@ export class OpenTagApi {
     intent: "create" | "reauthorize" | "replace" = "create",
     options?: RequestOptions,
   ): Promise<FeishuSetupAttempt> {
-    return this.#request(
-      agentFeishuSetupAttemptsPath(agentId),
-      FeishuSetupAttemptSchema,
-      {
-        method: "POST",
-        body: JSON.stringify({ intent }),
-        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
-      },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.createFeishuSetupAttempt(agentId, intent), options);
   }
 
   getFeishuSetupAttempt(accessToken: string, attemptId: string, options?: RequestOptions): Promise<FeishuSetupAttempt> {
-    return this.#request(
-      feishuSetupAttemptPath(attemptId),
-      FeishuSetupAttemptSchema,
-      {
-        headers: { authorization: `Bearer ${accessToken}` },
-      },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.getFeishuSetupAttempt(attemptId), options);
   }
 
   cancelFeishuSetupAttempt(
@@ -580,15 +392,7 @@ export class OpenTagApi {
     attemptId: string,
     options?: RequestOptions,
   ): Promise<FeishuSetupAttempt> {
-    return this.#request(
-      `${feishuSetupAttemptPath(attemptId)}/cancel`,
-      FeishuSetupAttemptSchema,
-      {
-        method: "POST",
-        headers: { authorization: `Bearer ${accessToken}` },
-      },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.cancelFeishuSetupAttempt(attemptId), options);
   }
 
   startSlackOAuth(
@@ -597,16 +401,7 @@ export class OpenTagApi {
     input: StartSlackOAuthRequest,
     options?: RequestOptions,
   ): Promise<StartSlackOAuthResponse> {
-    return this.#request(
-      agentSlackOAuthStartPath(agentId),
-      StartSlackOAuthResponseSchema,
-      {
-        method: "POST",
-        body: JSON.stringify(input),
-        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
-      },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.startSlackOAuth(agentId, input), options);
   }
 
   getImBindingDiagnostics(
@@ -614,58 +409,25 @@ export class OpenTagApi {
     imBindingId: string,
     options?: RequestOptions,
   ): Promise<ImBindingDiagnostics> {
-    return this.#request(
-      imBindingDiagnosticsPath(imBindingId),
-      ImBindingDiagnosticsSchema,
-      {
-        headers: { authorization: `Bearer ${accessToken}`, [PROVIDER_CLI_REASON_V2_HEADER]: "2" },
-      },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.getImBindingDiagnostics(imBindingId), options);
   }
 
   disableImBinding(accessToken: string, imBindingId: string, options?: RequestOptions): Promise<void> {
-    return this.#requestNoContent(
-      imBindingDisablePath(imBindingId),
-      {
-        method: "POST",
-        headers: { authorization: `Bearer ${accessToken}` },
-      },
-      options,
-    );
+    return this.#requestNoContentAccount(accessToken, accountApiEndpoints.disableImBinding(imBindingId), options);
   }
 
   // ------------------------------------------------------------------ MCP management
 
   listMcpServers(accessToken: string, options?: RequestOptions): Promise<ListMCPServersResponse> {
-    return this.#request(
-      mcpServersPath(),
-      ListMCPServersResponseSchema,
-      { headers: { authorization: `Bearer ${accessToken}` } },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.listMcpServers(), options);
   }
 
   createMcpServer(accessToken: string, input: CreateMCPServerRequest, options?: RequestOptions): Promise<MCPServer> {
-    return this.#request(
-      mcpServersPath(),
-      MCPServerSchema,
-      {
-        method: "POST",
-        body: JSON.stringify(input),
-        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
-      },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.createMcpServer(input), options);
   }
 
   getMcpServer(accessToken: string, mcpServerId: string, options?: RequestOptions): Promise<MCPServerDetail> {
-    return this.#request(
-      mcpServerPath(mcpServerId),
-      MCPServerDetailSchema,
-      { headers: { authorization: `Bearer ${accessToken}` } },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.getMcpServer(mcpServerId), options);
   }
 
   updateMcpServer(
@@ -674,24 +436,11 @@ export class OpenTagApi {
     input: UpdateMCPServerRequest,
     options?: RequestOptions,
   ): Promise<MCPServer> {
-    return this.#request(
-      mcpServerPath(mcpServerId),
-      MCPServerSchema,
-      {
-        method: "PATCH",
-        body: JSON.stringify(input),
-        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
-      },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.updateMcpServer(mcpServerId, input), options);
   }
 
   removeMcpServer(accessToken: string, mcpServerId: string, options?: RequestOptions): Promise<void> {
-    return this.#requestNoContent(
-      mcpServerPath(mcpServerId),
-      { method: "DELETE", headers: { authorization: `Bearer ${accessToken}` } },
-      options,
-    );
+    return this.#requestNoContentAccount(accessToken, accountApiEndpoints.removeMcpServer(mcpServerId), options);
   }
 
   listAgentMcpServers(
@@ -699,12 +448,7 @@ export class OpenTagApi {
     agentId: string,
     options?: RequestOptions,
   ): Promise<ListAgentMCPServersResponse> {
-    return this.#request(
-      agentMcpServersPath(agentId),
-      ListAgentMCPServersResponseSchema,
-      { headers: { authorization: `Bearer ${accessToken}` } },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.listAgentMcpServers(agentId), options);
   }
 
   listAvailableMcpServers(
@@ -712,12 +456,7 @@ export class OpenTagApi {
     agentId: string,
     options?: RequestOptions,
   ): Promise<ListAvailableMCPServersResponse> {
-    return this.#request(
-      `${agentMcpServersPath(agentId)}/available`,
-      ListAvailableMCPServersResponseSchema,
-      { headers: { authorization: `Bearer ${accessToken}` } },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.listAvailableMcpServers(agentId), options);
   }
 
   attachMcpServer(
@@ -726,16 +465,7 @@ export class OpenTagApi {
     input: AttachMCPServerRequest,
     options?: RequestOptions,
   ): Promise<MCPAgentServer> {
-    return this.#request(
-      agentMcpServersPath(agentId),
-      MCPAgentServerSchema,
-      {
-        method: "POST",
-        body: JSON.stringify(input),
-        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
-      },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.attachMcpServer(agentId, input), options);
   }
 
   updateAgentMcpServer(
@@ -745,22 +475,17 @@ export class OpenTagApi {
     input: UpdateMCPBindingRequest,
     options?: RequestOptions,
   ): Promise<MCPAgentServer> {
-    return this.#request(
-      agentMcpServerPath(agentId, mcpServerId),
-      MCPAgentServerSchema,
-      {
-        method: "PATCH",
-        body: JSON.stringify(input),
-        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
-      },
+    return this.#requestAccount(
+      accessToken,
+      accountApiEndpoints.updateAgentMcpServer(agentId, mcpServerId, input),
       options,
     );
   }
 
   detachMcpServer(accessToken: string, agentId: string, mcpServerId: string, options?: RequestOptions): Promise<void> {
-    return this.#requestNoContent(
-      agentMcpServerPath(agentId, mcpServerId),
-      { method: "DELETE", headers: { authorization: `Bearer ${accessToken}` } },
+    return this.#requestNoContentAccount(
+      accessToken,
+      accountApiEndpoints.detachMcpServer(agentId, mcpServerId),
       options,
     );
   }
@@ -772,14 +497,9 @@ export class OpenTagApi {
     input: SetMCPAuthorizationRequest,
     options?: RequestOptions,
   ): Promise<MCPAgentServer> {
-    return this.#request(
-      agentMcpAuthorizationPath(agentId, mcpServerId),
-      MCPAgentServerSchema,
-      {
-        method: "PUT",
-        body: JSON.stringify(input),
-        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
-      },
+    return this.#requestAccount(
+      accessToken,
+      accountApiEndpoints.setMcpAuthorization(agentId, mcpServerId, input),
       options,
     );
   }
@@ -790,19 +510,9 @@ export class OpenTagApi {
     mcpServerId: string,
     options?: RequestOptions & { expectedOAuthState?: string },
   ): Promise<MCPAgentServer> {
-    return this.#request(
-      agentMcpAuthorizationPath(agentId, mcpServerId),
-      MCPAgentServerSchema,
-      {
-        method: "DELETE",
-        ...(options?.expectedOAuthState !== undefined
-          ? { body: JSON.stringify({ expectedOAuthState: options.expectedOAuthState }) }
-          : {}),
-        headers: {
-          authorization: `Bearer ${accessToken}`,
-          ...(options?.expectedOAuthState !== undefined ? { "content-type": "application/json" } : {}),
-        },
-      },
+    return this.#requestAccount(
+      accessToken,
+      accountApiEndpoints.revokeMcpAuthorization(agentId, mcpServerId, options?.expectedOAuthState),
       options,
     );
   }
@@ -814,16 +524,7 @@ export class OpenTagApi {
     input: StartMCPOAuthRequest = {},
     options?: RequestOptions,
   ): Promise<StartMCPOAuthResponse> {
-    return this.#request(
-      agentMcpAuthorizationOAuthPath(agentId, mcpServerId),
-      StartMCPOAuthResponseSchema,
-      {
-        method: "POST",
-        body: JSON.stringify(input),
-        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
-      },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.startMcpOAuth(agentId, mcpServerId, input), options);
   }
 
   probeMcpServer(
@@ -832,12 +533,7 @@ export class OpenTagApi {
     mcpServerId: string,
     options?: RequestOptions,
   ): Promise<MCPProbeResponse> {
-    return this.#request(
-      agentMcpProbePath(agentId, mcpServerId),
-      MCPProbeResponseSchema,
-      { method: "POST", headers: { authorization: `Bearer ${accessToken}` } },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.probeMcpServer(agentId, mcpServerId), options);
   }
 
   async openImResource(
@@ -964,21 +660,11 @@ export class OpenTagApi {
   // ------------------------------------------------------------------ Agent Skills
 
   listAgentSkills(accessToken: string, agentId: string, options?: RequestOptions): Promise<ListAgentSkillsResponse> {
-    return this.#request(
-      agentSkillsPath(agentId),
-      ListAgentSkillsResponseSchema,
-      { headers: { authorization: `Bearer ${accessToken}` } },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.listAgentSkills(agentId), options);
   }
 
   getAgentSkill(accessToken: string, agentId: string, skillId: string, options?: RequestOptions): Promise<SkillDetail> {
-    return this.#request(
-      agentSkillPath(agentId, skillId),
-      SkillDetailSchema,
-      { headers: { authorization: `Bearer ${accessToken}` } },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.getAgentSkill(agentId, skillId), options);
   }
 
   uploadAgentSkill(
@@ -1025,11 +711,7 @@ export class OpenTagApi {
   }
 
   removeAgentSkill(accessToken: string, agentId: string, skillId: string, options?: RequestOptions): Promise<void> {
-    return this.#requestNoContent(
-      agentSkillPath(agentId, skillId),
-      { method: "DELETE", headers: { authorization: `Bearer ${accessToken}` } },
-      options,
-    );
+    return this.#requestNoContentAccount(accessToken, accountApiEndpoints.removeAgentSkill(agentId, skillId), options);
   }
 
   openAgentSkillBundle(accessToken: string, agentId: string, skillId: string, options?: RequestOptions) {
@@ -1103,12 +785,7 @@ export class OpenTagApi {
   }
 
   listSkillPresets(accessToken: string, agentId: string, options?: RequestOptions): Promise<ListSkillPresetsResponse> {
-    return this.#request(
-      agentSkillPresetsPath(agentId),
-      ListSkillPresetsResponseSchema,
-      { headers: { authorization: `Bearer ${accessToken}` } },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.listSkillPresets(agentId), options);
   }
 
   installSkillPreset(
@@ -1117,16 +794,7 @@ export class OpenTagApi {
     presetName: string,
     options?: RequestOptions,
   ): Promise<InstallSkillPresetResponse> {
-    return this.#request(
-      agentSkillPresetInstallPath(agentId, presetName),
-      InstallSkillPresetResponseSchema,
-      {
-        method: "POST",
-        body: "{}",
-        headers: { authorization: `Bearer ${accessToken}`, "content-type": "application/json" },
-      },
-      options,
-    );
+    return this.#requestAccount(accessToken, accountApiEndpoints.installSkillPreset(agentId, presetName), options);
   }
 
   listRuntimeSkillPresets(proof: string, options?: RequestOptions): Promise<ListSkillPresetsResponse> {
@@ -1475,6 +1143,40 @@ export class OpenTagApi {
       runtimeAgentMcpServerOAuthStatusPath(mcpServerId),
       SelfMCPOAuthStatusSchema,
       { headers: { [SESSION_CLI_PROOF_HEADER]: proof } },
+      options,
+    );
+  }
+
+  #requestAccount<T>(accessToken: string, endpoint: AccountApiEndpoint<T>, options?: RequestOptions): Promise<T> {
+    return this.#request(
+      endpoint.path,
+      endpoint.schema,
+      toAccountApiRequestInit(endpoint, { authorization: `Bearer ${accessToken}` }),
+      options,
+    );
+  }
+
+  #requestOptionalAccount<T>(
+    accessToken: string,
+    endpoint: AccountApiEndpoint<T>,
+    options?: RequestOptions,
+  ): Promise<T | undefined> {
+    return this.#requestOptional(
+      endpoint.path,
+      endpoint.schema,
+      toAccountApiRequestInit(endpoint, { authorization: `Bearer ${accessToken}` }),
+      options,
+    );
+  }
+
+  #requestNoContentAccount(
+    accessToken: string,
+    endpoint: AccountApiNoContentEndpoint,
+    options?: RequestOptions,
+  ): Promise<void> {
+    return this.#requestNoContent(
+      endpoint.path,
+      toAccountApiRequestInit(endpoint, { authorization: `Bearer ${accessToken}` }),
       options,
     );
   }

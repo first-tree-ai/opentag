@@ -70,6 +70,13 @@ Run, and Provider-protocol identities.
 
 ## Data and Cancellation Boundaries
 
+Providers share internal configuration-merge and protocol-value utilities, while retaining their
+validation limits and failure cleanup. Codex and Claude Code accept opaque nonempty MCP gateway
+bearers and absolute HTTP(S) URLs without rewriting the URL. Pi's managed extension launch facts
+remain stricter: bounded URL and token, the MCP gateway path, no URL credentials/query/fragment,
+no unknown fields, and an `otmg_` token. These adapter-specific contracts do not change the common
+Runtime API.
+
 - Contract JSON accepts finite numbers, primitives, dense arrays, and plain or
   null-prototype data objects with enumerable data properties only.
 - Dates, maps, sets, class instances, accessors, symbols, sparse arrays, custom

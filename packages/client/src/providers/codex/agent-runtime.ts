@@ -20,6 +20,18 @@ import {
   isTransientProviderProbeFailure,
 } from "../../agent-runtime/probe-failure.js";
 import { providerFailureCode, providerProcessFailureCode } from "../../agent-runtime/provider-failure.js";
+import type { Deferred } from "../../agent-runtime/provider-utils.js";
+import {
+  deferred,
+  isNonNegativeNumber,
+  parseHttpMcpGateway,
+  protocolError,
+  toJsonValue as protocolJsonValue,
+  providerConfiguration,
+  record,
+  requireProtocolString,
+  requireRecord,
+} from "../../agent-runtime/provider-utils.js";
 import {
   AGENT_RUNTIME_CONTRACT_VERSION,
   type AgentAbortRequest,
@@ -163,12 +175,6 @@ export interface CodexAgentRuntimeFactoryOptions {
   }>;
 }
 
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  readonly resolve: (value: T) => void;
-  readonly reject: (error: Error) => void;
-}
-
 type CodexEnvelope =
   | { readonly type: "notification"; readonly message: CodexAppServerMessage }
   | { readonly type: "request"; readonly request: CodexAppServerRequest };
@@ -215,7 +221,6 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
   #eventTail: Promise<void> = Promise.resolve();
   #buffering = false;
   #buffered: CodexEnvelope[] = [];
-  #context?: AgentProviderRunContext;
   #providerTurnId?: string;
   #turnIdReady?: Deferred<string>;
   #terminal?: Deferred<ParsedTurn>;
@@ -252,7 +257,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     request: AgentPromptRequest,
     context: AgentProviderRunContext,
   ): Promise<AgentProviderRunResult> {
-    this.#context = context;
+    this.providerContext = context;
     this.#providerTurnId = undefined;
     this.#providerFailure = undefined;
     this.#latestUsage = undefined;
@@ -310,7 +315,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       this.#preTurnAbort = undefined;
       this.#buffering = false;
       this.#buffered = [];
-      this.#context = undefined;
+      this.providerContext = undefined;
       this.#providerTurnId = undefined;
       this.#turnIdReady = undefined;
       this.#terminal = undefined;
@@ -360,14 +365,14 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     }
     const turnId = await this.#activeTurnId();
     /* v8 ignore next 3 -- Base validates expectedRunId before entering the Provider hook. */
-    if (request.expectedRunId !== this.#context?.runId) {
+    if (request.expectedRunId !== this.providerContext?.runId) {
       throw new AgentRuntimeError("run_mismatch", "abort no longer belongs to the active Codex turn");
     }
     await this.#client.interrupt(this.#threadId, turnId);
   }
 
   protected async closeProvider(): Promise<void> {
-    if (this.#context) {
+    if (this.providerContext) {
       const failure = new AgentProviderError("provider_error", "Codex runtime is closing");
       this.#providerFailure ??= failure;
       this.#terminal?.reject(failure);
@@ -568,7 +573,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
   }
 
   async #executeHostedTool(call: CodexDynamicToolCall): Promise<CodexDynamicToolResult> {
-    const context = this.#context;
+    const context = this.providerContext;
     const hostedTools = this.#hostedTools;
     if (!context || !hostedTools || call.namespace !== null || call.threadId !== this.#threadId) {
       return { success: false, text: "OpenTag tool request is not authorized for this run." };
@@ -602,7 +607,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
   #enqueue(envelope: CodexEnvelope): void {
     this.#claimTerminalAtIngress(envelope);
     const next = this.#eventTail.then(async () => {
-      if (!this.#context) return;
+      if (!this.providerContext) return;
       if (this.#buffering) {
         this.#buffered.push(envelope);
         return;
@@ -625,7 +630,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
         : new AgentProviderError("provider_error", "Codex process failed");
     }
     if (typeof method !== "string") throw protocolError("Codex emitted a notification without a method");
-    const context = this.#requireContext();
+    const context = this.requireProviderContext();
     const params = record(message.params);
 
     if (method === "warning" || method === "configWarning") {
@@ -713,7 +718,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
   }
 
   async #handleItem(method: "item/completed" | "item/started", item: Record<string, unknown>): Promise<void> {
-    const context = this.#requireContext();
+    const context = this.requireProviderContext();
     const id = requireString(item.id, `${method} item has no id`);
     const type = requireString(item.type, `${method} item has no type`);
     if (type === "agentMessage") {
@@ -752,7 +757,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     if (this.#activeMessages.has(messageId)) return;
     if (this.#completedMessages.has(messageId)) throw protocolError("Codex reused a completed agent message ID");
     this.#activeMessages.set(messageId, "");
-    await this.#requireContext().emit({ type: "message_started", messageId });
+    await this.requireProviderContext().emit({ type: "message_started", messageId });
   }
 
   async #ensureToolStarted(toolCallId: string, name: string, input: Record<string, unknown>): Promise<void> {
@@ -762,11 +767,11 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       return;
     }
     this.#activeTools.set(toolCallId, name);
-    await this.#requireContext().emit({ type: "tool_started", toolCallId, name, input: toJsonValue(input) });
+    await this.requireProviderContext().emit({ type: "tool_started", toolCallId, name, input: toJsonValue(input) });
   }
 
   async #completeOpenLifecycles(turn: ParsedTurn): Promise<void> {
-    const context = this.#requireContext();
+    const context = this.requireProviderContext();
     const terminalItems = new Map(
       turn.items.filter((item) => typeof item.id === "string").map((item) => [item.id as string, item] as const),
     );
@@ -796,7 +801,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
   }
 
   async #handleServerRequest(request: CodexAppServerRequest): Promise<void> {
-    const context = this.#requireContext();
+    const context = this.requireProviderContext();
     const params = requireRecord(request.params, `${request.method} has invalid params`);
     if (params.threadId !== undefined && params.threadId !== this.#threadId) {
       throw protocolError("Codex server request belongs to another thread");
@@ -896,24 +901,18 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     if (turnId !== this.#providerTurnId) throw protocolError("Codex turn identity changed during a run");
   }
 
-  #requireContext(): AgentProviderRunContext {
-    /* v8 ignore next -- #enqueue drops envelopes before a Run context exists. */
-    if (!this.#context) throw protocolError("Codex event arrived without an active run");
-    return this.#context;
-  }
-
   #claimTerminalAtIngress(envelope: CodexEnvelope): void {
     if (
       envelope.type !== "notification" ||
       envelope.message.method !== "turn/completed" ||
       this.#buffering ||
-      !this.#context
+      !this.providerContext
     ) {
       return;
     }
     try {
       this.#parseCompletedTurn(record(envelope.message.params));
-      this.#context.claimTerminal();
+      this.providerContext.claimTerminal();
     } catch (error) {
       logger.debug({ code: "terminal_message_invalid", error: String(error) }, "Codex terminal message was rejected");
       // The serial event queue preserves the authoritative fail-closed error path.
@@ -1415,11 +1414,8 @@ function validateFactoryRequest(request: CreateAgentRuntimeRequest): void {
   }
 }
 
-function validateConfiguration(configuration: AgentRunConfiguration | undefined): void {
-  if (!configuration) return;
-  assertConfigurationStrings(configuration);
-  parseProviderConfiguration(configuration.provider);
-}
+const { validate: validateConfiguration, merge: mergeConfiguration } =
+  providerConfiguration(parseProviderConfiguration);
 
 function parseProviderConfiguration(value: JsonValue | undefined): CodexProviderConfiguration {
   if (value === undefined) return {};
@@ -1452,23 +1448,7 @@ function parseProviderConfiguration(value: JsonValue | undefined): CodexProvider
  * would otherwise present the execution bearer to whatever it names.
  */
 function parseMcpGatewayConfiguration(value: unknown): CodexMcpGatewayEndpoint | undefined {
-  if (value === undefined) return undefined;
-  const object = record(value);
-  if (!object) throw new AgentRuntimeError("configuration_invalid", "Codex mcpGateway must be an object");
-  const { url, token } = object;
-  if (typeof url !== "string" || typeof token !== "string" || token.length === 0) {
-    throw new AgentRuntimeError("configuration_invalid", "Codex mcpGateway requires a url and a token");
-  }
-  let protocol: string;
-  try {
-    protocol = new URL(url).protocol;
-  } catch {
-    throw new AgentRuntimeError("configuration_invalid", "Codex mcpGateway url must be absolute");
-  }
-  if (protocol !== "https:" && protocol !== "http:") {
-    throw new AgentRuntimeError("configuration_invalid", "Codex mcpGateway url must be http or https");
-  }
-  return { url, token };
+  return parseHttpMcpGateway(value, "Codex");
 }
 
 /**
@@ -1525,29 +1505,6 @@ function hostedToolsHash(definitions: AgentHostedTools["definitions"]): string {
     1,
     [...definitions].sort((left, right) => left.name.localeCompare(right.name)).map(codexDynamicToolDefinition),
   ]);
-}
-
-function mergeConfiguration(
-  base: AgentRunConfiguration | undefined,
-  override: AgentRunConfiguration | undefined,
-): AgentRunConfiguration | undefined {
-  if (!base) {
-    validateConfiguration(override);
-    return override;
-  }
-  if (!override) return base;
-  // Structurally JSON, but an interface has no index signature, so TypeScript needs the assertion.
-  const provider = {
-    ...parseProviderConfiguration(base.provider),
-    ...parseProviderConfiguration(override.provider),
-  } as JsonValue;
-  const merged: AgentRunConfiguration = {
-    ...base,
-    ...override,
-    provider,
-  };
-  validateConfiguration(merged);
-  return merged;
 }
 
 function codexInput(items: readonly { readonly type: "text"; readonly text: string }[]): Array<Record<string, string>> {
@@ -1816,49 +1773,11 @@ function wireInteractionId(id: number | string): string {
 }
 
 function toJsonValue(value: unknown): JsonValue {
-  assertJsonValue(value, "Codex event payload");
-  return value as JsonValue;
-}
-
-function deferred<T>(): Deferred<T> {
-  let resolveValue!: (value: T) => void;
-  let rejectValue!: (error: Error) => void;
-  const promise = new Promise<T>((resolve, reject) => {
-    resolveValue = resolve;
-    rejectValue = reject;
-  });
-  return { promise, resolve: resolveValue, reject: rejectValue };
-}
-
-function protocolError(message: string): AgentProviderError {
-  return new AgentProviderError("provider_protocol_error", message);
-}
-
-function record(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
-function requireRecord(value: unknown, message: string): Record<string, unknown> {
-  const result = record(value);
-  if (!result) throw protocolError(message);
-  return result;
+  return protocolJsonValue(value, "Codex event payload");
 }
 
 function requireString(value: unknown, message: string, allowEmpty = false): string {
-  if (
-    typeof value !== "string" ||
-    (!allowEmpty && value.length === 0) ||
-    Buffer.byteLength(value, "utf8") > 1024 * 1024
-  ) {
-    throw protocolError(message);
-  }
-  return value;
-}
-
-function isNonNegativeNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+  return requireProtocolString(value, message, allowEmpty, 1024 * 1024);
 }
 
 function codexRunFailure(error: Error): Error {

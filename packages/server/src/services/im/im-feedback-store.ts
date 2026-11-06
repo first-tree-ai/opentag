@@ -501,10 +501,15 @@ function terminalFeedbackUpdate(target: FeedbackTarget, report: TurnReportReques
     state,
     desiredReaction: failed ? ("warning" as const) : ("none" as const),
     errorCode: failed ? report.errorReason : null,
-    // Only the recovery buttons need a card. The kind of failure is unknown when the target is created,
-    // so this is the one format change, and only while nothing has been sent in the stored format.
-    ...(state === "workspace_blocked" && !target.cardMessageId && ["none", "pending"].includes(target.cardState)
-      ? { messageFormat: "interactive_v1" as const }
+    // Only the recovery buttons need a card, and the kind of failure is unknown when the target is created.
+    // This is the one format change. The caller's snapshot is unlocked, so the decision reads the live row:
+    // a worker that has already started sending keeps the format it sent.
+    ...(state === "workspace_blocked"
+      ? {
+          messageFormat: sql<
+            FeedbackTarget["messageFormat"]
+          >`case when ${imFeedbackTargets.cardMessageId} is null and ${imFeedbackTargets.cardState} in ('none','pending') then 'interactive_v1' else ${imFeedbackTargets.messageFormat} end`,
+        }
       : {}),
     effects: report.executionEffects,
     reportHash: report.resultHash,

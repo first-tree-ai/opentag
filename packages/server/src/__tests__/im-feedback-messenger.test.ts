@@ -1,10 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { WebAPIRateLimitedError } from "@slack/web-api";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ExternalCallPolicy, ExternalCallPolicyError } from "../services/im/external-call-policy.js";
 import { FeedbackCooldownStorageError, ImFeedbackMessenger } from "../services/im/im-feedback-messenger.js";
 import type { FeedbackTarget } from "../services/im/im-feedback-store.js";
 import type { ImBindingService } from "../services/im-bindings/im-binding-service.js";
+import { deferred } from "./support/deferred.js";
 
 const mocks = vi.hoisted(() => ({
   slack: {
@@ -91,7 +92,7 @@ function target(provider: "slack" | "feishu" = "slack"): FeedbackTarget {
     updatedAt: now,
   };
 }
-function harness() {
+function harness(policy = new ExternalCallPolicy({ allowedHosts: [] })) {
   const slack = vi.fn(async () => ({
     generation: 2,
     botAccessToken: "unit-token",
@@ -109,7 +110,6 @@ function harness() {
     getSlackConnectionMaterial: slack,
     getFeishuConnectionMaterial: feishu,
   } as unknown as ImBindingService;
-  const policy = new ExternalCallPolicy({ allowedHosts: [] });
   const cooldown = {
     slackCooldownRemaining: vi.fn(async () => 0 as number | undefined),
     deferSlackInstallation: vi.fn(async () => true),
@@ -147,7 +147,45 @@ beforeEach(() => {
   mocks.feishu.im.v1.messageReaction.create.mockResolvedValue({ code: 0 });
   mocks.feishu.im.v1.messageReaction.delete.mockResolvedValue({ code: 0 });
 });
+afterEach(() => vi.useRealTimers());
 describe("native feedback transport", () => {
+  it.each(["slack", "feishu"] as const)(
+    "keeps %s cards retryable after capacity rejection or a queue deadline",
+    async (provider) => {
+      vi.useFakeTimers();
+      for (const mode of ["overflow", "deadline"] as const) {
+        const policy = new ExternalCallPolicy({ maxConcurrency: 1, maxQueueDepth: mode === "overflow" ? 0 : 1 });
+        const busy = deferred();
+        const entered = deferred();
+        const occupying = policy.run(
+          "busy",
+          async () => {
+            entered.resolve();
+            await busy.promise;
+          },
+          { timeoutMs: 60_000 },
+        );
+        await entered.promise;
+        try {
+          const h = harness(policy);
+          const result = h.messenger.post(target(provider)).then(
+            () => undefined,
+            (error: unknown) => error,
+          );
+          await vi.advanceTimersByTimeAsync(mode === "overflow" ? 0 : 8_000);
+          expect(await result).toMatchObject({
+            code: mode === "overflow" ? "IM_PROVIDER_OVERLOADED" : "IM_PROVIDER_CALL_DEADLINE_EXCEEDED",
+            knownNotApplied: true,
+          });
+          expect(mocks.slack.chat.postMessage).not.toHaveBeenCalled();
+          expect(mocks.feishu.im.v1.message.reply).not.toHaveBeenCalled();
+        } finally {
+          busy.resolve();
+          await occupying;
+        }
+      }
+    },
+  );
   it.each(["slack", "feishu"] as const)(
     "sends, edits and finds %s text without an interactive card",
     async (provider) => {
@@ -311,6 +349,25 @@ describe("native feedback transport", () => {
     );
     await expect(h.messenger.post(target())).rejects.toMatchObject({ knownNotApplied: true, retryAfterMs: 30_000 });
     expect(mocks.slack.chat.postMessage).not.toHaveBeenCalled();
+  });
+  it("retains an in-flight deadline as unknown rather than retrying a possibly applied post", async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    const sent = deferred<{ ok: boolean; channel: string; ts: string }>();
+    mocks.slack.chat.postMessage.mockImplementation(() => sent.promise);
+    const result = h.messenger.post(target()).then(
+      () => undefined,
+      (error: unknown) => error,
+    );
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(mocks.slack.chat.postMessage).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(await result).toMatchObject({ code: "IM_FEEDBACK_SEND_UNKNOWN", knownNotApplied: false });
+    } finally {
+      sent.resolve({ ok: true, channel: "channel", ts: "late" });
+      await vi.runAllTimersAsync();
+    }
   });
   it("privately answers an ineligible Slack click without replacing or posting a public card", async () => {
     await harness().messenger.respondSlack({

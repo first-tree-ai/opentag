@@ -505,6 +505,8 @@ function postFailure(error: unknown): FeedbackProviderError {
   if (error instanceof FeedbackProviderError) return error;
   if (error instanceof ExternalCallPolicyError && error.phase === "circuit")
     return new FeedbackProviderError("IM_PROVIDER_CIRCUIT_OPEN", true, false, 30_000);
+  if (error instanceof ExternalCallPolicyError && error.phase === "admission")
+    return new FeedbackProviderError(error.code, true);
   const code = slackErrorCode(error);
   const permanent = [
     "invalid_auth",

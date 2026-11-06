@@ -136,8 +136,7 @@ Credential/desired-state/claim reads and SQL settlement failures reach the nativ
 they do not consume the Slack failure budget or disable a healthy target. Only the status API call
 uses provider failure handling. Existing claim expiry and the next scan recover uncertain SQL work.
 
-Local automated coverage includes real PostgreSQL state, concurrent connections and mocked Slack HTTP.
-It does not establish deployment or native visual acceptance. Follow the
+Automated checks with mocked Slack HTTP do not establish deployment or native visual acceptance. Follow the
 [Slack regression checklist](https://github.com/first-tree-ai/opentag/blob/main/testing/regression/slack.md)
 and use an explicitly authorized test installation before claiming a native result.
 

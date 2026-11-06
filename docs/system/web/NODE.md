@@ -36,7 +36,7 @@ them with the [UX review rubric](ux-review-rubric.md).
   ([roster](web-ui-contract.md#layout-and-responsive-acceptance)).
 - **Don't guess or pretend**: a cron rule with no exact plain form is shown as
   written ([schedules](web-ui-contract.md#schedule-handoff-feedback)); roster
-  rows hold their last settled status and flag only a late row
+  rows render the current Server status snapshot directly, with no browser hold
   ([roster](web-ui-contract.md#layout-and-responsive-acceptance)).
 - **One command, no prompts, safe to rerun**: the connect command repairs or
   confirms an existing computer instead of adding a duplicate

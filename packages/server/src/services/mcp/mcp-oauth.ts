@@ -20,6 +20,8 @@ const AS_WELL_KNOWN = "/.well-known/oauth-authorization-server";
 const OIDC_WELL_KNOWN = "/.well-known/openid-configuration";
 
 export const MCP_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
+export const MCP_OAUTH_METADATA_CACHE_TTL_MS = 5 * 60 * 1000;
+const MAX_METADATA_CACHE_ENTRIES = 256;
 
 export interface McpProtectedResourceMetadata {
   resource: string;
@@ -100,6 +102,13 @@ export interface McpOAuthOptions {
   clientName?: string;
   softwareId?: string;
   softwareVersion?: string;
+  /**
+   * How long a discovered authorization server metadata document stays cached in memory per
+   * `(accountId, issuer)` before the next lookup re-fetches it; `0` disables caching.
+   */
+  metadataCacheTtlMs?: number;
+  /** Test seam for the metadata cache's clock. */
+  now?: () => Date;
 }
 
 export interface McpClientCredentials {
@@ -375,11 +384,27 @@ export function parseBearerChallenge(header: string | null): { resourceMetadata?
   };
 }
 
+function cloneAuthorizationServerMetadata(metadata: McpAuthorizationServerMetadata): McpAuthorizationServerMetadata {
+  return {
+    ...metadata,
+    scopesSupported: [...metadata.scopesSupported],
+    ...(metadata.codeChallengeMethodsSupported
+      ? { codeChallengeMethodsSupported: [...metadata.codeChallengeMethodsSupported] }
+      : {}),
+    ...(metadata.grantTypesSupported ? { grantTypesSupported: [...metadata.grantTypesSupported] } : {}),
+    tokenEndpointAuthMethodsSupported: [...metadata.tokenEndpointAuthMethodsSupported],
+  };
+}
+
 export class McpOAuthClient {
   /** This deployment's public origin, used for the fixed callback and the CIMD document URL. */
   readonly publicUrl: string;
   readonly #clientName: string;
   readonly #fetcher: McpOutboundFetcher;
+  readonly #metadataCache = new Map<string, { expiresAtMs: number; metadata: McpAuthorizationServerMetadata }>();
+  readonly #metadataCacheTtlMs: number;
+  readonly #metadataInflight = new Map<string, Promise<McpAuthorizationServerMetadata>>();
+  readonly #now: () => Date;
   readonly #publicUrl: string;
   readonly #softwareId: string;
   readonly #softwareVersion: string;
@@ -387,6 +412,8 @@ export class McpOAuthClient {
   constructor(options: McpOAuthOptions) {
     this.#clientName = options.clientName ?? "openTag";
     this.#fetcher = options.fetcher;
+    this.#metadataCacheTtlMs = Math.max(0, options.metadataCacheTtlMs ?? MCP_OAUTH_METADATA_CACHE_TTL_MS);
+    this.#now = options.now ?? (() => new Date());
     this.#publicUrl = options.publicUrl.replace(/\/+$/, "");
     this.#softwareId = options.softwareId ?? "opentag";
     this.#softwareVersion = options.softwareVersion ?? "1";
@@ -479,14 +506,50 @@ export class McpOAuthClient {
     signal?: AbortSignal,
   ): Promise<McpAuthorizationServerMetadata> {
     if (issuer === FEISHU_MCP_ISSUER) {
-      return {
-        ...FEISHU_OAUTH_METADATA,
-        scopesSupported: [...FEISHU_OAUTH_METADATA.scopesSupported],
-        codeChallengeMethodsSupported: [...(FEISHU_OAUTH_METADATA.codeChallengeMethodsSupported ?? [])],
-        grantTypesSupported: [...(FEISHU_OAUTH_METADATA.grantTypesSupported ?? [])],
-        tokenEndpointAuthMethodsSupported: [...FEISHU_OAUTH_METADATA.tokenEndpointAuthMethodsSupported],
-      };
+      return cloneAuthorizationServerMetadata(FEISHU_OAUTH_METADATA);
     }
+    const cacheKey = this.#metadataCacheKey(accountId, issuer);
+    // Callers that pass an explicit abort signal (such as `start` with its discovery deadline)
+    // revalidate against the live document and refresh the cache on success; background token
+    // refresh and callback redemption reuse the bounded TTL cache and coalesce concurrent lookups.
+    if (signal !== undefined) {
+      const metadata = await this.#fetchAuthorizationServerMetadata(accountId, issuer, signal);
+      this.#storeCachedMetadata(cacheKey, metadata);
+      return cloneAuthorizationServerMetadata(metadata);
+    }
+    const nowMs = this.#now().getTime();
+    if (this.#metadataCacheTtlMs > 0) {
+      const cached = this.#metadataCache.get(cacheKey);
+      if (cached && cached.expiresAtMs > nowMs) {
+        return cloneAuthorizationServerMetadata(cached.metadata);
+      }
+      if (cached) {
+        this.#metadataCache.delete(cacheKey);
+      }
+    }
+    let inflight = this.#metadataInflight.get(cacheKey);
+    if (!inflight) {
+      inflight = this.#fetchAuthorizationServerMetadata(accountId, issuer)
+        .then((metadata) => {
+          this.#storeCachedMetadata(cacheKey, metadata);
+          return metadata;
+        })
+        .finally(() => {
+          if (this.#metadataInflight.get(cacheKey) === inflight) {
+            this.#metadataInflight.delete(cacheKey);
+          }
+        });
+      this.#metadataInflight.set(cacheKey, inflight);
+    }
+    const metadata = await inflight;
+    return cloneAuthorizationServerMetadata(metadata);
+  }
+
+  async #fetchAuthorizationServerMetadata(
+    accountId: string,
+    issuer: string,
+    signal?: AbortSignal,
+  ): Promise<McpAuthorizationServerMetadata> {
     // The same opt-in the outbound gate enforces, so a loopback endpoint is only usable where the
     // deployment already permits dialing one.
     const allowLoopback = this.#fetcher.policy.allowLoopback;
@@ -527,6 +590,28 @@ export class McpOAuthClient {
       throw upstream("The authorization server metadata could not be read", { tried: result.failures.slice(0, 4) });
     }
     return result.value;
+  }
+
+  #storeCachedMetadata(cacheKey: string, metadata: McpAuthorizationServerMetadata): void {
+    if (this.#metadataCacheTtlMs <= 0) return;
+    const nowMs = this.#now().getTime();
+    if (this.#metadataCache.size >= MAX_METADATA_CACHE_ENTRIES && !this.#metadataCache.has(cacheKey)) {
+      for (const [key, entry] of this.#metadataCache) {
+        if (entry.expiresAtMs <= nowMs) {
+          this.#metadataCache.delete(key);
+        }
+      }
+      if (this.#metadataCache.size >= MAX_METADATA_CACHE_ENTRIES) {
+        const oldestKey = this.#metadataCache.keys().next().value;
+        if (oldestKey !== undefined) {
+          this.#metadataCache.delete(oldestKey);
+        }
+      }
+    }
+    this.#metadataCache.set(cacheKey, {
+      expiresAtMs: nowMs + this.#metadataCacheTtlMs,
+      metadata: cloneAuthorizationServerMetadata(metadata),
+    });
   }
 
   /** RFC 7591 dynamic registration. This is a remote web application, not a native one. */
@@ -718,7 +803,7 @@ export class McpOAuthClient {
       code_verifier: input.codeVerifier,
       resource: input.resource,
     });
-    return this.#tokenRequest(accountId, metadata.tokenEndpoint, body, input.client);
+    return this.#tokenRequest(accountId, metadata, body, input.client);
   }
 
   async refreshAccessToken(
@@ -731,12 +816,16 @@ export class McpOAuthClient {
       refresh_token: input.refreshToken,
       resource: input.resource,
     });
-    return this.#tokenRequest(accountId, metadata.tokenEndpoint, body, input.client);
+    return this.#tokenRequest(accountId, metadata, body, input.client);
+  }
+
+  #metadataCacheKey(accountId: string, issuer: string): string {
+    return `${accountId}\u0000${issuer}`;
   }
 
   async #tokenRequest(
     accountId: string,
-    tokenEndpoint: string,
+    metadata: McpAuthorizationServerMetadata,
     body: URLSearchParams,
     client: McpClientCredentials,
   ): Promise<McpTokenSet> {
@@ -744,34 +833,58 @@ export class McpOAuthClient {
       accept: "application/json",
       "content-type": "application/x-www-form-urlencoded",
     };
-    if (client.clientSecret && client.tokenEndpointAuthMethod === "client_secret_basic") {
-      headers.authorization = `Basic ${Buffer.from(`${client.clientId}:${client.clientSecret}`).toString("base64")}`;
-    } else {
-      body.set("client_id", client.clientId);
-      // HubSpot's token endpoint accepts only this method; sending a Basic header there is refused.
-      if (client.clientSecret && client.tokenEndpointAuthMethod === "client_secret_post") {
-        body.set("client_secret", client.clientSecret);
-      }
-    }
-    const response = await this.#fetcher.fetchOutbound(accountId, tokenEndpoint, {
-      method: "POST",
-      headers,
-      body: body.toString(),
-    });
-    if (response.status < 200 || response.status >= 300) {
-      let document: Record<string, unknown> = {};
-      if (response.text.trim().length > 0) {
-        try {
-          document = json(response);
-        } catch {
-          document = {};
+    applyTokenClientAuth(headers, body, client);
+    try {
+      const response = await this.#fetcher.fetchOutbound(accountId, metadata.tokenEndpoint, {
+        method: "POST",
+        headers,
+        body: body.toString(),
+      });
+      if (response.status < 200 || response.status >= 300) {
+        let document: Record<string, unknown> = {};
+        if (response.text.trim().length > 0) {
+          try {
+            document = json(response);
+          } catch {
+            document = {};
+          }
         }
+        throw tokenRequestFailure(response.status, document);
       }
-      throw tokenRequestFailure(response.status, document);
+      const document = response.text.trim().length > 0 ? json(response) : {};
+      return parseTokenResponse(document, response.status);
+    } catch (error) {
+      // Evict the cached metadata on any token endpoint failure that reached (or attempted to dial)
+      // the endpoint so a rotated or moved token endpoint is re-fetched from the discovery document
+      // on the next attempt rather than pinned for the remainder of the TTL. Skip eviction when a
+      // local pre-dispatch refusal (`dispatched === false`, such as the per-Account concurrency cap)
+      // prevented the request from ever leaving the process.
+      if (shouldEvictMetadataOnTokenError(error)) {
+        this.#metadataCache.delete(this.#metadataCacheKey(accountId, metadata.issuer));
+      }
+      throw error;
     }
-    const document = response.text.trim().length > 0 ? json(response) : {};
-    return parseTokenResponse(document, response.status);
   }
+}
+
+function applyTokenClientAuth(
+  headers: Record<string, string>,
+  body: URLSearchParams,
+  client: McpClientCredentials,
+): void {
+  if (client.clientSecret && client.tokenEndpointAuthMethod === "client_secret_basic") {
+    headers.authorization = `Basic ${Buffer.from(`${client.clientId}:${client.clientSecret}`).toString("base64")}`;
+    return;
+  }
+  body.set("client_id", client.clientId);
+  // HubSpot's token endpoint accepts only this method; sending a Basic header there is refused.
+  if (client.clientSecret && client.tokenEndpointAuthMethod === "client_secret_post") {
+    body.set("client_secret", client.clientSecret);
+  }
+}
+
+function shouldEvictMetadataOnTokenError(error: unknown): boolean {
+  return !(error instanceof McpServiceError && error.detail?.dispatched === false);
 }
 
 const FEISHU_INVALID_GRANT_CODES = new Set([20003, 20004, 20024, 20025, 20026, 20037, 20063, 20064, 20073, 20074]);

@@ -5,17 +5,10 @@ description: "The shared Skill contract: ownership, stored archives, object stor
 
 # Agent Skills
 
-> **Status: the shared contract is the source of truth; the lanes build against it.**
->
-> The `@opentag/shared` runtime schemas, constants, HTTP path templates, the manifest parser, and this
-> document are delivered in `packages/shared/src/skill.ts`, `packages/shared/src/skill-manifest.ts`,
-> and their tests. The Server lane delivers the `agent_skills` table and its migration, the
-> `SkillObjectStore` and its S3 adapter, the three HTTP surfaces, and the deferred orphan-object
-> collector. The Web lane delivers the Skills page. The Client/CLI lane delivers `opentag skill push`
-> and runtime materialization on a Computer.
->
-> Where this document and the shipped contract differ, the contract wins; a change to it is a change
-> to this design.
+The shared runtime schemas and manifest parser in `packages/shared/src/skill.ts` and
+`packages/shared/src/skill-manifest.ts` define the wire and archive contracts. The Server owns
+storage and authorization, the Web owns management, and the Client/CLI owns upload and runtime
+materialization. Update this page with a contract change; resolve disagreements from source evidence.
 
 ## What this feature is for
 
@@ -313,7 +306,7 @@ A Skill no longer has to be built locally and uploaded. An operator can paste a 
 the open skills ecosystem into an Agent's Skills page, preview what it publishes, and install a
 selection; the result is an ordinary Skill with `source = url_install`. The whole feature — accepted
 source forms, discovery rules, the outbound policy, and the per-item install semantics — is specified
-in `docs/design/skill-remote-install.md`; what matters here is that it adds no new storage, no new
+in [Installing Skills from a remote source](skill-remote-install.md); what matters here is that it adds no new storage, no new
 row shape, and no new runtime behaviour. Installation goes through `SkillService.upload`, so the
 archive contract and the per-Agent ownership rules above apply unchanged, and a name conflict is
 skipped rather than replaced.

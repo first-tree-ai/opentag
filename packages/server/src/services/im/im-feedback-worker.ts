@@ -25,7 +25,9 @@ export class ImFeedbackWorker {
   ) {}
   start(): void {
     this.#stopped = false;
-    this.#timer ??= setInterval(() => void this.runOnce(), 1_000);
+    this.#timer ??= setInterval(() => {
+      if (!this.#pass) void this.runOnce();
+    }, 1_000);
     this.#timer.unref?.();
   }
   async stop(): Promise<void> {
@@ -35,18 +37,47 @@ export class ImFeedbackWorker {
     await this.#pass;
   }
   runOnce(): Promise<void> {
-    this.#pass ??= this.#pump()
+    this.#pass ??= this.runPass()
       .catch(() => this.options.logger.warn({ code: "IM_FEEDBACK_PUMP_FAILED" }, "IM feedback worker failed"))
       .finally(() => {
         this.#pass = undefined;
       });
     return this.#pass;
   }
-  async #pump(): Promise<void> {
-    for (let i = 0; i < 8 && !this.#stopped; i++) {
-      const target = await this.options.store.claim();
-      if (!target) return;
-      await this.#apply(target);
+  async runPass(): Promise<void> {
+    const active = new Map<FeedbackTarget, Promise<void>>();
+    let halted = false;
+    const halt = () => {
+      halted = true;
+    };
+    let claimed = 0;
+    try {
+      while (claimed < 8 && !this.#stopped && !halted) {
+        const target = await this.options.store.claim([...active.keys()]);
+        if (!target) {
+          if (active.size === 0) break;
+          await Promise.race(active.values());
+          continue;
+        }
+        claimed++;
+        if (this.#stopped || halted) {
+          await this.options.store.settle(target, { delayMs: 0 });
+          break;
+        }
+        const task = this.#apply(target, halt)
+          .catch(() => {
+            halted = true;
+            this.options.logger.warn(
+              { code: "IM_FEEDBACK_PUMP_FAILED", feedbackId: target.id },
+              "IM feedback target failed",
+            );
+          })
+          .finally(() => active.delete(target));
+        active.set(target, task);
+        if (active.size >= 4) await Promise.race(active.values());
+      }
+    } finally {
+      await Promise.all(active.values());
     }
   }
   async #owns(target: FeedbackTarget): Promise<boolean> {
@@ -55,7 +86,7 @@ export class ImFeedbackWorker {
     await this.options.store.settle(target, authorized ? { delayMs: 0 } : { stale: true });
     return false;
   }
-  async #apply(original: FeedbackTarget): Promise<void> {
+  async #apply(original: FeedbackTarget, halt: () => void): Promise<void> {
     let target = original;
     let retryAfterMs = 0;
     try {
@@ -69,6 +100,7 @@ export class ImFeedbackWorker {
       else if (target.cardState === "pending" && !target.cardMessageId) await this.#publish(target, reaction);
       else await this.#settleKnown(target, reaction);
     } catch (error) {
+      if (error instanceof FeedbackCooldownStorageError) halt();
       await this.#failure(target, error, retryAfterMs);
     }
   }

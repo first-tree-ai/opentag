@@ -5,27 +5,14 @@ description: "Per-Agent MCP Server bindings and authorization, the MCP gateway, 
 
 # MCP Server integration
 
-> **Status: the management plane and local Claude Code/Codex runtime paths are delivered. This
-> change adds local Pi and Cloud Pi runtime paths; deployment acceptance remains separate.**
->
-> The management plane provides MCP (Model Context Protocol) Server definitions, per-Agent bindings
-> with per-Agent overrides, per-Agent authorization (anonymous / Bearer / OAuth), capability probing,
-> and background token maintenance, in the Server API, the Web UI, and the CLI.
->
-> Runtime delivery is [the MCP gateway](#the-mcp-gateway): one inbound Streamable HTTP endpoint on
-> the openTag Server that an Agent's provider CLI mounts like any other remote MCP Server. **No
-> upstream credential is ever delivered to a Provider** — the gateway resolves the Agent's own
-> authorization row and calls upstream itself.
->
-> The Cloud sandbox runs Pi only. It uses the same execution-scoped MCP gateway token and Server
-> authorization as a local Computer, through its existing Runtime Credential Relay. Claude Code
-> and Codex do not run inside the Cloud sandbox.
->
-> An earlier revision of this page proposed a different path — push credentials down to the Client
-> and inject the real authorization header through a local `127.0.0.1` loopback proxy. The gateway
-> replaces it, and inverts the trust: the Client holds only a token that is worthless outside one
-> live execution, and every upstream secret stays behind the outbound URL policy, the per-Account
-> concurrency budget, and the response bounds already described below.
+The management plane provides Server definitions, per-Agent bindings and overrides, authorization,
+capability probing, and background token maintenance through the Server API, Web, and CLI.
+Runtime delivery uses [the MCP gateway](#the-mcp-gateway): the Provider receives an execution-scoped
+token while the Server resolves upstream authorization and applies outbound URL policy, per-Account
+concurrency, and response bounds. Upstream credentials never reach the Provider or a Client-side
+credential proxy. Local execution supports Claude Code, Codex, and Pi; Cloud runs Pi only and obtains
+its gateway token through the Runtime Credential Relay. Deployment acceptance remains separate from
+management-plane readiness.
 
 ## What this feature is for
 
@@ -667,6 +654,10 @@ reaches metadata and registration requests; deadline/cancellation stops candidat
 prevents late SQL preparation from starting registration or publishing a flow. SQL statements retain
 the infrastructure timeouts. A timed-out registration is not automatically replayed.
 Refresh uses the credential's recorded issuer rather than running this selection again.
+Authorization server metadata is cached in memory per `(Account, issuer)` for five minutes and
+coalesced across concurrent lookups during callbacks and refreshes, while each `start` revalidates
+against the live document and refreshes that cache entry, and any token endpoint failure evicts the
+entry so the next attempt re-fetches discovery metadata.
 
 Users never choose an issuer — it is not a user-facing concept. The detail view shows which one is
 currently selected.
@@ -849,7 +840,7 @@ so those Agents must authorize again.
   have developer B's approval land a credential on A's Agent.
 - Re-starting a flow overwrites `state`, its deadline, the PKCE verifier, and the binding in one
   write, so the previous callback URL is immediately unusable. The callback then validates the
-  browser binding, then existence, then expiry, and expiry. A state CAS admits one code exchange, and final settlement clears the flow.
+  browser binding, then existence, then expiry. A state CAS admits one code exchange, and final settlement clears the flow.
   Starting a newer flow or disconnecting fences late results; no provider I/O holds a transaction.
   Failed discovery marks only its still-unpublished, credentialless pending root as failed. A failed
   one-time code exchange clears that attempt and records `MCP_OAUTH_FAILED`; an existing usable
@@ -933,7 +924,8 @@ A row that has no refresh token at all simply lapses to `expired` at its deadlin
 to spend and retrying forever would achieve nothing.
 
 The scan joins `agents` and excludes deleted ones, so a soft-deleted Agent's credential is not
-renewed. The worker keeps one current pass Promise. Stop closes scan/probe/refresh admission and
+renewed. Pending probes and due refreshes within a pass run with bounded concurrency (`4` by
+default, matching the per-Account outbound concurrency budget). The worker keeps one current pass Promise. Stop closes scan/probe/refresh admission and
 waits for that actual pass; an already-issued token exchange still finishes and persists under
 its existing generation/claim fences. Stop checks between rows avoid draining the rest of the
 100-row batch. SQL disposal follows that drain. Repeated stop calls join the same work; manual
@@ -1686,8 +1678,8 @@ full directory and clears the category highlight; choosing a category clears sea
 the shared Kumo Select with the same order and selection. Buttons and the More trigger use the shared neutral-grey filter
 selection recipe, preserving the application's typography, control size, and focus behavior.
 
-The current management layout is preserved: service identity opens settings, the list shows connection
-status and Connect/Reconnect, and tools and advanced connection settings are reached from settings.
+Connector identity opens Details, and recovery actions follow the current [Web UI contract](#web-ui).
+Preset Details omits a tool browser and advanced settings; Custom Details retains its editable settings.
 The identity subtitle uses the matched catalog entry's localized purpose description. Custom connectors
 use their user-supplied description, with the effective URL as the fallback when the description is blank.
 Subtitles stay on one line with truncation and a full-text tooltip; the complete URL remains in settings.
@@ -1819,8 +1811,8 @@ meaning. Review both locales in Discover. Descriptions summarize documented MCP
 capabilities within the preset's configured scopes; they do not promise every feature of the
 provider's product or establish successful openTag authorization.
 
-The description review on 2026-10-10 used the following provider documentation. These references
-record provenance for maintainers without adding links or explanatory copy to the cards.
+The following provider documentation records capability provenance for maintainers without adding
+links or explanatory copy to the cards.
 
 | Entries | Official capability reference |
 | --- | --- |

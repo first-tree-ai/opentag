@@ -172,7 +172,7 @@ describe("a scheduled Run that failed", () => {
     expect(h.post).toHaveBeenCalledOnce();
     const [target, text, requestId] = h.post.mock.calls[0] as unknown as [Record<string, unknown>, string, string];
     expect(target).toMatchObject({ bindingId: value.bindingId, channelId: "oc_channel", threadKey: null });
-    expect(requestId).toBe(messageId);
+    expect(requestId).not.toBe(messageId);
     expect(text).toContain("failed before finishing");
     expect(text).toContain("Some of its work may already have happened");
     expect(text).toContain("2026-09-28 09:00:00 +08:00 (Asia/Shanghai)");
@@ -310,7 +310,7 @@ function makeScheduler(notifier: ScheduledFailureNotifier, dispatch: ReturnType<
   });
 }
 
-async function insertEverySchedule(value: Seed, nextTriggerAt = T0): Promise<string> {
+async function insertEverySchedule(value: Seed, nextTriggerAt = T0, timezone = "UTC"): Promise<string> {
   const [row] = await db.database
     .insert(agentSchedules)
     .values({
@@ -319,7 +319,7 @@ async function insertEverySchedule(value: Seed, nextTriggerAt = T0): Promise<str
       name: "Hourly check",
       prompt: "Check the build.",
       schedule: { kind: "every", intervalSeconds: 3600, anchorAt: T0.toISOString() },
-      timezone: "UTC",
+      timezone,
       enabled: true,
       nextTriggerAt,
       revision: 1,
@@ -448,6 +448,81 @@ describe("a scheduled occurrence that never ran", () => {
     expect((h.post.mock.calls[0] as unknown as [unknown, string])[1]).toContain("the schedule has been turned off");
     const [row] = await db.database.select().from(agentSchedules).where(eq(agentSchedules.id, scheduleId));
     expect(row?.enabled).toBe(false);
+    await scheduler.stop();
+  });
+
+  it("still reports a schedule turned off for a timezone that cannot be formatted", async () => {
+    const value = await seed();
+    await insertEverySchedule(value, T0, "Mars/Olympus_Mons");
+    const h = harness();
+    const dispatch = vi.fn();
+    const scheduler = makeScheduler(h.notifier, dispatch);
+    await scheduler.scanNow();
+    await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce());
+    const text = (h.post.mock.calls[0] as unknown as [unknown, string])[1];
+    expect(text).toContain("the schedule has been turned off");
+    expect(text).toContain("Code: invalid_schedule");
+    expect(text).toContain(`${T0.toISOString()} (UTC)`);
+    expect(dispatch).not.toHaveBeenCalled();
+    await scheduler.stop();
+  });
+
+  it("reports both an unconfirmed hand-off and its later Run failure under distinct Feishu identities", async () => {
+    const value = await seed();
+    await insertEverySchedule(value);
+    const h = harness();
+    const scheduler = makeScheduler(
+      h.notifier,
+      vi.fn(async () => ({ outcome: "unknown", code: "delivery_timeout" })),
+    );
+    await occurrence(scheduler, 0);
+    expect(h.post).toHaveBeenCalledOnce();
+    const missRequestId = (h.post.mock.calls[0] as unknown as [unknown, string, string])[2];
+
+    // The hand-off in doubt had landed, and that Run now fails. Its report carries the same message.
+    await db.database
+      .insert(sessionMessages)
+      .values({
+        id: missRequestId,
+        scheduledOrigin: {
+          scheduleId: randomUUID(),
+          scheduledFor: T0.toISOString(),
+          timezone: "UTC",
+          name: "Hourly check",
+        },
+        targetSessionId: value.sessionId,
+        content: "Check the build.",
+        contentHash: "a".repeat(64),
+        lastOutcome: "unknown",
+      })
+      .onConflictDoNothing();
+    await expect(h.notifier.notifyRunOutcome(report(value, missRequestId))).resolves.toBe("notified");
+    expect(h.post).toHaveBeenCalledTimes(2);
+    const failureRequestId = (h.post.mock.calls[1] as unknown as [unknown, string, string])[2];
+    expect(failureRequestId).not.toBe(missRequestId);
+    // Report retries keep one identity, so Feishu still drops a repeat of the failure itself.
+    await h.notifier.notifyRunOutcome(report(value, missRequestId));
+    expect((h.post.mock.calls[2] as unknown as [unknown, string, string])[2]).toBe(failureRequestId);
+    await scheduler.stop();
+  });
+
+  it("posts once for a dispatch that keeps throwing, because the summary records the cause", async () => {
+    const value = await seed();
+    const scheduleId = await insertEverySchedule(value);
+    const h = harness();
+    const scheduler = makeScheduler(
+      h.notifier,
+      vi.fn(async () => {
+        throw new Error("boom");
+      }),
+    );
+    await occurrence(scheduler, 0);
+    expect(h.post).toHaveBeenCalledOnce();
+    const [row] = await db.database.select().from(agentSchedules).where(eq(agentSchedules.id, scheduleId));
+    expect(row?.lastDispatch).toMatchObject({ outcome: "unknown", code: "dispatch_failed" });
+    await occurrence(scheduler, 1);
+    await occurrence(scheduler, 2);
+    expect(h.post).toHaveBeenCalledOnce();
     await scheduler.stop();
   });
 

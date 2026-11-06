@@ -98,6 +98,7 @@ const DEFAULT_SCAN_INTERVAL_MS = 5_000;
 const DEFAULT_SCAN_LIMIT = 100;
 const DEFAULT_MAX_IN_FLIGHT = 100;
 const DEFAULT_CLAIM_WINDOW_MS = 30_000;
+const DISPATCH_FAILED_CODE = "dispatch_failed";
 
 function toDate(value: Date | string): Date {
   return value instanceof Date ? value : new Date(value);
@@ -300,9 +301,37 @@ export class ScheduleScheduler {
         },
         "Scheduled message dispatch failed",
       );
-      this.#noticeMiss(occurrence, { outcome: "unknown", code: "dispatch_failed", previous });
+      await this.#recordDispatchFailure(snapshot);
+      this.#noticeMiss(occurrence, { outcome: "unknown", code: DISPATCH_FAILED_CODE, previous });
     } finally {
       this.#inFlight.delete(entry);
+    }
+  }
+
+  /**
+   * A thrown dispatch recorded nothing, so the summary still holds the claim's code-less `unknown`.
+   * Record the cause there, or the next occurrence's comparison would count it as a new one.
+   */
+  async #recordDispatchFailure(snapshot: ScheduledMessageSnapshot): Promise<void> {
+    try {
+      await this.#database
+        .update(agentSchedules)
+        .set({
+          lastDispatch: sql`${agentSchedules.lastDispatch} || jsonb_build_object('code', ${DISPATCH_FAILED_CODE}::text)`,
+        })
+        .where(
+          and(
+            eq(agentSchedules.id, snapshot.scheduleId),
+            sql`${agentSchedules.lastDispatch} ->> 'scheduledFor' = ${snapshot.origin.scheduledFor}`,
+            sql`${agentSchedules.lastDispatch} ->> 'outcome' = 'unknown'`,
+            sql`${agentSchedules.lastDispatch} ->> 'code' is null`,
+          ),
+        );
+    } catch {
+      this.#options.logger?.error(
+        { event: "schedule.dispatch_failure_write_failed", scheduleId: snapshot.scheduleId },
+        "Scheduled dispatch failure could not be recorded",
+      );
     }
   }
 

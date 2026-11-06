@@ -10,6 +10,7 @@ import type {
   RunOutcomeNoticeStatus,
   RunOutcomeNotifier,
 } from "../sessions/session-collaboration-service.js";
+import { runOutcomeNoticeMessageId } from "../sessions/session-run-outcome-notice.js";
 import { formatScheduleLocal } from "./calculator.js";
 import { scheduleDetailUrl } from "./service.js";
 
@@ -82,10 +83,19 @@ function plainName(name: string): string {
   return name.replace(/\s+/gu, " ").trim().replace(/</gu, "‹").replace(/>/gu, "›");
 }
 
+/** A schedule can be turned off for its stored timezone, so that timezone may not format. */
+function scheduledTimeText(occurrence: ScheduledOccurrence): string {
+  try {
+    return `${formatScheduleLocal(new Date(occurrence.scheduledFor), occurrence.timezone)} (${occurrence.timezone})`;
+  } catch {
+    return `${occurrence.scheduledFor} (UTC)`;
+  }
+}
+
 function occurrenceLines(occurrence: ScheduledOccurrence, publicUrl: string, code: string, body: string): string {
   return [
     body,
-    `Scheduled time: ${formatScheduleLocal(new Date(occurrence.scheduledFor), occurrence.timezone)} (${occurrence.timezone})`,
+    `Scheduled time: ${scheduledTimeText(occurrence)}`,
     `Code: ${code}`,
     `Details: ${scheduleDetailUrl(publicUrl, occurrence.agentId, occurrence.scheduleId)}`,
   ].join("\n");
@@ -168,7 +178,10 @@ export class ScheduledFailureNotifier implements RunOutcomeNotifier, ScheduledMi
     // A stopped Run was stopped by someone; only the reporting placement may speak for the Session.
     if (input.outcome === "cancelled" || !scheduled.authorized) return "ignored";
     const text = renderRunFailure(scheduled.occurrence, input.outcome, input.reason, this.#options.publicUrl);
-    const sent = await this.#send(scheduled.occurrence.targetSessionId, text, input.messageId);
+    // Not the message id: that identifies this occurrence's earlier "may not have run" notice, and
+    // Feishu would drop this failure as a repeat of it.
+    const requestId = runOutcomeNoticeMessageId(input.childSessionId, input.messageId);
+    const sent = await this.#send(scheduled.occurrence.targetSessionId, text, requestId);
     if (sent.status === "sent") return "notified";
     return sent.status === "retry" ? "retry" : "ignored";
   }

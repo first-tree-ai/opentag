@@ -81,7 +81,7 @@ stores no IM feedback state and adds no column.
 | The Run failed, timed out, or was interrupted | `provider_unavailable`, `turn_timeout` | Every time, with a warning that some work may already have happened |
 | The Client rejected the message | `configuration_unsupported` | The first time per cause |
 | It never started | `runtime_unavailable`, `client_busy`, `late` | The first time per cause |
-| The hand-off's fate is unknown | `delivery_timeout`, `delivery_uncertain` | The first time per cause, worded as "may not have run" |
+| The hand-off's fate is unknown | `delivery_timeout`, `delivery_uncertain`, `dispatch_failed` | The first time per cause, worded as "may not have run" |
 | The schedule turned itself off | `target_invalid`, `invalid_schedule` | Once, saying it stays off until resumed |
 | Someone stopped or changed it | `turn_cancelled`, `schedule_disabled`, `agent_suspended` | Nothing |
 
@@ -92,7 +92,8 @@ keeps recurring posts every time, as it would for repeated human messages.
 Delivery is best effort:
 
 - A failed Run uses the Client's or Runner's existing outcome report. The Server answers `retry` while the send can safely
-  be repeated. Feishu drops a repeat of the same occurrence through its request `uuid`; a lost report acknowledgement can
+  be repeated. Feishu drops a repeat of the same notice through its request `uuid`, which differs from the occurrence's
+  "may not have run" notice, so a hand-off that was in doubt and then failed posts both. A lost report acknowledgement can
   duplicate the message on Slack. A Feishu thread is reached by replying to its latest known message; with none known, the
   message is dropped rather than posted to the chat.
 - A missed occurrence has no reporter. The Server tries up to three times in-process, so a Server stop or a long IM outage

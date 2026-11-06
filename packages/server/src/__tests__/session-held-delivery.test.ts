@@ -408,11 +408,65 @@ describe("Server-held Session message delivery", () => {
     expect(s.frames.map((frame) => frame.content.text)).toEqual(rows.map((row) => row.content));
   });
 
+  it("keeps a committed accepted when expiry acts on a stale held snapshot", async () => {
+    const s = await stack();
+    s.state.answer = "client_busy";
+    const sent = await s.send("receipt wins");
+    const service = new SessionService(db.database);
+    const [snapshot] = await service.sweepHeldMessages(null, 10);
+    if (!snapshot) throw new Error("expected a held message");
+
+    await service.recordMessageOutcome({
+      messageId: sent.messageId,
+      attemptCount: snapshot.attemptCount,
+      outcome: "accepted",
+    });
+    await s.collaboration.expireHeld(snapshot);
+
+    expect(await s.row(sent.messageId)).toMatchObject({ lastOutcome: "accepted", lastErrorCode: null });
+    await expect(s.row(deliveryFailureNoticeMessageId(sent.messageId))).resolves.toBeUndefined();
+  });
+
+  it("expires an unchanged held snapshot and sends its notice", async () => {
+    const s = await stack();
+    s.state.answer = "client_busy";
+    const sent = await s.send("nothing answered");
+    const [snapshot] = await new SessionService(db.database).sweepHeldMessages(null, 10);
+    if (!snapshot) throw new Error("expected a held message");
+
+    await s.collaboration.expireHeld(snapshot);
+
+    expect(await s.row(sent.messageId)).toMatchObject({
+      lastOutcome: "unreachable",
+      lastErrorCode: "delivery_expired",
+    });
+    expect(await s.row(deliveryFailureNoticeMessageId(sent.messageId))).toBeDefined();
+  });
+
+  it("waits to expire a message whose latest attempt may still answer", async () => {
+    let now = Date.now();
+    const s = await stack({ now: () => now });
+    s.state.answer = "client_busy";
+    const sent = await s.send("attempted just now");
+    await db.database
+      .update(sessionMessages)
+      .set({ createdAt: new Date(now - SESSION_MESSAGE_HELD_TTL_MS - 1_000), lastAttemptAt: new Date(now - 1_000) })
+      .where(eq(sessionMessages.id, sent.messageId));
+
+    await s.worker.sweep();
+    expect(await s.row(sent.messageId)).toMatchObject({ lastErrorCode: "delivery_held" });
+
+    now += 2 * 60_000;
+    await s.worker.sweep();
+    expect(await s.row(sent.messageId)).toMatchObject({ lastErrorCode: "delivery_expired" });
+  });
+
   it("sweeps past a row it cannot settle and reads each page once", async () => {
     const now = Date.now();
     const row = (n: number) => ({
       id: `id-${n}`,
       createdAt: new Date(now - SESSION_MESSAGE_HELD_TTL_MS - 1_000 + n),
+      lastAttemptAt: new Date(now - SESSION_MESSAGE_HELD_TTL_MS),
       computerId: "computer",
     });
     const pages = [Array.from({ length: 100 }, (_, n) => row(n)), [row(100)]];

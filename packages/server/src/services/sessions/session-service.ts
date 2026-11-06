@@ -153,6 +153,7 @@ export interface HeldSessionMessage {
   content: string;
   attemptCount: number;
   createdAt: Date;
+  lastAttemptAt: Date | null;
 }
 
 export interface HeldSweepMessage extends HeldSessionMessage {
@@ -164,6 +165,12 @@ export interface HeldSweepCursor {
   id: string;
 }
 
+/**
+ * Literal, not bound: PostgreSQL can only prove a partial index applies when it sees these values, and a
+ * prepared statement's generic plan would not.
+ */
+const HELD_ROW = sql`${sessionMessages.lastOutcome} = 'unknown' and ${sessionMessages.lastErrorCode} = ${sql.raw(`'${SESSION_MESSAGE_HELD_CODE}'`)}`;
+
 const HELD_MESSAGE_COLUMNS = {
   id: sessionMessages.id,
   sourceSessionId: sessionMessages.sourceSessionId,
@@ -174,6 +181,7 @@ const HELD_MESSAGE_COLUMNS = {
   content: sessionMessages.content,
   attemptCount: sessionMessages.attemptCount,
   createdAt: sessionMessages.createdAt,
+  lastAttemptAt: sessionMessages.lastAttemptAt,
 };
 
 export interface SessionMessageAttempt {
@@ -678,9 +686,8 @@ export class SessionService {
   }
 
   /**
-   * Active Sessions on a Computer that hold messages, one page at a time. Each candidate is a probe of the
-   * target and time index, so the cost follows the Computer's Sessions, not the size of the message table.
-   * A message to an ended target is settled by the sweep instead.
+   * Active Sessions on a Computer that hold messages, one page at a time, through the held index. A message
+   * to an ended target is settled by the sweep instead.
    */
   async listHeldTargetsForComputer(
     computerId: string,
@@ -689,24 +696,20 @@ export class SessionService {
     limit: number,
   ): Promise<string[]> {
     const rows = await this.#database
-      .select({ id: sessions.id })
-      .from(sessionPlacements)
-      .innerJoin(sessions, eq(sessions.id, sessionPlacements.sessionId))
+      .selectDistinct({ id: sessionMessages.targetSessionId })
+      .from(sessionMessages)
+      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessionMessages.targetSessionId))
+      .innerJoin(sessions, eq(sessions.id, sessionMessages.targetSessionId))
       .where(
         and(
+          HELD_ROW,
+          gt(sessionMessages.createdAt, cutoff),
           eq(sessionPlacements.computerId, computerId),
           isNull(sessions.endedAt),
-          afterTargetSessionId ? gt(sessions.id, afterTargetSessionId) : undefined,
-          sql`exists (
-            select 1 from ${sessionMessages}
-            where ${sessionMessages.targetSessionId} = ${sessions.id}
-              and ${sessionMessages.createdAt} > ${cutoff.toISOString()}::timestamptz
-              and ${sessionMessages.lastOutcome} = 'unknown'
-              and ${sessionMessages.lastErrorCode} = ${SESSION_MESSAGE_HELD_CODE}
-          )`,
+          afterTargetSessionId ? gt(sessionMessages.targetSessionId, afterTargetSessionId) : undefined,
         ),
       )
-      .orderBy(sessions.id)
+      .orderBy(sessionMessages.targetSessionId)
       .limit(limit);
     return rows.map(({ id }) => id);
   }
@@ -731,9 +734,8 @@ export class SessionService {
   }
 
   /**
-   * One page of every held message in `(created_at, id)` order. A sequential scan by design: there is no
-   * index on the held state, so the sweep runs rarely and pages with a keyset, which also gets it past a
-   * row it could not settle.
+   * One page of every held message in `(created_at, id)` order through the held index. The keyset also gets
+   * the sweep past a row it could not settle.
    */
   async sweepHeldMessages(cursor: HeldSweepCursor | null, limit: number): Promise<HeldSweepMessage[]> {
     return this.#database
@@ -744,8 +746,7 @@ export class SessionService {
       .leftJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessionMessages.targetSessionId))
       .where(
         and(
-          eq(sessionMessages.lastOutcome, "unknown"),
-          eq(sessionMessages.lastErrorCode, SESSION_MESSAGE_HELD_CODE),
+          HELD_ROW,
           cursor
             ? sql`(${sessionMessages.createdAt}, ${sessionMessages.id}) > (${cursor.createdAt.toISOString()}::timestamptz, ${cursor.id}::uuid)`
             : undefined,
@@ -1042,6 +1043,8 @@ export class SessionService {
      * receipt can never overwrite a newer claim's summary. Never touches enabled/revision/next.
      */
     scheduleSummary?: { scheduleId: string; scheduledFor: string; attemptedAt: string };
+    /** Write only if the message is still held, so giving it up cannot replace a committed answer. */
+    expectHeld?: boolean;
   }): Promise<boolean> {
     return this.#database.transaction(async (transaction) => {
       const now = this.#now();
@@ -1056,6 +1059,12 @@ export class SessionService {
           and(
             eq(sessionMessages.id, input.messageId),
             eq(sessionMessages.attemptCount, input.attemptCount),
+            input.expectHeld
+              ? and(
+                  eq(sessionMessages.lastOutcome, "unknown"),
+                  eq(sessionMessages.lastErrorCode, SESSION_MESSAGE_HELD_CODE),
+                )
+              : undefined,
             // A scheduled Runner receipt is durable custody. A later dispatch timeout or
             // transport error cannot revoke that fact, even if authorization is still minting.
             input.outcome === "accepted"

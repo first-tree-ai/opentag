@@ -960,6 +960,7 @@ export class SessionCollaborationService {
         content: attempt.message.content,
         attemptCount,
         createdAt: attempt.message.createdAt,
+        lastAttemptAt: attempt.message.lastAttemptAt,
       },
       result.code ?? "target_unavailable",
     );
@@ -1268,6 +1269,7 @@ export class SessionCollaborationService {
       attemptCount,
       outcome,
       errorCode: code,
+      expectHeld: true,
       ...(message.scheduledOrigin
         ? {
             scheduleSummary: {

@@ -1,7 +1,7 @@
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import type { SessionCollaborationService } from "./session-collaboration-service.js";
 import { heldMessageCutoff } from "./session-held-delivery.js";
-import type { HeldSweepCursor, SessionService } from "./session-service.js";
+import type { HeldSweepCursor, HeldSweepMessage, SessionService } from "./session-service.js";
 
 const TARGET_PAGE_SIZE = 200;
 const MESSAGE_PAGE_SIZE = 200;
@@ -9,8 +9,13 @@ const SWEEP_PAGE_SIZE = 100;
 const TARGET_CONCURRENCY = 4;
 /** Only Computers holding messages are visited; this covers a Client that recovers without reconnecting. */
 const DEFAULT_FALLBACK_INTERVAL_MS = 60_000;
-/** The sweep scans the message table, so it runs rarely. A notice for an expired message can be this late. */
-const DEFAULT_SWEEP_INTERVAL_MS = 60 * 60_000;
+/** The sweep reads the held index. A notice for an expired message can be this late. */
+const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60_000;
+/**
+ * Longer than one attempt's reconcile and delivery timeouts together. A message attempted more recently may
+ * still get a receipt, even on another replica, so giving it up now could contradict that answer.
+ */
+const ATTEMPT_SETTLE_MS = 2 * 60_000;
 /** A Client finishes its own recovery shortly after it registers, so look again soon. */
 const DEFAULT_READY_FOLLOW_UPS_MS = [5_000, 20_000];
 
@@ -128,16 +133,25 @@ export class SessionHeldDeliveryWorker {
     let cursor: HeldSweepCursor | null = null;
     while (!this.#stopped) {
       const page = await this.#options.sessions.sweepHeldMessages(cursor, SWEEP_PAGE_SIZE);
-      for (const message of page) {
-        if (this.#stopped) return;
-        if (message.createdAt <= cutoff) await this.#options.collaboration.expireHeld(message);
-        else if (message.computerId) this.#pending.add(message.computerId);
-      }
+      for (const message of page) await this.#sweepMessage(message, cutoff);
       const last = page.at(-1);
       if (!last || page.length < SWEEP_PAGE_SIZE) break;
       cursor = { createdAt: last.createdAt, id: last.id };
     }
     this.#flushPending();
+  }
+
+  async #sweepMessage(message: HeldSweepMessage, cutoff: Date): Promise<void> {
+    if (this.#stopped) return;
+    if (message.createdAt > cutoff) {
+      if (message.computerId) this.#pending.add(message.computerId);
+      return;
+    }
+    if (!this.#attemptMayStillAnswer(message)) await this.#options.collaboration.expireHeld(message);
+  }
+
+  #attemptMayStillAnswer({ lastAttemptAt }: HeldSweepMessage): boolean {
+    return lastAttemptAt !== null && this.#now() - lastAttemptAt.getTime() < ATTEMPT_SETTLE_MS;
   }
 
   #flushPending(): void {

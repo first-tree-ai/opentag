@@ -176,9 +176,10 @@ Client is upgrading, restarting or full.
   by evaluating it again. A Client older than that fix answered with a false `accepted`, so a refusal from a connected
   Client is held only once it has negotiated `runtime.sessionRecovery`, which shipped just before the fix.
 - **Expiry and notices.** A held message older than 24 hours (`SESSION_MESSAGE_HELD_TTL_MS`, the IM ambient delivery TTL)
-  ends as `unreachable / delivery_expired`. A sweep at Server startup and every hour applies this, so a notice can be up to an hour late, and finds
-  held Computers after a Server restart. It is a sequential scan of `session_messages`, because `last_error_code` has no
-  index; every other held-delivery query uses the existing target and time index. A held message
+  ends as `unreachable / delivery_expired`. A sweep at Server startup and every 5 minutes applies this and finds held Computers after a Server restart,
+  reading the partial index `session_messages_held_idx`, which covers only held rows. A message attempted in the last 2
+  minutes waits for the next sweep, because that attempt may still get an answer, and the write applies only while the
+  row is still held, so a committed `accepted` is never replaced. A held message
   that ends in failure produces one notice to its sender, from the target, starting with
   `[openTag notice] Session message was not delivered` (`SESSION_DELIVERY_FAILURE_NOTICE_HEADER`), under a deterministic ID.
   The notice is held like any message. A failed notice is only logged, so two Sessions never exchange notices. A sender

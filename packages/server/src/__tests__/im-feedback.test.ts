@@ -227,6 +227,21 @@ describe("durable IM feedback", () => {
     await h.store.settle(target, { reaction: "working" });
     expect((await h.target()).claimId).toBeNull();
   });
+  it("repairs a cancelled task after an in-flight working reaction without creating a failure card", async () => {
+    const h = await fixture();
+    h.transport.reaction.mockImplementationOnce(async () => {
+      await h.finish("cancelled", "may_have_occurred");
+    });
+    await h.worker.runOnce();
+    expect(await h.target()).toMatchObject({
+      state: "completed",
+      appliedReaction: "none",
+      cardState: "none",
+      claimId: null,
+    });
+    expect(h.transport.reaction.mock.calls.map((args) => args[1])).toEqual(["working", "none"]);
+    expect(h.transport.post).not.toHaveBeenCalled();
+  });
   it.each(["slack", "feishu"] as const)("has only start/end reaction changes for %s", async (provider) => {
     const h = await fixture(provider);
     await h.worker.runOnce();
@@ -908,7 +923,7 @@ it.each(["reaction", "post"] as const)(
     const claim = vi.spyOn(h.store, "claim");
     h.transport[operation].mockRejectedValueOnce(new FeedbackCooldownStorageError(30_000));
     await h.worker.runOnce();
-    expect(claim).toHaveBeenCalledOnce();
+    expect((await Promise.all(claim.mock.results.map((result) => result.value))).filter(Boolean)).toHaveLength(1);
     expect(await h.target()).toMatchObject({
       cardState: "pending",
       cardMessageId: null,

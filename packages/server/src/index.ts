@@ -1117,6 +1117,7 @@ export async function startServer(): Promise<void> {
       activation: feishuConnections,
       onDiagnostic: reportDiagnostic,
       supervisor: backgroundFailureSupervisor,
+      publicUrl: config.publicUrl,
     });
     const agentSetupService = new AgentSetupService(database, agentService, feishuSetupService, {
       prepareComputer: async (input) => {

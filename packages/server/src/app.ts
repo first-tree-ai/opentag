@@ -43,6 +43,7 @@ import { registerComputerSkillRoutes } from "./api/computer-skills.js";
 import { registerComputerRoutes } from "./api/computers.js";
 import { type ErrorReportRoutesOptions, registerErrorReportRoutes } from "./api/error-reports.js";
 import { registerExecutionWebSocketRoutes } from "./api/execution-websockets.js";
+import { registerFeishuQrLinkRoute } from "./api/feishu-qr-link.js";
 import { registerGitHubIntegrationsRoutes } from "./api/github-integrations.js";
 import { registerImBindingRoutes } from "./api/im-bindings.js";
 import { registerImFeedbackRoutes } from "./api/im-feedback.js";
@@ -97,7 +98,11 @@ import type { ComputerAuthVerifier, ComputerService, MachineAuthService } from "
 import { GitHubConnectionServiceError } from "./services/github/index.js";
 import { type ImFeedbackActionsService, ImFeedbackServiceError } from "./services/im/im-feedback-actions.js";
 import type { ImResourceService } from "./services/im/index.js";
-import { type FeishuSetupService, feishuPublicFailure } from "./services/im-bindings/feishu/index.js";
+import {
+  FEISHU_QR_LINK_PATH_PREFIX,
+  type FeishuSetupService,
+  feishuPublicFailure,
+} from "./services/im-bindings/feishu/index.js";
 import {
   type ImBindingService,
   ImBindingServiceError,
@@ -280,7 +285,9 @@ export interface CreateAppOptions {
 }
 
 export function sanitizeRequestUrl(url: string): string {
-  return url.split("?", 1)[0] ?? "/";
+  const path = url.split("?", 1)[0] ?? "/";
+  // This token sits in the path, and it is all an anonymous phone needs to reach a live setup code.
+  return path.startsWith(FEISHU_QR_LINK_PATH_PREFIX) ? `${FEISHU_QR_LINK_PATH_PREFIX}[redacted]` : path;
 }
 
 function deploymentHeaders(deployment: CreateAppOptions["deployment"]): Record<string, string> {
@@ -1014,6 +1021,7 @@ export function createApp(options: CreateAppOptions = {}) {
     registerRunnerWorkspaceRoutes(app, options.runnerWorkspace);
   }
 
+  if (options.feishuSetupService) registerFeishuQrLinkRoute(app, options.feishuSetupService);
   if (options.webAppRoot) registerWebApp(app, options.webAppRoot);
 
   app.setNotFoundHandler((request, reply) =>

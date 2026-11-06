@@ -7,8 +7,10 @@ friendly time rule and relative next occurrence. Enabled state has a labelled st
 exhausted state stays explicit. Normal runtime receipt occupies no extra line. Exceptional/unconfirmed
 triggers show a short relative warning that opens details, without claiming task failure or completion.
 Relative times refresh locally each minute. When an enabled observed occurrence becomes due, summaries
-revalidate once for that schedule and timestamp; an unchanged past occurrence does not loop. No private
-prompt is read by the timer. Past observations read Was due, not a future time. Exact timezone-aware timestamps remain in titles; repeated timezone/year/seconds are
+revalidate at most once per minute tick and at most three times for that schedule and timestamp, because a
+due read can precede the Server's five-second scan and still report the previous time; advancing to a new
+occurrence restores that budget and three unchanged responses stop automatic reads. No private prompt is
+read by the timer. Past observations read Was due, not a future time. Exact timezone-aware timestamps remain in titles; repeated timezone/year/seconds are
 removed from the scan path. Complex cron stays literal; the Server remains the schedule calculator.
 
 Details prioritize instructions, friendly rule with timezone, next occurrence and provider/conversation
@@ -24,7 +26,7 @@ confirmation. Missing targets close; failed refresh blocks deletion until explic
 ## Current verification
 
 - `pnpm --filter @opentag/web test src/features/agents/agent-schedules-section.test.tsx src/__tests__/i18n-catalog.test.ts src/im/brand-naming-guard.test.ts src/ui/kumo-contract.test.ts`: 62 tests pass.
-  This covers the due tick following the Server's next time, one refresh per unchanged observation,
+  This covers the due tick following the Server's next time, bounded confirmation of an unchanged observation,
   failed refresh with explicit recovery, paused schedules, lazy private reads, localized provider names,
   actual paragraph overflow and resize, and the existing catalog and UI contracts.
 - Expanded affected Web regression: `pnpm --filter @opentag/web test src/features/agents src/__tests__ src/ui src/im` passes 65 files / 855 tests.
@@ -34,8 +36,9 @@ confirmation. Missing targets close; failed refresh blocks deletion until explic
   no Server, database, shared contract or Runtime behavior.
 - `review-feedback-validation.json`: eight en/zh × 320/390/768/1440 list layouts, sixteen default/long
   instruction checks and eight due-time flows pass. The default desktop prompt fits and has no expansion
-  button; the 320px prompt clips and can expand. Server advancement changes the displayed next time with
-  one summary request and no detail read. An unchanged past occurrence causes no further request.
+  button; the 320px prompt clips and can expand. Server advancement changes the displayed next time within
+  two summary reads and no detail read. An unchanged past occurrence consumes the three-read budget and then
+  stops reading it.
 - Four fresh scoped axe WCAG A/AA/2.1 AA scans report no automatic violations. These cover English default
   desktop details and long narrow details, and Chinese default/long narrow details; they are not full
   accessibility or deployed acceptance.

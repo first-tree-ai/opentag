@@ -119,55 +119,34 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
   const evictionAttempts = options.evictionAttempts ?? 20;
   const evictionDelayMs = options.evictionDelayMs ?? 100;
 
-  const readStatus = async (failOnTimeout = false): Promise<DaemonServiceInfo> => {
-    const plist = await readRegularFile(plistPath);
-    if (plist === undefined) {
-      const orphaned = await options.runner.run(launchctl, ["print", target], { timeoutMs: LAUNCHD_TIMEOUT_MS });
-      if (orphaned.timedOut) {
-        if (failOnTimeout) {
-          throw new DaemonServiceError("OPERATION_FAILED", "launchd activation status check timed out");
-        }
-        return info("unknown", {
-          detail: "launchctl could not verify whether a definition-less service target is loaded",
-          drifted: true,
-        });
-      }
-      if (orphaned.code === 0) {
-        return info("unknown", {
-          detail: "launchd still has the service target loaded even though its plist definition is missing",
-          drifted: true,
-        });
-      }
-      return isManagerNotLoaded(orphaned)
-        ? info("not-installed", { drifted: true })
-        : info("unknown", {
-            detail: orphaned.stderr || orphaned.stdout || `launchctl exited with code ${orphaned.code}`,
-            drifted: true,
-          });
-    }
-    const wrapper = await readRegularFile(wrapperPath);
-    const configuredHome = extractLaunchdHome(plist);
-    if (!configuredHome) {
-      return info("unknown", {
-        detail: "The installed LaunchAgent does not contain a valid OPENTAG_HOME",
-        drifted: true,
-      });
-    }
-    const result = await options.runner.run(launchctl, ["print", target], { timeoutMs: LAUNCHD_TIMEOUT_MS });
-    const drifted = plist !== preserveLaunchdEnvironment(plistTemplate, plist) || wrapper !== expectedWrapper;
-    if (result.timedOut) {
+  const readOrphanedStatus = async (failOnTimeout: boolean): Promise<DaemonServiceInfo> => {
+    const orphaned = await options.runner.run(launchctl, ["print", target], { timeoutMs: LAUNCHD_TIMEOUT_MS });
+    if (orphaned.timedOut) {
       if (failOnTimeout) {
         throw new DaemonServiceError("OPERATION_FAILED", "launchd activation status check timed out");
       }
-      return info("unknown", { configuredHome, detail: "launchctl print timed out", drifted });
+      return info("unknown", {
+        detail: "launchctl could not verify whether a definition-less service target is loaded",
+        drifted: true,
+      });
     }
-    if (result.code !== 0) {
-      return isManagerNotLoaded(result)
-        ? info("inactive", { configuredHome, drifted })
-        : info("unknown", { configuredHome, detail: result.stderr || "launchctl print failed", drifted });
+    if (orphaned.code === 0) {
+      return info("unknown", {
+        detail: "launchd still has the service target loaded even though its plist definition is missing",
+        drifted: true,
+      });
     }
-    const pid = parseLaunchdPid(result.stdout);
-    const processState = parseLaunchdState(result.stdout);
+    return isManagerNotLoaded(orphaned)
+      ? info("not-installed", { drifted: true })
+      : info("unknown", {
+          detail: orphaned.stderr || orphaned.stdout || `launchctl exited with code ${orphaned.code}`,
+          drifted: true,
+        });
+  };
+
+  const evaluateLoadedProcessStatus = (stdout: string, configuredHome: string, drifted: boolean): DaemonServiceInfo => {
+    const pid = parseLaunchdPid(stdout);
+    const processState = parseLaunchdState(stdout);
     if (processState === "running" && pid) return info("active", { configuredHome, drifted, pid });
     if (processState && processState !== "running") {
       return info("inactive", {
@@ -184,6 +163,43 @@ export function createLaunchdBackend(options: LaunchdBackendOptions): DaemonServ
           : "LaunchAgent process state is unavailable",
       drifted,
     });
+  };
+
+  const queryLoadedTargetStatus = async (
+    configuredHome: string,
+    drifted: boolean,
+    failOnTimeout: boolean,
+  ): Promise<DaemonServiceInfo> => {
+    const result = await options.runner.run(launchctl, ["print", target], { timeoutMs: LAUNCHD_TIMEOUT_MS });
+    if (result.timedOut) {
+      if (failOnTimeout) {
+        throw new DaemonServiceError("OPERATION_FAILED", "launchd activation status check timed out");
+      }
+      return info("unknown", { configuredHome, detail: "launchctl print timed out", drifted });
+    }
+    if (result.code !== 0) {
+      return isManagerNotLoaded(result)
+        ? info("inactive", { configuredHome, drifted })
+        : info("unknown", { configuredHome, detail: result.stderr || "launchctl print failed", drifted });
+    }
+    return evaluateLoadedProcessStatus(result.stdout, configuredHome, drifted);
+  };
+
+  const readStatus = async (failOnTimeout = false): Promise<DaemonServiceInfo> => {
+    const plist = await readRegularFile(plistPath);
+    if (plist === undefined) {
+      return readOrphanedStatus(failOnTimeout);
+    }
+    const wrapper = await readRegularFile(wrapperPath);
+    const configuredHome = extractLaunchdHome(plist);
+    if (!configuredHome) {
+      return info("unknown", {
+        detail: "The installed LaunchAgent does not contain a valid OPENTAG_HOME",
+        drifted: true,
+      });
+    }
+    const drifted = plist !== preserveLaunchdEnvironment(plistTemplate, plist) || wrapper !== expectedWrapper;
+    return queryLoadedTargetStatus(configuredHome, drifted, failOnTimeout);
   };
   const status = (): Promise<DaemonServiceInfo> => readStatus();
 

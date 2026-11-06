@@ -1,4 +1,5 @@
 import { type ErrorCategory, MCP_ERROR_CODE_METADATA, MCP_ERROR_CODES, type MCPErrorCode } from "@opentag/shared";
+import { DomainServiceError } from "../domain-service-error.js";
 
 /*
  * The controlled MCP failure vocabulary lives in @opentag/shared so the Account HTTP error envelope
@@ -11,25 +12,22 @@ export { MCP_ERROR_CODES, type MCPErrorCode };
  * A controlled failure of the MCP management services. `category` and `statusCode` come from the
  * single published mapping so an HTTP response code can never be invented at a call site.
  */
-export class McpServiceError extends Error {
+export class McpServiceError extends DomainServiceError<MCPErrorCode, ErrorCategory, number> {
   /** Extra bounded detail a caller may render; never a secret and never raw upstream text. */
   readonly detail: Readonly<Record<string, unknown>> | undefined;
 
   constructor(code: MCPErrorCode, message: string, detail?: Record<string, unknown>, options?: ErrorOptions) {
-    super(message, options);
+    const metadata = MCP_ERROR_CODE_METADATA[code];
+    super({
+      code,
+      category: metadata.category,
+      statusCode: metadata.statusCode,
+      message,
+      details: detail,
+      cause: options?.cause,
+    });
     this.name = "McpServiceError";
-    this.code = code;
     this.detail = detail;
-  }
-
-  readonly code: MCPErrorCode;
-
-  get category(): ErrorCategory {
-    return MCP_ERROR_CODE_METADATA[this.code].category;
-  }
-
-  get statusCode(): number {
-    return MCP_ERROR_CODE_METADATA[this.code].statusCode;
   }
 }
 

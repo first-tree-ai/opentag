@@ -87,47 +87,35 @@ import {
 } from "./observability/index.js";
 import type { AgentRuntimeOptionsService } from "./services/agents/agent-runtime-options-service.js";
 import type { ContextTreeOperationService } from "./services/agents/context-tree-operation-service.js";
-import {
-  type AgentRuntimeTestService,
-  type AgentService,
-  AgentServiceError,
-  type AgentSetupService,
-} from "./services/agents/index.js";
+import type { AgentRuntimeTestService, AgentService, AgentSetupService } from "./services/agents/index.js";
 import { AuthServiceError, type ConnectCodeIssuer, type UserAuthService } from "./services/auth/index.js";
 import type { ComputerAuthVerifier, ComputerService, MachineAuthService } from "./services/computers/index.js";
-import { GitHubConnectionServiceError } from "./services/github/index.js";
-import { type ImFeedbackActionsService, ImFeedbackServiceError } from "./services/im/im-feedback-actions.js";
+import { DomainServiceError } from "./services/domain-service-error.js";
+import type { ImFeedbackActionsService } from "./services/im/im-feedback-actions.js";
 import type { ImResourceService } from "./services/im/index.js";
 import {
   FEISHU_QR_LINK_PATH_PREFIX,
   type FeishuSetupService,
   feishuPublicFailure,
 } from "./services/im-bindings/feishu/index.js";
-import {
-  type ImBindingService,
-  ImBindingServiceError,
-  ImBindingUnbindRequiredError,
-} from "./services/im-bindings/index.js";
-import { SlackConfigurationServiceError } from "./services/im-bindings/slack/index.js";
+import { type ImBindingService, ImBindingUnbindRequiredError } from "./services/im-bindings/index.js";
 import type { McpAuthorizationService, McpOAuthFlowService, McpServerService } from "./services/mcp/index.js";
-import { McpServiceError } from "./services/mcp/index.js";
-import { OnboardingResetError, type OnboardingResetService } from "./services/onboarding-reset/index.js";
+import type { OnboardingResetService } from "./services/onboarding-reset/index.js";
 import type { CloudDeliveryOwner } from "./services/sandboxes/cloud-delivery-owner.js";
 import type { CloudModelCatalog } from "./services/sandboxes/cloud-model-catalog.js";
 import { CloudOverviewService } from "./services/sandboxes/cloud-overview-service.js";
 import type { CloudSessionCollaborationOwner } from "./services/sandboxes/cloud-session-collaboration-owner.js";
-import { type SandboxService, SandboxServiceError } from "./services/sandboxes/index.js";
+import type { SandboxService } from "./services/sandboxes/index.js";
 import type { RunnerBootstrapTokenService } from "./services/sandboxes/runner-bootstrap-token.js";
 import type { RunnerHub } from "./services/sandboxes/runner-hub.js";
 import type { RunnerWorkspaceService } from "./services/sandboxes/runner-workspace-service.js";
 import { DEFAULT_CLOUD_CAPACITY_LIMITS } from "./services/sandboxes/sandbox-capacity.js";
 import type { SandboxRunnerService } from "./services/sandboxes/sandbox-runner-service.js";
-import { ScheduleServiceError } from "./services/schedules/index.js";
 import { SessionCliProofError, type SessionCliProofService, SessionServiceError } from "./services/sessions/index.js";
-import { type AccountSetupService, AccountSetupServiceError } from "./services/setup/index.js";
-import { type SkillPresetService, type SkillService, SkillServiceError } from "./services/skills/index.js";
+import type { AccountSetupService } from "./services/setup/index.js";
+import type { SkillPresetService, SkillService } from "./services/skills/index.js";
 import type { RemoteSkillService } from "./services/skills/source/remote-skill-service.js";
-import { TaskQueryError, type TaskService } from "./services/tasks/index.js";
+import type { TaskService } from "./services/tasks/index.js";
 import { closeServerResources, startClosingServerResources } from "./shutdown.js";
 import { registerWebApp } from "./web-app.js";
 
@@ -301,40 +289,11 @@ function deploymentHeaders(deployment: CreateAppOptions["deployment"]): Record<s
   return headers;
 }
 
-type AccountFacingError =
-  | AuthServiceError
-  | ImFeedbackServiceError
-  | AgentServiceError
-  | ImBindingServiceError
-  | OnboardingResetError
-  | TaskQueryError
-  | SlackConfigurationServiceError
-  | AccountSetupServiceError
-  | SandboxServiceError
-  | McpServiceError
-  | GitHubConnectionServiceError
-  | ScheduleServiceError
-  | SkillServiceError;
-
-function isAccountFacingError(error: unknown): error is AccountFacingError {
-  return (
-    error instanceof AuthServiceError ||
-    error instanceof ImFeedbackServiceError ||
-    error instanceof AgentServiceError ||
-    error instanceof ImBindingServiceError ||
-    error instanceof OnboardingResetError ||
-    error instanceof TaskQueryError ||
-    error instanceof SlackConfigurationServiceError ||
-    error instanceof AccountSetupServiceError ||
-    error instanceof SandboxServiceError ||
-    error instanceof McpServiceError ||
-    error instanceof GitHubConnectionServiceError ||
-    error instanceof ScheduleServiceError ||
-    error instanceof SkillServiceError
-  );
+function isAccountFacingError(error: unknown): error is DomainServiceError {
+  return error instanceof DomainServiceError;
 }
 
-function accountFacingErrorEnvelope(error: AccountFacingError, requestId: string) {
+function accountFacingErrorEnvelope(error: DomainServiceError, requestId: string) {
   return ErrorEnvelopeSchema.parse({
     error: {
       code: error.code,

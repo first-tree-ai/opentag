@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import type { RuntimeCredentialProvider } from "@opentag/shared";
+import { RuntimeStoreCapacityError } from "./capacity-error.js";
 
 export const RUNTIME_URL_HANDLE_PATH_PREFIX = "/__opentag__/handles/";
 export const RUNTIME_URL_HANDLE_TTL_MS = 15 * 60 * 1_000;
@@ -20,7 +21,7 @@ export interface RuntimeUrlHandleStoreOptions {
   maxHandles?: number;
 }
 
-export class RuntimeUrlHandleStoreCapacityError extends Error {
+export class RuntimeUrlHandleStoreCapacityError extends RuntimeStoreCapacityError {
   constructor() {
     super("The runtime URL handle store is full");
     this.name = "RuntimeUrlHandleStoreCapacityError";

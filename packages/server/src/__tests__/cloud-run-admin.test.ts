@@ -1,5 +1,5 @@
 import { cloudLatencySessions } from "@opentag/shared";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CloudRunAdmin } from "../services/cloud-run/cloud-run-admin.js";
 import { CloudRunAdminError } from "../services/cloud-run/errors.js";
 import {
@@ -115,6 +115,208 @@ describe("runner instance identity", () => {
   it("rejects non-positive generations and malformed identities", () => {
     expect(() => runnerInstanceId({ ...IDENTITY, environmentGeneration: 0 })).toThrow(CloudRunAdminError);
     expect(() => runnerInstanceId({ ...IDENTITY, sandboxId: "not-a-uuid" })).toThrow(CloudRunAdminError);
+  });
+});
+
+describe.each(["instance", "operation"] as const)("CloudRunAdmin %s read retries", (resource) => {
+  afterEach(() => vi.useRealTimers());
+  const name =
+    resource === "instance" ? instanceBody().name : "projects/opentag-test/locations/us-west1/operations/op-1";
+  const success = resource === "instance" ? instanceBody() : { name, done: true };
+  const read = (cloud: CloudRunAdmin, timeoutMs?: number, signal?: AbortSignal) =>
+    resource === "instance" ? cloud.getInstance(name, timeoutMs, signal) : cloud.getOperation(name, timeoutMs, signal);
+
+  it.each([502, 503, 504, "transport"])("recovers from one transient %s without a business retry", async (failure) => {
+    const { calls, fetchImpl } = fakeFetch(() => {
+      if (calls.length > 1) return { status: 200, body: success };
+      if (failure === "transport") throw new TypeError("fetch failed with private transport details");
+      return { status: failure as number };
+    });
+    const sleep = vi.fn(async () => undefined);
+    await expect(read(admin(fetchImpl, { sleep }))).resolves.toMatchObject(
+      resource === "instance" ? { uid: instanceBody().uid } : { done: true },
+    );
+    expect(calls).toHaveLength(2);
+    expect(calls.every((call) => call.method === "GET")).toBe(true);
+    expect(sleep.mock.calls).toEqual([[150, expect.any(AbortSignal)]]);
+  });
+
+  it("caps a persistent 503 at three attempts and releases every rejected body", async () => {
+    const cancellations: ReturnType<typeof vi.fn>[] = [];
+    const fetchImpl = vi.fn(async () => {
+      const cancel = vi.fn();
+      cancellations.push(cancel);
+      return new Response(new ReadableStream({ cancel }), { status: 503 });
+    });
+    const sleep = vi.fn(async () => undefined);
+    await expect(read(admin(fetchImpl, { sleep }))).rejects.toMatchObject({ kind: "unavailable", status: 503 });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(sleep.mock.calls).toEqual([
+      [150, expect.any(AbortSignal)],
+      [300, expect.any(AbortSignal)],
+    ]);
+    expect(cancellations.every((cancel) => cancel.mock.calls.length === 1)).toBe(true);
+  });
+
+  it("caps persistent transport failures and keeps private causes out of the error", async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new TypeError("private transport details");
+    });
+    const error = await read(admin(fetchImpl)).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ kind: "unknown", message: "Cloud Run Admin GET transport failed" });
+    expect(error).not.toHaveProperty("cause");
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it.each([400, 401, 403, 404, 409, 429, 500, 501])("does not retry HTTP %s", async (status) => {
+    const { calls, fetchImpl } = fakeFetch(() => ({ status }));
+    const sleep = vi.fn(async () => undefined);
+    const result = read(admin(fetchImpl, { sleep }));
+    if (status === 404 && resource === "instance") await expect(result).resolves.toBeUndefined();
+    else await expect(result).rejects.toMatchObject({ status });
+    expect(calls).toHaveLength(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it.each(["AbortError", "TimeoutError"])("does not retry transport cancellation %s", async (name) => {
+    const fetchImpl = vi.fn(async () => {
+      throw new DOMException("private cancellation reason", name);
+    });
+    await expect(read(admin(fetchImpl))).rejects.toMatchObject({ kind: "unknown" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not sleep or retry without enough remaining budget", async () => {
+    const { calls, fetchImpl } = fakeFetch(() => ({ status: 503 }));
+    const sleep = vi.fn(async () => undefined);
+    await expect(read(admin(fetchImpl, { sleep }), 100)).rejects.toMatchObject({ status: 503 });
+    expect(calls).toHaveLength(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+
+  it("shares one deadline across retries and aborts an in-flight retry at the original deadline", async () => {
+    vi.useFakeTimers();
+    const signals: AbortSignal[] = [];
+    const fetchImpl = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      const signal = init?.signal;
+      if (!signal) throw new Error("Missing deadline signal");
+      signals.push(signal);
+      if (signals.length === 1) return new Response("", { status: 503 });
+      return new Promise<Response>((_resolve, reject) => {
+        signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+      });
+    });
+    const cloud = new CloudRunAdmin(CONFIG, {
+      fetchImpl,
+      tokenProvider: createStaticTokenProvider("unit-token"),
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    });
+    const result = read(cloud, 800);
+    const failed = expect(result).rejects.toMatchObject({ kind: "unknown" });
+    let settled = false;
+    void result.catch(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(799);
+    expect(settled).toBe(false);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(signals[0]).toBe(signals[1]);
+    await vi.advanceTimersByTimeAsync(1);
+    await failed;
+    expect(signals[1]?.aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it("bounds stalled credentials without submitting a late GET", async () => {
+    vi.useFakeTimers();
+    let resolveToken!: (token: string) => void;
+    const token = new Promise<string>((resolve) => {
+      resolveToken = resolve;
+    });
+    const tokenProvider = vi.fn(() => token);
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify(success)));
+    const cloud = new CloudRunAdmin({ ...CONFIG, apiTimeoutMs: 120_000 }, { fetchImpl, tokenProvider });
+    const failed = expect(read(cloud, 20)).rejects.toMatchObject({ kind: "unknown" });
+    await vi.advanceTimersByTimeAsync(20);
+    await failed;
+    resolveToken("late-unit-token");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(tokenProvider).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("caps the complete read by apiTimeoutMs even when the caller allows more time", async () => {
+    vi.useFakeTimers();
+    const tokenProvider = vi.fn(() => new Promise<string>(() => undefined));
+    const cloud = new CloudRunAdmin({ ...CONFIG, apiTimeoutMs: 20 }, { tokenProvider });
+    const failed = expect(read(cloud, 120_000)).rejects.toMatchObject({ kind: "unknown" });
+    await vi.advanceTimersByTimeAsync(20);
+    await failed;
+  });
+
+  it("bounds response-body reads without retrying a partially received response", async () => {
+    vi.useFakeTimers();
+    const fetchImpl = vi.fn(async () => new Response(new ReadableStream()));
+    const failed = expect(read(admin(fetchImpl), 20)).rejects.toMatchObject({ kind: "unknown" });
+    await vi.advanceTimersByTimeAsync(20);
+    await failed;
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["before", "credentials", "fetch", "backoff"])("honors cancellation during %s", async (phase) => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    let resolveToken!: (token: string) => void;
+    const token = new Promise<string>((resolve) => {
+      resolveToken = resolve;
+    });
+    const tokenProvider = vi.fn(() => (phase === "credentials" ? token : Promise.resolve("unit-token")));
+    const fetchImpl = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      if (phase === "fetch")
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+        });
+      return new Response("", { status: 503 });
+    });
+    const cloud = new CloudRunAdmin(CONFIG, { fetchImpl, tokenProvider });
+    if (phase === "before") controller.abort();
+    const failed = expect(read(cloud, undefined, controller.signal)).rejects.toMatchObject({ kind: "unknown" });
+    await vi.advanceTimersByTimeAsync(0);
+    controller.abort(new Error("private cancellation reason"));
+    await failed;
+    resolveToken("late-unit-token");
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(fetchImpl).toHaveBeenCalledTimes(phase === "fetch" || phase === "backoff" ? 1 : 0);
+    expect(tokenProvider).toHaveBeenCalledTimes(phase === "before" ? 0 : 1);
+  });
+
+  it("does not retry credential failures", async () => {
+    const tokenProvider = vi.fn(async () => {
+      throw new Error("private credential failure");
+    });
+    const fetchImpl = vi.fn();
+    await expect(read(new CloudRunAdmin(CONFIG, { fetchImpl, tokenProvider }))).rejects.toMatchObject({
+      kind: "credential",
+      createRejected: false,
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(tokenProvider).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([0, -1])("does not submit a GET with an exhausted %s ms budget", async (timeoutMs) => {
+    const fetchImpl = vi.fn();
+    await expect(read(admin(fetchImpl), timeoutMs)).rejects.toMatchObject({ kind: "unknown" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("does not retry malformed successful responses or identity mismatches", async () => {
+    const invalidJson = vi.fn(async () => new Response("invalid JSON"));
+    await expect(read(admin(invalidJson))).rejects.toMatchObject({ kind: "unknown" });
+    expect(invalidJson).toHaveBeenCalledTimes(1);
+    const { calls, fetchImpl } = fakeFetch(() => ({ status: 200, body: { ...success, name: "different" } }));
+    await expect(read(admin(fetchImpl))).rejects.toMatchObject({ kind: "ownership_mismatch" });
+    expect(calls).toHaveLength(1);
   });
 });
 
@@ -558,6 +760,7 @@ describe("CloudRunAdmin create", () => {
     await expect(admin(failing as unknown as typeof fetch).createInstance(SPEC)).rejects.toMatchObject({
       kind: "unknown",
     });
+    expect(failing).toHaveBeenCalledTimes(1);
   });
 
   it("sanitizes error bodies instead of echoing payloads", async () => {
@@ -606,6 +809,16 @@ describe("CloudRunAdmin delete", () => {
     });
     expect(calls.map((call) => call.method)).toEqual(["GET", "DELETE"]);
     expect(new URL(calls[1]?.url ?? "").searchParams.get("etag")).toBe('"revision-1"');
+  });
+
+  it.each([503, "transport"])("does not retry an uncertain DELETE %s", async (failure) => {
+    const { calls, fetchImpl } = fakeFetch((call) => {
+      if (call.method === "GET") return { status: 200, body: instanceBody() };
+      if (failure === "transport") throw new TypeError("private transport details");
+      return { status: failure as number };
+    });
+    await expect(admin(fetchImpl).deleteInstance(name, "uid-1234-5678")).rejects.toBeInstanceOf(CloudRunAdminError);
+    expect(calls.map((call) => call.method)).toEqual(["GET", "DELETE"]);
   });
 
   it("rejects resource names outside the configured project/region", async () => {

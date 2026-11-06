@@ -44,6 +44,14 @@ allocation. An uncertain create or delete retains the row's resource reference a
 error code; a 404 while a create may still arrive is not proof of cleanup. The provider UID and
 etag protect deletion against name reuse.
 
+Cloud Admin Instance and operation GETs make at most three attempts for HTTP 502/503/504
+or transport failures, with 150 ms then 300 ms backoff. Credential acquisition, requests,
+response reads and backoff share one deadline, capped by the caller's read budget and the
+configured API timeout; cancellation stops the read without another attempt. A missing
+Instance still returns absence immediately; other HTTP errors, invalid responses and ownership
+failures are not retried. This read policy does not retry create or delete requests. Image
+prewarming uses its own separate deadline-bound read loop.
+
 The Instance runs `opentag-runner serve`. It declares the single container port `8080`, and after
 native readiness is verified the Runner listens on that **declared port by default** (an injected
 `PORT` remains the explicit override), so the platform's default TCP startup probe always has a

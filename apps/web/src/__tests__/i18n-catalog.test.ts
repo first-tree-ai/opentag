@@ -23,7 +23,6 @@ const areas = [
   "tasks",
   "usage",
   "skills",
-  "integrations",
   "agent-setup",
   "onboarding-v2",
   "im",

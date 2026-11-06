@@ -193,15 +193,21 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     signal: AbortSignal,
   ): Promise<void> {
     const { api, material } = await this.#feishu(target, signal);
-    for (const emoji of ["OnIt", "CrossMark"]) {
-      await projectFeishuEmoji(
-        api.im.v1.messageReaction,
-        material.appId,
-        target.inputExternalId,
-        emoji,
-        desired === (emoji === "OnIt" ? "working" : "warning"),
-      );
-    }
+    const reactions = api.im.v1.messageReaction;
+    const owned = await ownedFeishuReactions(reactions, material.appId, target.inputExternalId, signal);
+    const results = await Promise.allSettled(
+      (["OnIt", "CrossMark"] as const).map((emoji) =>
+        projectFeishuEmoji(
+          reactions,
+          target.inputExternalId,
+          emoji,
+          owned[emoji],
+          desired === (emoji === "OnIt" ? "working" : "warning"),
+          signal,
+        ),
+      ),
+    );
+    for (const result of results) if (result.status === "rejected") throw result.reason;
   }
 
   async post(target: FeedbackTarget, action?: FeedbackAction): Promise<string> {
@@ -370,33 +376,41 @@ function slackErrorCode(error: unknown): string | undefined {
 
 type FeishuReactions = Client["im"]["v1"]["messageReaction"];
 type FeishuReactionItem = NonNullable<Awaited<ReturnType<FeishuReactions["list"]>>["data"]>["items"][number];
-function ownedFeishuReaction(item: FeishuReactionItem, appId: string, emoji: string): string[] {
-  if (
-    item.operator?.operator_type !== "app" ||
-    item.operator.operator_id !== appId ||
-    item.reaction_type?.emoji_type !== emoji ||
-    !item.reaction_id
-  )
-    return [];
-  return [item.reaction_id];
+type FeedbackEmoji = "OnIt" | "CrossMark";
+function collectOwnedFeishuReactions(
+  owned: Record<FeedbackEmoji, Set<string>>,
+  items: FeishuReactionItem[],
+  appId: string,
+): void {
+  for (const item of items) {
+    const emoji = item.reaction_type?.emoji_type;
+    if (
+      (emoji === "OnIt" || emoji === "CrossMark") &&
+      item.operator?.operator_type === "app" &&
+      item.operator.operator_id === appId &&
+      item.reaction_id
+    )
+      owned[emoji].add(item.reaction_id);
+  }
 }
 async function ownedFeishuReactions(
   api: FeishuReactions,
   appId: string,
   messageId: string,
-  emoji: string,
-): Promise<string[]> {
-  const owned: string[] = [];
+  signal: AbortSignal,
+): Promise<Record<FeedbackEmoji, Set<string>>> {
+  const owned = { OnIt: new Set<string>(), CrossMark: new Set<string>() };
   let page: string | undefined;
   const seen = new Set<string>();
   do {
+    signal.throwIfAborted();
     const response = await api.list({
       path: { message_id: messageId },
-      params: { reaction_type: emoji, page_size: 50, ...(page ? { page_token: page } : {}) },
+      params: { page_size: 50, ...(page ? { page_token: page } : {}) },
     });
     if (response.code !== 0 || !response.data)
       throw new FeedbackProviderError("IM_FEEDBACK_REACTION_READ_FAILED", false);
-    owned.push(...response.data.items.flatMap((item) => ownedFeishuReaction(item, appId, emoji)));
+    collectOwnedFeishuReactions(owned, response.data.items, appId);
     page = response.data.has_more ? response.data.page_token : undefined;
     if (response.data.has_more && (!page || seen.has(page) || seen.size >= 100))
       throw new FeedbackProviderError("IM_FEEDBACK_REACTION_PAGINATION_INVALID", false);
@@ -406,13 +420,14 @@ async function ownedFeishuReactions(
 }
 async function projectFeishuEmoji(
   api: FeishuReactions,
-  appId: string,
   messageId: string,
-  emoji: string,
+  emoji: FeedbackEmoji,
+  owned: Set<string>,
   wanted: boolean,
+  signal: AbortSignal,
 ): Promise<void> {
-  const owned = await ownedFeishuReactions(api, appId, messageId, emoji);
-  if (wanted && owned.length === 0) {
+  signal.throwIfAborted();
+  if (wanted && owned.size === 0) {
     const response = await api.create({
       path: { message_id: messageId },
       data: { reaction_type: { emoji_type: emoji } },
@@ -421,6 +436,7 @@ async function projectFeishuEmoji(
   }
   if (wanted) return;
   for (const id of owned) {
+    signal.throwIfAborted();
     const response = await api.delete({ path: { message_id: messageId, reaction_id: id } });
     if (response.code !== 0) throw new FeedbackProviderError("IM_FEEDBACK_REACTION_WRITE_FAILED", false);
   }

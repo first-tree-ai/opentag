@@ -246,17 +246,47 @@ trim_slashes() {
   printf '%s' "$1" | sed 's:/*$::'
 }
 
+# curl --retry does not treat CURLE_RECV_ERROR (exit 56, e.g. a CDN edge connection reset) as
+# transient without --retry-all-errors, which older system curl builds (such as macOS /usr/bin/curl)
+# do not support, and wget has no equivalent. Retry full downloads in an outer loop instead, removing
+# any partial target file before each attempt.
 download_to() {
   url="$1"
   dest="$2"
   if command_exists curl; then
-    curl -fsSL --retry 3 --retry-delay 2 "$url" -o "$dest"
+    downloader="curl"
   elif command_exists wget; then
-    wget -qO "$dest" "$url"
+    downloader="wget"
   else
     die "openTag setup needs curl or wget to download files, and neither is installed.
 Next: install curl (for example: sudo apt-get install curl), then run the same command again."
   fi
+
+  attempt=1
+  max_attempts=4
+  retry_delay="${OPENTAG_PORTABLE_DOWNLOAD_RETRY_DELAY:-2}"
+  while :; do
+    rm -f "$dest"
+    if [ "$downloader" = "curl" ]; then
+      if curl -fsSL --retry 3 --retry-delay 2 "$url" -o "$dest"; then
+        return 0
+      else
+        rc=$?
+      fi
+    else
+      if wget -qO "$dest" "$url"; then
+        return 0
+      else
+        rc=$?
+      fi
+    fi
+    rm -f "$dest"
+    if [ "$attempt" -ge "$max_attempts" ]; then
+      return "$rc"
+    fi
+    attempt=$((attempt + 1))
+    sleep "$retry_delay"
+  done
 }
 
 # The nearest existing ancestor of a path that may not exist yet.

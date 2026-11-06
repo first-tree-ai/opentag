@@ -86,7 +86,11 @@ interface FakeRuntime {
   stopped: boolean;
 }
 
-function fakeRuntime(protectedWork: { total: number }, runError?: Error): FakeRuntime {
+function fakeRuntime(
+  protectedWork: { total: number },
+  runError?: Error,
+  recoverable?: { value: boolean },
+): FakeRuntime {
   const runtime: FakeRuntime = {
     quiesced: false,
     stopped: false,
@@ -109,6 +113,7 @@ function fakeRuntime(protectedWork: { total: number }, runError?: Error): FakeRu
   clientMocks.createClientRuntime.mockResolvedValue({
     run: runtime.run,
     stop: runtime.stop,
+    canInterruptWorkForUpgrade: () => recoverable?.value ?? false,
     quiesceForUpdate: () => {
       runtime.quiesced = true;
       return () => {
@@ -176,6 +181,40 @@ describe("daemon automatic upgrade", () => {
     expect(runtime.quiesced).toBe(true);
     expect(store.state()).toMatchObject({ state: "installed", target: "0.0.3" });
     expect(store.state()?.attempts["0.0.3"]).toMatchObject({ result: "installed" });
+  });
+
+  it("interrupts running work for an upgrade once the Server can recover it", async () => {
+    const home = await tempHome();
+    clientMocks.readMachineCredentials.mockResolvedValue(machineCredentials());
+    clientMocks.resolveComputerIdentity.mockResolvedValue(computerIdentity());
+    const runtime = fakeRuntime({ total: 3 }, undefined, { value: true });
+    const store = memoryStore();
+    const installs: string[] = [];
+
+    const result = await runDaemonService({
+      home,
+      logger: noopLogger(),
+      signals: new EventEmitter() as unknown as NodeJS.Process,
+      autoUpdate: {
+        attach: true,
+        discovery: false,
+        installMode: { mode: "portable", root: "/portable/root", binDir: "/portable/bin" },
+        installTarget: async (target) => {
+          installs.push(target);
+          expect(runtime.quiesced).toBe(false);
+        },
+        refreshService: async () => undefined,
+        stateStore: store,
+        checkIntervalMs: 5,
+        initialTarget: { channel: "dev", version: "0.0.3" },
+      },
+    });
+
+    expect(result.supervisorRestartRequested).toBe(true);
+    expect(installs).toEqual(["0.0.3"]);
+    expect(runtime.stopped).toBe(true);
+    expect(runtime.quiesced).toBe(true);
+    expect(store.state()).toMatchObject({ state: "installed", target: "0.0.3" });
   });
 
   it("waits for protected work and reports a blocked failure without handing off", async () => {
@@ -294,6 +333,46 @@ describe("daemon automatic upgrade", () => {
       target: "0.0.2",
       recoveryStatus: "upgrade_required",
     });
+  });
+
+  it("upgrades after a capability rejection even with protected work the rejected Client cannot finish", async () => {
+    const home = await tempHome();
+    clientMocks.readMachineCredentials.mockResolvedValue(machineCredentials());
+    clientMocks.resolveComputerIdentity.mockResolvedValue(computerIdentity());
+    const recoverable = { value: true };
+    const runtime = fakeRuntime(
+      { total: 3 },
+      new RuntimeConnectionError("Required runtime capabilities are unavailable", true, "capability_incompatibility"),
+      recoverable,
+    );
+    const store = memoryStore();
+    const installs: string[] = [];
+
+    const daemon = runDaemonServiceEntry({
+      home,
+      logger: noopLogger(),
+      signals: new EventEmitter() as unknown as NodeJS.Process,
+      autoUpdate: {
+        attach: true,
+        checkIntervalMs: 5,
+        fetchFn: vi.fn(
+          async () =>
+            new Response(JSON.stringify({ channel: "dev", version: "0.0.3" }), {
+              headers: { "content-type": "application/json" },
+            }),
+        ) as typeof fetch,
+        installMode: { mode: "portable", root: "/portable/root", binDir: "/portable/bin" },
+        installTarget: async (target) => {
+          installs.push(target);
+        },
+        refreshService: async () => undefined,
+        stateStore: store,
+      },
+    });
+
+    expect(await daemon).toBe(75);
+    expect(installs).toEqual(["0.0.3"]);
+    expect(runtime.stopped).toBe(true);
   });
 
   it("installs and hands off a newer target after a capability rejection without reconnecting as a new Computer", async () => {

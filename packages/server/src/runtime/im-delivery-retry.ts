@@ -1,4 +1,5 @@
 import { RUNTIME_MAX_DURATION_MS } from "@opentag/shared";
+import type { RuntimeReconcileResult } from "./runtime-domain-owner.js";
 
 const RETRY_BASE_DELAY_MS = 2_000;
 const RETRY_MAX_DELAY_MS = 30_000;
@@ -92,4 +93,26 @@ export function acceptedReportDeadlineMs(acceptedAtMs: number): number {
 /** Whether no Turn Report can still be truthful for a Turn accepted at `acceptedAt`. */
 export function acceptedReportClosed(acceptedAt: Date | null, nowMs: number): boolean {
   return acceptedAt !== null && nowMs >= acceptedReportDeadlineMs(acceptedAt.getTime());
+}
+
+const RECOVERY_RETRY_CODES: Record<RuntimeReconcileResult["status"], string> = {
+  ready: "IM_DELIVERY_RECOVERY_AWAITING_REPORT",
+  stopped: "IM_DELIVERY_RECOVERY_AWAITING_REPORT",
+  running: "IM_DELIVERY_RECOVERY_RUNNING",
+  reporting: "IM_DELIVERY_RECOVERY_REPORTING",
+  busy: "IM_DELIVERY_RECOVERY_BUSY",
+  recovery_required: "IM_DELIVERY_RECOVERY_REQUIRED",
+  rejected: "IM_DELIVERY_RECOVERY_REJECTED",
+};
+
+export function recoveryRetryCode(
+  result: RuntimeReconcileResult,
+  delivery: { id: string; turnId: string | null },
+): string {
+  const reporting =
+    (result.status === "ready" || result.status === "stopped") &&
+    result.claimedRetainedReports?.some(
+      (report) => report.deliveryId === delivery.id && report.turnId === delivery.turnId,
+    );
+  return reporting ? "IM_DELIVERY_RECOVERY_REPORTING" : RECOVERY_RETRY_CODES[result.status];
 }

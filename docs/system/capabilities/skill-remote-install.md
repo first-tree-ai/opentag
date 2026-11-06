@@ -5,11 +5,10 @@ description: "Accepted remote Skill sources, discovery rules, fetch safety, and 
 
 # Installing Skills from a remote source
 
-> **Status: delivered.** The shared source contract and discovery rules live in
-> `packages/shared/src/skill-source.ts` and `packages/shared/src/skill-discovery.ts`; the Server lane
-> lives in `packages/server/src/services/skills/source/**`; the Web entry point is the Skills page.
-> See `agent-skills.md` for the Skill contract itself — this document covers only where a Skill can
-> come from when it is not an upload.
+The shared source contract and discovery rules live in `packages/shared/src/skill-source.ts` and
+`packages/shared/src/skill-discovery.ts`; Server readers live in
+`packages/server/src/services/skills/source/`. The Web entry point is the Skills page.
+See [Agent Skills](agent-skills.md) for archive, storage, and runtime ownership.
 
 ## What this feature is for
 
@@ -18,8 +17,7 @@ other half: an operator pastes an address from the open skills ecosystem (skills
 Skills page, sees what that address publishes, picks some of it, and installs it. The installed Skill
 is an ordinary Skill from that point on — same archive, same row, same runtime delivery.
 
-The authoritative behaviour contract is the change's specs; the sections below record the decisions
-that are not visible on the wire.
+Shared runtime schemas define the wire contract; the sections below record discovery and safety decisions.
 
 ## Accepted sources
 
@@ -182,8 +180,7 @@ GIT_ASKPASS=                    GIT_SSH_COMMAND=/bin/false      HOME=<the reques
 
 The process itself runs through `github-proxy/git-process.ts`, which spawns without a shell, kills the
 process group on its deadline, and bounds the output it will collect. That module is shared by direct
-import rather than duplicated; moving it to a neutral `services/git/` module is a reasonable
-follow-up, since its current home names a feature it no longer exclusively belongs to.
+import rather than duplicated.
 
 A local `file://` or plain-path repository is refused by design, which is why the git transport's
 tests serve a real repository over smart HTTP on `127.0.0.1`
@@ -224,8 +221,8 @@ The install request carries the source and the selected names, never file conten
 2. a candidate that could never be packaged fails with the reason it was listed with
    (`SKILL_MANIFEST_INVALID`, `SKILL_NAME_RESERVED`, `SKILL_ARCHIVE_TOO_LARGE`);
 3. otherwise the candidate is materialized and packed through `normalizeSkillEntries` — the same
-   packer an upload uses, which is what makes the canonical bytes, and therefore the sha256 and the
-   object key, identical however the Skill arrived;
+   packer an upload uses, so equivalent content has the same canonical bytes and sha256 however
+   the Skill arrived. Each upload still allocates its own independent object key;
 4. the packaged manifest name must equal the selected name, because selection is by name and a
    well-known index publishes its own metadata: a disagreement fails with `SKILL_MANIFEST_INVALID`
    rather than installing something the user did not choose;
@@ -239,19 +236,11 @@ reported as skipped the second time, and the response is always a per-item repor
 
 ## Rollout and rollback
 
-Deploy the migration and the code together. Rolling the Server back once `url_install` rows exist is
-**not** safe on its own: an older Server validates `Skill.source` against the three earlier enum
-values, so every Skill read for the affected Agents fails validation. Before rolling back, run:
-
-```sql
-update agent_skills set source = 'web_upload' where source = 'url_install';
-```
-
-The Skills, their archives, and their revisions are untouched; they simply report as web uploads on
-the older build, which is the closest representation it has. Redeploying the newer Server afterwards
-is safe. If the enum value has to survive a rollback window, stage the change instead: deploy
-migration `0053` alone, then deploy the code that writes `url_install`. The same step is recorded for
-operators in `docs/deploying.md`.
+Deploy the migration and compatible code together. Before rolling back across a `Skill.source`
+change, follow [Manual deployment and rollback](../../operations/deploying.md#manual-deployment-and-rollback).
+That procedure owns the target-validator check, backups, paused writes, source mapping, and final audit.
+Mapping to an older source loses provenance; deploying an enum migration alone does not make an
+older application's validator compatible.
 
 ## Deliberate omissions
 

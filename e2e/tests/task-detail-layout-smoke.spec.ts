@@ -30,7 +30,11 @@ async function createAgent(page: Page): Promise<string> {
 }
 
 /** The real Task page and shell over a synthetic Task: no route creates internal Sessions in a smoke run. */
-async function installTask(page: Page, agentId: string): Promise<void> {
+async function installTask(
+  page: Page,
+  agentId: string,
+  { turnCount = 0, internalSessionCount = 0 }: { turnCount?: number; internalSessionCount?: number } = {},
+): Promise<void> {
   const at = new Date(Date.now() - 60_000).toISOString();
   const task = {
     id: taskId,
@@ -80,6 +84,19 @@ async function installTask(page: Page, agentId: string): Promise<void> {
       occurredAt: new Date(Date.now() - 30_000).toISOString(),
     },
   };
+  const extraTurns = Array.from({ length: turnCount }, (_, index) => {
+    const suffix = String(index).padStart(12, "0");
+    return {
+      ...shortTurn,
+      deliveryId: `20000000-0000-4000-8000-${suffix}`,
+      message: {
+        ...shortTurn.message,
+        id: `30000000-0000-4000-8000-${suffix}`,
+        externalMessageId: `layout-message-${index}`,
+        occurredAt: new Date(Date.now() - 20_000 + index).toISOString(),
+      },
+    };
+  }).reverse();
   const internalSession = {
     id: internalSessionId,
     createdBySessionId: taskId,
@@ -91,12 +108,16 @@ async function installTask(page: Page, agentId: string): Promise<void> {
     lastActivityAt: at,
   };
   const untitledInternalSession = { ...internalSession, id: untitledInternalSessionId, title: null };
+  const extraSessions = Array.from({ length: internalSessionCount }, (_, index) => ({
+    ...internalSession,
+    id: `50000000-0000-4000-8000-${String(index).padStart(12, "0")}`,
+  }));
   const json = (body: unknown) => ({ contentType: "application/json", body: JSON.stringify(body) });
   await page.route(`**/api/v1/sessions/${taskId}/detail?**`, (route) =>
-    route.fulfill(json({ task, turns: { items: [shortTurn, turn], nextCursor: null } })),
+    route.fulfill(json({ task, turns: { items: [...extraTurns, shortTurn, turn], nextCursor: null } })),
   );
   await page.route(`**/api/v1/sessions/${taskId}/detail/internal-sessions**`, (route) =>
-    route.fulfill(json({ items: [internalSession, untitledInternalSession], nextCursor: null })),
+    route.fulfill(json({ items: [internalSession, untitledInternalSession, ...extraSessions], nextCursor: null })),
   );
   await page.route(`**/api/v1/sessions/${taskId}/replies**`, (route) =>
     route.fulfill(json({ items: [], nextCursor: null })),
@@ -121,6 +142,17 @@ function titleLines(element: Element): number {
   return Math.round(element.getBoundingClientRect().height / Number.parseFloat(getComputedStyle(element).lineHeight));
 }
 
+/** The overview sits beside the conversation once the content frame has room, and above it before that. */
+async function expectColumnsFor(page: Page, width: number): Promise<void> {
+  const [overview, thread] = await Promise.all([
+    page.locator('[data-ui="task-detail-overview"]').boundingBox(),
+    page.locator('[data-ui="task-thread"]').boundingBox(),
+  ]);
+  if (!overview || !thread) throw new Error("Expected the overview and the conversation to have layout boxes");
+  if (width >= 1440) expect(overview.x, "overview beside the conversation").toBeGreaterThan(thread.x + thread.width);
+  else expect(thread.y, "conversation below the overview").toBeGreaterThanOrEqual(overview.y + overview.height);
+}
+
 async function expectInsideArticle(page: Page, selector: string): Promise<void> {
   const [article, element] = await Promise.all([
     page.locator('[data-ui="task-conversation-page"]').boundingBox(),
@@ -130,7 +162,7 @@ async function expectInsideArticle(page: Page, selector: string): Promise<void> 
   expect(element.x + element.width, `${selector} right edge`).toBeLessThanOrEqual(article.x + article.width + 0.5);
 }
 
-for (const width of [390, 1440, 2000]) {
+for (const width of [390, 1024, 1440, 2000]) {
   test.describe(`Task detail at ${width}px`, () => {
     test.use({ viewport: { width, height: 900 } });
 
@@ -146,11 +178,12 @@ for (const width of [390, 1440, 2000]) {
       await expectNoPageOverflow(page);
       await expect
         .poll(() => row.locator('[tabindex="0"]').evaluate(titleLines), { message: "title lines" })
-        .toBe(width === 390 ? 2 : 1);
+        .toBe(width === 1024 ? 1 : 2);
       await expectInsideArticle(page, '[data-ui="task-thread"]');
       await expectInsideArticle(page, '[data-ui="task-internal-sessions"]');
       await expectInsideArticle(page, '[data-ui="task-message-request"]');
-      await expect(page.locator('[data-ui="task-conversation-header"]')).toContainText("Running");
+      await expect(page.locator('[data-ui="task-detail-overview"]')).toContainText("Running");
+      await expectColumnsFor(page, width);
 
       // Reopening lays out the cached internal Sessions before the Task page's load-time scroll runs.
       await page.getByRole("navigation", { name: "Back to Tasks" }).getByRole("link").click();
@@ -175,7 +208,7 @@ test.describe("Task detail composition", () => {
     const section = page.locator('[data-ui="task-internal-sessions"]');
     const size = (selector: string) =>
       page.locator(selector).evaluate((element) => Number.parseFloat(getComputedStyle(element).fontSize));
-    expect(await size('[data-ui="task-internal-sessions"] h3')).toBeLessThanOrEqual(await size("h1"));
+    expect(await size('[data-ui="task-internal-sessions"] h2')).toBeLessThanOrEqual(await size("h1"));
     await expect(section).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
 
     // The id waits in the tooltip, which hover and keyboard focus both open.
@@ -208,5 +241,39 @@ test.describe("Task detail composition", () => {
 
     const requestAvatar = page.locator('[data-ui="task-message-request"] > span').first();
     await expect(requestAvatar).toHaveClass(/rounded-full/);
+  });
+
+  test("keeps the overview in view beside a long conversation and scrolls it only when it is too tall", async ({
+    page,
+  }) => {
+    const agentId = await createAgent(page);
+    await installTask(page, agentId, { turnCount: 30, internalSessionCount: 25 });
+    await page.goto(`/agents/${agentId}/tasks/${taskId}`, { waitUntil: "networkidle" });
+
+    const content = page.locator('[data-ui="content"]');
+    const overview = page.locator('[data-ui="task-detail-overview"]');
+    await expect.poll(() => content.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
+    await content.evaluate((element) => {
+      element.scrollTop = 200;
+    });
+    await expect.poll(async () => (await overview.boundingBox())?.y).toBe(24);
+
+    // The conversation's jump control stays in its own column.
+    const jump = page.locator('[data-ui="task-activity-jump-latest"]');
+    await expect(jump).toBeVisible();
+    const [jumpBox, overviewBox] = await Promise.all([jump.boundingBox(), overview.boundingBox()]);
+    if (!jumpBox || !overviewBox) throw new Error("Expected the jump control and the overview to have layout boxes");
+    expect(jumpBox.x + jumpBox.width).toBeLessThan(overviewBox.x);
+
+    // Too tall for the window, it scrolls by itself and takes a keyboard stop; the page stays put.
+    await expect(overview).toHaveAttribute("tabindex", "0");
+    const scrolled = await overview.evaluate((element) => {
+      const page = element.closest('[data-ui="content"]') as HTMLElement;
+      const before = page.scrollTop;
+      element.scrollTop = 100;
+      return { overview: element.scrollTop, moved: page.scrollTop - before };
+    });
+    expect(scrolled).toEqual({ overview: 100, moved: 0 });
+    await expectAccessible(page);
   });
 });

@@ -181,8 +181,16 @@ export class SessionReconciler {
     return this.#recoveries.delete(sessionId);
   }
 
-  claimRecovery(sessionId: string, turn: SessionTurnIdentity): boolean {
-    if (this.#activities.has(sessionId)) return false;
+  claimRecovery(sessionId: string, turn: SessionTurnIdentity, options: { reportReady?: boolean } = {}): boolean {
+    const activity = this.#activities.get(sessionId);
+    if (activity) {
+      return (
+        options.reportReady === true &&
+        activity.phase === "reporting" &&
+        activity.turnId === turn.turnId &&
+        activity.deliveryId === turn.deliveryId
+      );
+    }
     const current = this.#recoveries.get(sessionId);
     if (current) return current.turnId === turn.turnId && current.deliveryId === turn.deliveryId;
     this.#recoveries.set(sessionId, turn);

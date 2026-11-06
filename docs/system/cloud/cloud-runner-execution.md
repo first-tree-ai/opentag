@@ -7,7 +7,7 @@ description: "Cloud Run Instances and native Sandboxes for Agent Sessions: lifec
 
 E3 connects an existing Agent Session's Sandbox identity to a real Cloud Run Instance and the
 Cloud Run native Sandbox CLI. It is opt-in and disabled by default. Each allocation uses **one
-Instance, one native Sandbox, one vCPU and 1 GiB**. The Runner remains part of Client and uses the
+Instance, one native Sandbox, one vCPU and 2 GiB**. The Runner remains part of Client and uses the
 CLI release version. E3 adds no database migration or table.
 
 ## Boundaries
@@ -47,7 +47,8 @@ permission before admitting work/results.
 
 Cloud provider readiness alone does not make a Sandbox ready. The authenticated Runner must
 prove native execution, tool versions, image Runner version, and filesystem/credential isolation.
-Every launch and every post-cleanup reset re-runs that probe in full: real native Node execution,
+Every launch and every post-cleanup reset re-runs that probe in full, using one bounded native
+Node process for the Node version, metadata and isolation checks: real native Node execution,
 a bounded read of the image identity plus the locked Pi package metadata from the immutable
 rootfs (shape-checked and required to match the identity's Pi package/version, with the fixed Pi
 shim and its declared CLI entry verified accessible), and fresh filesystem/credential/
@@ -381,9 +382,9 @@ heartbeat cannot precede the authentication result.
 
 Boundary: E3 remains the native-execution acceptance path. The E4 acceptance path does not cover
 GCS workspace restore (E5), concurrent multi-Turn placement (E6), idle reuse/recycling (E7), or
-Context Tree synchronization (E8). Real native Cloud Run execution, real GCP acceptance, and real IM
-provider ingress/reply acceptance remain pending; current evidence is local composition and
-external local probes only. Do not claim E4 accepted from local results.
+Context Tree synchronization (E8). Local composition and external local probes do not establish
+native Cloud Run execution, GCP acceptance, or real IM ingress and reply delivery; verify those
+boundaries separately before claiming Cloud delivery acceptance.
 
 ## Required configuration
 
@@ -565,7 +566,9 @@ There is no retention clock, no preallocated pool and no new scheduler service.
 
 E7 requires a single Server process while Runner control ownership, busy state and readiness live
 in the process-local `RunnerHub`. Database CAS alone does not make active-active Servers supported.
-Shutdown drains the current sweep before closing the database.
+Shutdown stops admission of further sweep candidates and drains the current candidate before
+closing the database. An in-flight seal or Cloud Admin request remains owned until it settles
+under its existing timeout; shutdown does not race it against a detached timeout.
 
 A second, same-account Session may borrow the physical Instance on demand instead of cold
 allocating. The borrower must be an `unallocated` Sandbox on the same logical Cloud Computer, and
@@ -587,14 +590,32 @@ new table). While it is set, execution authority is revoked, a start reports pen
 ingress returns `pending` — never a terminal `environment_stopped` — so a message that arrives
 during recycle or borrow is retried. Lifecycle stays `ready` while sealing; only a proven seal
 moves an automatically reclaimed row to `releasing` for verified deletion. The budget clock is
-always `last_activity_at`; `idle_reclaim_at` records reclamation intent. Already claimed and
-automatic `releasing` rows also wait ten minutes from `updated_at` before another attempt. The
-candidate queries exclude cooldown rows before their 25-row limit. A conditional update reserves
-each due retry by advancing `updated_at` for that exact lifecycle, generation, resource name/UID
-and claim; only its winner performs external I/O. Failures advance the retry clock, while ordinary
+always `last_activity_at`; `idle_reclaim_at` records reclamation intent. Already claimed rows
+and failed automatic releases wait ten minutes from `updated_at` before another attempt. A
+successful DELETE followed by a still-present UID instead records `cloud_delete_pending` in the
+existing `last_error_code`, with the confirmation window's start in `last_error_at`. The binding
+stays `releasing`: DELETE acceptance alone never clears ownership or counts as a release.
+The overview treats this marker as a normal phase: it adds no attention count or public error,
+so workspace controls keep their existing pending-release behavior.
+Subsequent due sweeps perform one GET, without another DELETE or an in-pass polling sleep, at
+most once per 15 seconds per row. Since reservations occur after a sweep starts, the default
+15-second timer can skip its next tick and confirm about every 30 seconds. A 404 completes
+release; a different UID or a failed read is an incomplete release. A still-present UID at a due
+read after the original 60-second confirmation window also becomes incomplete and returns to
+the ten-minute failure cooldown. The start of this window
+survives restarts and is never extended by a confirmation read. Explicit Account stop retains
+its bounded synchronous verification. No schema change or additional worker is needed.
+
+The candidate queries exclude cooldown rows before their 25-row limit. A conditional update reserves
+each due retry or confirmation by advancing `updated_at` for that exact lifecycle, generation,
+resource name/UID, phase marker and claim; only its winner performs external I/O. Failures
+advance the retry clock, while ordinary
 polls leave it untouched. The initial claim and its successful transition to deletion proceed
-immediately; a failed deletion is not retried again within the same pass. Restart recovery of an
-abandoned claim or release can therefore wait up to ten minutes. This is retry pacing, not an
+immediately; a failed deletion is not retried again within the same pass. Unknown DELETE or
+marker-write outcomes retain the binding and retry through the same UID/etag-fenced conditional
+delete after cooldown. A lost acknowledgement of a committed pending marker instead resumes
+confirmation. Restart recovery of an abandoned claim or failed release can wait up to ten
+minutes. This is retry pacing, not an
 exactly-once guarantee for a worker stalled beyond that interval; socket, generation, object CAS
 and UID fences still protect external effects and late results. Explicit generation-bound Account
 save/release bypasses the automatic cooldown. A failed or unknown seal keeps

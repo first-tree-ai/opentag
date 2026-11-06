@@ -981,9 +981,10 @@ export class SessionCollaborationService {
   }
 
   #failure(messageId: string, error: unknown): SessionCliCommandResponse {
-    const mapped = mapFailure(error);
-    if (mapped.status === "rejected") this.#onDiagnostic?.(`SESSION_COLLABORATION_${mapped.code.toUpperCase()}`);
-    return response(messageId, mapped.status, undefined, mapped.code);
+    const mapped = mapExpectedFailure(error);
+    if (mapped) return response(messageId, mapped.status, undefined, mapped.code);
+    this.#onDiagnostic?.("SESSION_COLLABORATION_RUNTIME_UNAVAILABLE");
+    return response(messageId, "unreachable", undefined, "runtime_unavailable");
   }
 }
 
@@ -1023,7 +1024,7 @@ function mapScheduledDelivery(delivery: SessionMessageDeliveryResult): {
   return { outcome: "rejected", code: delivery.reason ?? "target_unavailable" };
 }
 
-function mapFailure(error: unknown): { status: "unreachable" | "rejected"; code: string } {
+function mapExpectedFailure(error: unknown): { status: "unreachable" | "rejected"; code: string } | undefined {
   const code = error instanceof Error && "code" in error && typeof error.code === "string" ? error.code : undefined;
   if (code === "SESSION_PLACEMENT_STALE" || code === "SESSION_SOURCE_UNAVAILABLE") {
     return { status: "rejected", code: "source_unavailable" };
@@ -1036,7 +1037,7 @@ function mapFailure(error: unknown): { status: "unreachable" | "rejected"; code:
   // rejection; an unconfirmable model list is transient and unreachable.
   if (code === "SESSION_MODEL_UNAVAILABLE") return { status: "rejected", code: "model_unavailable" };
   if (code === "SESSION_MODEL_CATALOG_UNAVAILABLE") return { status: "unreachable", code: "model_unavailable" };
-  return { status: "unreachable", code: "runtime_unavailable" };
+  return undefined;
 }
 
 function response(

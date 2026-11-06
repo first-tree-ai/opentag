@@ -109,7 +109,7 @@ export interface RuntimeCustodyStore extends RuntimeCustodyStoreDispatchRelease 
     request: SessionReconcileRequest,
     claims: NonNullable<SessionReconcileResult["retainedReports"]>,
     context: RuntimeBusinessContext,
-  ): Promise<void>;
+  ): Promise<NonNullable<SessionReconcileResult["retainedReports"]>>;
   getDelivery(deliveryId: string): Promise<AcceptedDeliveryRecord | undefined>;
   getDeliveryByTurn(turnId: string): Promise<AcceptedDeliveryRecord | undefined>;
   getTurn(turnId: string): Promise<RecordedTurnRecord | undefined>;
@@ -611,9 +611,9 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
     request: SessionReconcileRequest,
     claims: NonNullable<SessionReconcileResult["retainedReports"]>,
     context: RuntimeBusinessContext,
-  ): Promise<void> {
-    if (claims.length === 0) return;
-    await this.#database.transaction(async (transaction) => {
+  ): Promise<NonNullable<SessionReconcileResult["retainedReports"]>> {
+    if (claims.length === 0) return [];
+    return this.#database.transaction(async (transaction) => {
       const [session] = await transaction
         .select({ id: sessions.id })
         .from(sessions)
@@ -628,7 +628,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
         )
         .limit(1)
         .for("no key update", { of: sessions });
-      if (!session) return;
+      if (!session) return [];
       const [placement] = await transaction
         .select({ computerId: sessionPlacements.computerId, generation: sessionPlacements.generation })
         .from(sessionPlacements)
@@ -639,7 +639,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
         placement.computerId !== context.computerId ||
         placement.generation !== request.placementGeneration
       ) {
-        return;
+        return [];
       }
       const scopes = await this.#deliveryScopes(
         transaction,
@@ -648,12 +648,14 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
         true,
       );
       const claimsById = new Map(claims.map((claim) => [claim.deliveryId, claim]));
+      const claimed: NonNullable<SessionReconcileResult["retainedReports"]> = [];
       for (const scope of scopes) {
         const claim = claimsById.get(scope.delivery.id);
         if (claim && retainedClaimMatches(scope, claim, request, context)) {
-          await this.#restoreRetainedDelivery(transaction, scope, claim, context);
+          if (await this.#restoreRetainedDelivery(transaction, scope, claim, context)) claimed.push(claim);
         }
       }
+      return claimed;
     });
   }
 
@@ -662,8 +664,8 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
     scope: DeliveryScope,
     claim: NonNullable<SessionReconcileResult["retainedReports"]>[number],
     context: RuntimeBusinessContext,
-  ): Promise<void> {
-    if (scope.delivery.reportedAt !== null) return;
+  ): Promise<boolean> {
+    if (scope.delivery.reportedAt !== null) return false;
     if (scope.delivery.state === "pending" || scope.delivery.state === "expired") {
       await settleRetainedBatch(transaction, scope.delivery, this.#now());
       const restored = await transaction
@@ -689,9 +691,9 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
         )
         .returning({ id: imMessageDeliveries.id });
       if (restored.length) await startImFeedback(transaction, claim.deliveryId, this.#now());
-      return;
+      return restored.length > 0;
     }
-    if (scope.delivery.state !== "accepted" || scope.delivery.turnId !== claim.turnId) return;
+    if (scope.delivery.state !== "accepted" || scope.delivery.turnId !== claim.turnId) return false;
     if (scope.delivery.reportOwnerInstanceId !== context.instanceId || scope.delivery.resultHash !== claim.resultHash) {
       const [claimed] = await transaction
         .update(imMessageDeliveries)
@@ -707,9 +709,10 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
           ),
         )
         .returning({ id: imMessageDeliveries.id });
-      if (!claimed) return;
+      if (!claimed) return false;
     }
     await startImFeedback(transaction, claim.deliveryId, this.#now());
+    return true;
   }
 
   async getDelivery(deliveryId: string): Promise<AcceptedDeliveryRecord | undefined> {

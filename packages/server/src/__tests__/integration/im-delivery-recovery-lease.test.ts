@@ -5,7 +5,14 @@ import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import WebSocket, { WebSocketServer } from "ws";
 import { createDatabaseClient } from "../../db/client.js";
-import { computers, imBindings, imMessageDeliveries, sessionPlacements, sessions } from "../../db/schema/index.js";
+import {
+  computers,
+  imBindings,
+  imMessageDeliveries,
+  imMessages,
+  sessionPlacements,
+  sessions,
+} from "../../db/schema/index.js";
 import { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { ImDeliveryWorker } from "../../runtime/im-delivery-worker.js";
 import { PostgresRuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
@@ -104,7 +111,7 @@ function worker(
   return created;
 }
 
-async function wireFixture(f: Awaited<ReturnType<typeof fixture>>) {
+async function wireFixture(f: Awaited<ReturnType<typeof fixture>>, onResult?: () => Promise<void>) {
   const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
   await once(server, "listening");
   const address = server.address();
@@ -133,7 +140,10 @@ async function wireFixture(f: Awaited<ReturnType<typeof fixture>>) {
     async () => undefined,
   );
   const custody = new PostgresRuntimeCustodyStore(client.database);
-  const domain = new RuntimeDomainOwner(f.registry, custody, { requestTimeoutMs: 400 });
+  const domain = new RuntimeDomainOwner(f.registry, custody, {
+    requestTimeoutMs: 400,
+    ...(onResult ? { prepareReconcile: async (_computerId, _instanceId, request) => ({ request, onResult }) } : {}),
+  });
   const context = {
     computerId: f.computerId,
     instanceId: f.instanceId,
@@ -213,7 +223,231 @@ async function assertLateReport(
   expect(wire.frames).toHaveLength(1);
 }
 
+async function retainedFixture() {
+  const f = await fixture();
+  const body = {
+    deliveryId: f.deliveryId,
+    sessionId: f.sessionId,
+    agentId: f.agentId,
+    turnId: "original-turn",
+    placementGeneration: 1,
+    outcome: "completed" as const,
+    executionEffects: "completed" as const,
+    traceSummary: { lastSequence: 0, droppedEvents: 0 },
+  };
+  const report: TurnReportRequest = {
+    type: "turn:report",
+    requestId: randomUUID(),
+    ...body,
+    resultHash: computeTurnResultHash(body),
+  };
+  const dispatchRequestId = randomUUID();
+  const inputHash = "a".repeat(64);
+  await client.database
+    .update(imMessageDeliveries)
+    .set({
+      dispatchRequestId,
+      dispatchInputHash: inputHash,
+      inputHash,
+    })
+    .where(eq(imMessageDeliveries.id, f.deliveryId));
+  const claim = {
+    deliveryId: f.deliveryId,
+    dispatchRequestId,
+    inputHash,
+    turnId: body.turnId,
+    placementGeneration: 1,
+    resultHash: report.resultHash,
+  };
+  return { f, report, claim };
+}
+
+type Manifest =
+  | "matching"
+  | "absent"
+  | "delivery"
+  | "turn"
+  | "dispatch"
+  | "input"
+  | "generation"
+  | "hash"
+  | "other-claimed";
+
+async function prepareManifest({ f, report, claim }: Awaited<ReturnType<typeof retainedFixture>>, manifest: Manifest) {
+  if (manifest === "delivery") claim.deliveryId = randomUUID();
+  if (manifest === "turn") claim.turnId = "another-turn";
+  if (manifest === "dispatch") claim.dispatchRequestId = randomUUID();
+  if (manifest === "input") claim.inputHash = "b".repeat(64);
+  if (manifest === "generation") claim.placementGeneration++;
+  if (manifest === "hash") {
+    await client.database
+      .update(imMessageDeliveries)
+      .set({ resultHash: report.resultHash })
+      .where(eq(imMessageDeliveries.id, f.deliveryId));
+    claim.resultHash = "b".repeat(64);
+  }
+  if (manifest === "other-claimed") {
+    const original = await readDelivery(f.deliveryId);
+    claim.deliveryId = randomUUID();
+    claim.turnId = "another-turn";
+    claim.dispatchRequestId = randomUUID();
+    const [message] = await client.database.select().from(imMessages).where(eq(imMessages.id, original.messageId));
+    if (!message) throw new Error("missing fixture message");
+    const messageId = randomUUID();
+    await client.database.insert(imMessages).values({ ...message, id: messageId, externalMessageId: messageId });
+    await client.database.insert(imMessageDeliveries).values({
+      ...original,
+      id: claim.deliveryId,
+      messageId,
+      dispatchRequestId: claim.dispatchRequestId,
+      turnId: claim.turnId,
+      nextAttemptAt: new Date(Date.now() + 60_000),
+    });
+  }
+}
+
 describe("accepted recovery leases on independent PostgreSQL connections", () => {
+  it.each(
+    (["ready", "stopped"] as const).flatMap((status) =>
+      (["report", "cancel", "failure"] as const).map((race) => ({ status, race })),
+    ),
+  )("preserves a $race after claiming a retained report with $status", async ({ status, race }) => {
+    const { f, report, claim } = await retainedFixture();
+    const entered = barrier();
+    const finish = barrier();
+    const wire = await wireFixture(f, async () => {
+      entered.release();
+      await finish.promise;
+      if (race === "failure") throw new Error("reconcile completion failed");
+    });
+    const diagnostic = vi.fn();
+    const owner = worker(client.database, f.registry, vi.fn(), { domain: wire.domain, onDiagnostic: diagnostic });
+    const running = owner.runOnce();
+    let stopping: Promise<void> | undefined;
+    try {
+      await expect.poll(() => wire.frames.length).toBe(1);
+      const request = wire.frames[0];
+      if (!request) throw new Error("missing reconcile request");
+      wire.remote.send(
+        JSON.stringify({
+          type: "session:reconcile:result",
+          requestId: request.requestId,
+          sessionId: request.sessionId,
+          placementGeneration: request.placementGeneration,
+          status,
+          retainedReports: [claim],
+        }),
+      );
+      await entered.promise;
+      expect(await readDelivery(f.deliveryId)).toMatchObject({ reportedAt: null, resultHash: report.resultHash });
+      if (race === "report") {
+        wire.remote.send(JSON.stringify(report));
+        await expect.poll(() => wire.replies.length).toBe(1);
+      } else if (race === "cancel") {
+        stopping = owner.stop();
+      }
+      finish.release();
+      await running;
+      await stopping;
+      expect((await readDelivery(f.deliveryId)).lastErrorCode).toBe(
+        race === "failure" ? "IM_DELIVERY_RECOVERY_FAILED" : null,
+      );
+      expect(diagnostic).toHaveBeenCalledTimes(race === "failure" ? 1 : 0);
+      if (race !== "report") {
+        wire.remote.send(JSON.stringify(report));
+        await expect.poll(() => wire.replies.length).toBe(1);
+      }
+      wire.remote.send(JSON.stringify(report));
+      await expect.poll(() => wire.replies.length).toBe(2);
+      expect(wire.replies).toEqual([
+        expect.objectContaining({ status: "recorded" }),
+        expect.objectContaining({ status: "already_recorded" }),
+      ]);
+      expect((await readDelivery(f.deliveryId)).reportedAt).not.toBeNull();
+      expect(wire.frames).toHaveLength(1);
+      expect(wire.errors).toEqual([]);
+    } finally {
+      finish.release();
+      await owner.stop();
+      await wire.close();
+      await Promise.allSettled([running, stopping]);
+    }
+  });
+
+  it.each(
+    (["ready", "stopped"] as const).flatMap((status) =>
+      (
+        ["matching", "absent", "delivery", "turn", "dispatch", "input", "generation", "hash", "other-claimed"] as const
+      ).map((manifest) => ({ status, manifest })),
+    ),
+  )(
+    "classifies $status recovery with a $manifest retained manifest before the actual report",
+    async ({ status, manifest }) => {
+      const { f, report, claim } = await retainedFixture();
+      await prepareManifest({ f, report, claim }, manifest);
+      const wire = await wireFixture(f);
+      const diagnostic = vi.fn();
+      const sends = vi.spyOn(f.registry, "send");
+      const now = new Date();
+      const owner = worker(client.database, f.registry, vi.fn(), {
+        domain: wire.domain,
+        onDiagnostic: diagnostic,
+        now: () => now,
+      });
+      const running = owner.runOnce();
+      try {
+        await expect.poll(() => wire.frames.length).toBe(1);
+        const request = wire.frames[0];
+        if (!request) throw new Error("missing reconcile request");
+        wire.remote.send(
+          JSON.stringify({
+            type: "session:reconcile:result",
+            requestId: request.requestId,
+            sessionId: request.sessionId,
+            placementGeneration: request.placementGeneration,
+            status,
+            retainedReports: manifest === "absent" ? [] : [claim],
+            claimedRetainedReports: [claim],
+          }),
+        );
+        await running;
+        expect(await readDelivery(f.deliveryId)).toMatchObject({
+          state: "accepted",
+          reportedAt: null,
+          turnReport: null,
+          resultHash: ["matching", "hash"].includes(manifest) ? report.resultHash : null,
+          reportOwnerInstanceId: f.instanceId,
+          attemptCount: 25,
+          nextAttemptAt: new Date(now.getTime() + 30_000),
+          lastErrorCode:
+            manifest === "matching" ? "IM_DELIVERY_RECOVERY_REPORTING" : "IM_DELIVERY_RECOVERY_AWAITING_REPORT",
+        });
+        expect(diagnostic).toHaveBeenCalledTimes(manifest === "matching" ? 0 : 1);
+        if (manifest === "other-claimed") {
+          expect(await readDelivery(claim.deliveryId)).toMatchObject({ resultHash: claim.resultHash });
+        }
+        wire.remote.send(JSON.stringify(report));
+        await expect.poll(() => wire.replies.length).toBe(1);
+        wire.remote.send(JSON.stringify(report));
+        await expect.poll(() => wire.replies.length).toBe(2);
+        expect(wire.replies).toEqual([
+          expect.objectContaining({ status: "recorded" }),
+          expect.objectContaining({ status: "already_recorded" }),
+        ]);
+        const terminal = await readDelivery(f.deliveryId);
+        await owner.runOnce();
+        expect(await readDelivery(f.deliveryId)).toEqual(terminal);
+        expect(wire.frames).toHaveLength(1);
+        for (const call of sends.mock.calls) expect(call[2]).toMatchObject({ type: "session:reconcile" });
+        expect(wire.errors).toEqual([]);
+      } finally {
+        await owner.stop();
+        await wire.close();
+        await Promise.allSettled([running]);
+      }
+    },
+  );
+
   it("keeps one recovery attempt through slow reconcile and competing scans", async () => {
     const f = await fixture();
     const entered = barrier();

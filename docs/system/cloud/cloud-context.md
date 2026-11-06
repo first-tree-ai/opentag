@@ -21,7 +21,7 @@ does not imply a shared filesystem or a Local Computer WebSocket connection.
 
 There is no second Agent configuration store, shared Agent Home, background directory replication,
 or Context Tree checkpoint history. `sandboxes.storage_uri` still identifies the latest saved
-Session workspace. E8 does not turn the Server into a Git hosting service.
+Session workspace. The Server does not host Git repositories.
 
 ## Configuration and recovery
 
@@ -46,13 +46,15 @@ checks Account ownership, repository admission, and the selected subtree at the 
 branch before saving. Agent/runtime revisions guard the final update. A running Agent can
 change its selection; the change applies from the next turn.
 
-Each Cloud Sandbox owns its cached snapshots and write sessions. Before fetching, preparation
-saves the current authorized selection in an OpenTag-owned project configuration. Removed
-selections do not delete cached content or unpublished work. One sync refreshes the selected
-sources; a separate recovery budget permits offline cached reads after a timeout. Modified
-snapshots are unavailable. Partial results remain independent and no tree takes precedence.
-Managed command timeouts return a `TIMEOUT` status so preparation can attempt its bounded offline
-recovery; a transport failure returns `CLI_FAILED` instead of escaping the optional preparation.
+Each Cloud Sandbox owns its cached snapshots and write sessions. Preparation saves the current
+authorized selection in an OpenTag-owned project configuration and writes the packaged CLI shim;
+it performs no remote synchronization or automatic offline recovery. Removed selections do not
+delete cached content or unpublished work. The Agent runs `context-tree sync` through the command
+gateway at task boundaries and uses `sync --offline` after a failed refresh, reporting cached
+content as possibly stale. A source is available only when both its command gateway and packaged
+Skills are present. Partial results remain independent and no tree takes precedence. See
+[Preparation](../capabilities/context-tree-integration.md#preparation) and
+[Read freshness](../capabilities/context-tree-integration.md#read-freshness-and-prompt-placement).
 
 The [Context Tree integration](../capabilities/context-tree-integration.md) uses the current
 execution's managed GitHub environment. It never falls back to ambient host credentials.
@@ -134,7 +136,7 @@ its journal and waits for every settlement ack, so the release cannot destroy an
 settlement. A v3 Runner
 image requires a v3 Server, so the Server must be deployed first, as with earlier versions.
 
-Cloud delivery still uses one Server owner. E8 adds no cross-Server routing or independent task queue.
+Cloud delivery still uses one Server owner, with no cross-Server routing or independent task queue.
 Local Session collaboration keeps its current behavior and trust boundary.
 
 Scheduled handoffs carry their existing cancellation signal through the per-Session FIFO and

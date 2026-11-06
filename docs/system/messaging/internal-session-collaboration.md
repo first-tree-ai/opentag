@@ -67,6 +67,14 @@ work: an upgrade is switching over, the Client is stopping, or the bounded FIFO 
 code. `session_busy` and `agent_busy` map to their own codes, though the Local inbox does not return them today. Messages
 recorded before this split keep `capacity`.
 
+Create/send admission refusals for source authority, target availability, collaboration scope, message ID conflicts,
+or an unavailable model keep their existing `rejected` response and code without an ERROR `Server diagnostic`.
+An unconfirmable Cloud model catalog remains `unreachable` with `model_unavailable` and does not emit that diagnostic.
+An unexpected exception still returns `unreachable` with `runtime_unavailable` and emits the fixed
+`SESSION_COLLABORATION_RUNTIME_UNAVAILABLE` diagnostic without exception details or message content. HTTP responses
+remain 200 for these command outcomes. Runtime assembly, Cloud dispatch, and outcome-persistence failures retain
+their separate internal-error logs.
+
 The Server does not hold or replay a refused message (decision by yuezengwu, 2026-11-05,
 [#1327](https://github.com/first-tree-ai/opentag/issues/1327)). The Client keeps the upgrade switch window as small as it
 can instead. A sender retries with the same `--message-id`, and the inbox evaluates that replay again rather than answering
@@ -154,8 +162,8 @@ person for an IM message. So when a message's Run ends without completing, the S
 kind of Session the target is. A scheduled message has no sender: its notice goes to an internal target's creator
 (`created_by_session_id`), and a visible target produces none:
 
-- Local: a message whose Run a daemon crash or restart interrupts, or that hits a model HTTP 429, gets at most 2 automatic
-  retries, as described in
+- Local: a message whose Run a daemon crash, restart or upgrade interrupts, or that hits a model HTTP 429, gets at most 2
+  automatic retries, as described in
   [Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work). The retried Run
   starts with the continuation notice and the original message. Every other failure, including `turn_timeout`, is terminal
   without a retry, and so is running out of retries (`provider_rate_limited`, or `run_interrupted` after a crash).

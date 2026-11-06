@@ -308,7 +308,7 @@ export class FakeCloudRunAdmin {
             image: instance.image,
             sandboxLauncher: true,
             args: ["opentag-runner", "serve"],
-            resources: { limits: { cpu: "1", memory: "1Gi" } },
+            resources: { limits: { cpu: "1", memory: "2Gi" } },
             ports: [{ containerPort: 8080 }],
           },
         ],

@@ -104,8 +104,9 @@ and no endpoint exists.
 - Cloud executions get one fresh per-execution `sandbox exec` duplex pipe; the channel is closed with the execution and
   a successor obtains its own bearer, socket, and channel.
 - The trusted Pi extension is the built artifact `dist/pi-extensions/web-tools.mjs`, shipped with the Client package,
-  the npm CLI, and portable artifacts. It loads explicitly with `pi -e`; `--no-extensions` stays set so implicit
-  discovery never loads anything, and help/probe commands never load the extension.
+  the npm CLI, and portable artifacts. It loads explicitly with `pi -e`. Cloud keeps implicit discovery disabled;
+  Local execution preserves [native Pi resources](../runtime/agent-runtime-contract.md#local-pi-native-resources-and-trust).
+  Help/probe commands never load the platform Web extension.
 
 ## Budgets, errors, and artifacts
 

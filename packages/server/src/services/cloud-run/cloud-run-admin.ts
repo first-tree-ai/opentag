@@ -94,6 +94,14 @@ function workspacePersistenceOf(value: unknown): boolean | undefined {
   if (flags.length === 0) return false;
   return flags.length === 1 && flags[0]?.value === "1" && flags[0]?.valueSource === undefined ? true : undefined;
 }
+/** Memory for new Runner Instances. The workspace and its temporary archive both use this memory. */
+const RUNNER_MEMORY_LIMIT = "2Gi";
+/**
+ * OpenTag never patches a running Instance, so 1 GiB Instances created before the move to 2 GiB
+ * must stay valid until they are replaced.
+ */
+const ACCEPTED_RUNNER_MEMORY_LIMITS: ReadonlySet<string> = new Set(["2Gi", "2048Mi", "1Gi", "1024Mi"]);
+
 export class CloudRunAdmin {
   readonly #config: CloudRunAdminConfig;
   readonly #fetch: typeof fetch;
@@ -362,7 +370,7 @@ export class CloudRunAdmin {
       ports.length !== 1 ||
       containerPort !== 8080 ||
       !(cpu === "1" || cpu === "1000m") ||
-      !(memory === "1Gi" || memory === "1024Mi")
+      !ACCEPTED_RUNNER_MEMORY_LIMITS.has(String(memory))
     )
       throw new CloudRunAdminError(
         "invalid",
@@ -371,7 +379,7 @@ export class CloudRunAdmin {
   }
   async #createV1(spec: RunnerInstanceSpec, id: string, name: string): Promise<CloudRunCreateResult> {
     const c = this.#container(spec);
-    c.resources = { limits: { cpu: "1", memory: "1Gi" } };
+    c.resources = { limits: { cpu: "1", memory: RUNNER_MEMORY_LIMIT } };
     const r = await this.#request(
       "POST",
       `${this.#regionalApiBaseUrl(this.#config.region)}/apis/run.googleapis.com/v1/namespaces/${this.#config.project}/instances`,
@@ -430,7 +438,7 @@ export class CloudRunAdmin {
             ]
           : []),
       ],
-      resources: { limits: { cpu: "1", memory: "1Gi" }, cpuIdle: false },
+      resources: { limits: { cpu: "1", memory: RUNNER_MEMORY_LIMIT }, cpuIdle: false },
       // The Instance ingress policy and the default TCP startup probe both require exactly this
       // single declared container port; the Runner listens here for probe connections only.
       ports: [{ containerPort: 8080 }],

@@ -73,6 +73,27 @@ the Server shows the person an [error card](messaging/im-feedback.md). A Session
 message ends `failed` and its sender gets a
 [Run outcome notice](messaging/internal-session-collaboration.md#run-outcome-notices).
 
+### Delivery of completed Turn reports
+
+The Client writes the immutable completed report into the Session binding before
+submitting it to the Turn Report owner. The owner's delivery record is separate:
+its failed writes retain volatile retry bookkeeping, without advancing the durable
+record or sending before persistence succeeds. Initial and retry-transition write
+failures use the same capped attempts, age limit and backoff as report delivery.
+Exhausting that budget retains the Session's report for a later recovery reconcile.
+
+A legal reconcile can advertise an exact retained report while the same live Turn
+is reporting, including after delivery enters dead-letter. It cannot take over a
+running Turn, another Turn or delivery, or a live reporting activity at a different
+placement generation. Replay joins an existing in-flight report or its retry timer;
+it reopens exhausted delivery only after the retained-report manifest is sent.
+Confirmation records the result through the live custody owner when present, then
+releases that Turn's admission and reporting activity. Disk-only recovery clears
+its recovery fence instead. Cancellation of an unsent manifest starts no replay.
+These paths resend the original report and never run the completed model task again.
+The Server still checks current ownership, connection instance, placement and
+terminal settlement before accepting a report.
+
 ### Automatic retry of accepted work
 
 Automatic retry of accepted work belongs to the Local Client daemon; the Server
@@ -159,9 +180,23 @@ are acceptable: the Provider may or may not have persisted the interrupted turn.
 - Session messages waiting for that preparation are not failures. Once the
   Turn is resumed they are steered into it in order; see
   [Session messages steered into an IM Turn](messaging/internal-session-collaboration.md#session-messages-steered-into-an-im-turn).
+- An automatic upgrade does not wait for running Sessions. It installs the new
+  version while they keep running and new work keeps arriving, so a failed
+  install costs them nothing. It then closes admission and stops the daemon
+  through the orderly stop above. That stop still finishes its durable writes
+  (interruption records, inbox records, Turn reports and Session message outcome
+  reports); a report not yet sent is replayed after the restart. Background
+  processes a Run started are lost with it.
+- An automatic upgrade waits only while the Client is registered with a Server
+  that did not negotiate `runtime.sessionRecovery`, that is, one older than this
+  retry. Then it closes admission and waits for protected work, and new input is
+  refused with `client_busy` until the wait ends or that changes. An IM delivery
+  stays pending on the Server and arrives later; a scheduled message is recorded
+  as `unreachable`. A Client that is not registered does not wait: while
+  disconnected nothing can be delivered, and a Client the Server rejected for its
+  version can finish its work only after upgrading.
 - Manual `opentag upgrade` and `opentag daemon restart` still stop the daemon
-  without draining; automatic upgrades wait for protected work, which includes
-  pending retries.
+  without waiting.
 
 Cloud is unchanged: accepted Cloud custody is never replayed automatically (see
 [Cloud Runner execution](cloud/cloud-runner-execution.md)); the Cloud model proxy

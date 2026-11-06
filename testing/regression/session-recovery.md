@@ -16,6 +16,19 @@ the same Session after the daemon is back, its input begins with
 - One Agent on that Computer with an IM binding, and permission to stop, kill and restart its daemon.
 - For internal Sessions: a request that makes the visible Session run `opentag session create` for a long task.
 
+## Feishu system reaction projection
+
+With an authorized Feishu test binding, verify a running task has the App's `OnIt`, terminal success removes it,
+and a terminal failure replaces it with `CrossMark`. Repeated projection retains the wanted reaction without
+creating another. Reactions from users and other Apps, including the same emojis, remain untouched. Include a
+message with more than fifty reactions so the App's reaction is found on a later page.
+
+Use the controlled HTTP suite `im-feedback-feishu-http.test.ts` for request counts, simultaneous emoji writes,
+incomplete or looping pagination, lost write acknowledgements and cancellation. It must show that a failed writer
+is joined with its sibling before returning, and that a late read after the deadline starts no mutation. The
+480 ms RTT model measures the Server component, not native provider latency; record actual provider timing
+separately when an authorized test deployment is available.
+
 ## Daemon crash (power loss)
 
 1. Start a long Run in a DM or thread, then kill the daemon process group (`kill -9` of the daemon and its children).
@@ -29,6 +42,56 @@ the same Session after the daemon is back, its input begins with
 1. Start a long Run, then run `opentag daemon restart` (or upgrade the client).
 2. Expected: no "cancelled" outcome is reported and no error card appears; after the restart the Session continues
    with reason "the OpenTag daemon was restarted or upgraded".
+
+## Automatic upgrade while Sessions run
+
+1. On a portable install, start a long Run in an IM conversation and a long internal Session, then publish a newer
+   channel target.
+2. Expected: `opentag daemon status` does not stay in `awaiting_protected_work`. While the new version installs, a new
+   IM message still gets a reply. After the restart both Sessions continue with reason "the OpenTag daemon was
+   restarted or upgraded", with no error card and no creator notice. A second upgrade during the same Run also
+   continues it.
+
+## Completed report delivery failures without restarting the daemon
+
+1. With a connected daemon, let an IM Turn complete and verify its immutable report
+   exists in the Session binding. Inject failures into the separate Turn Report
+   durability writes, including the first write and retry-transition writes.
+2. Restore those writes within the delivery retry budget without reconnecting.
+   Expected: the exact original report is delivered and acknowledged; failed writes
+   never appear as committed state. Persistent failure consumes the capped retry
+   budget and leaves the binding's report recoverable.
+3. Exhaust report delivery into dead-letter, then restore storage/transport and
+   request an ordinary recovery reconcile. Expected: the matching reporting Turn
+   advertises retained custody; successful manifest delivery wakes report replay.
+   Cancelling an unsent manifest sends no report. Repeated reconciles join an
+   in-flight delivery instead of duplicating its send or resetting its backoff.
+4. Expected: acknowledgement settles the original Turn once, releases its original
+   admission reservation and reporting activity, and lets queued input proceed.
+   No completed model task runs again. A running activity, mismatched Turn or
+   delivery, wrong installation, stale placement, or changed live generation must
+   not be taken over. Server terminal and authorization checks still apply.
+5. Stop the daemon during a persistence retry. Expected: its timers stop, no late
+   send occurs, and the retained Session report remains available on restart.
+   If writing the Session report itself failed, do not claim a durable completed
+   report or send an invented success.
+
+## Retained report replay after reconnect
+
+1. On the authorized test Computer, disconnect its runtime transport after a Turn finishes locally
+   but before the Server records its report. Reconnect the daemon with its retained report intact.
+2. Expected: a recovery reconcile may return `ready` or `stopped` with a retained report. Once the
+   Server claims that exact delivery and Turn, it waits with `IM_DELIVERY_RECOVERY_REPORTING` and
+   emits no `IM_DELIVERY_RECOVERY_AWAITING_REPORT` error during the gap before report arrival.
+   The report settles the original Turn once, the working reaction clears, and no replacement Run starts.
+3. Replay the same report again. Expected: it is acknowledged as already recorded, with no second
+   settlement or additional reply. If the report arrives before recovery deferral, the terminal
+   state remains intact.
+4. In the controlled protocol test harness, repeat with no manifest, a mismatched dispatch, input,
+   generation, Turn or result hash, and a valid retained report for another delivery. Expected:
+   an unreported `ready`/`stopped` response still diagnoses the current missing report; no input is
+   redispatched. Cancellation and failed reconcile completion preserve custody and still accept
+   the authentic report through its normal path.
 
 ## Retries run out
 

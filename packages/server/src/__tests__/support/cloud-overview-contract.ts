@@ -117,6 +117,33 @@ export function cloudOverviewContract(databaseForTest: () => DatabaseClient) {
       expect(result.sessions[0]?.taskState).toBe("queued");
     });
 
+    it("keeps an accepted automatic deletion pending without an attention diagnostic", async () => {
+      const value = await fixture();
+      await database
+        .update(sandboxes)
+        .set({
+          lifecycle: "releasing",
+          environmentGeneration: 1,
+          currentResourceName: "projects/test/locations/test/instances/tracked",
+          currentResourceUid: "tracked-uid",
+          idleReclaimAt: new Date(),
+          lastErrorCode: "cloud_delete_pending",
+          lastErrorAt: new Date(),
+        })
+        .where(eq(sandboxes.id, value.sandbox.sandboxId));
+      const result = AgentCloudOverviewSchema.parse(
+        await service().read(value.accountId, value.agent.id, { limit: 20 }),
+      );
+      expect(result.counts).toEqual({ allocated: 1, queued: 0, running: 0, attention: 0 });
+      expect(result.sessions[0]).toMatchObject({
+        lifecycle: "releasing",
+        lastErrorCode: null,
+        lastErrorAt: null,
+        canRelease: true,
+        canDiscard: false,
+      });
+    });
+
     it("rejects other Accounts and preserves suspended/ended cleanup visibility", async () => {
       const value = await fixture();
       const foreign = await fixture();

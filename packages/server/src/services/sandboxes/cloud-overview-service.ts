@@ -14,9 +14,15 @@ import {
 import { sandboxNotFound } from "./errors.js";
 import type { RunnerHub } from "./runner-hub.js";
 import { countCloudCapacityOccupancy, occupiedSandbox } from "./sandbox-capacity.js";
+import { CLOUD_DELETE_PENDING } from "./sandbox-runner-service.js";
 
 // Phase markers are not failures. Never expose raw provider diagnostics to the browser.
-const phaseMarkers = ["cloud_create_pending", "workspace_save_required", "workspace_discard_requested"];
+const phaseMarkers = [
+  "cloud_create_pending",
+  "workspace_save_required",
+  "workspace_discard_requested",
+  CLOUD_DELETE_PENDING,
+];
 const publicErrors = new Set([
   "cloud_create_uncertain",
   "cloud_create_rejected",

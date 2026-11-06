@@ -43,6 +43,7 @@ import {
 } from "../runtime/runtime-durability.js";
 import {
   buildSessionMessageInput,
+  SESSION_MESSAGE_STOPPED_CODE,
   SessionMessageInbox,
   type SessionMessageRunOutcomeEvent,
 } from "../runtime/session-message-inbox.js";
@@ -1943,6 +1944,162 @@ describe("SessionMessageInbox", () => {
     });
     expect(preparation.prepareSession).toHaveBeenCalledTimes(2);
     inbox.stop();
+  });
+
+  describe("Session stop", () => {
+    function stoppableInbox(
+      options: {
+        scheduler?: RuntimeRetryScheduler;
+        prompt?: (input: { signal?: AbortSignal }) => Promise<unknown>;
+      } = {},
+    ) {
+      const prompt = vi.fn(
+        options.prompt ??
+          ((input: { signal?: AbortSignal }) =>
+            new Promise((_resolve, reject) => {
+              input.signal?.addEventListener("abort", () => reject(input.signal?.reason), { once: true });
+            })),
+      );
+      const onRunOutcome = vi.fn();
+      const persistence = new MemoryRuntimeDurabilityStore();
+      const inbox = new SessionMessageInbox({
+        admission: new AdmissionController(),
+        credentialEnvironment: credentialEnvironment(),
+        imCredentialGrantVersion: () => 2,
+        onRunOutcome,
+        persistence,
+        sessionCollaborationVersion: () => 4,
+        reconciler: inboxReconciler(),
+        runtimeManager: {
+          ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+          sessionKind: vi.fn(() => "internal" as const),
+        },
+        ...(options.scheduler ? { scheduler: options.scheduler } : {}),
+      });
+      return { inbox, prompt, onRunOutcome };
+    }
+
+    it("aborts the running Run and withdraws queued messages without a retry or an outcome report", async () => {
+      const { inbox, prompt, onRunOutcome } = stoppableInbox();
+      const first = delivery();
+      const queued = {
+        ...delivery(),
+        targetSessionId: first.targetSessionId,
+        placementGeneration: first.placementGeneration,
+      };
+      await inbox.accept(first);
+      await inbox.accept(queued);
+      await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce());
+      expect(inbox.queuedCount).toBe(1);
+
+      await inbox.stopSessionWork(first.targetSessionId, first.placementGeneration);
+
+      expect(prompt).toHaveBeenCalledOnce();
+      expect(inbox.queuedCount).toBe(0);
+      for (const { messageId } of [first, queued]) {
+        expect(inbox.getState(messageId)).toMatchObject({
+          status: "failed",
+          lastError: { code: SESSION_MESSAGE_STOPPED_CODE, retryability: "never" },
+        });
+      }
+      expect(onRunOutcome).not.toHaveBeenCalled();
+      await inbox.settled();
+      expect(prompt).toHaveBeenCalledOnce();
+      inbox.stop();
+    });
+
+    it("cancels a pending retry", async () => {
+      const cancel = vi.fn();
+      const tasks: Array<() => void> = [];
+      const scheduler = {
+        schedule: (_delay: number, task: () => void) => {
+          tasks.push(task);
+          return { cancel };
+        },
+      };
+      const { inbox, prompt } = stoppableInbox({
+        scheduler,
+        prompt: async () => ({
+          runId: "run",
+          status: "failed",
+          error: { code: "provider_rate_limited", category: "rate_limit", retryability: "transient", phase: "prompt" },
+        }),
+      });
+      const request = delivery();
+      await inbox.accept(request);
+      await vi.waitFor(() => expect(inbox.getState(request.messageId)?.status).toBe("retryable"));
+
+      await inbox.stopSessionWork(request.targetSessionId, request.placementGeneration);
+
+      expect(cancel).toHaveBeenCalled();
+      expect(inbox.getState(request.messageId)?.status).toBe("failed");
+      expect(prompt).toHaveBeenCalledOnce();
+      inbox.stop();
+    });
+
+    it("leaves a message of a newer placement alone", async () => {
+      const { inbox, prompt } = stoppableInbox({
+        prompt: async () => ({ runId: "run", status: "completed", output: [] }),
+      });
+      const request = { ...delivery(), placementGeneration: 2 };
+      await inbox.accept(request);
+      await inbox.stopSessionWork(request.targetSessionId, 1);
+      await inbox.settled();
+      expect(prompt).toHaveBeenCalledOnce();
+      expect(inbox.getState(request.messageId)?.status).toBe("succeeded");
+      inbox.stop();
+    });
+
+    it("stops the Run through a stopped reconcile and answers stopped, not busy", async () => {
+      const computerId = randomUUID();
+      const request = delivery();
+      const preparation = {
+        prepareAgent: vi.fn(async () => undefined),
+        prepareSession: vi.fn(async () => undefined),
+        stopSession: vi.fn(async () => undefined),
+      };
+      const reconciler = new SessionReconciler({ installationId: computerId, preparation });
+      const creatorSessionId = randomUUID();
+      const ready = { ...reconcileFor(computerId, request), sessionKind: "internal" as const, creatorSessionId };
+      await reconciler.reconcile(ready);
+      const prompt = vi.fn(
+        (input: { signal?: AbortSignal }) =>
+          new Promise((_resolve, reject) => {
+            input.signal?.addEventListener("abort", () => reject(input.signal?.reason), { once: true });
+          }),
+      );
+      const inbox = new SessionMessageInbox({
+        admission: new AdmissionController(),
+        credentialEnvironment: credentialEnvironment(),
+        imCredentialGrantVersion: () => 2,
+        sessionCollaborationVersion: () => 4,
+        reconciler,
+        runtimeManager: {
+          ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+          sessionKind: vi.fn(() => "internal" as const),
+        },
+      });
+      reconciler.setInternalWorkStopper(inbox);
+      await inbox.accept(request);
+      await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce());
+
+      await expect(
+        reconciler.reconcile({
+          ...ready,
+          requestId: randomUUID(),
+          desired: "stopped",
+          runtime: undefined,
+          sessionCliProof: undefined,
+        }),
+      ).resolves.toMatchObject({ status: "stopped" });
+
+      expect(preparation.stopSession).toHaveBeenCalledOnce();
+      expect(inbox.getState(request.messageId)).toMatchObject({
+        status: "failed",
+        lastError: { code: SESSION_MESSAGE_STOPPED_CODE },
+      });
+      inbox.stop();
+    });
   });
 
   it("rejects a delivery when an earlier stop reconcile wins the agent lock", async () => {

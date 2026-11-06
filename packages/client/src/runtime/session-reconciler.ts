@@ -110,6 +110,11 @@ const noopPreparation: RuntimePreparation = {
   stopSession: async () => undefined,
 };
 
+/** Ends an internal Session's accepted work: its running Run, retries and queued messages. */
+export interface InternalSessionWorkStopper {
+  stopSessionWork(sessionId: string, placementGeneration: number): Promise<void>;
+}
+
 export class SessionReconciler {
   readonly #installationId: string;
   readonly #preparation: RuntimePreparation;
@@ -117,6 +122,7 @@ export class SessionReconciler {
   #resumer?: InterruptedTurnResumer;
   readonly #maxRememberedRequests: number;
   readonly #agents = new Map<string, AgentRuntimeState>();
+  #internalWorkStopper: InternalSessionWorkStopper | undefined;
   readonly #sessions = new Map<string, SessionRuntimeState>();
   readonly #activities = new Map<string, SessionActivity>();
   readonly #recoveries = new Map<string, SessionTurnIdentity>();
@@ -137,6 +143,11 @@ export class SessionReconciler {
   /** Late binding: the resumer and the reconciler depend on each other. */
   setResumer(resumer: InterruptedTurnResumer): void {
     this.#resumer = resumer;
+  }
+
+  /** Late binding: the inbox needs the reconciler before the reconciler can reach the inbox. */
+  setInternalWorkStopper(stopper: InternalSessionWorkStopper): void {
+    this.#internalWorkStopper = stopper;
   }
 
   getAgent(agentId: string): AgentRuntimeState | undefined {
@@ -206,7 +217,9 @@ export class SessionReconciler {
       return Promise.resolve(this.#result(request, "rejected", "request_conflict"));
     }
 
-    const result = this.withAgentLock(request.agentId, () => this.#reconcileLocked(request));
+    const result = this.#stopsInternalWork(request)
+      ? this.#stopInternalSession(request)
+      : this.withAgentLock(request.agentId, () => this.#reconcileLocked(request));
     this.#requests.set(request.requestId, { payloadHash, result });
     this.#trimRequests();
     return result;
@@ -321,6 +334,38 @@ export class SessionReconciler {
       return false;
     }
     return this.#resumer?.resume(sessionId, unresolved) === true;
+  }
+
+  /**
+   * A stop may interrupt an internal Session's work only when the frame could also win the reconcile:
+   * a frame for another installation, Agent or an older placement is refused below without side effects.
+   * The frame names the kind itself because a restarted daemon has not prepared the Session yet.
+   */
+  #stopsInternalWork(request: SessionReconcileRequest): boolean {
+    if (request.desired !== "stopped" || !this.#internalWorkStopper) return false;
+    if (request.installationId !== this.#installationId) return false;
+    const existing = this.#sessions.get(request.sessionId);
+    if (
+      existing &&
+      (request.placementGeneration < existing.placementGeneration || existing.agentId !== request.agentId)
+    ) {
+      return false;
+    }
+    return request.sessionKind === "internal" || existing?.sessionKind === "internal";
+  }
+
+  /**
+   * The Run's own cleanup clears its activity under the Agent lock, so the work stops before the lock is
+   * taken; the normal stop then finds the Session idle. A message authorized before the Server ended the
+   * Session can still arrive in between, so the work is withdrawn again once the stop has been decided.
+   */
+  async #stopInternalSession(request: SessionReconcileRequest): Promise<SessionReconcileResult> {
+    await this.#internalWorkStopper?.stopSessionWork(request.sessionId, request.placementGeneration);
+    const result = await this.withAgentLock(request.agentId, () => this.#reconcileLocked(request));
+    if (result.status === "stopped") {
+      await this.#internalWorkStopper?.stopSessionWork(request.sessionId, request.placementGeneration);
+    }
+    return result;
   }
 
   async #reconcileLocked(

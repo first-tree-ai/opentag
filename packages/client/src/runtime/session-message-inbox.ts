@@ -132,6 +132,8 @@ export interface SessionMessageRunOutcomeEvent {
 
 /** The stable code a Run outcome report carries for a timed-out Session message. */
 export const SESSION_MESSAGE_TURN_TIMEOUT_CODE = "turn_timeout";
+/** A Session stop withdrew or aborted the message. */
+export const SESSION_MESSAGE_STOPPED_CODE = "session_stopped";
 
 export class SessionMessageInbox {
   readonly #admission: AdmissionController;
@@ -161,6 +163,8 @@ export class SessionMessageInbox {
   /** Messages in a joinable Run: how to settle each one when that Run ends. */
   readonly #joined = new Map<string, (outcome: AgentSteerOutcome) => Promise<void>>();
   readonly #queues = new Map<string, QueuedMessage[]>();
+  /** The abort of each Session's own running Run, for a Session stop. */
+  readonly #runStops = new Map<string, { controller: AbortController; placementGeneration: number }>();
   readonly #drains = new Map<string, Promise<void>>();
   /** Sessions whose queued messages wait for the Server to prepare them (e.g. after a restart). */
   readonly #awaitingPreparation = new Set<string>();
@@ -387,6 +391,66 @@ export class SessionMessageInbox {
     }
   }
 
+  /**
+   * The Server stopped this internal Session for good: its queued messages and pending retries are
+   * withdrawn, and its running Run is aborted and not retried. None of them reports a Run outcome,
+   * because whoever stops a Session decides what its creator is told. Messages of a newer placement
+   * are left alone. Resolves when the Run has settled, so the caller may close its runtime.
+   */
+  async stopSessionWork(sessionId: string, placementGeneration: number): Promise<void> {
+    this.#awaitingPreparation.delete(sessionId);
+    const running = this.#runStops.get(sessionId);
+    if (running && running.placementGeneration <= placementGeneration) {
+      running.controller.abort(new Error("Session stopped"));
+    }
+    const queue = this.#queues.get(sessionId) ?? [];
+    const kept = queue.filter((queued) => queued.request.placementGeneration > placementGeneration);
+    this.#queuedTotal -= queue.length - kept.length;
+    if (kept.length > 0) this.#queues.set(sessionId, kept);
+    else this.#queues.delete(sessionId);
+    const withdrawn = [...this.#records.values()].filter(
+      ({ payload, status }) =>
+        payload.targetSessionId === sessionId &&
+        payload.placementGeneration <= placementGeneration &&
+        (status === "accepted" || status === "retryable"),
+    );
+    for (const record of withdrawn) {
+      this.#retryTimers.get(record.key)?.cancel();
+      this.#retryTimers.delete(record.key);
+      await this.#recordStopped(record, "runtime");
+    }
+    await this.#drains.get(sessionId);
+  }
+
+  /** Terminal without a retry or an outcome report; a write that fails is settled by recovery after a restart. */
+  async #recordStopped(record: DurableWorkRecord<SessionMessageDeliveryRequestV3>, phase: string): Promise<void> {
+    const failure: DurableFailure = {
+      code: SESSION_MESSAGE_STOPPED_CODE,
+      category: "unavailable",
+      retryability: "never",
+      phase: "transport",
+      requestId: record.payload.requestId,
+      message: "The Session was stopped",
+    };
+    await this.#transition({ ...record, lastError: failure }, "failed", {
+      nextAttemptAt: undefined,
+    }).catch(() =>
+      this.#logger.warn(
+        { code: "SESSION_MESSAGE_PERSISTENCE_FAILED", messageId: record.payload.messageId, status: "failed" },
+        "Session message stop could not be persisted",
+      ),
+    );
+    this.#remember(record.key, {
+      hash: sessionMessageSemanticHash(record.payload),
+      status: "failed",
+      reason: "provider_unavailable",
+    });
+    this.#logger.warn(
+      { code: SESSION_MESSAGE_STOPPED_CODE, messageId: record.payload.messageId, phase, status: "failed" },
+      "Session message withdrawn because its Session stopped",
+    );
+  }
+
   #startDrain(sessionId: string): void {
     if (this.#drains.has(sessionId) || this.#abort.signal.aborted || this.#awaitingPreparation.has(sessionId)) return;
     const drain = this.#drain(sessionId).finally(() => {
@@ -413,11 +477,16 @@ export class SessionMessageInbox {
         return;
       }
       let reservation = this.#admission.reserve(sessionId, next.request.agentId, { acceptedWork: true });
-      while (!reservation.accepted) {
+      while (!reservation.accepted && this.#queues.get(sessionId)?.[0] === next) {
         // A busy Session usually has a running Turn: the message joins it instead of waiting for it to end.
         if (await this.#steerIntoRunningTurn(sessionId, next)) break;
         await this.#waitForReleaseOrSteerRetry();
         reservation = this.#admission.reserve(sessionId, next.request.agentId, { acceptedWork: true });
+      }
+      // A Session stop withdrew the message while it waited for admission.
+      if (this.#queues.get(sessionId)?.[0] !== next) {
+        if (reservation.accepted) reservation.reservation.release();
+        continue;
       }
       queue?.shift();
       this.#queuedTotal -= 1;
@@ -675,6 +744,8 @@ export class SessionMessageInbox {
     let turnPlanInput: ProviderCliTurnPlanPrepareInput | undefined;
     let phase = "runtime";
     const timeout = new AbortController();
+    const stop = new AbortController();
+    this.#runStops.set(sessionId, { controller: stop, placementGeneration: next.request.placementGeneration });
     let timer: { cancel(): void } | undefined;
     let runSignal: AbortSignal | undefined;
     let executionSignal: AbortSignal | undefined;
@@ -697,8 +768,8 @@ export class SessionMessageInbox {
       if (current) runTime = this.#trackMessageRunTime(key);
       // Revocation or control/owner replacement aborts the Run and its provider children.
       runSignal = executionSignal
-        ? AbortSignal.any([this.#abort.signal, timeout.signal, executionSignal])
-        : AbortSignal.any([this.#abort.signal, timeout.signal]);
+        ? AbortSignal.any([this.#abort.signal, stop.signal, timeout.signal, executionSignal])
+        : AbortSignal.any([this.#abort.signal, stop.signal, timeout.signal]);
       return runSignal;
     };
     try {
@@ -769,8 +840,13 @@ export class SessionMessageInbox {
       // existing recovery semantics.
       const timedOut = timeout.signal.aborted && !this.#abort.signal.aborted && executionSignal?.aborted !== true;
       await settleRunTime();
-      if (current) await this.#handleFailure(current, next.hash, phase, error, timedOut);
+      // A daemon stop wins: the restarted daemon asks the Server, which refuses the ended Session.
+      if (current && stop.signal.aborted && !this.#abort.signal.aborted) {
+        this.#emitFailure(durableFailureFromUnknown(next.request.requestId, phase, error, "runtime_failed"));
+        await this.#recordStopped(current, phase);
+      } else if (current) await this.#handleFailure(current, next.hash, phase, error, timedOut);
     } finally {
+      if (this.#runStops.get(sessionId)?.controller === stop) this.#runStops.delete(sessionId);
       timer?.cancel();
       await this.#cleanupTurnPlan(turnPlanInput);
       if (credentialPrepared) {
@@ -1112,7 +1188,10 @@ export class SessionMessageInbox {
       const current = this.#records.get(record.key);
       if (current?.status !== "retryable") return;
       void this.#transition(current, "accepted")
-        .then(() => this.#enqueue(current.payload, hash))
+        .then((accepted) => {
+          // A Session stop may have withdrawn the message during this write.
+          if (this.#records.get(record.key) === accepted) this.#enqueue(current.payload, hash);
+        })
         .catch(() => undefined);
     });
     this.#retryTimers.set(record.key, timer);

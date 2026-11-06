@@ -94,8 +94,8 @@ Delivery is best effort:
 - A failed Run uses the Client's or Runner's existing outcome report. The Server answers `retry` while the send can safely
   be repeated. Feishu drops a repeat of the same notice through its request `uuid`, which differs from the occurrence's
   "may not have run" notice, so a hand-off that was in doubt and then failed posts both. A lost report acknowledgement can
-  duplicate the message on Slack. A Feishu thread is reached by replying to its latest known message; with none known, the
-  message is dropped rather than posted to the chat.
+  duplicate the message on Slack. A Feishu thread is reached by replying to its latest known message that was not
+  recalled; with none known, the message is dropped rather than posted to the chat.
 - A missed occurrence has no reporter. The Server tries up to three times in-process, so a Server stop or a long IM outage
   loses the message. The Agent schedule page still shows the miss from `last_dispatch`.
 - A Client that never returns never reports a message it accepted; its next occurrence reports the miss instead.

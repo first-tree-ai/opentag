@@ -266,6 +266,36 @@ describe("a scheduled Run that failed", () => {
     );
   });
 
+  it("skips a recalled Feishu message when choosing the thread reply target", async () => {
+    const value = await seed({ threadKey: "omt_thread" });
+    const messageId = await scheduledMessage(value);
+    const revision = (externalMessageId: string, operation: string, minutes: number) => ({
+      id: randomUUID(),
+      imBindingId: value.bindingId,
+      channelId: "oc_channel",
+      externalMessageId,
+      providerRevisionKey: operation,
+      operation,
+      direction: "inbound",
+      threadKey: "omt_thread",
+      authorKind: "human",
+      authorExternalId: "ou_user",
+      content: { version: 1, fallbackText: "hello", blocks: [], truncated: false },
+      providerContext: { provider: "feishu" },
+      occurredAt: new Date(T0.getTime() + minutes * 60_000),
+    });
+    await db.database
+      .insert(imMessages)
+      .values([
+        revision("om_live", "created", 0),
+        revision("om_recalled", "created", 1),
+        revision("om_recalled", "deleted", 2),
+      ] as never);
+    const h = harness();
+    await expect(h.notifier.notifyRunOutcome(report(value, messageId))).resolves.toBe("notified");
+    expect(h.post.mock.calls[0]?.[0 as never]).toMatchObject({ replyToExternalId: "om_live" });
+  });
+
   it("stays in a Feishu thread by replying to its latest message", async () => {
     const value = await seed({ threadKey: "omt_thread" });
     const messageId = await scheduledMessage(value);

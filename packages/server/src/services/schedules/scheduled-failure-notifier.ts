@@ -1,6 +1,6 @@
 import { setTimeout as delay } from "node:timers/promises";
 import type { AgentScheduleLastDispatch } from "@opentag/shared";
-import { and, desc, eq, ne } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { imBindings, imMessages, sessionMessages, sessionPlacements, sessions } from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
@@ -310,7 +310,8 @@ export class ScheduledFailureNotifier implements RunOutcomeNotifier, ScheduledMi
           eq(imMessages.imBindingId, row.bindingId),
           eq(imMessages.channelId, row.channelId),
           eq(imMessages.threadKey, row.threadKey),
-          ne(imMessages.operation, "deleted"),
+          // A recall is its own revision row, and the message's earlier rows stay behind.
+          sql`not exists (select 1 from im_messages recalled where recalled.im_binding_id = ${imMessages.imBindingId} and recalled.channel_id = ${imMessages.channelId} and recalled.external_message_id = ${imMessages.externalMessageId} and recalled.operation = 'deleted')`,
         ),
       )
       .orderBy(desc(imMessages.occurredAt))

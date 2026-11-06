@@ -488,10 +488,11 @@ it("describes a Slack conversation without inventing its name and keeps identifi
   expect(screen.getByText("Slack channel example-chat")).toBeTruthy();
 });
 
-it("keeps revalidating a due occurrence until the server advances it and then stops reading it", async () => {
+it("keeps a retry path when the first due read precedes the scheduler scan", async () => {
   const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-26T08:00:00Z"));
   const interval = vi.spyOn(window, "setInterval");
   const first = schedule({ nextTriggerAt: "2026-10-26T08:01:00Z" });
+  // The scheduler scans every five seconds, so a read that lands first still reports 08:01.
   const advanced = schedule({
     nextTriggerAt: "2026-10-26T08:04:00Z",
     lastDispatch: {
@@ -505,7 +506,6 @@ it("keeps revalidating a due occurrence until the server advances it and then st
   const list = vi
     .spyOn(browserApi, "agentSchedules")
     .mockResolvedValueOnce({ items: [summaryOf(first)], nextCursor: null })
-    // The Server has not scanned yet, so the first answer to a due read is the old occurrence.
     .mockResolvedValueOnce({ items: [summaryOf(first)], nextCursor: null })
     .mockResolvedValue({ items: [summaryOf(advanced)], nextCursor: null });
   const detail = vi.spyOn(browserApi, "agentSchedule");
@@ -519,26 +519,58 @@ it("keeps revalidating a due occurrence until the server advances it and then st
     });
   };
   await advance("2026-10-26T08:01:00Z");
-  // An unchanged due response must not settle the row: the next minute still asks again.
-  await screen.findByText("Due now");
   expect(list).toHaveBeenCalledTimes(2);
+  expect(screen.getByText("Due now")).toBeTruthy();
+  // An unchanged due response must not settle the row: the next tick still reads it.
   await advance("2026-10-26T08:02:00Z");
+  expect(list).toHaveBeenCalledTimes(3);
   await screen.findByText("Next in 2 minutes");
-  expect(list).toHaveBeenCalledTimes(3);
+  expect(screen.queryByText(/Was due/)).toBeNull();
   await advance("2026-10-26T08:03:00Z");
-  // The advanced occurrence is in the future again, so the minute tick stops reading it.
   expect(list).toHaveBeenCalledTimes(3);
-  expect(screen.getByText("Next in 1 minute")).toBeTruthy();
   expect(detail).not.toHaveBeenCalled();
 });
 
-it("stops reading a due occurrence the server never advances after a bounded number of reads", async () => {
+it("stops automatic reads after the bounded attempts on an unchanged past occurrence", async () => {
   const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-26T08:00:00Z"));
   const interval = vi.spyOn(window, "setInterval");
-  const unchanged = schedule({ nextTriggerAt: "2026-10-26T08:01:00Z" });
+  const first = schedule({ nextTriggerAt: "2026-10-26T08:01:00Z" });
   const list = vi
     .spyOn(browserApi, "agentSchedules")
-    .mockResolvedValue({ items: [summaryOf(unchanged)], nextCursor: null });
+    .mockResolvedValue({ items: [summaryOf(first)], nextCursor: null });
+  const detail = vi.spyOn(browserApi, "agentSchedule");
+  mount();
+  await screen.findByText("Next in 1 minute");
+  const tick = interval.mock.calls.find(([, delay]) => delay === 60_000)?.[0];
+  const advance = async (time: string) => {
+    clock.mockReturnValue(Date.parse(time));
+    await act(async () => {
+      if (typeof tick === "function") tick();
+    });
+  };
+  await advance("2026-10-26T08:01:00Z");
+  await advance("2026-10-26T08:02:00Z");
+  await advance("2026-10-26T08:03:00Z");
+  // Mount plus three bounded reads, then the occurrence is settled.
+  expect(list).toHaveBeenCalledTimes(4);
+  await advance("2026-10-26T08:04:00Z");
+  await advance("2026-10-26T08:05:00Z");
+  expect(list).toHaveBeenCalledTimes(4);
+  expect(screen.getByText("Was due 4 minutes ago")).toBeTruthy();
+  expect(detail).not.toHaveBeenCalled();
+});
+
+it("retries a failed due read within the same bounded budget", async () => {
+  const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-26T08:00:00Z"));
+  const interval = vi.spyOn(window, "setInterval");
+  const first = schedule({ nextTriggerAt: "2026-10-26T08:01:00Z" });
+  const list = vi
+    .spyOn(browserApi, "agentSchedules")
+    .mockResolvedValueOnce({ items: [summaryOf(first)], nextCursor: null })
+    .mockRejectedValueOnce(new Error("Unavailable"))
+    .mockRejectedValueOnce(new Error("Unavailable"))
+    .mockRejectedValueOnce(new Error("Unavailable"))
+    .mockResolvedValue({ items: [summaryOf(schedule({ nextTriggerAt: "2026-10-26T09:00:00Z" }))], nextCursor: null });
   const detail = vi.spyOn(browserApi, "agentSchedule");
   mount();
   await screen.findByText("Next in 1 minute");
@@ -551,46 +583,18 @@ it("stops reading a due occurrence the server never advances after a bounded num
   };
   await advance("2026-10-26T08:01:00Z");
   expect(list).toHaveBeenCalledTimes(2);
+  expect(screen.getByText("Schedules could not be loaded.")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Daily check" })).toBeTruthy();
+  // Failed reads keep the budget: the next tick still reads instead of settling on the error.
   await advance("2026-10-26T08:02:00Z");
   expect(list).toHaveBeenCalledTimes(3);
   await advance("2026-10-26T08:03:00Z");
   expect(list).toHaveBeenCalledTimes(4);
   await advance("2026-10-26T08:04:00Z");
-  await advance("2026-10-26T08:05:00Z");
-  await advance("2026-10-26T08:06:00Z");
-  // The bound is spent: a stale past occurrence is never polled on every minute tick.
   expect(list).toHaveBeenCalledTimes(4);
-  expect(screen.getByText("Was due 5 minutes ago")).toBeTruthy();
-  expect(detail).not.toHaveBeenCalled();
-});
-
-it("retains summaries after a failed due refresh and recovers only on explicit retry", async () => {
-  const clock = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-10-26T08:00:00Z"));
-  const interval = vi.spyOn(window, "setInterval");
-  const first = schedule({ nextTriggerAt: "2026-10-26T08:01:00Z" });
-  const list = vi
-    .spyOn(browserApi, "agentSchedules")
-    .mockResolvedValueOnce({ items: [summaryOf(first)], nextCursor: null })
-    .mockRejectedValueOnce(new Error("Unavailable"))
-    .mockResolvedValue({ items: [summaryOf(schedule({ nextTriggerAt: "2026-10-26T09:00:00Z" }))], nextCursor: null });
-  const detail = vi.spyOn(browserApi, "agentSchedule");
-  mount();
-  await screen.findByText("Next in 1 minute");
-  const tick = interval.mock.calls.find(([, delay]) => delay === 60_000)?.[0];
-  clock.mockReturnValue(Date.parse("2026-10-26T08:02:00Z"));
-  await act(async () => {
-    if (typeof tick === "function") tick();
-  });
-  await screen.findByText("Schedules could not be loaded.");
-  expect(screen.getByRole("button", { name: "Daily check" })).toBeTruthy();
-  clock.mockReturnValue(Date.parse("2026-10-26T08:03:00Z"));
-  await act(async () => {
-    if (typeof tick === "function") tick();
-  });
-  expect(list).toHaveBeenCalledTimes(2);
   fireEvent.click(screen.getByRole("button", { name: "Retry" }));
-  await screen.findByText("Next in 57 minutes");
-  expect(list).toHaveBeenCalledTimes(3);
+  await screen.findByText("Next in 56 minutes");
+  expect(list).toHaveBeenCalledTimes(5);
   expect(detail).not.toHaveBeenCalled();
 });
 

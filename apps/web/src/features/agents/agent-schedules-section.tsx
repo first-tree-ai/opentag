@@ -12,6 +12,7 @@ import { messagingProviderLabel } from "../../im/provider-label.js";
 import * as m from "../../paraglide/messages.js";
 import { queryKeys } from "../../query/keys.js";
 import { Banner, Button, Collapsible, Dialog, DropdownMenu, Icon, SkeletonLine, Text } from "../../ui/design-system.js";
+import { type DueObservation, planDueReads } from "./schedule-due-reads.js";
 
 /** Account management for schedules pinned to this Agent's existing IM conversations. */
 export function AgentSchedulesSection({ agentId, scheduleId }: { agentId: string; scheduleId?: string }) {
@@ -52,7 +53,7 @@ function AgentSchedulesContent({ agentId, scheduleId }: { agentId: string; sched
     retry: (count, error) => !(error instanceof ApiError && error.status === 404) && count < 2,
   });
   const loaded = useMemo(() => list.data?.pages.flatMap((page) => page.items) ?? [], [list.data]);
-  useDueScheduleRefresh(loaded, now, list.isFetching, list.isError, list.refetch);
+  useDueScheduleRefresh(loaded, now, list.isFetching, list.refetch);
   const deepLinkedItem =
     expandedId && detail.data && !loaded.some((item) => item.id === expandedId) ? detail.data : undefined;
   const rows = deepLinkedItem ? [deepLinkedItem, ...loaded] : loaded;
@@ -216,47 +217,23 @@ function AgentSchedulesContent({ agentId, scheduleId }: { agentId: string; sched
 }
 
 /**
- * How many minute reads one due occurrence may consume before the page stops asking about it.
- *
- * A due response can legitimately keep the old nextTriggerAt until the Server's next scan, so the
- * first read after the occurrence is observed may come back unchanged. One follow-up would still
- * freeze the row whenever the scan lands later than that, so the bound spans a few minute ticks —
- * long enough to outlast a scan, short enough that an unchanged past occurrence is never polled.
+ * Follow a due occurrence until the Server's next time is observed; the ordering rule lives in
+ * `planDueReads`. Budgets are tracked per row and dropped when a row leaves the loaded list.
  */
-const DUE_READ_ATTEMPTS = 3;
-
-/** Revalidate each observed due occurrence within a bounded number of reads; never poll forever. */
 function useDueScheduleRefresh(
   rows: AgentScheduleListItem[],
   now: number,
   fetching: boolean,
-  failed: boolean,
   refetch: () => Promise<unknown>,
 ) {
   const mountedAt = useRef(now);
-  const reads = useRef(new Map<string, { attempts: number; tick: number }>());
+  const observed = useRef(new Map<string, DueObservation>());
   useEffect(() => {
-    // A failed list owns its own recovery through the banner's explicit retry, not through the tick.
-    if (now === mountedAt.current || fetching || failed) return;
-    const keyOf = (item: AgentScheduleListItem) => `${item.id}|${item.nextTriggerAt}`;
-    const due = rows.filter((item) => {
-      if (!item.enabled || !item.nextTriggerAt || Date.parse(item.nextTriggerAt) > now) return false;
-      const read = reads.current.get(keyOf(item));
-      // One read per occurrence per tick, whatever that response turned out to be.
-      if (read?.tick === now) return false;
-      return (read?.attempts ?? 0) < DUE_READ_ATTEMPTS;
-    });
-    for (const item of due) {
-      const key = keyOf(item);
-      reads.current.set(key, { attempts: (reads.current.get(key)?.attempts ?? 0) + 1, tick: now });
-    }
-    // An occurrence that left the page stops counting, so only live occurrences stay in the map.
-    const visible = new Set(rows.filter((item) => item.nextTriggerAt).map(keyOf));
-    reads.current.forEach((_, key) => {
-      if (!visible.has(key)) reads.current.delete(key);
-    });
-    if (due.length > 0) void refetch();
-  }, [rows, now, fetching, failed, refetch]);
+    if (now === mountedAt.current || fetching) return;
+    const planned = planDueReads(rows, now, observed.current);
+    observed.current = planned.next;
+    if (planned.read) void refetch();
+  }, [rows, now, fetching, refetch]);
 }
 
 function ScheduleListState({

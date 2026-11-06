@@ -1334,7 +1334,12 @@ describe("SessionMessageInbox", () => {
       inbox,
       logger: { info: vi.fn(), warn: vi.fn() },
       reconciler: { setRecovery: vi.fn(), clearRecovery: vi.fn(() => true) },
-      retries: { list: async () => [imRequest], write: async () => undefined, remove: async () => undefined },
+      retries: {
+        list: async () => [imRequest],
+        write: async () => undefined,
+        update: async () => undefined,
+        remove: async () => undefined,
+      },
     });
     await recovery.start();
     const handlers = createClientRuntimeHandlers(

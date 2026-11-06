@@ -47,7 +47,7 @@ export interface InterruptedWorkRecoveryOptions {
   logger?: Pick<ClientLogger, "info" | "warn">;
   now?: () => number;
   reconciler: Pick<SessionReconciler, "clearRecovery" | "setRecovery">;
-  retries: Pick<TurnRetryStore, "list" | "remove" | "write">;
+  retries: Pick<TurnRetryStore, "list" | "remove" | "update" | "write">;
   scheduler?: RuntimeRetryScheduler;
 }
 
@@ -133,9 +133,22 @@ export class InterruptedWorkRecovery implements InterruptedTurnResumer {
     }
     this.#turns.delete(sessionId);
     this.#settle(sessionId);
+    this.#markRetryStarted(sessionId, turn.turnId);
     // Waiting Session messages join the resumed Turn as soon as it can take them.
     this.#options.inbox.sessionPrepared(sessionId);
     return true;
+  }
+
+  /** From here an interruption is the retry's own and counts again. A failed write only forgoes that one count. */
+  #markRetryStarted(sessionId: string, turnId: string): void {
+    void this.#options.retries
+      .update(sessionId, turnId, ({ interruption: _ended, retryNotStarted: _waiting, ...started }) => started)
+      .catch(() =>
+        this.#logger.warn(
+          { code: "TURN_RETRY_START_NOT_RECORDED", sessionId, turnId },
+          "Turn retry start could not be recorded",
+        ),
+      );
   }
 
   abandon(sessionId: string, turn: SessionTurnIdentity, reason: string): void {
@@ -214,14 +227,14 @@ export class InterruptedWorkRecovery implements InterruptedTurnResumer {
       reason: "daemon_crash" as const,
       at: new Date(this.#now()).toISOString(),
     };
-    // Counted before anything runs; a 429 was counted when it failed and its retry has not started. The
-    // reason goes to the resumed Turn's notice; what ends that Turn is recorded anew.
-    const counted = record.interruption?.reason === "provider_rate_limited";
+    // Counted before anything runs; a 429 was counted when it failed and its retry has not started. So
+    // was a retry that an earlier start counted and never began: a restart in that wait costs nothing.
+    // The reason goes to the resumed Turn's notice; what ends that Turn is recorded anew.
+    const counted = record.interruption?.reason === "provider_rate_limited" || record.retryNotStarted === true;
     const { count, exhausted } = counted
       ? { count: record.retries, exhausted: record.retries > MAX_AUTOMATIC_RETRIES }
       : nextRetry({ count: record.retries, ranMs: record.retryRanMs ?? 0 });
-    const { interruption: _ended, ...attempt } = record;
-    const spent: TurnRetryRecord = { ...attempt, retries: count, retryRanMs: 0 };
+    const spent: TurnRetryRecord = { ...record, interruption, retries: count, retryRanMs: 0, retryNotStarted: true };
     try {
       await this.#options.retries.write(spent);
     } catch {

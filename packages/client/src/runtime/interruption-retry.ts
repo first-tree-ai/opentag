@@ -151,6 +151,8 @@ export interface TurnRetryRecord {
   retryRanMs?: number;
   /** What ended the Turn's latest attempt; cleared when an attempt starts, so it never names an older one. */
   interruption?: Interruption;
+  /** The latest retry is counted but has not begun, so a restart before it begins must not count it again. */
+  retryNotStarted?: boolean;
 }
 
 /** Bound on steered messages kept per Turn; further messages are not steered but queued by the Server. */
@@ -309,6 +311,7 @@ export function parseTurnRetryRecord(value: unknown): TurnRetryRecord {
     request,
     steers,
     retries: candidate.retries as number,
+    ...(candidate.retryNotStarted === true ? { retryNotStarted: true } : {}),
     ...(ranMs !== undefined ? { ranMs } : {}),
     ...(retryRanMs !== undefined ? { retryRanMs } : {}),
     ...(interruption

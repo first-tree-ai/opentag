@@ -269,7 +269,7 @@ included; see [Agent, Session, and Computer model](../agent-session-computer-mod
 ## Automatic retry before a notice
 
 On a Local Computer a Session message running on its own gets at most 2 automatic retries after a crash, power loss,
-restart, upgrade, or model HTTP 429; a retry that actually ran for at least 5 minutes resets the count. The Run's duration
+restart, upgrade, or model HTTP 429; a retry that actually ran for at least 5 minutes resets the count. A restart while a counted retry has not begun does not count it again. The Run's duration
 limit counts actual running time across its retries and resumes. Reaching it (`turn_timeout`) and non-recoverable failures
 are not retried, and the five-attempt inbox retry is gone. The retried
 Run starts with the continuation notice and the original message. The creator receives the notice only when the message

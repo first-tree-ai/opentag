@@ -573,6 +573,14 @@ describe("the retry count shared by process interruptions and model 429", () => 
     return { next, pending };
   }
 
+  /** What `resume` records when the retry begins. */
+  function retryBegan(first: System, ranMs = 0) {
+    return first.retries.update(first.request.sessionId, TURN_ID, ({ retryNotStarted: _waiting, ...record }) => ({
+      ...record,
+      retryRanMs: ranMs,
+    }));
+  }
+
   it("stops resuming a Turn after two retries in a row, and fails the messages steered into it", async () => {
     const first = await system();
     first.prompt.mockImplementationOnce(hangs(first));
@@ -589,6 +597,7 @@ describe("the retry count shared by process interruptions and model 429", () => 
       const { next, pending } = await restartTurn(first, at);
       daemons.push(next);
       expect(pending).toBe(true);
+      await retryBegan(first);
     }
     const { next: last, pending } = await restartTurn(first, 120 * MINUTE);
     daemons.push(last);
@@ -613,10 +622,7 @@ describe("the retry count shared by process interruptions and model 429", () => 
       const { next, pending } = await restartTurn(first, at);
       daemons.push(next);
       expect(pending).toBe(true);
-      await first.retries.update(first.request.sessionId, TURN_ID, (record) => ({
-        ...record,
-        retryRanMs: RETRY_RESET_AFTER_MS,
-      }));
+      await retryBegan(first, RETRY_RESET_AFTER_MS);
     }
     for (const daemon of daemons) await daemon.stop();
   });

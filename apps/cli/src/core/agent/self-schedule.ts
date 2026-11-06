@@ -226,6 +226,24 @@ export function formatAgentSchedule(schedule: AgentSchedule): string {
   ].join("\n");
 }
 
+/**
+ * How every command answering with one full Schedule presents it.
+ *
+ * The prompt is printed exactly as stored, including any text that looks like a credential. Callers
+ * read it, edit it, and send it back with `update --prompt-file`, so a redacted prompt is written
+ * back as the literal `[REDACTED]` and the original instructions are lost (#1298). This reveals
+ * nothing new: the Session proof limits these routes to this Agent, and the same text is what the
+ * Agent receives on every trigger. All other fields keep the normal redaction.
+ */
+export const FULL_SCHEDULE_PRESENTATION = {
+  formatValue: formatAgentSchedule,
+  restoreAfterRedaction: (redacted: AgentSchedule, raw: AgentSchedule): AgentSchedule => ({
+    ...redacted,
+    prompt: raw.prompt,
+  }),
+  phase: "request",
+} as const;
+
 export function formatAgentScheduleList(result: AgentScheduleListResponse): string {
   const rows = ["ID\tNAME\tENABLED\tNEXT\tLAST HANDOFF"];
   for (const item of result.items) {

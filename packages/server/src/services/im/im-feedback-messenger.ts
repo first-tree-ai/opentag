@@ -380,7 +380,8 @@ export class ImFeedbackMessenger implements FeedbackTransport {
       params: {
         container_id_type: target.threadKey ? "thread" : "chat",
         container_id: target.threadKey ?? target.channelId,
-        page_size: 100,
+        // Feishu rejects the whole request above fifty.
+        page_size: 50,
         ...(!target.threadKey
           ? { start_time: String(Math.floor((target.sendStartedAt ?? target.createdAt).getTime() / 1000)) }
           : {}),

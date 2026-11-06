@@ -175,7 +175,7 @@ own. Binding rotation fences new calls and callbacks; it cannot revoke a request
 
 Before a new card request, the worker persists `sending` and a stable request identity. A lost acknowledgement or
 abandoned send becomes `send_unknown`. Bounded readback searches the original conversation for this Bot and feedback
-identity, up to one hundred messages per page and five pages per pass, retaining a cursor. A confirmed match binds
+identity, up to one hundred messages per page on Slack and fifty on Feishu, five pages per pass, retaining a cursor. A confirmed match binds
 its native ID. Multiple observed matches are a defect. Negative, inaccessible, or incomplete reads never authorize
 another creation. Readback stops at the twenty-four-hour action deadline; unresolved sends become dormant without deletion or another creation. Feishu topic replies are read through the `thread` container without unsupported time-range filters ([provider contract](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/list)). Unknown sends remain in Account diagnostics with sanitized operational warnings. This deliberately
 does not promise unconditional eventual delivery or exactly-once external sending. Known-message updates use that

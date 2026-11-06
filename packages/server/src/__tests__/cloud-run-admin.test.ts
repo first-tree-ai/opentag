@@ -178,6 +178,16 @@ describe.each(["instance", "operation"] as const)("CloudRunAdmin %s read retries
     expect(sleep).not.toHaveBeenCalled();
   });
 
+  it.each([403, 404])("stops retrying when a transient 503 is followed by HTTP %s", async (status) => {
+    const { calls, fetchImpl } = fakeFetch(() => ({ status: calls.length === 1 ? 503 : status }));
+    const sleep = vi.fn(async () => undefined);
+    const result = read(admin(fetchImpl, { sleep }));
+    if (status === 404 && resource === "instance") await expect(result).resolves.toBeUndefined();
+    else await expect(result).rejects.toMatchObject({ status });
+    expect(calls).toHaveLength(2);
+    expect(sleep.mock.calls).toEqual([[150, expect.any(AbortSignal)]]);
+  });
+
   it.each(["AbortError", "TimeoutError"])("does not retry transport cancellation %s", async (name) => {
     const fetchImpl = vi.fn(async () => {
       throw new DOMException("private cancellation reason", name);

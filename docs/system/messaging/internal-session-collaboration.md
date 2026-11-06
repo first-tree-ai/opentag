@@ -268,14 +268,12 @@ included; see [Agent, Session, and Computer model](../agent-session-computer-mod
 
 ## Automatic retry before a notice
 
-On a Local Computer a Session message running on its own gets at most 2 automatic retries after a crash, power loss,
-restart, upgrade, or model HTTP 429; a retry that actually ran for at least 5 minutes resets the count. The Run's duration
-limit counts actual running time across its retries and resumes. Reaching it (`turn_timeout`) and non-recoverable failures
-are not retried, and the five-attempt inbox retry is gone. The retried
-Run starts with the continuation notice and the original message. The creator receives the notice only when the message
-finally fails, so the superior hears about a timeout directly. After a daemon restart, each interrupted Session's message
-runs once the Server has prepared the Session again, before the Session's queued messages. See
+Local Session messages running on their own follow
 [Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work).
+After a daemon restart, interrupted messages resume once the Server prepares their Session,
+before that Session's queued messages.
+The creator receives a [Run outcome notice](#run-outcome-notices) only after terminal failure.
+Steered Session messages follow the rules below.
 
 ### Session messages steered into an IM Turn
 

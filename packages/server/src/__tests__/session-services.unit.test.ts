@@ -16,7 +16,10 @@ import {
   sessions,
   users,
 } from "../db/schema/index.js";
-import { withAgentSessionStopAuthority } from "../runtime/agent-session-stop-authority.js";
+import {
+  withAgentSessionStopAuthority,
+  withEndedSessionStopAuthority,
+} from "../runtime/agent-session-stop-authority.js";
 import { RuntimeDomainRequestError } from "../runtime/runtime-domain-owner.js";
 import { AgentService, type AgentSessionStopTarget } from "../services/agents/index.js";
 import type { ExternalCallPolicy } from "../services/im/external-call-policy.js";
@@ -207,6 +210,107 @@ describe("SessionService with the unit database", () => {
     await expect(
       service.ensureChatSession({ imBindingId: fixture.bindingId, channelId: "C1", conversationKind: "dm" }, "channel"),
     ).rejects.toMatchObject({ code: "AGENT_NOT_ACTIVE" });
+  });
+
+  describe("stopping an internal Session", () => {
+    async function tree() {
+      const service = new SessionService(db.database);
+      const root = await service.ensureChatSession(
+        { imBindingId: fixture.bindingId, channelId: "C1", conversationKind: "dm" },
+        "channel",
+      );
+      const authority = (sessionId: string) => ({
+        sourceSessionId: sessionId,
+        sourceInstallationId: fixture.installationId,
+        sourceConnectionInstanceId: fixture.instanceId,
+        sourceComputerId: fixture.computerId,
+        sourcePlacementGeneration: 1,
+      });
+      const create = (creatorSessionId: string) =>
+        service.createInternalSessionWithMessage({
+          creatorSessionId,
+          creatorInstallationId: fixture.installationId,
+          creatorConnectionInstanceId: fixture.instanceId,
+          creatorComputerId: fixture.computerId,
+          creatorPlacementGeneration: 1,
+          messageId: randomUUID(),
+          initialMessage: "task",
+        });
+      const child = await create(root.session.id);
+      const grandchild = await create(child.session.id);
+      return { service, root: root.session.id, child: child.session.id, grandchild: grandchild.session.id, authority };
+    }
+
+    it("ends the target for good, reports its live descendants, and repeats harmlessly", async () => {
+      const { service, root, child, grandchild, authority } = await tree();
+      const stopped = await service.stopInternalSession({ ...authority(root), targetSessionId: child });
+      expect(stopped).toMatchObject({
+        alreadyStopped: false,
+        activeDescendantCount: 1,
+        target: { sessionId: child, creatorSessionId: root, computerKind: "local", computerId: fixture.computerId },
+      });
+      const [ended] = await db.database.select().from(sessions).where(eq(sessions.id, child));
+      expect(ended?.endedAt).toBeInstanceOf(Date);
+      const active = await service.listInternalSessions(root, { recursive: true, limit: 10 });
+      expect(active.items.map((item) => item.sessionId)).toEqual([grandchild]);
+      expect(active.items[0]).not.toHaveProperty("stoppedAt");
+      const all = await service.listInternalSessions(root, { recursive: true, limit: 10, includeStopped: true });
+      expect(all.items.find((item) => item.sessionId === child)?.stoppedAt).toBe(ended?.endedAt?.toISOString());
+      await expect(service.stopInternalSession({ ...authority(root), targetSessionId: child })).resolves.toMatchObject({
+        alreadyStopped: true,
+      });
+      const [unchanged] = await db.database.select().from(sessions).where(eq(sessions.id, child));
+      expect(unchanged?.endedAt).toEqual(ended?.endedAt);
+    });
+
+    it("refuses anyone but an ancestor, and a source without authority", async () => {
+      const { service, root, child, grandchild, authority } = await tree();
+      for (const [source, targetSessionId] of [
+        [child, child],
+        [child, root],
+        [grandchild, child],
+        [root, root],
+        [root, randomUUID()],
+      ] as const) {
+        await expect(service.stopInternalSession({ ...authority(source), targetSessionId })).rejects.toMatchObject({
+          code: "SESSION_STOP_NOT_ANCESTOR",
+        });
+      }
+      await expect(
+        service.stopInternalSession({ ...authority(root), sourcePlacementGeneration: 9, targetSessionId: child }),
+      ).rejects.toMatchObject({ code: "SESSION_PLACEMENT_STALE" });
+      await service.stopInternalSession({ ...authority(root), targetSessionId: child });
+      await expect(
+        service.stopInternalSession({ ...authority(child), targetSessionId: grandchild }),
+      ).rejects.toMatchObject({ code: "SESSION_SOURCE_UNAVAILABLE" });
+    });
+
+    it("finds recently ended internal Sessions of one Computer only", async () => {
+      const { service, root, child, authority } = await tree();
+      await service.stopInternalSession({ ...authority(root), targetSessionId: child });
+      const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
+      await expect(service.recentlyEndedInternalSessions(fixture.computerId, hourAgo, 10)).resolves.toEqual([
+        expect.objectContaining({ sessionId: child, creatorSessionId: root }),
+      ]);
+      await expect(service.recentlyEndedInternalSessions(randomUUID(), hourAgo, 10)).resolves.toEqual([]);
+      await expect(
+        service.recentlyEndedInternalSessions(fixture.computerId, new Date(Date.now() + 60_000), 10),
+      ).resolves.toEqual([]);
+    });
+
+    it("admits a stop frame only for an ended Session on its captured placement", async () => {
+      const { service, root, child, grandchild, authority } = await tree();
+      const { target } = await service.stopInternalSession({ ...authority(root), targetSessionId: child });
+      const enqueue = vi.fn(async () => "enqueued");
+      await expect(withEndedSessionStopAuthority(db.database, target, enqueue)).resolves.toBe("enqueued");
+      await expect(
+        withEndedSessionStopAuthority(db.database, { ...target, sessionId: grandchild }, enqueue),
+      ).resolves.toBeUndefined();
+      await expect(
+        withEndedSessionStopAuthority(db.database, { ...target, placementGeneration: 9 }, enqueue),
+      ).resolves.toBeUndefined();
+      expect(enqueue).toHaveBeenCalledOnce();
+    });
   });
 
   it("creates internal sessions, descendants, retries, and fences conflicting IDs", async () => {

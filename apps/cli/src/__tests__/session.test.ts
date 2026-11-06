@@ -16,6 +16,7 @@ import {
   runSessionCreate,
   runSessionList,
   runSessionSend,
+  runSessionStop,
   SessionCommandRequestError,
 } from "../core/session/index.js";
 
@@ -289,6 +290,16 @@ describe("session CLI", () => {
           messageId: "44444444-4444-4444-8444-444444444444",
         }),
       ).resolves.toMatchObject({ sessionId: "33333333-3333-4333-8333-333333333333" });
+      const stop = vi.spyOn(OpenTagApi.prototype, "stopSession").mockResolvedValue({
+        status: "stopped",
+        sessionId: "33333333-3333-4333-8333-333333333333",
+        execution: "stopped",
+      });
+      await expect(runSessionStop("33333333-3333-4333-8333-333333333333")).resolves.toMatchObject({
+        status: "stopped",
+      });
+      expect(stop).toHaveBeenCalledWith("p".repeat(40), { targetSessionId: "33333333-3333-4333-8333-333333333333" });
+      await expect(runSessionStop("not-a-uuid")).rejects.toThrow();
       await expect(
         runSessionList({ recursive: true, limit: 5, cursor: "c", since: "2026-01-01T00:00:00.000Z" }),
       ).resolves.toEqual({

@@ -229,6 +229,30 @@ describe("OpenTagApi Agent methods", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(10);
   });
 
+  it("stops a Session with the proof and asks for stopped Sessions only when told to", async () => {
+    const sessionId = randomUUID();
+    const fetchImpl = vi.fn<typeof fetch>(async (input) =>
+      Response.json(
+        String(input).includes("/stop") ? { status: "stopped", sessionId, execution: "stopped" } : { items: [] },
+      ),
+    );
+    const api = new OpenTagApi("https://opentag.example", fetchImpl);
+
+    await expect(api.stopSession("proof", { targetSessionId: sessionId })).resolves.toMatchObject({
+      status: "stopped",
+    });
+    await api.stopSession("proof", { targetSessionId: sessionId }, { executionId: "execution-1" });
+    await api.listInternalSessions("proof", { recursive: false, limit: 5 });
+    await api.listInternalSessions("proof", { recursive: false, limit: 5, includeStopped: true });
+
+    const [first, second, plain, stopped] = fetchImpl.mock.calls;
+    expect(String(first?.[0])).toContain("/runtime/sessions/stop");
+    expect(first?.[1]).toMatchObject({ method: "POST", body: JSON.stringify({ targetSessionId: sessionId }) });
+    expect(new Headers(second?.[1]?.headers).get("x-opentag-execution-id")).toBe("execution-1");
+    expect(String(plain?.[0])).not.toContain("includeStopped");
+    expect(String(stopped?.[0])).toContain("includeStopped=true");
+  });
+
   it("maps network, optional-response, no-content, and fallback HTTP failures", async () => {
     const network = new OpenTagApi(
       "https://opentag.example",

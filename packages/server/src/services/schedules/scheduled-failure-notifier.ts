@@ -58,6 +58,9 @@ const SELF_INFLICTED_CODES: ReadonlySet<string> = new Set([
   "schedule_disabled",
 ]);
 
+/** Server-held delivery (#1353) answers with this while it may still deliver the occurrence. */
+const STILL_DELIVERING_CODE = "delivery_held";
+
 /** What the IM conversation hears about one dispatch or skip result, or nothing. */
 export function scheduledMissKind(input: {
   outcome: AgentScheduleLastDispatch["outcome"];
@@ -67,6 +70,7 @@ export function scheduledMissKind(input: {
 }): ScheduledMissKind | undefined {
   // A null code on `unknown` is a duplicate dispatcher or a stop, neither of which is a failure.
   if (input.outcome === "accepted" || input.code === null || SELF_INFLICTED_CODES.has(input.code)) return undefined;
+  if (input.code === STILL_DELIVERING_CODE) return undefined;
   if (input.disabled) return "disabled";
   // One cause, one message: a Computer offline overnight must not post on every occurrence.
   if (input.previous?.outcome === input.outcome && input.previous.code === input.code) return undefined;

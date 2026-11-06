@@ -518,6 +518,10 @@ describe("scheduledMissKind", () => {
     expect(scheduledMissKind({ outcome: "unknown", code: null, previous: null })).toBeUndefined();
   });
 
+  it("does not call an occurrence missed while the Server still holds it for delivery", () => {
+    expect(scheduledMissKind({ outcome: "unknown", code: "delivery_held", previous: null })).toBeUndefined();
+  });
+
   it("repeats for a new cause and for a new outcome", () => {
     expect(
       scheduledMissKind({ outcome: "unreachable", code: "client_busy", previous: previous("unreachable", "late") }),

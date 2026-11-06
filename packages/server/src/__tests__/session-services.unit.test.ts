@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Readable } from "node:stream";
 import { gzipSync } from "node:zlib";
 import type { NormalizedInboundImEvent, SessionReconcileRequest, SessionReconcileResult } from "@opentag/shared";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstrap.js";
 import {
@@ -261,6 +261,29 @@ describe("SessionService with the unit database", () => {
       });
       const [unchanged] = await db.database.select().from(sessions).where(eq(sessions.id, child));
       expect(unchanged?.endedAt).toEqual(ended?.endedAt);
+    });
+
+    it("leaves a live child's closure rows active when its parent stops", async () => {
+      const { service, root, child, grandchild, authority } = await tree();
+      const { activeDescendantCount } = await service.stopInternalSession({
+        ...authority(root),
+        targetSessionId: child,
+      });
+      expect(activeDescendantCount).toBeGreaterThan(0);
+      const rows = await db.database
+        .select({
+          ancestor: sessionDescendants.ancestorSessionId,
+          descendant: sessionDescendants.descendantSessionId,
+          active: sessionDescendants.descendantActive,
+        })
+        .from(sessionDescendants)
+        .where(inArray(sessionDescendants.descendantSessionId, [child, grandchild]));
+      const grandchildRows = rows.filter((row) => row.descendant === grandchild);
+      expect(grandchildRows.map((row) => row.ancestor).sort()).toEqual([root, child].sort());
+      expect(grandchildRows.every((row) => row.active)).toBe(true);
+      const childRows = rows.filter((row) => row.descendant === child);
+      expect(childRows.length).toBeGreaterThan(0);
+      expect(childRows.every((row) => !row.active)).toBe(true);
     });
 
     it("refuses anyone but an ancestor, and a source without authority", async () => {

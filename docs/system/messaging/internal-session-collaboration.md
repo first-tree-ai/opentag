@@ -287,7 +287,8 @@ retries are cancelled and its queued messages are withdrawn.
 Local uses the existing `session:reconcile` frame with `desired: "stopped"`; there is no new frame or capability. The
 frame names the internal kind so that a daemon that restarted and has not prepared the Session can still withdraw its
 work. The Client aborts the Run before taking the Agent lock, because the Run's cleanup needs that lock, then runs the
-normal stop. A provider that ignores the abort for 5 seconds has its runtime closed, which ends its process tree. The withdrawn messages reach a terminal `session_stopped` record with no retry and no Run outcome report.
+normal stop. The Client fences the stopped placement synchronously before any of its writes, so a retry or delivery whose
+write was already in flight neither starts a Run nor answers `accepted`. A provider that ignores the abort for 5 seconds has its runtime closed, which ends its process tree. The withdrawn messages reach a terminal `session_stopped` record with no retry and no Run outcome report.
 The same Client behavior applies to an Agent lifecycle stop of an internal Session, which previously answered `busy`
 while a Run was active; a visible Session's Turn still answers `busy`.
 

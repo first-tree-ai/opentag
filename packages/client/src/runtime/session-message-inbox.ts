@@ -135,6 +135,8 @@ export const SESSION_MESSAGE_TURN_TIMEOUT_CODE = "turn_timeout";
 /** A Session stop withdrew or aborted the message. */
 export const SESSION_MESSAGE_STOPPED_CODE = "session_stopped";
 export const SESSION_STOP_GRACE_MS = 5_000;
+/** Enough for any late write to have landed; a stopped Session's work is otherwise settled by the Server's refusal. */
+const MAX_STOPPED_PLACEMENTS = 1024;
 
 export class SessionMessageInbox {
   readonly #admission: AdmissionController;
@@ -164,6 +166,8 @@ export class SessionMessageInbox {
   /** Messages in a joinable Run: how to settle each one when that Run ends. */
   readonly #joined = new Map<string, (outcome: AgentSteerOutcome) => Promise<void>>();
   readonly #queues = new Map<string, QueuedMessage[]>();
+  /** The newest placement each Session was stopped at: late work of that placement never runs. */
+  readonly #stoppedPlacements = new Map<string, number>();
   /** The abort of each Session's own running Run, for a Session stop. */
   readonly #runStops = new Map<string, { controller: AbortController; placementGeneration: number }>();
   readonly #drains = new Map<string, Promise<void>>();
@@ -266,6 +270,7 @@ export class SessionMessageInbox {
 
   #acceptanceReason(request: SessionMessageDeliveryRequestV3): InputRejectReason | undefined {
     if (this.#admission.paused) return "client_busy";
+    if (this.#isStopped(request)) return "session_not_ready";
     const authorityReason = this.#reconciler.checkSessionMessageDelivery(request);
     if (authorityReason) return authorityReason;
     if (
@@ -309,6 +314,12 @@ export class SessionMessageInbox {
         "Session message persistence failed",
       );
       return deliveryResult(request, "rejected", "provider_unavailable");
+    }
+    // A stop that began during this write has already withdrawn the queue entry.
+    if (this.#isStopped(request)) {
+      const record = this.#records.get(key);
+      if (record) await this.#recordStopped(record, "runtime");
+      return deliveryResult(request, "rejected", "session_not_ready");
     }
     this.#remember(key, { hash, status: "accepted" });
     this.#startDrain(request.targetSessionId);
@@ -399,11 +410,10 @@ export class SessionMessageInbox {
    * are left alone. Resolves when the Run has settled, so the caller may close its runtime.
    */
   async stopSessionWork(sessionId: string, placementGeneration: number): Promise<void> {
+    // Before any wait: a write already in flight must find the stop when it completes.
+    this.#fenceStopped(sessionId, placementGeneration);
     this.#awaitingPreparation.delete(sessionId);
-    const running = this.#runStops.get(sessionId);
-    if (running && running.placementGeneration <= placementGeneration) {
-      running.controller.abort(new Error("Session stopped"));
-    }
+    this.#abortStoppedRun(sessionId, placementGeneration);
     const queue = this.#queues.get(sessionId) ?? [];
     const kept = queue.filter((queued) => queued.request.placementGeneration > placementGeneration);
     this.#queuedTotal -= queue.length - kept.length;
@@ -420,9 +430,31 @@ export class SessionMessageInbox {
       this.#retryTimers.delete(record.key);
       await this.#recordStopped(record, "runtime");
     }
+    const running = this.#abortStoppedRun(sessionId, placementGeneration);
     const drain = this.#drains.get(sessionId);
     if (running && drain) await this.#closeRuntimeAfterGrace(sessionId, drain);
     await drain;
+  }
+
+  #abortStoppedRun(sessionId: string, placementGeneration: number): boolean {
+    const running = this.#runStops.get(sessionId);
+    if (!running || running.placementGeneration > placementGeneration) return false;
+    running.controller.abort(new Error("Session stopped"));
+    return true;
+  }
+
+  #fenceStopped(sessionId: string, placementGeneration: number): void {
+    const fenced = Math.max(this.#stoppedPlacements.get(sessionId) ?? placementGeneration, placementGeneration);
+    this.#stoppedPlacements.delete(sessionId);
+    this.#stoppedPlacements.set(sessionId, fenced);
+    if (this.#stoppedPlacements.size <= MAX_STOPPED_PLACEMENTS) return;
+    const oldest = this.#stoppedPlacements.keys().next().value;
+    if (oldest !== undefined) this.#stoppedPlacements.delete(oldest);
+  }
+
+  #isStopped(request: SessionMessageDeliveryRequestV3): boolean {
+    const fenced = this.#stoppedPlacements.get(request.targetSessionId);
+    return fenced !== undefined && request.placementGeneration <= fenced;
   }
 
   /** An abort asks the provider to interrupt; one that does not comply within the grace is closed. */
@@ -1072,6 +1104,12 @@ export class SessionMessageInbox {
   }
 
   #enqueue(request: SessionMessageDeliveryRequestV3, hash: string): void {
+    // A late retry acceptance can land after the stop's terminal write, so its record is ended here again.
+    if (this.#isStopped(request)) {
+      const record = this.#records.get(sessionMessageKey(request));
+      if (record) void this.#recordStopped(record, "runtime");
+      return;
+    }
     const queue = this.#queues.get(request.targetSessionId) ?? [];
     if (queue.some((candidate) => candidate.request.messageId === request.messageId)) return;
     if (queue.length >= this.#maxQueuedPerSession || this.#queuedTotal >= this.#maxQueuedTotal) {
@@ -1228,16 +1266,20 @@ export class SessionMessageInbox {
   }
 
   #scheduleRetry(record: DurableWorkRecord<SessionMessageDeliveryRequestV3>, hash: string): void {
+    if (this.#isStopped(record.payload)) {
+      void this.#recordStopped(record, "runtime");
+      return;
+    }
     if (this.#abort.signal.aborted || this.#retryTimers.has(record.key)) return;
     const delay = Math.max(0, (record.nextAttemptAt ?? this.#now()) - this.#now());
     const timer = this.#scheduler.schedule(delay, () => {
       this.#retryTimers.delete(record.key);
       if (this.#abort.signal.aborted) return;
       const current = this.#records.get(record.key);
-      if (current?.status !== "retryable") return;
+      if (current?.status !== "retryable" || this.#isStopped(current.payload)) return;
       void this.#transition(current, "accepted")
         .then((accepted) => {
-          // A Session stop may have withdrawn the message during this write.
+          // A Session stop's terminal write may have landed after this one; otherwise #enqueue sees its fence.
           if (this.#records.get(record.key) === accepted) this.#enqueue(current.payload, hash);
         })
         .catch(() => undefined);

@@ -2106,6 +2106,177 @@ describe("SessionMessageInbox", () => {
       inbox.stop();
     });
 
+    describe("a write in flight when the stop begins", () => {
+      /** Holds a write until released, per the record's status, so a test sets the landing order. */
+      class GatedStore extends MemoryRuntimeDurabilityStore {
+        readonly gates = new Map<string, { entered: () => void; opened: Promise<void>; open: () => void }>();
+        hold(status: string) {
+          let open: () => void = () => undefined;
+          const opened = new Promise<void>((resolve) => {
+            open = resolve;
+          });
+          let entered: () => void = () => undefined;
+          const reached = new Promise<void>((resolve) => {
+            entered = resolve;
+          });
+          this.gates.set(status, { entered, opened, open });
+          return { reached, open };
+        }
+        override async write<T>(record: DurableWorkRecord<T>): Promise<void> {
+          const gate = this.gates.get(record.status);
+          if (gate) {
+            this.gates.delete(record.status);
+            gate.entered();
+            await gate.opened;
+          }
+          await super.write(record);
+        }
+      }
+      const failedOnce = async () => ({
+        runId: "run",
+        status: "failed",
+        error: { code: "provider_rate_limited", category: "rate_limit", retryability: "transient", phase: "prompt" },
+      });
+
+      async function retryAwaitingAcceptance() {
+        const tasks: Array<() => void> = [];
+        const scheduler = {
+          schedule: (_delay: number, task: () => void) => {
+            tasks.push(task);
+            return { cancel: () => undefined };
+          },
+        };
+        const prompt = vi.fn(failedOnce);
+        const store = new GatedStore();
+        const inbox = new SessionMessageInbox({
+          admission: new AdmissionController(),
+          credentialEnvironment: credentialEnvironment(),
+          imCredentialGrantVersion: () => 2,
+          persistence: store,
+          sessionCollaborationVersion: () => 4,
+          reconciler: inboxReconciler(),
+          runtimeManager: {
+            ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+            sessionKind: vi.fn(() => "internal" as const),
+          },
+          scheduler,
+        });
+        const request = delivery();
+        await inbox.accept(request);
+        await vi.waitFor(() => expect(inbox.getState(request.messageId)?.status).toBe("retryable"));
+        await inbox.settled();
+        const accepted = store.hold("accepted");
+        tasks.at(-1)?.();
+        await accepted.reached;
+        return { inbox, prompt, request, store, accepted };
+      }
+
+      it.each(["acceptance lands first", "the stop's terminal write lands first"])(
+        "never starts the retry: %s",
+        async (order) => {
+          const { inbox, prompt, request, store, accepted } = await retryAwaitingAcceptance();
+          const terminal = store.hold("failed");
+
+          const stopping = inbox.stopSessionWork(request.targetSessionId, request.placementGeneration);
+          await terminal.reached;
+          if (order === "acceptance lands first") {
+            accepted.open();
+            await new Promise((resolve) => setTimeout(resolve, 20));
+            expect(prompt).toHaveBeenCalledOnce();
+            terminal.open();
+          } else {
+            terminal.open();
+            await vi.waitFor(() => expect(inbox.getState(request.messageId)?.status).toBe("failed"));
+            accepted.open();
+          }
+          await stopping;
+
+          await vi.waitFor(async () => {
+            const [record] = await store.list("session-message");
+            expect(record).toMatchObject({ status: "failed", lastError: { code: SESSION_MESSAGE_STOPPED_CODE } });
+          });
+          await inbox.settled();
+          expect(prompt).toHaveBeenCalledOnce();
+          expect(inbox.queuedCount).toBe(0);
+          inbox.stop();
+        },
+      );
+
+      it("refuses a message accepted during the stop instead of leaving it to never run", async () => {
+        const store = new GatedStore();
+        const prompt = vi.fn(async () => ({ runId: "run", status: "completed", output: [] }));
+        const inbox = new SessionMessageInbox({
+          admission: new AdmissionController(),
+          credentialEnvironment: credentialEnvironment(),
+          imCredentialGrantVersion: () => 2,
+          persistence: store,
+          sessionCollaborationVersion: () => 4,
+          reconciler: inboxReconciler(),
+          runtimeManager: {
+            ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+            sessionKind: vi.fn(() => "internal" as const),
+          },
+        });
+        const request = delivery();
+        const write = store.hold("accepted");
+        const accepting = inbox.accept(request);
+        await write.reached;
+
+        await inbox.stopSessionWork(request.targetSessionId, request.placementGeneration);
+        write.open();
+
+        await expect(accepting).resolves.toMatchObject({ status: "rejected", reason: "session_not_ready" });
+        await expect(inbox.accept({ ...delivery(), targetSessionId: request.targetSessionId })).resolves.toMatchObject({
+          status: "rejected",
+          reason: "session_not_ready",
+        });
+        await inbox.settled();
+        expect(prompt).not.toHaveBeenCalled();
+        const [record] = await store.list("session-message");
+        expect(record).toMatchObject({ status: "failed", lastError: { code: SESSION_MESSAGE_STOPPED_CODE } });
+        inbox.stop();
+      });
+
+      it("ends a retry whose failure write was in flight, and still runs a newer placement", async () => {
+        const store = new GatedStore();
+        const prompt = vi.fn(failedOnce);
+        const schedule = vi.fn(() => ({ cancel: () => undefined }));
+        const inbox = new SessionMessageInbox({
+          admission: new AdmissionController(),
+          credentialEnvironment: credentialEnvironment(),
+          imCredentialGrantVersion: () => 2,
+          persistence: store,
+          sessionCollaborationVersion: () => 4,
+          reconciler: inboxReconciler(),
+          runtimeManager: {
+            ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+            sessionKind: vi.fn(() => "internal" as const),
+          },
+          scheduler: { schedule },
+        });
+        const request = delivery();
+        const write = store.hold("retryable");
+        await inbox.accept(request);
+        await write.reached;
+
+        const stopping = inbox.stopSessionWork(request.targetSessionId, request.placementGeneration);
+        write.open();
+        await stopping;
+        await vi.waitFor(() => expect(inbox.getState(request.messageId)?.status).toBe("failed"));
+        expect(schedule).not.toHaveBeenCalled();
+        prompt.mockImplementationOnce(async () => ({ runId: "run", status: "completed", output: [] }) as never);
+        const moved = {
+          ...delivery(),
+          targetSessionId: request.targetSessionId,
+          placementGeneration: request.placementGeneration + 1,
+        };
+        await expect(inbox.accept(moved)).resolves.toMatchObject({ status: "accepted" });
+        await inbox.settled();
+        expect(inbox.getState(moved.messageId)?.status).toBe("succeeded");
+        inbox.stop();
+      });
+    });
+
     it("cancels a pending retry", async () => {
       const cancel = vi.fn();
       const tasks: Array<() => void> = [];

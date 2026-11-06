@@ -55,9 +55,16 @@ and skipped results do not independently change the exit code. Invalid command s
 usage error. Never present unknown or skipped evidence as a pass. Invalid prerequisites skip their
 dependent checks with a reason while independent checks continue.
 
-The complete human-readable report goes to stdout even when checks fail. Unexpected command-level
-errors may additionally use stderr. Presentation consumes structured results; P0 does not promise a
-public `--json` interface or its compatibility.
+In default human-readable mode, the complete report goes to stdout even when checks fail.
+Unexpected command-level errors use the shared CLI error path on stderr.
+
+`opentag doctor --json` is available and uses the shared command envelope. A healthy report is
+`{"ok":true,"result":...}` on stdout. An unhealthy report is
+`{"ok":false,"error":...,"result":...}` on stderr, with `DOCTOR_UNHEALTHY` as a configuration
+error and exit 1. The attached result includes `target`, `checks`, `nextActions`, `providerCliSetup`,
+`notEvaluated`, `exitCode`, and the rendered `message`. An unexpected command failure uses the shared
+structured error envelope and may have no report. Availability of this flag does not promise a
+separately versioned public Doctor JSON schema or compatibility contract.
 
 ## Baseline checks
 
@@ -111,9 +118,10 @@ checks still run independently.
 
 ### Agent Runtime CLI artifacts
 
-P0 reports Codex CLI and Claude Code CLI separately. The blocking aggregate passes when at least
-one supported artifact is known to be installed. A missing alternative is informational: P0 has no
-authoritative Agent-to-Provider assignment view that would justify requiring both.
+P0 reports every `AGENT_RUNTIME_PROVIDERS` entry separately: Codex CLI, Claude Code CLI, and Pi CLI.
+The blocking aggregate passes when at least one supported artifact is known to be installed, including
+a Pi-only installation. A missing alternative is informational: P0 has no authoritative
+Agent-to-Provider assignment view that would justify requiring all supported Providers.
 
 Installed means the shared production resolver selected an ordinary executable file without
 starting the Provider. Runtime composition and Doctor use the same resolver so their definitions
@@ -128,9 +136,9 @@ cannot drift. It must:
   following reads, including symlink routes into Desktop, Documents, Downloads, iCloud, or cloud drives;
 - return the canonical selected path and source (`caller-path`, `well-known`, `desktop-app`, or an
   actual supported configuration source);
-- isolate detector failures, so one Provider's error cannot hide the other one's result.
+- isolate detector failures, so one Provider's error cannot hide another Provider's result.
 
-Do not launch `codex` or `claude`, request `--version` or `--help`, inspect credentials or login,
+Do not launch `codex`, `claude`, or `pi`, request `--version` or `--help`, inspect credentials or login,
 initialize an App Server, call a model, install a binary, or modify Provider configuration.
 An exception is unknown evidence, not proof that an artifact is absent.
 
@@ -141,8 +149,9 @@ context. Runtime credential handling never permits Doctor to claim Claude authen
 ### Integration CLI artifacts
 
 Lark CLI and Slack CLI use the same install-only observation and are always nonblocking. Missing
-one or both is informational; detector failure is nonblocking `unknown`. There is no
-`integration.any-installed` aggregate or Integration-specific readiness contract.
+one or both is informational; detector failure is nonblocking `unknown`. There is no blocking
+`integration.any-installed` aggregate. The report's `providerCliSetup` field summarizes these
+installation observations; it does not establish Integration authentication or business readiness.
 
 Search the diagnostic process's `PATH`, openTag's account-global launcher directory, and reviewed
 well-known roots. Select an ordinary executable and report its canonical path and source, with
@@ -164,10 +173,24 @@ Keep a fixed section order, regardless of concurrent completion:
 8. Not evaluated
 
 Installed artifact rows show their canonical path and source. Missing optional artifacts remain
-visible. Summary is exactly one of:
+visible. Summary always contains two lines. Its first line is one of:
 
 - `Baseline checks passed for this openTag Home.`
 - `N blocking baseline check(s) failed for this openTag Home.`
+
+The second line follows `providerCliSetup`:
+
+| Installation observation | `providerCliSetup` | Current Summary text |
+| --- | --- | --- |
+| Both Provider CLI checks pass | `ready` | `Lark and Slack CLIs are ready.` |
+| No Provider CLI checks, or at least one is unknown | `unknown` | `Lark and Slack CLI readiness could not be fully inspected.` |
+| Otherwise, including a missing CLI | `needs_attention` | `At least one messaging CLI still needs attention.` |
+
+The displayed words "ready" and "readiness" refer only to CLI installation observations. They do
+not prove login, credentials, subscription, daemon visibility, network access, or business or handoff
+readiness, and do not change the blocking baseline exit code. `nextActions` contains one entry for
+each check with a command: `checkCode`, that `command`, and `reason` equal to the check code. The
+renderer displays commands and remediation alongside their check; it does not run them.
 
 Every report includes **Not evaluated**, covering Runtime authentication, version/protocol
 compatibility, visibility from the installed daemon environment, machine-token authentication,
@@ -210,6 +233,7 @@ are bounded and redacted. The command is noninteractive.
 | `runtime.any-installed` | Yes | At least one supported Runtime artifact |
 | `runtime.codex.installation` | No | Codex artifact observation |
 | `runtime.claude-code.installation` | No | Claude Code artifact observation |
+| `runtime.pi.installation` | No | Pi artifact observation |
 | `provider-cli.feishu.installation` | No | Lark CLI artifact observation |
 | `provider-cli.slack.installation` | No | Slack CLI artifact observation |
 

@@ -572,7 +572,11 @@ class ReliableFeishuChannel implements FeishuChannel {
       },
       () => undefined,
     );
-    await Promise.all([outboundPromise, this.#ready]);
+    await outboundPromise;
+    if (state.cancelled || this.#closed || signal?.aborted) {
+      await this.#failAbortedConnect(signal);
+    }
+    await this.#ready;
     if (state.cancelled || this.#closed || signal?.aborted) {
       await this.#failAbortedConnect(signal);
     }

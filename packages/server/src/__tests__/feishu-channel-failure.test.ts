@@ -1,6 +1,7 @@
 import { setImmediate } from "node:timers/promises";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FeishuAdapter } from "../services/im-bindings/feishu/adapter.js";
+import { classifyFeishuConnectionFailure } from "../services/im-bindings/feishu/connection-failure.js";
 
 const sdk = vi.hoisted(() => ({
   outbound: {
@@ -92,8 +93,7 @@ describe("reliable Feishu channel connection failures", () => {
     sdk.options.onError(cause);
     await setImmediate();
     try {
-      expect(settled).toBe(true);
-      expect(sdk.close).toHaveBeenCalledWith({ force: true });
+      expect(settled).toBe(false);
     } finally {
       outbound.resolve();
     }
@@ -115,6 +115,24 @@ describe("reliable Feishu channel connection failures", () => {
     expect(sdk.close).toHaveBeenCalledWith({ force: true });
     expect(sdk.outbound.disconnect).toHaveBeenCalled();
     expect(value.channel.botIdentity).toBeUndefined();
+  });
+
+  it.each([
+    { gatewayCode: 514, tokenCode: 10015, expected: "FEISHU_CREDENTIAL_INVALID" },
+    { gatewayCode: 514, tokenCode: 10014, expected: "FEISHU_APP_UNAVAILABLE" },
+    { gatewayCode: 1, tokenCode: 10015, expected: "FEISHU_CREDENTIAL_INVALID" },
+  ])("preserves token $tokenCode classification after gateway $gatewayCode fails first", async (input) => {
+    const outbound = deferred();
+    sdk.outbound.connect.mockReturnValueOnce(outbound.promise);
+    const value = adapter();
+    const pending = outcome(value.validateBinding());
+    sdk.options.onError(new Error(`pullConnectConfig failed: code=${input.gatewayCode}, msg=test`));
+    await setImmediate();
+    const cause = Object.assign(new Error("token refused"), { code: input.tokenCode });
+    outbound.reject(cause);
+    const result = await pending;
+    expect(result.error).toBe(cause);
+    expect(classifyFeishuConnectionFailure(result.error)).toEqual({ kind: "permanent", code: input.expected });
   });
 
   it("returns a rejected SDK start to the caller with its original cause", async () => {

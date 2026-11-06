@@ -285,7 +285,12 @@ reads the logical Computer and installation, then revalidates the deployment-iss
 control credential through the injected authority; it has no Local credential row.
 A concurrent uncommitted lifecycle change can still admit a frame against the
 previous committed state. This admission does not reserve authority for later
-effects: handlers retain their own placement, generation, and connection fences.
+effects. Some handler placement and connection fences read the in-memory registry,
+which post-commit connection cleanup updates. A frame admitted before revocation
+commits can still pass those fences and take effect afterward; they do not enforce
+database credential revocation. Only some paths, such as approval insertion,
+recheck database authority under a row lock. This admission check does not establish
+that every handler fences later effects against revocation.
 Registration and heartbeat instead recheck credentials under the Computer row lock
 inside the same transaction as their writes, preserving lifecycle lock order.
 

@@ -759,3 +759,200 @@ describe("automatic reclamation retry reservations on PostgreSQL", () => {
     },
   );
 });
+
+describe("automatic deletion confirmation on PostgreSQL", () => {
+  function pendingDeletes(stack: RaceStack) {
+    const remove = stack.fake.deleteInstance.bind(stack.fake);
+    vi.spyOn(stack.fake, "deleteInstance").mockImplementation(async (name, uid) => {
+      const result = await remove(name, uid);
+      const instance = stack.fake.instances.get(name);
+      if (instance && !result.alreadyGone) instance.gone = false;
+      return result;
+    });
+  }
+
+  it("reserves one confirmation across concurrent Server connections", async () => {
+    const stack = makeStack();
+    let now = new Date(Date.now() + 1_000);
+    const ready = await failedIdleClaim(stack, now, "releasing");
+    pendingDeletes(stack);
+    await retryService(database, stack, () => now).reclaimIdleSandboxes();
+    expect((await rowFor(ready.row.id)).lastErrorCode).toBe("cloud_delete_pending");
+    now = new Date(now.getTime() + 15_000);
+    const clients = [0, 1].map(() => createDatabaseClient(testDatabase.databaseUrl, { max: 1 }));
+    const locked = deferred();
+    const unlock = deferred();
+    const reading = deferred();
+    const finish = deferred();
+    const reads = vi.spyOn(stack.fake, "getInstance").mockImplementation(async () => {
+      reading.resolve();
+      await finish.promise;
+      return undefined;
+    });
+    const block = database.transaction(async (transaction) => {
+      await transaction.select().from(sandboxes).where(eq(sandboxes.id, ready.row.id)).for("update");
+      locked.resolve();
+      await unlock.promise;
+    });
+    const attempts: Promise<unknown>[] = [];
+    const outcomes: { released: number }[] = [];
+    try {
+      const pids = await Promise.all(
+        clients.map(async (client) => {
+          const [row] = await client.sql`select pg_backend_pid() as pid`;
+          return row?.pid as number;
+        }),
+      );
+      await locked.promise;
+      for (const client of clients) {
+        attempts.push(
+          retryService(client.database, stack, () => now)
+            .reclaimIdleSandboxes()
+            .then((result) => {
+              outcomes.push(result);
+            }),
+        );
+      }
+      await vi.waitFor(async () => {
+        const waiting =
+          await sql`select pid from pg_stat_activity where pid in (${pids[0] as number}, ${pids[1] as number}) and wait_event_type = 'Lock'`;
+        expect(waiting).toHaveLength(2);
+      });
+      unlock.resolve();
+      await reading.promise;
+      await vi.waitFor(() => expect(outcomes).toHaveLength(1));
+      expect(reads).toHaveBeenCalledOnce();
+      finish.resolve();
+      await Promise.all(attempts);
+      expect(outcomes.reduce((sum, result) => sum + result.released, 0)).toBe(1);
+      expect(stack.fake.deleteCalls).toHaveLength(1);
+      expect((await rowFor(ready.row.id)).lifecycle).toBe("unallocated");
+    } finally {
+      unlock.resolve();
+      finish.resolve();
+      await Promise.allSettled([block, ...attempts]);
+      await Promise.all(clients.map((client) => client.sql.end()));
+    }
+  });
+
+  it.each(["stop", "generation", "uid"])("does not stamp a late pending marker onto newer %s state", async (change) => {
+    const stack = makeStack();
+    const now = new Date(Date.now() + 1_000);
+    const ready = await failedIdleClaim(stack, now, "releasing");
+    pendingDeletes(stack);
+    const entered = deferred();
+    const finish = deferred();
+    const get = stack.fake.getInstance.bind(stack.fake);
+    vi.spyOn(stack.fake, "getInstance").mockImplementation(async (name) => {
+      const view = await get(name);
+      if (stack.fake.deleteCalls.length > 0) {
+        entered.resolve();
+        await finish.promise;
+      }
+      return view;
+    });
+    const client = createDatabaseClient(testDatabase.databaseUrl, { max: 1 });
+    const attempt = retryService(client.database, stack, () => now).reclaimIdleSandboxes();
+    try {
+      await entered.promise;
+      const replacement = {
+        updatedAt: new Date(now.getTime() + 1),
+        lastErrorCode: "workspace_discard_requested",
+        idleReclaimAt: null,
+        ...(change === "generation" ? { environmentGeneration: ready.row.environmentGeneration + 1 } : {}),
+        ...(change === "uid" ? { currentResourceUid: "replacement-uid" } : {}),
+      };
+      await database.update(sandboxes).set(replacement).where(eq(sandboxes.id, ready.row.id));
+      finish.resolve();
+      expect(await attempt).toMatchObject({ released: 0, failed: 0 });
+      expect(await rowFor(ready.row.id)).toMatchObject(replacement);
+      expect(stack.fake.deleteCalls).toEqual([
+        { name: ready.row.currentResourceName, uid: ready.row.currentResourceUid },
+      ]);
+    } finally {
+      finish.resolve();
+      await attempt;
+      await client.sql.end();
+    }
+  });
+
+  it("does not clear a newer allocation after a late 404 confirmation", async () => {
+    const stack = makeStack();
+    let now = new Date(Date.now() + 1_000);
+    const ready = await failedIdleClaim(stack, now, "releasing");
+    pendingDeletes(stack);
+    await retryService(database, stack, () => now).reclaimIdleSandboxes();
+    now = new Date(now.getTime() + 15_000);
+    const entered = deferred();
+    const finish = deferred();
+    vi.spyOn(stack.fake, "getInstance").mockImplementationOnce(async () => {
+      entered.resolve();
+      await finish.promise;
+      return undefined;
+    });
+    const client = createDatabaseClient(testDatabase.databaseUrl, { max: 1 });
+    const attempt = retryService(client.database, stack, () => now).reclaimIdleSandboxes();
+    try {
+      await entered.promise;
+      const replacement = {
+        lifecycle: "preparing" as const,
+        environmentGeneration: ready.row.environmentGeneration + 1,
+        currentResourceName: "replacement-name",
+        currentResourceUid: "replacement-uid",
+        lastErrorCode: "cloud_create_pending",
+        lastActivityAt: now,
+        idleReclaimAt: null,
+        updatedAt: now,
+      };
+      await database.update(sandboxes).set(replacement).where(eq(sandboxes.id, ready.row.id));
+      finish.resolve();
+      expect(await attempt).toMatchObject({ released: 0, failed: 0 });
+      expect(await rowFor(ready.row.id)).toMatchObject(replacement);
+      expect(stack.fake.deleteCalls).toHaveLength(1);
+    } finally {
+      finish.resolve();
+      await attempt;
+      await client.sql.end();
+    }
+  });
+
+  it.each([false, true])("recovers a pending-marker write with an unknown result (committed=%s)", async (committed) => {
+    const stack = makeStack();
+    let now = new Date(Date.now() + 1_000);
+    const ready = await failedIdleClaim(stack, now, "releasing");
+    pendingDeletes(stack);
+    const client = createDatabaseClient(testDatabase.databaseUrl, { max: 1 });
+    const update = client.database.update.bind(client.database);
+    vi.spyOn(client.database, "update").mockImplementation(((table) => {
+      const builder = update(table);
+      const set = builder.set.bind(builder);
+      builder.set = ((values) => {
+        if ((values as { lastErrorCode?: unknown }).lastErrorCode !== "cloud_delete_pending") return set(values);
+        return {
+          where: async (condition: Parameters<ReturnType<typeof set>["where"]>[0]) => {
+            if (committed) await set(values).where(condition);
+            throw new Error("Pending marker acknowledgement lost");
+          },
+        };
+      }) as typeof builder.set;
+      return builder;
+    }) as typeof client.database.update);
+    try {
+      expect((await retryService(client.database, stack, () => now).reclaimIdleSandboxes()).failed).toBe(1);
+      expect(await rowFor(ready.row.id)).toMatchObject({
+        lifecycle: "releasing",
+        currentResourceUid: ready.row.currentResourceUid,
+        lastErrorCode: committed ? "cloud_delete_pending" : "workspace_save_failed",
+      });
+      const instance = stack.fake.instances.get(ready.row.currentResourceName as string);
+      if (!instance) throw new Error("Missing fixture Instance");
+      instance.gone = true;
+      now = new Date(now.getTime() + (committed ? 15_000 : WORKSPACE_RECOVERY_RETRY_DELAY_MS));
+      expect((await retryService(database, stack, () => now).reclaimIdleSandboxes()).released).toBe(1);
+      expect((await rowFor(ready.row.id)).lifecycle).toBe("unallocated");
+      expect(stack.store.stored(ready.row.storageUri)).toMatchObject({ saved: true, sealed: true });
+    } finally {
+      await client.sql.end();
+    }
+  });
+});

@@ -9,7 +9,7 @@ describe("SandboxIdleReclaimer shutdown", () => {
       resolve = yes;
       reject = no;
     });
-    const reclaimIdleSandboxes = vi.fn(() => promise);
+    const reclaimIdleSandboxes = vi.fn((_signal?: AbortSignal) => promise);
     const onDiagnostic = vi.fn();
     const reclaimer = new SandboxIdleReclaimer({ service: { reclaimIdleSandboxes }, onDiagnostic });
     reclaimer.start();
@@ -22,6 +22,7 @@ describe("SandboxIdleReclaimer shutdown", () => {
     await Promise.resolve();
     expect(stopped).toBe(false);
     expect(reclaimIdleSandboxes).toHaveBeenCalledTimes(1);
+    expect(reclaimIdleSandboxes.mock.calls[0]?.[0]).toMatchObject({ aborted: true });
     if (failed) reject(new Error("Provider unavailable"));
     else resolve({ claimed: 0, released: 0, recovered: 0, failed: 0 });
     await stop;

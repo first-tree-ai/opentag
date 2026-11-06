@@ -692,7 +692,7 @@ describe("native sandbox launch, probe, and exec failure classification", () => 
 describe("combined native readiness probe", () => {
   function executeScript(
     script: string,
-    options: { visible?: string; environment?: string; environmentFile?: string } = {},
+    options: { visible?: string; environment?: string; environmentFile?: string; failure?: string } = {},
   ) {
     let stdout = "";
     let stderr = "";
@@ -704,9 +704,13 @@ describe("combined native readiness probe", () => {
       accessSync: () => undefined,
       existsSync: (file: string) => options.visible !== undefined && file.includes(options.visible),
       mkdirSync: () => undefined,
-      writeFileSync: (file: string) => writes.push(file),
+      writeFileSync: (file: string) => {
+        if (options.failure === "EROFS") throw Object.assign(new Error("read-only filesystem"), { code: "EROFS" });
+        writes.push(file);
+      },
       readFileSync: (file: string) => {
         reads.push(file);
+        if (file === options.failure) throw Object.assign(new Error("permission denied"), { code: "EACCES" });
         if (file.startsWith("/proc/")) {
           return options.environmentFile && file !== options.environmentFile
             ? "PATH=/usr/bin"
@@ -737,6 +741,9 @@ describe("combined native readiness probe", () => {
         },
         process: {
           version: "v24.19.0",
+          set exitCode(value: number) {
+            code = value;
+          },
           stdout: {
             write: (value: string) => {
               stdout += value;
@@ -812,8 +819,61 @@ describe("combined native readiness probe", () => {
       }).spawn,
     });
     await expect(sandbox.probe()).rejects.toMatchObject({ code: "probe_failed", message: /isolation/ });
-    expect(result?.stdout).toBe("");
+    expect(JSON.parse(result?.stdout ?? "")).toMatchObject({ runnerVersion: "1.0.0", isolated: false });
     expect([10, 11, 12]).toContain(result?.code);
+  });
+
+  it.each(["EROFS", "/proc/self/environ", "/proc/1/environ"])(
+    "classifies isolation exceptions and retains version metrics: %s",
+    async (failure) => {
+      const rootfs = await temporaryDirectory("opentag-combined-probe-");
+      const log = vi.fn();
+      const sandbox = new NativeSandbox({
+        name: "diagnostics",
+        workspace: rootfs,
+        rootfs,
+        onPerformanceLog: log,
+        spawnProcess: recordingSpawn((args) => executeScript(args[5] ?? "", { failure })).spawn,
+      });
+      await expect(sandbox.probe()).rejects.toMatchObject({ code: "probe_failed", message: /isolation/ });
+      expect(log).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          operation: "runner.native_sandbox.probe",
+          outcome: "error",
+          errorCode: "probe_failed",
+          runnerVersion: "1.0.0",
+        }),
+      );
+    },
+  );
+
+  it.each([10, 11, 12])("retains validated version metadata without accepting isolation exit %i", async (code) => {
+    const log = vi.fn();
+    const sandbox = new NativeSandbox({
+      name: "diagnostics",
+      workspace: "/tmp/unused",
+      onPerformanceLog: log,
+      spawnProcess: recordingSpawn(() => ({ code, stdout: PROBE_METADATA_STDOUT })).spawn,
+    });
+    await expect(sandbox.probe()).rejects.toMatchObject({ code: "probe_failed", message: /isolation/ });
+    expect(log).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ outcome: "error", runnerVersion: "1.0.0" }));
+  });
+
+  it("does not log unvalidated metadata from an isolation failure", async () => {
+    const log = vi.fn();
+    const sandbox = new NativeSandbox({
+      name: "diagnostics",
+      workspace: "/tmp/unused",
+      onPerformanceLog: log,
+      spawnProcess: recordingSpawn(() => ({
+        code: 10,
+        stdout: JSON.stringify({ ...JSON.parse(PROBE_METADATA_STDOUT), runnerVersion: "invalid version!" }),
+      })).spawn,
+    });
+    await expect(sandbox.probe()).rejects.toMatchObject({ code: "probe_failed", message: /valid Runner version/ });
+    expect(log).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ outcome: "error", runnerVersion: "unknown" }),
+    );
   });
 
   it.each(["parent", "lower"])(
@@ -1038,6 +1098,22 @@ process.stdout.write(JSON.stringify(metadata));`;
       stderr: "runner-metadata:pi-package-invalid",
     });
   });
+
+  it.each(["null", "[]", "42", "true", '"metadata"'])(
+    "rejects non-object identity and package JSON with metadata diagnostics: %s",
+    async (value) => {
+      const identity = await piMetadataFixture({ identity: value });
+      expect(await runNodeScript(scriptFor(identity))).toMatchObject({
+        code: 1,
+        stderr: "runner-metadata:identity-invalid",
+      });
+      const pkg = await piMetadataFixture({ packageJson: value });
+      expect(await runNodeScript(scriptFor(pkg))).toMatchObject({
+        code: 1,
+        stderr: "runner-metadata:pi-package-invalid",
+      });
+    },
+  );
 
   it("requires the fixed shim and the declared CLI entry without loading them", async () => {
     const missingShim = await piMetadataFixture({ shim: false });

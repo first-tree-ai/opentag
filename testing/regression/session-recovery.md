@@ -38,7 +38,11 @@ Concurrent store claimants must never own the same live target claim. A stale cl
 
 Hold a projection across several timer ticks and explicit `runOnce` calls. Verify one `ImFeedbackWorker.runPass`
 start/end pair for the actual pass, including a failed pass. Fail or time out one target and verify independent targets
-still settle. A cooldown-storage failure stops new claims and drains calls already admitted. During controlled shutdown,
+still settle. Block the failed target's settlement with a PostgreSQL row lock after a cooldown-storage failure, then let
+its siblings finish. No fifth target may be claimed or started while the failed settlement is waiting; releasing the
+lock drains all already-admitted work. Saturate the shared provider-call pool, verify an unsent card stays pending, then
+release capacity and verify one send succeeds. Queue deadlines remain definitely unsent, while in-flight send deadlines
+retain unknown-send reconciliation. During controlled shutdown,
 verify all admitted projections settle before the worker stops and a claim returned after stop starts no provider call.
 Cancel an in-flight working task and verify its working reaction is removed without creating a failure card or replaying
 execution. These deterministic checks do not establish native provider latency or deployment acceptance.

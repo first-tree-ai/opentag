@@ -16,7 +16,11 @@ import { PostgresRuntimeCustodyStore } from "../../runtime/runtime-custody-store
 import { ApplicationCipher } from "../../services/crypto.js";
 import { ExternalCallPolicy } from "../../services/im/external-call-policy.js";
 import { ImFeedbackActionsService } from "../../services/im/im-feedback-actions.js";
-import { type FeedbackTransport, ImFeedbackMessenger } from "../../services/im/im-feedback-messenger.js";
+import {
+  FeedbackCooldownStorageError,
+  type FeedbackTransport,
+  ImFeedbackMessenger,
+} from "../../services/im/im-feedback-messenger.js";
 import {
   createImFeedbackTarget,
   type FeedbackTarget,
@@ -205,6 +209,82 @@ describe("PostgreSQL feedback operations", () => {
       gate.resolve();
       await worker.stop();
     }
+  });
+
+  it("halts new claims while a cooldown failure's settlement waits on a PostgreSQL row lock", async () => {
+    const h = await failed();
+    for (let i = 0; i < 4; i++) {
+      const entry = await h.delivery();
+      await client.database.transaction((tx) => startImFeedback(tx, entry.frame.deliveryId, clock));
+    }
+    const store = new ImFeedbackStore(client.database, () => clock);
+    const claim = vi.spyOn(store, "claim");
+    const fail = deferred();
+    const siblings = deferred();
+    const siblingsSettled = deferred();
+    const unlock = deferred();
+    const locked = deferred<number>();
+    const admitted: FeedbackTarget[] = [];
+    let completedSiblings = 0;
+    const settle = store.settle.bind(store);
+    vi.spyOn(store, "settle").mockImplementation(async (target, input) => {
+      await settle(target, input);
+      if (target.id !== admitted[0]?.id && ++completedSiblings === 3) siblingsSettled.resolve();
+    });
+    const peer = createDatabaseClient(fixtureDb.databaseUrl, { max: 1 });
+    const worker = new ImFeedbackWorker({
+      store,
+      transport: {
+        reaction: async (target) => {
+          admitted.push(target);
+          if (admitted[0]?.id !== target.id) return siblings.promise;
+          await fail.promise;
+          throw new FeedbackCooldownStorageError();
+        },
+        post: async () => "card",
+        update: async () => {},
+        find: async () => ({ ids: [] }),
+      },
+      logger: { warn: vi.fn() },
+    });
+    const pass = worker.runOnce();
+    let lock: Promise<void> | undefined;
+    try {
+      await vi.waitFor(() => expect(admitted).toHaveLength(4));
+      const first = admitted[0];
+      if (!first) throw new Error("Missing failed target");
+      lock = peer.database.transaction(async (tx) => {
+        await tx.select().from(imFeedbackTargets).where(eq(imFeedbackTargets.id, first.id)).for("update");
+        const [backend] = await tx.execute(sql`select pg_backend_pid()::int as pid`);
+        locked.resolve(Number(backend?.pid));
+        await unlock.promise;
+      });
+      const lockerPid = await locked.promise;
+      fail.resolve();
+      await vi.waitFor(async () => {
+        const [row] = await client.sql`select exists(select 1 from pg_stat_activity
+          where datname = current_database() and wait_event_type = 'Lock'
+          and ${lockerPid} = any(pg_blocking_pids(pid))
+          and query ilike 'update "im_feedback_targets"%') as waiting`;
+        expect(row?.waiting).toBe(true);
+      });
+      siblings.resolve();
+      await siblingsSettled.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(claim).toHaveBeenCalledTimes(4);
+      expect(admitted).toHaveLength(4);
+    } finally {
+      const stop = worker.stop();
+      fail.resolve();
+      siblings.resolve();
+      unlock.resolve();
+      await Promise.all([pass, stop, lock]);
+      await peer.sql.end();
+    }
+    const first = admitted[0];
+    if (!first) throw new Error("Missing failed target");
+    const [saved] = await client.database.select().from(imFeedbackTargets).where(eq(imFeedbackTargets.id, first.id));
+    expect(saved).toMatchObject({ claimId: null, lastErrorCode: "IM_FEEDBACK_COOLDOWN_UNAVAILABLE" });
   });
 
   it("rejects concurrent legacy Retry confirmations without adding an attempt", async () => {
@@ -424,7 +504,11 @@ describe("PostgreSQL feedback operations", () => {
   });
 });
 
-function messengerFor(target: FeedbackTarget, store: ImFeedbackStore) {
+function messengerFor(
+  target: FeedbackTarget,
+  store: ImFeedbackStore,
+  policy = new ExternalCallPolicy({ allowedHosts: [], performanceLogger: createPerformanceLogger(() => undefined) }),
+) {
   const binding = {
     getSlackConnectionMaterial: async () => ({
       installationId: target.installationId,
@@ -433,12 +517,7 @@ function messengerFor(target: FeedbackTarget, store: ImFeedbackStore) {
       botUserId: "U1",
     }),
   } as unknown as ImBindingService;
-  return new ImFeedbackMessenger(
-    binding,
-    new ExternalCallPolicy({ allowedHosts: [], performanceLogger: createPerformanceLogger(() => undefined) }),
-    "https://example.test",
-    store,
-  );
+  return new ImFeedbackMessenger(binding, policy, "https://example.test", store);
 }
 
 async function failAnother(h: Awaited<ReturnType<typeof failed>>) {
@@ -452,6 +531,52 @@ async function failAnother(h: Awaited<ReturnType<typeof failed>>) {
 }
 
 describe("existing installation cooldown", () => {
+  it("keeps a definitely unsent card pending when the call pool is full and sends it after capacity returns", async () => {
+    const h = await failed();
+    await client.database.update(imFeedbackTargets).set({ appliedReaction: "warning" });
+    const store = new ImFeedbackStore(client.database, () => clock);
+    const policy = new ExternalCallPolicy({ maxConcurrency: 1, maxQueueDepth: 0 });
+    const gate = deferred();
+    const entered = deferred();
+    const occupying = policy.run("busy", async () => {
+      entered.resolve();
+      await gate.promise;
+    });
+    await entered.promise;
+    const http = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ ok: true, channel: h.target.channelId, ts: "after-capacity" }), {
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const worker = new ImFeedbackWorker({
+      store,
+      transport: messengerFor(h.target, store, policy),
+      logger: { warn: vi.fn() },
+      now: () => clock,
+    });
+    try {
+      await worker.runOnce();
+      const [pending] = await client.database.select().from(imFeedbackTargets);
+      expect(pending).toMatchObject({
+        cardState: "pending",
+        cardMessageId: null,
+        lastErrorCode: "IM_PROVIDER_OVERLOADED",
+      });
+      expect(http).not.toHaveBeenCalled();
+      gate.resolve();
+      await occupying;
+      clock = new Date(clock.getTime() + 5_000);
+      await worker.runOnce();
+      const [saved] = await client.database.select().from(imFeedbackTargets);
+      expect(saved).toMatchObject({ cardState: "sent", cardMessageId: "after-capacity" });
+      expect(http).toHaveBeenCalledOnce();
+    } finally {
+      gate.resolve();
+      await occupying;
+      await worker.stop();
+      http.mockRestore();
+    }
+  });
   it("shares a real SDK 429 across due targets, worker restarts and methods, while isolating another installation", async () => {
     const h = await failed();
     await failAnother(h);

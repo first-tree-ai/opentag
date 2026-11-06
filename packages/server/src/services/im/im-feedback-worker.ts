@@ -47,6 +47,9 @@ export class ImFeedbackWorker {
   async runPass(): Promise<void> {
     const active = new Map<FeedbackTarget, Promise<void>>();
     let halted = false;
+    const halt = () => {
+      halted = true;
+    };
     let claimed = 0;
     try {
       while (claimed < 8 && !this.#stopped && !halted) {
@@ -61,7 +64,7 @@ export class ImFeedbackWorker {
           await this.options.store.settle(target, { delayMs: 0 });
           break;
         }
-        const task = this.#apply(target)
+        const task = this.#apply(target, halt)
           .catch(() => {
             halted = true;
             this.options.logger.warn(
@@ -83,7 +86,7 @@ export class ImFeedbackWorker {
     await this.options.store.settle(target, authorized ? { delayMs: 0 } : { stale: true });
     return false;
   }
-  async #apply(original: FeedbackTarget): Promise<void> {
+  async #apply(original: FeedbackTarget, halt: () => void): Promise<void> {
     let target = original;
     let retryAfterMs = 0;
     try {
@@ -97,6 +100,7 @@ export class ImFeedbackWorker {
       else if (target.cardState === "pending" && !target.cardMessageId) await this.#publish(target, reaction);
       else await this.#settleKnown(target, reaction);
     } catch (error) {
+      if (error instanceof FeedbackCooldownStorageError) halt();
       await this.#failure(target, error, retryAfterMs);
     }
   }

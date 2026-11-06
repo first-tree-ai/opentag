@@ -122,6 +122,8 @@ again before I/O and cannot settle a newer desired revision as its own. Binding 
 it cannot revoke a request already in flight. Timer ticks and explicit wakeups join the active pass; performance logging
 records `ImFeedbackWorker.runPass` once per actual pass. Provider failures are rescheduled independently. A claim or
 settlement storage failure stops further admission while joining every projection already in flight.
+Cooldown-storage failure stops admission as soon as it is observed, before waiting for its settlement write; a blocked
+settlement does not permit more targets to start.
 Shutdown stops new claims, releases a claim that finishes admission after shutdown, and drains every admitted projection.
 
 Before a new card request, the worker persists `sending` and a stable request identity. A lost acknowledgement or
@@ -136,6 +138,10 @@ New workspace actions expire after twenty-four hours. Previously admitted task r
 settled projections and actions retain ninety days of diagnostics; cleanup is bounded to one hundred records per
 retention tick. Unknown sends and operations survive expiry. Referenced source deliveries/messages remain available
 until their feedback is safely removed. No historical error-card backfill runs.
+
+The shared call policy distinguishes rejection before capacity admission from a request already started. Queue overflow,
+queue deadline, queued cancellation, and an open circuit are definitely not submitted and keep an unsent card pending
+for a later bounded retry. A deadline after the provider action begins remains unknown and requires readback.
 
 ## Slack rate-limit coordination
 

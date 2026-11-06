@@ -256,4 +256,44 @@ describe("feedback pass scheduling", () => {
       expect(h.store.settle).toHaveBeenCalledTimes(4);
     },
   );
+
+  it("halts admission before a cooldown failure's delayed settlement completes", async () => {
+    vi.useFakeTimers();
+    const h = harness();
+    const fail = deferred();
+    const siblings = deferred();
+    const settlement = deferred();
+    h.transport.reaction.mockImplementation(async (t) => {
+      if (t.id !== "0") return siblings.promise;
+      await fail.promise;
+      throw new FeedbackCooldownStorageError();
+    });
+    h.store.settle.mockImplementation(async (t?: FeedbackTarget) => {
+      if (t?.id === "0") await settlement.promise;
+    });
+    let finished = false;
+    const pass = h.worker.runOnce().then(() => {
+      finished = true;
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.transport.reaction).toHaveBeenCalledTimes(4);
+      fail.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.store.settle).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "0" }),
+        expect.objectContaining({ errorCode: "IM_FEEDBACK_COOLDOWN_UNAVAILABLE" }),
+      );
+      siblings.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(finished).toBe(false);
+      expect(h.store.claim).toHaveBeenCalledTimes(4);
+      expect(h.transport.reaction).toHaveBeenCalledTimes(4);
+    } finally {
+      fail.resolve();
+      siblings.resolve();
+      settlement.resolve();
+      await pass;
+    }
+  });
 });

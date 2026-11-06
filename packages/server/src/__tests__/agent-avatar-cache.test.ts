@@ -218,4 +218,28 @@ describe("authorized avatar reuse", () => {
     expect(await bytes(await service.openAvatar("owner", "agent"))).toEqual(Buffer.from("image"));
     expect(fetch).toHaveBeenCalledTimes(2);
   });
+
+  it("does not let a late old-URL download replace the current binding's cached bytes", async () => {
+    const { service, fetch, binding } = fixture();
+    let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
+    fetch.mockResolvedValueOnce(
+      imageResponse(
+        new ReadableStream<Uint8Array>({
+          start(value) {
+            controller = value;
+          },
+        }),
+      ),
+    );
+    const old = service.openAvatar("owner", "agent");
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+    binding.providerUrl = "https://cdn.example.test/new.png";
+    fetch.mockResolvedValueOnce(imageResponse("new image"));
+    expect(await bytes(await service.openAvatar("owner", "agent"))).toEqual(Buffer.from("new image"));
+    controller?.enqueue(Buffer.from("old image"));
+    controller?.close();
+    expect(await bytes(await old)).toEqual(Buffer.from("old image"));
+    expect(await bytes(await service.openAvatar("owner", "agent"))).toEqual(Buffer.from("new image"));
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
 });

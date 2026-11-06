@@ -9,6 +9,19 @@ import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
 import { composeRuntimeEnvironment } from "../../agent-runtime/environment.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
 import { piProviderFailureCode, providerProcessFailureCode } from "../../agent-runtime/provider-failure.js";
+import type { Deferred } from "../../agent-runtime/provider-utils.js";
+import {
+  deferred,
+  protocolError,
+  toJsonValue as protocolJsonValue,
+  providerConfiguration,
+  record,
+  requireArray,
+  requireIndex as requireProtocolIndex,
+  requireProtocolString,
+  requireRecord,
+  requireUuid,
+} from "../../agent-runtime/provider-utils.js";
 import {
   AGENT_RUNTIME_CONTRACT_VERSION,
   AGENT_RUNTIME_ID_MAX_BYTES,
@@ -174,12 +187,6 @@ export interface PiAgentRuntimeFactoryOptions {
   }>;
 }
 
-interface Deferred<T> {
-  readonly promise: Promise<T>;
-  readonly reject: (error: Error) => void;
-  readonly resolve: (value: T) => void;
-}
-
 interface PiTerminal {
   readonly error?: string;
   readonly status: "aborted" | "completed" | "failed";
@@ -235,7 +242,6 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   readonly #tools = new Map<string, PiTool>();
   #client?: PiRpcClient;
   #unsubscribe?: () => void;
-  #context?: AgentProviderRunContext;
   #eventTail: Promise<void> = Promise.resolve();
   #terminal?: Deferred<PiTerminal>;
   #promptAccepted?: Deferred<void>;
@@ -477,7 +483,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       logger.debug({ code: "provider_close_failed", error: failure.message }, "Pi provider close failed");
     }
     this.#client = undefined;
-    this.#context = undefined;
+    this.providerContext = undefined;
     this.#terminal = undefined;
     this.#promptAccepted = undefined;
     this.#currentTurnId = undefined;
@@ -541,7 +547,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   }
 
   #resetRun(context: AgentProviderRunContext): void {
-    this.#context = context;
+    this.providerContext = context;
     this.#eventTail = Promise.resolve();
     this.#terminal = deferred<PiTerminal>();
     this.#promptAccepted = deferred<void>();
@@ -617,7 +623,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     }
     const next = this.#eventTail.then(async () => {
       /* v8 ignore next -- unsubscribe detaches the only event source before Run context cleanup. */
-      if (!this.#context) return;
+      if (!this.providerContext) return;
       await this.#handleMessage(message);
     });
     this.#eventTail = next.catch((error: unknown) => {
@@ -626,8 +632,8 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   }
 
   #claimTerminalAtIngress(message: Readonly<Record<string, unknown>>): void {
-    if (message.type !== "agent_settled" || !this.#context) return;
-    this.#context.claimTerminal();
+    if (message.type !== "agent_settled" || !this.providerContext) return;
+    this.providerContext.claimTerminal();
     this.#terminalClaimed = true;
   }
 
@@ -644,7 +650,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       if (this.#currentTurnId) throw protocolError("Pi started overlapping turns");
       this.#turnSequence += 1;
       this.#currentTurnId = `pi-turn-${this.#turnSequence}`;
-      await this.#requireContext().emit({ type: "model_turn_started", modelTurnId: this.#currentTurnId });
+      await this.requireProviderContext().emit({ type: "model_turn_started", modelTurnId: this.#currentTurnId });
       return;
     }
     if (type === "turn_end") {
@@ -695,7 +701,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       return;
     }
     if (type === "extension_error") {
-      await this.#requireContext().emit({
+      await this.requireProviderContext().emit({
         type: "provider_warning",
         code: "pi_extension_error",
         message: typeof message.error === "string" ? message.error : "Pi extension failed",
@@ -703,7 +709,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       return;
     }
     if (type === "auto_retry_start") {
-      await this.#requireContext().emit({
+      await this.requireProviderContext().emit({
         type: "provider_warning",
         code: "pi_auto_retry",
         message: typeof message.errorMessage === "string" ? message.errorMessage : "Pi is retrying the model request",
@@ -737,7 +743,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     )
       return;
     if (this.#mcpEnabled && message.method === "notify") {
-      await this.#requireContext().emit({
+      await this.requireProviderContext().emit({
         type: "provider_warning",
         code: "pi_mcp_notice",
         message: "Pi MCP adapter reported a notice",
@@ -767,7 +773,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       if (current.blocks.has(index)) throw protocolError("Pi reused a text content index");
       const block = { id: `${current.id}:text:${index}`, text: "", completed: false };
       current.blocks.set(index, block);
-      await this.#requireContext().emit({ type: "message_started", messageId: block.id });
+      await this.requireProviderContext().emit({ type: "message_started", messageId: block.id });
       return;
     }
     if (type === "text_delta") {
@@ -775,7 +781,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       if (!block || block.completed) throw protocolError("Pi text delta has no active content block");
       const delta = requireString(update.delta, "Pi text delta has no text", true);
       block.text += delta;
-      await this.#requireContext().emit({ type: "message_delta", messageId: block.id, delta });
+      await this.requireProviderContext().emit({ type: "message_delta", messageId: block.id, delta });
       return;
     }
     if (type === "text_end") {
@@ -784,7 +790,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       const text = requireString(update.content, "Pi text end has no text", true);
       if (block.text !== text) throw protocolError("Pi text stream does not match its completed content");
       block.completed = true;
-      await this.#requireContext().emit({ type: "message_completed", messageId: block.id, text });
+      await this.requireProviderContext().emit({ type: "message_completed", messageId: block.id, text });
       return;
     }
     if (type === "error") {
@@ -833,9 +839,9 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       if (!block) {
         block = { id: `${current.id}:text:${index}`, text, completed: true };
         current.blocks.set(index, block);
-        await this.#requireContext().emit({ type: "message_started", messageId: block.id });
-        if (text) await this.#requireContext().emit({ type: "message_delta", messageId: block.id, delta: text });
-        await this.#requireContext().emit({ type: "message_completed", messageId: block.id, text });
+        await this.requireProviderContext().emit({ type: "message_started", messageId: block.id });
+        if (text) await this.requireProviderContext().emit({ type: "message_delta", messageId: block.id, delta: text });
+        await this.requireProviderContext().emit({ type: "message_completed", messageId: block.id, text });
       } else if (!block.completed || block.text !== text) {
         throw protocolError("Pi completed assistant content does not match its text stream");
       }
@@ -846,10 +852,10 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     const usage = parseUsage(message.usage);
     if (usage) {
       this.#usage = addUsage(this.#usage, usage);
-      await this.#requireContext().emit({ type: "usage_updated", usage: this.#usage });
+      await this.requireProviderContext().emit({ type: "usage_updated", usage: this.#usage });
     }
     this.#currentAssistant = undefined;
-    await this.#materializeSession(this.#requireContext(), this.#pendingSessionFileHash);
+    await this.#materializeSession(this.requireProviderContext(), this.#pendingSessionFileHash);
   }
 
   async #endTurn(): Promise<void> {
@@ -858,7 +864,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     if (this.#currentAssistant || this.#tools.size > 0) {
       throw protocolError("Pi ended a turn with unfinished child events");
     }
-    await this.#requireContext().emit({ type: "model_turn_completed", modelTurnId: turnId });
+    await this.requireProviderContext().emit({ type: "model_turn_completed", modelTurnId: turnId });
     this.#currentTurnId = undefined;
   }
 
@@ -867,7 +873,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     if (this.#tools.has(toolCallId)) throw protocolError("Pi reused an active toolCallId");
     const name = requireString(message.toolName, "Pi tool start has no toolName");
     this.#tools.set(toolCallId, { name });
-    await this.#requireContext().emit({
+    await this.requireProviderContext().emit({
       type: "tool_started",
       toolCallId: piToolEventId(toolCallId),
       name,
@@ -878,7 +884,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   async #updateTool(message: Readonly<Record<string, unknown>>): Promise<void> {
     const toolCallId = requireString(message.toolCallId, "Pi tool update has no toolCallId");
     if (!this.#tools.has(toolCallId)) throw protocolError("Pi tool update has no active tool");
-    await this.#requireContext().emit({
+    await this.requireProviderContext().emit({
       type: "tool_updated",
       toolCallId: piToolEventId(toolCallId),
       update: toJsonValue(message.partialResult ?? {}),
@@ -890,7 +896,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     const tool = this.#tools.get(toolCallId);
     if (!tool) throw protocolError("Pi tool end has no active tool");
     this.#tools.delete(toolCallId);
-    await this.#requireContext().emit({
+    await this.requireProviderContext().emit({
       type: "tool_completed",
       toolCallId: piToolEventId(toolCallId),
       name: tool.name,
@@ -920,7 +926,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       const result =
         message.result === undefined ? undefined : requireRecord(message.result, "Pi compaction_end result is invalid");
       if (result === undefined) {
-        await this.#requireContext().emit({
+        await this.requireProviderContext().emit({
           type: "provider_warning",
           code: message.aborted === true ? "pi_compaction_aborted" : "pi_compaction_failed",
           message: compactionDiagnostic(message),
@@ -931,7 +937,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
         const usage = parseUsage(result.usage);
         if (usage) {
           this.#usage = addUsage(this.#usage, usage);
-          await this.#requireContext().emit({ type: "usage_updated", usage: this.#usage });
+          await this.requireProviderContext().emit({ type: "usage_updated", usage: this.#usage });
         }
       }
       return;
@@ -986,18 +992,12 @@ export class PiAgentRuntime extends BaseAgentRuntime {
   }
 
   async #emitProviderEvent(payload: JsonValue | Readonly<Record<string, unknown>>): Promise<void> {
-    await this.#requireContext().emit({
+    await this.requireProviderContext().emit({
       type: "provider_event",
       providerId: PI_PROVIDER_ID,
       schemaVersion: 1,
       payload: toJsonValue(payload),
     });
-  }
-
-  #requireContext(): AgentProviderRunContext {
-    /* v8 ignore next -- the serial event queue drops events after the active Run context is cleared. */
-    if (!this.#context) throw protocolError("Pi event arrived without an active run");
-    return this.#context;
   }
 
   #failProvider(error: Error): void {
@@ -1414,11 +1414,8 @@ function validateToolPolicy(policy: AgentRuntimePolicy): void {
   }
 }
 
-function validateConfiguration(configuration: AgentRunConfiguration | undefined): void {
-  if (!configuration) return;
-  assertConfigurationStrings(configuration);
-  parseProviderConfiguration(configuration.provider);
-}
+const { validate: validateConfiguration, merge: mergeConfiguration } =
+  providerConfiguration(parseProviderConfiguration);
 
 function parseProviderConfiguration(value: JsonValue | undefined): PiProviderConfiguration {
   if (value === undefined) return {};
@@ -1521,27 +1518,6 @@ function boundedConfigurationString(
   return value;
 }
 
-function mergeConfiguration(
-  base: AgentRunConfiguration | undefined,
-  override: AgentRunConfiguration | undefined,
-): AgentRunConfiguration | undefined {
-  if (!base) {
-    validateConfiguration(override);
-    return override;
-  }
-  if (!override) return base;
-  const merged: AgentRunConfiguration = {
-    ...base,
-    ...override,
-    provider: {
-      ...parseProviderConfiguration(base.provider),
-      ...parseProviderConfiguration(override.provider),
-    },
-  };
-  validateConfiguration(merged);
-  return merged;
-}
-
 function piPolicyArguments(policy: AgentRuntimePolicy): readonly string[] {
   if (policy.fileSystem === "read-only") {
     return ["--tools", PI_READ_ONLY_TOOLS.join(",")];
@@ -1641,66 +1617,16 @@ function isIrrecoverablePiFailure(error: Error): boolean {
   return error instanceof AgentProviderError || (error instanceof PiRpcError && error.code !== "command");
 }
 
-function deferred<T>(): Deferred<T> {
-  let resolvePromise!: (value: T) => void;
-  let rejectPromise!: (error: Error) => void;
-  const promise = new Promise<T>((resolve, reject) => {
-    resolvePromise = resolve;
-    rejectPromise = reject;
-  });
-  return { promise, resolve: resolvePromise, reject: rejectPromise };
-}
-
 function requireIndex(value: unknown): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) throw protocolError("Pi content index is invalid");
-  return value as number;
-}
-
-function requireUuid(value: unknown, field: string): string {
-  const result = requireString(value, `${field} must be a UUID`);
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(result)) {
-    throw protocolError(`${field} must be a UUID`);
-  }
-  return result;
+  return requireProtocolIndex(value, "Pi content index is invalid");
 }
 
 function requireString(value: unknown, message: string, allowEmpty = false): string {
-  if (
-    typeof value !== "string" ||
-    (!allowEmpty && value.length === 0) ||
-    Buffer.byteLength(value, "utf8") > PI_RPC_EVENT_STRING_MAX_BYTES
-  ) {
-    throw protocolError(message);
-  }
-  return value;
-}
-
-const PI_RPC_EVENT_STRING_MAX_BYTES = 8 * 1024 * 1024;
-
-function requireArray(value: unknown, message: string): readonly unknown[] {
-  if (!Array.isArray(value)) throw protocolError(message);
-  return value;
-}
-
-function requireRecord(value: unknown, message: string): Record<string, unknown> {
-  const result = record(value);
-  if (!result) throw protocolError(message);
-  return result;
-}
-
-function record(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
+  return requireProtocolString(value, message, allowEmpty, 8 * 1024 * 1024);
 }
 
 function toJsonValue(value: unknown): JsonValue {
-  assertJsonValue(value, "Pi event payload");
-  return value as JsonValue;
-}
-
-function protocolError(message: string): AgentProviderError {
-  return new AgentProviderError("provider_protocol_error", message);
+  return protocolJsonValue(value, "Pi event payload");
 }
 
 function piFailedStopMessage(stopReason: string): string {

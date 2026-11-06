@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import { RUNTIME_PROXY_TICKET_TTL_MS } from "@opentag/shared";
+import { RuntimeStoreCapacityError } from "./capacity-error.js";
 
 export interface RuntimeProxyTicketRecord {
   ticketHash: string;
@@ -16,7 +17,7 @@ export interface RuntimeProxyTicketStoreOptions {
   maxTickets?: number;
 }
 
-export class RuntimeProxyTicketStoreCapacityError extends Error {
+export class RuntimeProxyTicketStoreCapacityError extends RuntimeStoreCapacityError {
   constructor() {
     super("The runtime proxy ticket store is full");
     this.name = "RuntimeProxyTicketStoreCapacityError";

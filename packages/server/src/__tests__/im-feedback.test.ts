@@ -264,6 +264,34 @@ describe("IM offline notice", () => {
     expect(await h.store.reserveOfflineNotice(target)).toBeUndefined();
   });
 
+  it("starts a never-connected Computer's offline period when it was created, not at the epoch", async () => {
+    const h = await queued();
+    await setComputer(h, {
+      lastSeenAt: null,
+      currentInstanceId: null,
+      createdAt: new Date(clock.getTime() - 120_000),
+    });
+    const second = await h.delivery();
+    await db.database.transaction((tx) => createImFeedbackTarget(tx, second.frame.deliveryId, clock));
+    await h.park(second.frame.deliveryId, 300_000);
+    const [secondTarget] = await db.database
+      .select()
+      .from(imFeedbackTargets)
+      .where(eq(imFeedbackTargets.deliveryId, second.frame.deliveryId));
+    if (!secondTarget) throw new Error("Missing second target");
+
+    // A send from before this Computer existed belongs to no offline period of it.
+    await db.database
+      .update(imFeedbackTargets)
+      .set({ sendStartedAt: new Date(clock.getTime() - 86_400_000) })
+      .where(eq(imFeedbackTargets.deliveryId, h.frame.deliveryId));
+    expect(await h.store.reserveOfflineNotice(secondTarget)).toEqual(clock);
+
+    // Later input in the same outage still gets no second notice, whenever it was received.
+    await h.park(h.frame.deliveryId, 61_000);
+    expect(await h.store.reserveOfflineNotice(await h.target())).toBeUndefined();
+  });
+
   it("stays silent for a connected Computer, a Cloud Computer and a suspended Agent", async () => {
     const h = await queued();
     await setComputer(h, { lastSeenAt: new Date(clock.getTime() - 10_000), currentInstanceId: randomUUID() });
@@ -339,7 +367,7 @@ describe("durable IM feedback", () => {
     expect(target.messageFormat).toBe("text_v1");
     const text = renderFeedbackText(target, "https://example.test");
     expect(text).not.toContain("provider_failed");
-    expect(text.split("\n")).toHaveLength(3);
+    expect(text.split("\n\n")).toHaveLength(3);
   });
 
   it("reads the language of the input the target was created for", async () => {
@@ -405,6 +433,21 @@ describe("durable IM feedback", () => {
     if (!target) throw new Error("Missing claim");
     await h.store.settle(target, { reaction: "working" });
     expect((await h.target()).claimId).toBeNull();
+  });
+  it("repairs a cancelled task after an in-flight working reaction without creating a failure card", async () => {
+    const h = await fixture();
+    h.transport.reaction.mockImplementationOnce(async () => {
+      await h.finish("cancelled", "may_have_occurred");
+    });
+    await h.worker.runOnce();
+    expect(await h.target()).toMatchObject({
+      state: "completed",
+      appliedReaction: "none",
+      cardState: "none",
+      claimId: null,
+    });
+    expect(h.transport.reaction.mock.calls.map((args) => args[1])).toEqual(["working", "none"]);
+    expect(h.transport.post).not.toHaveBeenCalled();
   });
   it.each(["slack", "feishu"] as const)("has only start/end reaction changes for %s", async (provider) => {
     const h = await fixture(provider);
@@ -1090,7 +1133,7 @@ it.each(["reaction", "post"] as const)(
     const claim = vi.spyOn(h.store, "claim");
     h.transport[operation].mockRejectedValueOnce(new FeedbackCooldownStorageError(30_000));
     await h.worker.runOnce();
-    expect(claim).toHaveBeenCalledOnce();
+    expect((await Promise.all(claim.mock.results.map((result) => result.value))).filter(Boolean)).toHaveLength(1);
     expect(await h.target()).toMatchObject({
       cardState: "pending",
       cardMessageId: null,

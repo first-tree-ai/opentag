@@ -565,6 +565,24 @@ describe("Codex MCP gateway delivery", () => {
     expect(client.events.some((event) => event.startsWith("turn:"))).toBe(false);
   });
 
+  it("preserves the opaque HTTP gateway contract without applying Pi launch restrictions", async () => {
+    const { client, factory } = setup();
+    const url = "HTTP://Server.Example.test:80/custom?legacy=1#fragment";
+    const runtime = await factory.create(
+      createRequest([], {
+        provider: { mcpGateway: { url, token: "opaque-bearer", legacy: true } },
+      }),
+    );
+    try {
+      await runtime.prompt(prompt("opaque-http-gateway"));
+      expect(Object.values(client.last("thread/start")?.config as Record<string, unknown>)).toContainEqual(
+        expect.objectContaining({ url, http_headers: { Authorization: "Bearer opaque-bearer" } }),
+      );
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it("accepts a gateway carried by the Session configuration", async () => {
     const { client, factory } = setup();
     const runtime = await factory.create(createRequest([], { provider: { mcpGateway: { ...GATEWAY } } }));

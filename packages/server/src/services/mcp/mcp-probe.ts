@@ -149,6 +149,11 @@ export class McpProbe {
       );
       return result;
     } catch (error) {
+      // A local per-Account concurrency slot refusal never contacted the peer; let the caller retry
+      // rather than recording a false upstream probe failure.
+      if (error instanceof McpServiceError && error.detail?.cause === "concurrency_limit") {
+        throw error;
+      }
       /*
        * The probe API answers 200 whether or not the probe succeeded, and the upstream status never
        * reaches the response, so this line is the only place that shows what the Server really sent.

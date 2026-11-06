@@ -109,3 +109,8 @@ Use the same code/category/retryability/phase values for command failures. Prese
 redacted message to the user and a request or operation ID for support. Do not print the structured
 event as an unbounded stack trace. A non-zero exit status is a presentation decision and does not
 change the event's retryability.
+
+Successful command results pass through the same redaction before they are printed. A command whose
+answer is itself a redacted field name restores that one field explicitly: the `self schedule`
+commands that return a full Schedule print `prompt` exactly as stored, because a caller reads it and
+writes it back, and a redacted copy would overwrite the original.

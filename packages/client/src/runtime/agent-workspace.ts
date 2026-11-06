@@ -219,25 +219,7 @@ async function removeProvenManagedFile(
   if (!expectedHash) return;
   const quarantine = resolve(quarantineRoot, `${kind}-${expectedHash}.managed`);
   assertWithin(quarantineRoot, quarantine);
-  let stranded: string | undefined;
-  let strandedIsReadOnly = false;
-  try {
-    stranded = await readSecureFile(quarantine);
-    if (stranded !== undefined) strandedIsReadOnly = isReadOnlyRegularFile(await lstat(quarantine));
-  } catch (error) {
-    logger.debug(
-      { code: "quarantine_inspection_failed", error: String(error) },
-      "Agent workspace quarantine inspection failed",
-    );
-    await restoreQuarantinedEntry(quarantine, path);
-    throw new RuntimeStorageError("conflict", "A non-file Workspace entry was isolated during cleanup");
-  }
-  if (stranded !== undefined) {
-    if (sha256(stranded) !== expectedHash || !strandedIsReadOnly) {
-      await restoreQuarantinedEntry(quarantine, path);
-      throw new RuntimeStorageError("conflict", "A Workspace file changed while OpenTag isolated it for cleanup");
-    }
-    await removeDurableFile(quarantine);
+  if (await removeStrandedQuarantineFile(quarantine, path, expectedHash)) {
     return;
   }
   const content = await readSecureFile(path);
@@ -260,6 +242,41 @@ async function removeProvenManagedFile(
   }
   await syncDurableDirectory(dirname(path));
   await syncDurableDirectory(quarantineRoot);
+  await verifyIsolatedQuarantineFile(quarantine, path, originalIdentity, expectedHash);
+  await removeDurableFile(quarantine);
+}
+
+async function removeStrandedQuarantineFile(quarantine: string, path: string, expectedHash: string): Promise<boolean> {
+  let stranded: string | undefined;
+  let strandedIsReadOnly = false;
+  try {
+    stranded = await readSecureFile(quarantine);
+    if (stranded !== undefined) strandedIsReadOnly = isReadOnlyRegularFile(await lstat(quarantine));
+  } catch (error) {
+    logger.debug(
+      { code: "quarantine_inspection_failed", error: String(error) },
+      "Agent workspace quarantine inspection failed",
+    );
+    await restoreQuarantinedEntry(quarantine, path);
+    throw new RuntimeStorageError("conflict", "A non-file Workspace entry was isolated during cleanup");
+  }
+  if (stranded === undefined) {
+    return false;
+  }
+  if (sha256(stranded) !== expectedHash || !strandedIsReadOnly) {
+    await restoreQuarantinedEntry(quarantine, path);
+    throw new RuntimeStorageError("conflict", "A Workspace file changed while OpenTag isolated it for cleanup");
+  }
+  await removeDurableFile(quarantine);
+  return true;
+}
+
+async function verifyIsolatedQuarantineFile(
+  quarantine: string,
+  path: string,
+  originalIdentity: Stats,
+  expectedHash: string,
+): Promise<void> {
   let isolated: string | undefined;
   try {
     const isolatedIdentity = await lstat(quarantine);
@@ -287,7 +304,6 @@ async function removeProvenManagedFile(
     await restoreQuarantinedEntry(quarantine, path);
     throw new RuntimeStorageError("conflict", "A proven OpenTag-managed instruction file changed during cleanup");
   }
-  await removeDurableFile(quarantine);
 }
 
 function isReadOnlyRegularFile(identity: Stats): boolean {
@@ -394,7 +410,7 @@ function parseAgentWorkspaceState(value: unknown): ParsedAgentWorkspaceState {
     throw new RuntimeStorageError("invalid", "Agent workspace state fields are invalid");
   }
   const state = value as Record<string, unknown>;
-  if (state.schemaVersion === 1 || state.schemaVersion === 2) return parseLegacyState(state);
+  if (state.schemaVersion === 1 || state.schemaVersion === 2) return parseLegacyState(state, state.schemaVersion);
   if (state.schemaVersion !== 3) throw new RuntimeStorageError("invalid", "Agent workspace state version is invalid");
   assertExactFields(
     state,
@@ -402,15 +418,31 @@ function parseAgentWorkspaceState(value: unknown): ParsedAgentWorkspaceState {
       ? ["agentId", "layout", "managedFiles", "provider", "schemaVersion", "transition", "workspaceId"]
       : ["agentId", "layout", "provider", "schemaVersion", "transition", "workspaceId"],
   );
-  validateIdentityFields(state);
+  const identity = validateIdentityFields(state);
   if (state.layout !== "root" && state.layout !== "legacy-files") {
     throw new RuntimeStorageError("invalid", "Agent workspace layout is invalid");
   }
-  if (state.transition === "complete") return state as unknown as LocalAgentWorkspaceState;
+  if (state.transition === "complete") {
+    return {
+      ...identity,
+      schemaVersion: 3,
+      layout: state.layout,
+      transition: "complete",
+    };
+  }
   if (state.transition !== "pending" || state.layout !== "legacy-files") {
     throw new RuntimeStorageError("invalid", "Agent workspace transition is invalid");
   }
-  const managedFiles = state.managedFiles;
+  return {
+    ...identity,
+    schemaVersion: 3,
+    layout: "legacy-files",
+    transition: "pending",
+    managedFiles: parsePendingManagedFiles(state.managedFiles),
+  };
+}
+
+function parsePendingManagedFiles(managedFiles: unknown): PendingAgentWorkspaceState["managedFiles"] {
   if (
     typeof managedFiles !== "object" ||
     managedFiles === null ||
@@ -419,15 +451,22 @@ function parseAgentWorkspaceState(value: unknown): ParsedAgentWorkspaceState {
   ) {
     throw new RuntimeStorageError("invalid", "Agent workspace transition provenance is invalid");
   }
-  for (const hash of Object.values(managedFiles)) {
-    if (!RuntimeSha256Schema.safeParse(hash).success) {
-      throw new RuntimeStorageError("invalid", "Agent workspace transition hash is invalid");
-    }
+  const record = managedFiles as Record<string, unknown>;
+  const result: PendingAgentWorkspaceState["managedFiles"] = {};
+  if ("root" in record) {
+    const parsed = RuntimeSha256Schema.safeParse(record.root);
+    if (!parsed.success) throw new RuntimeStorageError("invalid", "Agent workspace transition hash is invalid");
+    result.root = parsed.data;
   }
-  return state as unknown as PendingAgentWorkspaceState;
+  if ("files" in record) {
+    const parsed = RuntimeSha256Schema.safeParse(record.files);
+    if (!parsed.success) throw new RuntimeStorageError("invalid", "Agent workspace transition hash is invalid");
+    result.files = parsed.data;
+  }
+  return result;
 }
 
-function parseLegacyState(state: Record<string, unknown>): LegacyAgentWorkspaceState {
+function parseLegacyState(state: Record<string, unknown>, schemaVersion: 1 | 2): LegacyAgentWorkspaceState {
   assertExactFields(state, [
     "agentConfigHash",
     "agentId",
@@ -438,21 +477,30 @@ function parseLegacyState(state: Record<string, unknown>): LegacyAgentWorkspaceS
     "schemaVersion",
     "workspaceId",
   ]);
-  validateIdentityFields(state);
+  const identity = validateIdentityFields(state);
+  const agentConfigHash = RuntimeSha256Schema.safeParse(state.agentConfigHash);
+  const managedInstructionsHash = RuntimeSha256Schema.safeParse(state.managedInstructionsHash);
   if (
     typeof state.appliedAgentRevisionSequence !== "number" ||
     !Number.isSafeInteger(state.appliedAgentRevisionSequence) ||
     state.appliedAgentRevisionSequence < 0 ||
     typeof state.appliedAgentRevisionId !== "string" ||
-    !RuntimeSha256Schema.safeParse(state.agentConfigHash).success ||
-    !RuntimeSha256Schema.safeParse(state.managedInstructionsHash).success
+    !agentConfigHash.success ||
+    !managedInstructionsHash.success
   ) {
     throw new RuntimeStorageError("invalid", "Agent workspace state values are invalid");
   }
-  return state as unknown as LegacyAgentWorkspaceState;
+  return {
+    ...identity,
+    schemaVersion,
+    appliedAgentRevisionSequence: state.appliedAgentRevisionSequence,
+    appliedAgentRevisionId: state.appliedAgentRevisionId,
+    agentConfigHash: agentConfigHash.data,
+    managedInstructionsHash: managedInstructionsHash.data,
+  };
 }
 
-function validateIdentityFields(state: Record<string, unknown>): void {
+function validateIdentityFields(state: Record<string, unknown>): AgentWorkspaceIdentity {
   if (
     typeof state.agentId !== "string" ||
     typeof state.workspaceId !== "string" ||
@@ -461,6 +509,11 @@ function validateIdentityFields(state: Record<string, unknown>): void {
   ) {
     throw new RuntimeStorageError("invalid", "Agent workspace identity values are invalid");
   }
+  return {
+    agentId: state.agentId,
+    workspaceId: state.workspaceId,
+    provider: state.provider,
+  };
 }
 
 function assertExactFields(state: Record<string, unknown>, fields: readonly string[]): void {

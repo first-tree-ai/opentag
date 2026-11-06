@@ -1,4 +1,5 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { RuntimeStoreCapacityError } from "./capacity-error.js";
 
 export interface RuntimeExecutionBearerRecord {
   tokenHash: string;
@@ -25,7 +26,7 @@ function hashToken(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
 }
 
-export class RuntimeExecutionBearerStoreCapacityError extends Error {
+export class RuntimeExecutionBearerStoreCapacityError extends RuntimeStoreCapacityError {
   constructor(message: string) {
     super(message);
     this.name = "RuntimeExecutionBearerStoreCapacityError";

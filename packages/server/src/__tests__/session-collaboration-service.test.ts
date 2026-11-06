@@ -99,6 +99,209 @@ describe("SessionCollaborationService", () => {
       await expect(fixture.service.notifyRunOutcome(noticeInput(fixture))).resolves.toBe("notified");
       expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
     });
+
+    it.each(["reconcile", "delivery"] as const)(
+      "answers retry before a slow %s, without starting duplicate attempts",
+      async (stage) => {
+        const fixture = serviceFixture();
+        const input = noticeInput(fixture);
+        const gate = deferred<void>();
+        const method =
+          stage === "reconcile" ? fixture.domain.requestReconcile : fixture.domain.requestSessionMessageDelivery;
+        const result = await method();
+        method.mockImplementationOnce(async () => {
+          await gate.promise;
+          return result;
+        });
+        method.mockClear();
+
+        await expect(fixture.service.notifyRunOutcomeInBackground(input)).resolves.toBe("retry");
+        await flush();
+        expect(method).toHaveBeenCalledOnce();
+        expect(fixture.sessions.recordMessageOutcome).not.toHaveBeenCalled();
+        await expect(fixture.service.notifyRunOutcomeInBackground(input)).resolves.toBe("retry");
+        expect(fixture.sessions.authorizeAndRecordMessage).toHaveBeenCalledOnce();
+        gate.resolve();
+        await flush();
+        expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledWith(
+          expect.objectContaining({ outcome: "accepted" }),
+        );
+
+        fixture.sessions.authorizeAndRecordMessage.mockResolvedValue({
+          ...fixture.attempt,
+          attemptCount: null,
+          message: { ...fixture.attempt.message, lastOutcome: "accepted" },
+        });
+        await expect(fixture.service.notifyRunOutcomeInBackground(input)).resolves.toBe("notified");
+        expect(method).toHaveBeenCalledOnce();
+        await fixture.service.close();
+      },
+    );
+
+    it("waits for the database and never dispatches after a failed or unknown commit", async () => {
+      const fixture = serviceFixture();
+      const input = noticeInput(fixture);
+      const gate = deferred<never>();
+      fixture.sessions.authorizeAndRecordMessage.mockReturnValueOnce(gate.promise);
+      const pending = fixture.service.notifyRunOutcomeInBackground(input);
+      await flush();
+      expect(fixture.domain.requestReconcile).not.toHaveBeenCalled();
+      gate.reject(new Error("COMMIT response lost"));
+      await expect(pending).resolves.toBe("retry");
+      expect(fixture.domain.requestReconcile).not.toHaveBeenCalled();
+      // A replay reconciles the same durable identity before any dispatch.
+      fixture.sessions.authorizeAndRecordMessage.mockResolvedValue({
+        ...fixture.attempt,
+        attemptCount: null,
+        message: { ...fixture.attempt.message, lastOutcome: "accepted" },
+      });
+      await expect(fixture.service.notifyRunOutcomeInBackground(input)).resolves.toBe("notified");
+      expect(fixture.domain.requestReconcile).not.toHaveBeenCalled();
+      await fixture.service.close();
+    });
+
+    it.each(["runtime_unavailable", "timeout", "write_failed"] as const)(
+      "keeps reporter custody after %s",
+      async (failure) => {
+        const fixture = serviceFixture();
+        const input = noticeInput(fixture);
+        if (failure === "runtime_unavailable") fixture.registry.currentInstanceId.mockReturnValue(undefined);
+        if (failure === "timeout")
+          fixture.domain.requestSessionMessageDelivery.mockRejectedValue(
+            new RuntimeDomainRequestError("timeout", "lost receipt"),
+          );
+        if (failure === "write_failed")
+          fixture.sessions.recordMessageOutcome.mockRejectedValue(new Error("write failed"));
+        await expect(fixture.service.notifyRunOutcomeInBackground(input)).resolves.toBe("retry");
+        await flush();
+        await expect(fixture.service.notifyRunOutcomeInBackground(input)).resolves.toBe("retry");
+        await fixture.service.close();
+        expect(fixture.sessions.authorizeAndRecordMessage).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it("bounds background work and leaves excess reports with their reporters", async () => {
+      const fixture = serviceFixture();
+      const gate = deferred<void>();
+      const ready = await fixture.domain.requestReconcile();
+      fixture.domain.requestReconcile.mockImplementation(async () => {
+        await gate.promise;
+        return ready;
+      });
+      fixture.domain.requestReconcile.mockClear();
+      await Promise.all(
+        Array.from({ length: 20 }, () => fixture.service.notifyRunOutcomeInBackground(noticeInput(fixture))),
+      );
+      expect(fixture.sessions.authorizeAndRecordMessage).toHaveBeenCalledTimes(16);
+      gate.resolve();
+      await flush();
+      await expect(fixture.service.notifyRunOutcomeInBackground(noticeInput(fixture))).resolves.toBe("retry");
+      await fixture.service.close();
+      expect(fixture.sessions.authorizeAndRecordMessage).toHaveBeenCalledTimes(17);
+    });
+
+    it("cancels a slow reconcile and drains its outcome write before closing", async () => {
+      const fixture = serviceFixture();
+      const input = noticeInput(fixture);
+      const write = deferred<boolean>();
+      fixture.sessions.recordMessageOutcome.mockReturnValueOnce(write.promise);
+      fixture.domain.requestReconcile.mockImplementation(
+        (...args: unknown[]) =>
+          new Promise((_, reject) => {
+            const signal = args[5] as AbortSignal;
+            signal.addEventListener("abort", () => reject(new RuntimeDomainRequestError("stopped", "stopping")), {
+              once: true,
+            });
+          }),
+      );
+      await fixture.service.notifyRunOutcomeInBackground(input);
+      await flush();
+      let closed = false;
+      const closing = fixture.service.close().then(() => {
+        closed = true;
+      });
+      await flush();
+      expect(closed).toBe(false);
+      expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
+      write.resolve(true);
+      await closing;
+      await expect(fixture.service.notifyRunOutcomeInBackground(input)).resolves.toBe("retry");
+      expect(fixture.sessions.authorizeAndRecordMessage).toHaveBeenCalledOnce();
+    });
+
+    it.each(["authorization", "assembly"] as const)(
+      "waits for pending %s at shutdown without sending a late frame",
+      async (stage) => {
+        const fixture = serviceFixture();
+        const gate = deferred<void>();
+        if (stage === "authorization") {
+          const authorize = fixture.sessions.authorizeAndRecordMessage.getMockImplementation();
+          fixture.sessions.authorizeAndRecordMessage.mockImplementationOnce(async (input) => {
+            await gate.promise;
+            return authorize?.(input);
+          });
+        } else {
+          fixture.assembler.assembleForSession.mockImplementationOnce(async () => {
+            await gate.promise;
+            return snapshot(fixture.source.agentId);
+          });
+        }
+        const reporting = fixture.service.notifyRunOutcomeInBackground(noticeInput(fixture));
+        await flush();
+        let closed = false;
+        const closing = fixture.service.close().then(() => {
+          closed = true;
+        });
+        await flush();
+        expect(closed).toBe(false);
+        gate.resolve();
+        await reporting;
+        await closing;
+        expect(fixture.domain.requestReconcile).not.toHaveBeenCalled();
+      },
+    );
+
+    it("does not wait for a Cloud target's cold start and passes shutdown cancellation to it", async () => {
+      const fixture = serviceFixture({ targetComputerKind: "cloud" });
+      const input = noticeInput(fixture);
+      fixture.cloud.deliver.mockImplementation(
+        (_input, _admission, signal) =>
+          new Promise((_, reject) => {
+            signal?.addEventListener("abort", () => reject(new Error("stopped")), { once: true });
+          }),
+      );
+      await expect(fixture.service.notifyRunOutcomeInBackground(input)).resolves.toBe("retry");
+      await flush();
+      expect(fixture.cloud.deliver).toHaveBeenCalledOnce();
+      expect(fixture.sessions.recordMessageOutcome).not.toHaveBeenCalled();
+      await fixture.service.close();
+      expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: "unreachable" }),
+      );
+    });
+
+    it("drains a receipt that resolves while only the collaboration service is closing", async () => {
+      const fixture = serviceFixture();
+      const receipt = deferred<void>();
+      const result = await fixture.domain.requestSessionMessageDelivery();
+      fixture.domain.requestSessionMessageDelivery.mockImplementationOnce(async () => {
+        await receipt.promise;
+        return result;
+      });
+      await expect(fixture.service.notifyRunOutcomeInBackground(noticeInput(fixture))).resolves.toBe("retry");
+      await flush();
+      let closed = false;
+      const closing = fixture.service.close().then(() => {
+        closed = true;
+      });
+      await flush();
+      expect(closed).toBe(false);
+      receipt.resolve();
+      await closing;
+      expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: "accepted" }),
+      );
+    });
   });
 
   it("returns an already accepted durable message without reconciling or delivering again", async () => {
@@ -340,6 +543,7 @@ function serviceFixture(
     attemptCount?: number | null;
     lastOutcome?: "accepted" | "unknown";
     targetSessionKind?: "channel" | "thread" | "internal";
+    targetComputerKind?: "local" | "cloud";
   } = {},
 ) {
   const sourceSessionId = randomUUID();
@@ -367,6 +571,7 @@ function serviceFixture(
       sourceSessionId,
       targetSessionId,
       targetComputerId,
+      targetComputerKind: options.targetComputerKind ?? "local",
       targetInstallationId,
       targetPlacementGeneration: 1,
       targetSessionKind: options.targetSessionKind ?? ("internal" as const),
@@ -433,7 +638,18 @@ function serviceFixture(
     supportsCapability: vi.fn().mockReturnValue(true),
   };
   const assembler = { assembleForSession: vi.fn().mockResolvedValue(snapshot(agentId)) };
+  const cloud = {
+    deliver: vi
+      .fn<
+        NonNullable<
+          import("../services/sessions/session-collaboration-service.js").SessionCollaborationServiceOptions["cloud"]
+        >["deliver"]
+      >()
+      .mockResolvedValue({ status: "accepted" }),
+  };
   return {
+    attempt,
+    cloud,
     assembler,
     domain,
     diagnosticLogger,
@@ -451,9 +667,22 @@ function serviceFixture(
       registry,
       sessions: sessions as never,
       logger,
+      cloud,
     }),
   };
 }
+
+function deferred<T = void>() {
+  let resolve: (value: T) => void = () => undefined;
+  let reject: (error: unknown) => void = () => undefined;
+  const promise = new Promise<T>((accept, fail) => {
+    resolve = accept;
+    reject = fail;
+  });
+  return { promise, resolve, reject };
+}
+
+const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 function sendRequest(fixture: ReturnType<typeof serviceFixture>): SessionCliSendRequest {
   return { messageId: fixture.messageId, targetSessionId: fixture.targetSessionId, message: "hello" };

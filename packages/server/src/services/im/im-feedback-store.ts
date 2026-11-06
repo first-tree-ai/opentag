@@ -198,6 +198,7 @@ async function offlinePeriodStart(
       kind: computers.kind,
       instanceId: computers.currentInstanceId,
       lastSeenAt: computers.lastSeenAt,
+      computerCreatedAt: computers.createdAt,
       disconnectedAt: computers.disconnectedAt,
       deletedAt: computers.deletedAt,
       agentStatus: agents.status,
@@ -226,7 +227,9 @@ async function offlinePeriodStart(
   const offline =
     row.disconnectedAt !== null || row.instanceId === null || lastSeenMs < now.getTime() - COMPUTER_PRESENCE_TIMEOUT_MS;
   if (!offline || now.getTime() - Math.max(row.receivedAt.getTime(), lastSeenMs) < OFFLINE_NOTICE_DELAY_MS) return;
-  return new Date(lastSeenMs);
+  // A Computer that never connected has been offline since it was created. This baseline must not depend on
+  // the input: a later message's receipt would exclude the earlier notice and repeat it within one outage.
+  return row.lastSeenAt ?? row.computerCreatedAt;
 }
 
 export class ImFeedbackStore {
@@ -235,7 +238,9 @@ export class ImFeedbackStore {
     readonly now: () => Date = () => new Date(),
   ) {}
 
-  async claim(): Promise<FeedbackTarget | undefined> {
+  async claim(
+    excluded: readonly Pick<FeedbackTarget, "bindingId" | "channelId" | "inputExternalId">[] = [],
+  ): Promise<FeedbackTarget | undefined> {
     return this.database.transaction(async (tx) => {
       const now = this.now();
       const [target] = await tx
@@ -245,6 +250,13 @@ export class ImFeedbackStore {
           and(
             lte(imFeedbackTargets.nextAttemptAt, now),
             or(isNull(imFeedbackTargets.claimExpiresAt), lte(imFeedbackTargets.claimExpiresAt, now)),
+            ...excluded.map((target) =>
+              or(
+                ne(imFeedbackTargets.bindingId, target.bindingId),
+                ne(imFeedbackTargets.channelId, target.channelId),
+                ne(imFeedbackTargets.inputExternalId, target.inputExternalId),
+              ),
+            ),
           ),
         )
         .orderBy(imFeedbackTargets.nextAttemptAt, imFeedbackTargets.id)

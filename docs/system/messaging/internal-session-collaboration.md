@@ -175,6 +175,20 @@ Server tells the Session that created it (`created_by_session_id`):
   terminal path (reason `session_message_steer_interrupted`), a completed Turn makes it succeed, and a message the
   provider never started returns to the FIFO with no report. Eligibility is unchanged, so a message steered into a
   visible Session's IM Turn produces no notice.
+  The report frame waits for notice authorization and persistence, then answers `retry` while the Server delivers
+  the notice in the background to either a Local or Cloud creator. This is a frame response, not an acknowledgement
+  of Server custody, Runtime receipt, or business completion: the Local reporter remains the durable retry owner.
+  Its next report receives `notified` only after the creator's acceptance is recorded, or `ignored` after a final
+  refusal. Final report acknowledgement therefore follows the reporter's existing backoff (initially 5 seconds,
+  capped at 5 minutes). Slow reconcile, delivery receipts, and Cloud cold starts do not hold the inbound frame open.
+  At most 16 Local outcome notices prepare or deliver concurrently; duplicates already in flight and excess reports
+  answer `retry` without starting another attempt. Each delivery retains normal authority fences and target inbox
+  ordering. Shutdown stops admission, signals transport cancellation and prevents late sends, then drains outstanding
+  preparation and outcome writes before the database closes. Runtime route shutdown closes the Domain owner and
+  rejects pending delivery waits; an unconfirmed delivery stays `unknown` rather than proving that the target never
+  accepted it. After a Server or daemon restart, the reporter replays its durable report under the current connection
+  with the same deterministic notice ID through the target's message deduplication. The Server's in-memory
+  tasks are an optimization, not a durable delivery queue; the existing one-day reporter limit still applies.
 - Cloud: the Runner's `session:message:settled` frame carries the failure `reason` (for example `turn_timeout`) on a
   collaboration-v3 channel. Every non-completed outcome (`failed`, `cancelled`, `unknown`) produces a notice. The
   Server makes up to three delivery attempts, 30 seconds apart. The notice's source authority is the settling

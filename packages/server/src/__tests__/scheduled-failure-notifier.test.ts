@@ -136,7 +136,10 @@ async function scheduledMessage(value: Seed): Promise<string> {
 }
 
 function harness(post = vi.fn(async () => "native-id")) {
-  const runOutcomes = { notifyRunOutcome: vi.fn(async () => "notified" as const) };
+  const runOutcomes = {
+    notifyRunOutcome: vi.fn(async () => "notified" as const),
+    notifyRunOutcomeInBackground: vi.fn(async () => "retry" as const),
+  };
   const logger = { warn: vi.fn() };
   const notifier = new ScheduledFailureNotifier({
     database: db.database,
@@ -249,7 +252,7 @@ describe("a scheduled Run that failed", () => {
       } as never,
       messenger: { postConversationText: vi.fn() },
       publicUrl: PUBLIC_URL,
-      runOutcomes: { notifyRunOutcome: vi.fn() },
+      runOutcomes: { notifyRunOutcome: vi.fn(), notifyRunOutcomeInBackground: vi.fn() },
     });
     await expect(broken.notifyRunOutcome(report(value, messageId))).resolves.toBe("retry");
 
@@ -321,6 +324,126 @@ describe("a scheduled Run that failed", () => {
     } as never);
     await expect(h.notifier.notifyRunOutcome(report(value, messageId))).resolves.toBe("notified");
     expect(h.post.mock.calls[0]?.[0 as never]).toMatchObject({ replyToExternalId: "om_latest" });
+  });
+});
+
+describe("a scheduled Run failure reported by a Local Computer", () => {
+  function deferredPost() {
+    const resolvers: { resolve(value: string): void; reject(error: unknown): void }[] = [];
+    const post = vi.fn(
+      () =>
+        new Promise<string>((resolve, reject) => {
+          resolvers.push({ resolve, reject });
+        }),
+    );
+    return { post, resolvers };
+  }
+
+  it("answers retry before the IM send finishes, sends once, and reports notified afterwards", async () => {
+    const value = await seed();
+    const messageId = await scheduledMessage(value);
+    const { post, resolvers } = deferredPost();
+    const h = harness(post);
+    const input = report(value, messageId);
+
+    // The send has not settled, so a frame that waited for it would never resolve here.
+    await expect(h.notifier.notifyRunOutcomeInBackground(input)).resolves.toBe("retry");
+    await vi.waitFor(() => expect(post).toHaveBeenCalledOnce());
+    await expect(h.notifier.notifyRunOutcomeInBackground(input)).resolves.toBe("retry");
+    expect(post).toHaveBeenCalledOnce();
+
+    resolvers[0]?.resolve("native-id");
+    await vi.waitFor(async () => expect(await h.notifier.notifyRunOutcomeInBackground(input)).toBe("notified"));
+    // A report whose answer was lost gets the same answer, not a second message.
+    await expect(h.notifier.notifyRunOutcomeInBackground(input)).resolves.toBe("notified");
+    expect(post).toHaveBeenCalledOnce();
+    expect(h.runOutcomes.notifyRunOutcomeInBackground).not.toHaveBeenCalled();
+  });
+
+  it("sends again on the next report after a retryable failure, and ends on a permanent one", async () => {
+    const value = await seed();
+    const messageId = await scheduledMessage(value);
+    const post = vi
+      .fn()
+      .mockRejectedValueOnce(new FeedbackProviderError("IM_FEEDBACK_RATE_LIMITED", true, false, 1_000))
+      .mockRejectedValueOnce(new FeedbackProviderError("IM_FEEDBACK_SEND_REJECTED", true, true));
+    const h = harness(post);
+    const input = report(value, messageId);
+
+    await h.notifier.notifyRunOutcomeInBackground(input);
+    await vi.waitFor(() => expect(post).toHaveBeenCalledOnce());
+    await vi.waitFor(async () => {
+      await h.notifier.notifyRunOutcomeInBackground(input);
+      expect(post).toHaveBeenCalledTimes(2);
+    });
+    await vi.waitFor(async () => expect(await h.notifier.notifyRunOutcomeInBackground(input)).toBe("ignored"));
+    expect(post).toHaveBeenCalledTimes(2);
+  });
+
+  it("limits concurrent sends and leaves the excess with the reporter", async () => {
+    const value = await seed();
+    const { post, resolvers } = deferredPost();
+    const h = harness(post);
+    const inputs = [];
+    for (let index = 0; index < 17; index += 1) inputs.push(report(value, await scheduledMessage(value)));
+    for (const input of inputs) await expect(h.notifier.notifyRunOutcomeInBackground(input)).resolves.toBe("retry");
+    await vi.waitFor(() => expect(post).toHaveBeenCalledTimes(16));
+
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(post).toHaveBeenCalledTimes(16);
+    for (const resolver of resolvers) resolver.resolve("native-id");
+    await h.notifier.close();
+  });
+
+  it("drains running sends on close and starts no new one", async () => {
+    const value = await seed();
+    const { post, resolvers } = deferredPost();
+    const h = harness(post);
+    await h.notifier.notifyRunOutcomeInBackground(report(value, await scheduledMessage(value)));
+    await vi.waitFor(() => expect(post).toHaveBeenCalledOnce());
+
+    let closed = false;
+    const closing = h.notifier.close().then(() => {
+      closed = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(closed).toBe(false);
+    resolvers[0]?.resolve("native-id");
+    await closing;
+
+    await expect(h.notifier.notifyRunOutcomeInBackground(report(value, await scheduledMessage(value)))).resolves.toBe(
+      "retry",
+    );
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(post).toHaveBeenCalledOnce();
+  });
+
+  it("routes unscheduled reports to the collaboration service's background path, not its synchronous one", async () => {
+    const value = await seed();
+    const h = harness();
+    await expect(h.notifier.notifyRunOutcomeInBackground(report(value, randomUUID()))).resolves.toBe("retry");
+    expect(h.runOutcomes.notifyRunOutcomeInBackground).toHaveBeenCalledOnce();
+    expect(h.runOutcomes.notifyRunOutcome).not.toHaveBeenCalled();
+    expect(h.post).not.toHaveBeenCalled();
+  });
+
+  it("gives a final answer without a send for a cancelled Run or a stale placement", async () => {
+    const value = await seed();
+    const messageId = await scheduledMessage(value);
+    const h = harness();
+    await expect(
+      h.notifier.notifyRunOutcomeInBackground(
+        report(value, messageId, { outcome: "cancelled", reason: "turn_cancelled" }),
+      ),
+    ).resolves.toBe("ignored");
+    await expect(
+      h.notifier.notifyRunOutcomeInBackground(
+        report(value, messageId, {
+          source: { computerId: value.computerId, connectionInstanceId: randomUUID(), placementGeneration: 2 },
+        }),
+      ),
+    ).resolves.toBe("ignored");
+    expect(h.post).not.toHaveBeenCalled();
   });
 });
 

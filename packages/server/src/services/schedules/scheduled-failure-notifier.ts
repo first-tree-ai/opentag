@@ -9,6 +9,7 @@ import type {
   RunOutcomeNoticeInput,
   RunOutcomeNoticeStatus,
   RunOutcomeNotifier,
+  SessionCollaborationService,
 } from "../sessions/session-collaboration-service.js";
 import { runOutcomeNoticeMessageId } from "../sessions/session-run-outcome-notice.js";
 import { formatScheduleLocal } from "./calculator.js";
@@ -21,9 +22,11 @@ import { scheduleDetailUrl } from "./service.js";
  * finish: a plain message from the Session's own Bot, in the Session's own chat or thread.
  *
  * It writes nothing to the database. A failed Run is retried by its durable reporter, which
- * resends the report while this answers `retry`. A missed occurrence has no reporter, so it gets a
- * few attempts in this process; a Server stop or a long IM outage loses that message, and the
- * schedule's Web summary still shows the miss.
+ * resends the report while this answers `retry`. A Local report frame never waits for the IM send:
+ * it answers `retry`, the send runs in bounded background work, and a later report gets the result.
+ * Cloud settlement waits for the answer, as it does for creator notices. A missed occurrence has no
+ * reporter, so it gets a few attempts in this process; a Server stop or a long IM outage loses that
+ * message, and the schedule's Web summary still shows the miss.
  */
 
 /** The occurrence facts a failure message displays and routes by. */
@@ -147,6 +150,16 @@ export function renderMiss(
 const MISS_SEND_ATTEMPTS = 3;
 const MISS_RETRY_DEFAULT_MS = 5_000;
 const MISS_RETRY_MAX_MS = 30_000;
+/** Matches the Local creator notices' limit: excess reports stay with their durable reporter. */
+const MAX_BACKGROUND_SENDS = 16;
+/** Enough to answer every report still in its retry backoff; a forgotten one may send again. */
+const MAX_REMEMBERED_RESULTS = 1024;
+
+interface ScheduledRunNotice {
+  requestId: string;
+  sessionId: string;
+  text: string;
+}
 
 type SendResult = { status: "sent" | "dropped" } | { status: "retry"; retryAfterMs?: number };
 
@@ -156,34 +169,87 @@ export interface ScheduledFailureNotifierOptions {
   messenger: Pick<ImFeedbackMessenger, "postConversationText">;
   publicUrl: string;
   /** Reports for everything that is not a scheduled message on a visible Session. */
-  runOutcomes: RunOutcomeNotifier;
+  runOutcomes: Pick<SessionCollaborationService, "notifyRunOutcome" | "notifyRunOutcomeInBackground">;
   retryDelayMs?: number;
 }
 
 export class ScheduledFailureNotifier implements RunOutcomeNotifier, ScheduledMissNotices {
   readonly #options: ScheduledFailureNotifierOptions;
+  readonly #backgroundSends = new Map<string, Promise<void>>();
+  readonly #results = new Map<string, RunOutcomeNoticeStatus>();
+  #closing = false;
 
   constructor(options: ScheduledFailureNotifierOptions) {
     this.#options = options;
   }
 
+  /** The Cloud entry: its settlement journal and bounded attempts wait for this answer. */
   async notifyRunOutcome(input: RunOutcomeNoticeInput): Promise<RunOutcomeNoticeStatus> {
+    const scheduled = await this.#scheduledNotice(input);
+    if (scheduled === undefined) return this.#options.runOutcomes.notifyRunOutcome(input);
+    if (typeof scheduled === "string") return scheduled;
+    return this.#runFailureStatus(await this.#send(scheduled.sessionId, scheduled.text, scheduled.requestId));
+  }
+
+  /** The Local entry. See the file comment; the reporter keeps its durable report throughout. */
+  async notifyRunOutcomeInBackground(input: RunOutcomeNoticeInput): Promise<RunOutcomeNoticeStatus> {
+    const scheduled = await this.#scheduledNotice(input);
+    if (scheduled === undefined) return this.#options.runOutcomes.notifyRunOutcomeInBackground(input);
+    if (typeof scheduled === "string") return scheduled;
+    const remembered = this.#results.get(scheduled.requestId);
+    if (remembered) return remembered;
+    if (
+      !this.#closing &&
+      !this.#backgroundSends.has(scheduled.requestId) &&
+      this.#backgroundSends.size < MAX_BACKGROUND_SENDS
+    ) {
+      const send = this.#sendInBackground(scheduled).finally(() => this.#backgroundSends.delete(scheduled.requestId));
+      this.#backgroundSends.set(scheduled.requestId, send);
+    }
+    return "retry";
+  }
+
+  /** Stop starting background sends and wait for the running ones, each bounded by its provider call. */
+  async close(): Promise<void> {
+    this.#closing = true;
+    await Promise.all(this.#backgroundSends.values());
+  }
+
+  async #sendInBackground(notice: ScheduledRunNotice): Promise<void> {
+    const status = this.#runFailureStatus(await this.#send(notice.sessionId, notice.text, notice.requestId));
+    if (status === "retry") return;
+    if (this.#results.size >= MAX_REMEMBERED_RESULTS) {
+      const oldest = this.#results.keys().next().value;
+      if (oldest !== undefined) this.#results.delete(oldest);
+    }
+    this.#results.set(notice.requestId, status);
+  }
+
+  #runFailureStatus(sent: SendResult): RunOutcomeNoticeStatus {
+    if (sent.status === "sent") return "notified";
+    return sent.status === "retry" ? "retry" : "ignored";
+  }
+
+  /** The notice for a report, a final answer without a send, or undefined when it is not scheduled. */
+  async #scheduledNotice(
+    input: RunOutcomeNoticeInput,
+  ): Promise<ScheduledRunNotice | RunOutcomeNoticeStatus | undefined> {
     let scheduled: { occurrence: ScheduledOccurrence; authorized: boolean } | undefined;
     try {
       scheduled = await this.#readScheduledRun(input);
     } catch {
       return "retry";
     }
-    if (!scheduled) return this.#options.runOutcomes.notifyRunOutcome(input);
+    if (!scheduled) return undefined;
     // A stopped Run was stopped by someone; only the reporting placement may speak for the Session.
     if (input.outcome === "cancelled" || !scheduled.authorized) return "ignored";
-    const text = renderRunFailure(scheduled.occurrence, input.outcome, input.reason, this.#options.publicUrl);
-    // Not the message id: that identifies this occurrence's earlier "may not have run" notice, and
-    // Feishu would drop this failure as a repeat of it.
-    const requestId = runOutcomeNoticeMessageId(input.childSessionId, input.messageId);
-    const sent = await this.#send(scheduled.occurrence.targetSessionId, text, requestId);
-    if (sent.status === "sent") return "notified";
-    return sent.status === "retry" ? "retry" : "ignored";
+    return {
+      // Not the message id: that identifies this occurrence's earlier "may not have run" notice, and
+      // Feishu would drop this failure as a repeat of it.
+      requestId: runOutcomeNoticeMessageId(input.childSessionId, input.messageId),
+      sessionId: scheduled.occurrence.targetSessionId,
+      text: renderRunFailure(scheduled.occurrence, input.outcome, input.reason, this.#options.publicUrl),
+    };
   }
 
   async notifyMissed(

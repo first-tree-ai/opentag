@@ -92,7 +92,10 @@ keeps recurring posts every time, as it would for repeated human messages.
 Delivery is best effort:
 
 - A failed Run uses the Client's or Runner's existing outcome report. The Server answers `retry` while the send can safely
-  be repeated. Feishu drops a repeat of the same notice through its request `uuid`, which differs from the occurrence's
+  be repeated. A Local report frame does not wait for the send: it answers `retry`, at most 16 sends run in the background,
+  and a later report receives the result, following the same backoff as
+  [creator notices](internal-session-collaboration.md). The result is kept in memory only, so a Server restart can
+  repeat the send. Shutdown starts no new send and waits for running ones. Cloud settlement waits for the answer. Feishu drops a repeat of the same notice through its request `uuid`, which differs from the occurrence's
   "may not have run" notice, so a hand-off that was in doubt and then failed posts both. A lost report acknowledgement can
   duplicate the message on Slack. A Feishu thread is reached by replying to its latest known message that was not
   recalled; with none known, the message is dropped rather than posted to the chat.

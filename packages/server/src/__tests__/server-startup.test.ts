@@ -50,6 +50,7 @@ const state = vi.hoisted(() => ({
   schedulerStart: vi.fn(),
   schedulerStop: vi.fn(),
   domainOptions: undefined as unknown,
+  notifyRunOutcomeInBackground: vi.fn().mockResolvedValue("retry"),
   issueRuntimeCredentialGrant: vi.fn(),
   devAuthArgs: undefined as unknown,
   slackAdapterOptions: undefined as unknown,
@@ -230,7 +231,14 @@ vi.mock("../services/sessions/index.js", () => ({
       return state.sessionCliPrepareReconcile(computerId, connectionInstanceId, request);
     }
   },
-  SessionCollaborationService: class {},
+  SessionCollaborationService: class {
+    notifyRunOutcomeInBackground(input: unknown) {
+      return state.notifyRunOutcomeInBackground(input);
+    }
+    close() {
+      state.events.push("outcome-notices:close");
+    }
+  },
   SessionService: class {},
   SessionServiceError: class extends Error {},
 }));
@@ -341,7 +349,19 @@ vi.mock("../services/setup/index.js", () => ({
   AccountSetupService: class {},
 }));
 vi.mock("../services/schedules/index.js", () => ({
-  ScheduledFailureNotifier: class {},
+  // Delegates like the real one for an unscheduled report, so these tests still prove the Local route.
+  ScheduledFailureNotifier: class {
+    readonly #runOutcomes: { notifyRunOutcomeInBackground(input: unknown): Promise<string> };
+    constructor(options: { runOutcomes: { notifyRunOutcomeInBackground(input: unknown): Promise<string> } }) {
+      this.#runOutcomes = options.runOutcomes;
+    }
+    notifyRunOutcomeInBackground(input: unknown) {
+      return this.#runOutcomes.notifyRunOutcomeInBackground(input);
+    }
+    close() {
+      state.events.push("scheduled-failures:close");
+    }
+  },
   ScheduleService: class {},
   ScheduleServiceError: class extends Error {},
   ScheduleScheduler: class {
@@ -701,9 +721,11 @@ describe("Server startup", () => {
     await app.close();
     // The schedule scanner stops first: no new claims and no late hand-off frames once the
     // Runtime and the database begin their own shutdown.
-    expect(state.events.slice(-8)).toEqual([
+    expect(state.events.slice(-10)).toEqual([
       "app:close",
       "scheduler:stop",
+      "outcome-notices:close",
+      "scheduled-failures:close",
       "worker:stop",
       "inbox:close",
       "platform:close",
@@ -711,6 +733,29 @@ describe("Server startup", () => {
       "feishu-connections:stop",
       "sql:end",
     ]);
+  });
+
+  it("routes Local Run outcome frames through the background notifier", async () => {
+    await startServer();
+    const frame = {
+      targetSessionId: "child",
+      messageId: "message",
+      outcome: "timed_out",
+      reason: "turn_timeout",
+      placementGeneration: 3,
+    };
+    const context = { computerId: "computer", instanceId: "instance" };
+    const handler = (
+      state.domainOptions as { onSessionMessageOutcome(frame: unknown, context: unknown): Promise<string> }
+    ).onSessionMessageOutcome;
+    await expect(handler(frame, context)).resolves.toBe("retry");
+    expect(state.notifyRunOutcomeInBackground).toHaveBeenCalledWith({
+      childSessionId: "child",
+      messageId: "message",
+      outcome: "timed_out",
+      reason: "turn_timeout",
+      source: { computerId: "computer", connectionInstanceId: "instance", placementGeneration: 3 },
+    });
   });
 
   it("wires credential rotation, reconcile preparation, and Agent session stop into the runtime", async () => {
@@ -872,9 +917,11 @@ describe("Server startup", () => {
     expect(app.close).toHaveBeenCalledTimes(1);
     expect(state.events).not.toContain("ready:listen");
     expect(state.events).not.toContain("prewarm:start");
-    expect(state.events.slice(-9)).toEqual([
+    expect(state.events.slice(-11)).toEqual([
       "app:close",
       "scheduler:stop",
+      "outcome-notices:close",
+      "scheduled-failures:close",
       "worker:stop",
       "inbox:close",
       "platform:close",

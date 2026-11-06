@@ -3,6 +3,7 @@ import {
   AGENT_SLUG_CHARACTERS,
   contextTreeName,
   contextTreeSelector,
+  SESSION_DELIVERY_FAILURE_NOTICE_HEADER,
   SESSION_RUN_OUTCOME_NOTICE_HEADER,
 } from "@opentag/shared";
 import type { ContextTreeResult, ContextTreeStatus as ManagedContextTreeStatus } from "./context-tree-connections.js";
@@ -231,7 +232,7 @@ function renderSessionCollaboration(context: ManagedSessionContext): readonly st
     `- ${context.cliCommand} session create --message <task>`,
     `- ${context.cliCommand} session send <target-session-id> --message <text>`,
     `- ${context.cliCommand} session list`,
-    "A result of `unreachable` with code `client_busy` means the target Client is briefly not admitting new work, for example during an upgrade. The message was not delivered and nothing retries it for you: send it again shortly with `--message-id` set to the returned message ID.",
+    `A result of \`accepted\` from \`session send\` or \`session create\` means openTag has the message. If the target's Client is briefly unavailable, for example during an upgrade, openTag keeps the message and delivers it in order when the Client is back, so do not send it again. If it can never be delivered, you get a message that begins with "${SESSION_DELIVERY_FAILURE_NOTICE_HEADER}".`,
     `Each Run of an internal Session is stopped when its time budget runs out; the child keeps its conversation, but the interrupted work does not finish on its own. When you create one, estimate how long the task needs and pass \`--max-duration-ms\` with headroom: for example 4 hours (14400000) for coding, debugging, or test runs, up to the 24-hour maximum (86400000) for very long work. Without it, the Session gets the larger of 2 hours and this Agent's configured budget.`,
     context.environment === "cloud"
       ? "Your source Session identity is supplied by this execution. Do not copy or persist its temporary proof."

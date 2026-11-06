@@ -180,9 +180,9 @@ export class SessionMessageInbox {
     this.#turnPlan = options.turnPlan;
     this.#imCredentialGrantVersion = options.imCredentialGrantVersion;
     this.#logger = options.logger ?? createLogger("session-message-inbox");
-    this.#maxQueuedPerSession = positive(options.maxQueuedPerSession ?? 64, "maxQueuedPerSession");
-    this.#maxQueuedTotal = positive(options.maxQueuedTotal ?? 256, "maxQueuedTotal");
-    this.#maxRememberedMessages = positive(options.maxRememberedMessages ?? 512, "maxRememberedMessages");
+    this.#maxQueuedPerSession = positive(options.maxQueuedPerSession ?? 256, "maxQueuedPerSession");
+    this.#maxQueuedTotal = positive(options.maxQueuedTotal ?? 1024, "maxQueuedTotal");
+    this.#maxRememberedMessages = positive(options.maxRememberedMessages ?? 2048, "maxRememberedMessages");
     this.#metrics = options.metrics;
     this.#now = options.now ?? Date.now;
     this.#onFailure = options.onFailure;

@@ -26,7 +26,8 @@ import { type ScheduleClock, scheduleDatabaseClock, scheduleDetailUrl } from "./
  * loop, so a Cloud cold start never blocks the next scan. When no slot is free the scan does not
  * claim deliverable rows (they are neither locked nor advanced early), but still skips rows that
  * are already expired. One accepted hand-off releases its slot immediately; the scheduler never
- * waits for business completion and never replays after a restart.
+ * waits for business completion. A dispatch itself never replays after a restart; a Local occurrence
+ * the Client provably never got is held and redelivered by SessionHeldDeliveryWorker.
  */
 
 /** The RFC 9562 URL namespace: the schedule message id derives from the occurrence identity. */

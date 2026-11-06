@@ -187,7 +187,9 @@ function makeFixture(
       if (capability === "runtime.imCredentialGrant") return 2;
       return undefined;
     }),
-    supportsCapability: vi.fn(() => true),
+    supportsCapability: vi.fn(
+      (_computerId: string, _instanceId: string, capability: string) => capability !== "runtime.sessionRecovery",
+    ),
   };
   const cloud = { deliver: vi.fn(async () => ({ status: "accepted" as const })) };
   const logger = { error: vi.fn() };

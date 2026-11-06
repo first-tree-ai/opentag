@@ -140,13 +140,14 @@ import {
 import { SandboxIdleReclaimer } from "./services/sandboxes/idle-reclaimer.js";
 import { SandboxService } from "./services/sandboxes/index.js";
 import type { SandboxAllocationReconciliation } from "./services/sandboxes/sandbox-runner-service.js";
-import { ScheduleScheduler, ScheduleService } from "./services/schedules/index.js";
+import { ScheduleScheduler, ScheduleService, scheduleDetailUrl } from "./services/schedules/index.js";
 import {
   type RunOutcomeNotifier,
   SessionCliProofService,
   SessionCollaborationService,
   SessionService,
 } from "./services/sessions/index.js";
+import { SessionHeldDeliveryWorker } from "./services/sessions/session-held-delivery-worker.js";
 import { AccountSetupService } from "./services/setup/index.js";
 import { S3SkillObjectStore, SkillObjectGc, SkillPresetService, SkillService } from "./services/skills/index.js";
 import { RemoteSkillService } from "./services/skills/source/remote-skill-service.js";
@@ -970,6 +971,7 @@ export async function startServer(): Promise<void> {
     const slackWorkingStore = new SlackWorkingStore(database);
     // Bound after the collaboration service exists; the service itself depends on this owner.
     let runOutcomeNotifier: RunOutcomeNotifier | undefined;
+    let sessionHeldDeliveryWorker: SessionHeldDeliveryWorker | undefined;
     // Late-bound like the notifier: recovery schedules its reconcile through this same owner.
     let recoveryDomain: RuntimeDomainOwner | undefined;
     const sessionRecovery = new SessionRecoveryService({
@@ -1226,7 +1228,15 @@ export async function startServer(): Promise<void> {
       sessions: sessionService,
       cloud: cloudSessionOwner,
       logger: serviceLogger("session-collaboration"),
+      scheduleDetailUrl: (agentId, scheduleId) => scheduleDetailUrl(config.publicUrl, agentId, scheduleId),
     });
+    sessionHeldDeliveryWorker = new SessionHeldDeliveryWorker({
+      collaboration: sessionCollaborationService,
+      sessions: sessionService,
+      registry,
+      logger: serviceLogger("session-collaboration"),
+    });
+    sessionCollaborationService.setHeldListener((computerId) => sessionHeldDeliveryWorker?.markHeld(computerId));
     runOutcomeNotifier = sessionCollaborationService;
     cloudSessionOwner?.setRunOutcomeNotifier(sessionCollaborationService);
     const imDeliveryLogger = serviceLogger("im-delivery");
@@ -1297,6 +1307,7 @@ export async function startServer(): Promise<void> {
       shutdown.abort();
       stopping ??= startClosingServerResources([
         ["schedule scheduler", () => scheduleScheduler.stop()],
+        ["Session held delivery worker", () => sessionHeldDeliveryWorker?.stop()],
         ["channel target poller", () => channelTargetPoller.stop()],
         ["sandbox idle reclaimer", () => sandboxIdleReclaimer?.stop()],
         ["IM delivery worker", () => imDeliveryWorker.stop()],
@@ -1460,6 +1471,7 @@ export async function startServer(): Promise<void> {
         // offline backoff can never delay work behind a live runtime.
         onRegistered: async ({ computerId }) => {
           await imDeliveryWorker?.notifyComputerReady(computerId);
+          sessionHeldDeliveryWorker?.notifyComputerReady(computerId);
         },
         channelTarget: () => channelTargetPoller.get(),
       },
@@ -1544,6 +1556,7 @@ export async function startServer(): Promise<void> {
     slackWorkingWorker.start();
     imFeedbackWorker.start();
     scheduleScheduler.start();
+    sessionHeldDeliveryWorker.start();
     sandboxIdleReclaimer?.start();
     mcpRefreshWorker.start();
     skillRuntime.gc?.start();

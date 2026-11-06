@@ -796,6 +796,9 @@ export const SessionMessageRunOutcomeSchema = z.enum(["timed_out", "failed", "ca
  * Managed instructions describe notices by this exact header, so both sides share one constant.
  */
 export const SESSION_RUN_OUTCOME_NOTICE_HEADER = "[openTag notice] Internal Session Run did not complete";
+
+/** The first line of the Server's notice that an accepted Session message could not be delivered. */
+export const SESSION_DELIVERY_FAILURE_NOTICE_HEADER = "[openTag notice] Session message was not delivered";
 /** Stable machine-readable reason, e.g. `turn_timeout`; never free text or provider output. */
 export const SessionMessageRunOutcomeReasonSchema = z.string().regex(/^[a-z][a-z0-9_]{0,63}$/);
 

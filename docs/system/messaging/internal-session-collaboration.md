@@ -38,8 +38,9 @@ the daemon user's files.
 
 `session create` atomically creates an internal child Session and its first message. `session send` addresses an
 existing Session in the same Agent and conversation scope. Both accept an optional `--message-id` for an explicit retry;
-reuse the same ID and identical semantic input after an uncertain result. `accepted` means the target accepted the
-message into its bounded FIFO, not that the task completed. On a Local Computer, a message whose target Session is
+reuse the same ID and identical semantic input after an uncertain result. `accepted` means openTag has the message: the
+target took it into its bounded FIFO, or the Server is holding it for a Local Client (see
+[Held delivery](#held-delivery)). It does not mean the task completed. On a Local Computer, a message whose target Session is
 running a Turn on a steer-capable runtime is steered into that Turn instead of waiting for it to end. Runtime acceptance
 is not delivery: the durable record stays `running` until that Turn ends. It becomes `succeeded` when the Turn completed;
 returns to the FIFO when the provider reports that it never started the input (Claude Code `command_lifecycle`), so the
@@ -60,17 +61,9 @@ conversation-kind and thread scope enter this lock chain; foreign-scope targets 
 an unlocked read. Create retries first read the immutable target hint for that message and creator;
 the later message lock and input-conflict checks remain authoritative. There is no automatic database retry.
 
-A temporary refusal returns `unreachable` with its cause as the code. `client_busy` means the Client is not admitting new
-work: an upgrade is switching over, the Client is stopping, or the bounded FIFO is full. The Cloud Runner reports the same
-code. `session_busy` and `agent_busy` map to their own codes, though the Local inbox does not return them today. Messages
-recorded before this split keep `capacity`.
-
-The Server does not hold or replay a refused message (decision by yuezengwu, 2026-11-05,
-[#1327](https://github.com/first-tree-ai/opentag/issues/1327)). The Client keeps the upgrade switch window as small as it
-can instead. A sender retries with the same `--message-id`, and the inbox evaluates that replay again rather than answering
-from memory, so the message runs once admission reopens. A permanent rejection stays rejected on replay. A scheduled
-message has no sender to retry it, so one refused in that window stays `unreachable` and the next occurrence is the next
-chance; this is an accepted cost. The Client logs every refused Session message with its reason.
+A Cloud target has no held delivery, so a temporary refusal returns `unreachable` with its cause as the code:
+`client_busy` when the Runner cannot queue more work, for example. A Local Client older than `runtime.sessionRecovery`
+answers the same way. Messages recorded before the code was split keep `capacity`.
 
 `session list` returns direct children by default, ordered by recent message activity. Pages default to 20 items and
 are capped at 100; `--cursor` continues a page, `--recursive` includes descendants, `--since` filters recent activity,
@@ -143,6 +136,51 @@ and cleanup share one serial lifecycle per Session: a replacement waits for olde
 an older token cannot remove the replacement's context or files. A Run that never prepared credentials does not perform
 Session-wide cleanup. Other Sessions prepare independently.
 An older grant without outbox context still leaves visible Session messages queued until the Turn ends.
+
+## Held delivery
+
+Direction from the 2026-11-06 team meeting
+([#1327](https://github.com/first-tree-ai/opentag/issues/1327)). A sender should not have to retry because a Local
+Client is upgrading, restarting or full.
+
+- **Who retries.** Once the Client accepts a message, the Client owns its retries and reports a failure to the Server,
+  which tells the sender. Before that, the Server keeps the message; it does not retry without limit.
+- **Held state.** A Local `session send` or `session create` tries the Client once and waits at most 5 seconds, so a Client
+  that does not answer cannot run into the CLI's request timeout. Past that, the attempt continues in the background and a
+  failure it finds later reaches the sender as a notice. On a failure a redelivery can overcome
+  (`client_busy`, `session_busy`, `agent_busy`, no connection, a Session that is not ready, a lost or timed-out request) the
+  message row becomes `last_outcome = unknown`, `last_error_code = delivery_held`, and the sender gets `accepted`.
+  A failed final admission (the sender's connection was replaced, the Agent suspended, or the binding disabled) is an
+  authority fence, not a Client outage, so it still answers `unreachable`. There is no separate "pending" status, and no
+  schema change. The row is never written as `accepted` while held,
+  because execution authority reads that value as custody. A permanent rejection on the first attempt is still answered
+  directly as `rejected`.
+- **Recovery.** A Client registering triggers delivery, again 5 and 20 seconds later because its own
+  `session:recover` work finishes after it registers. Every 60 seconds the Server also visits connected Computers that hold
+  messages, which covers recovery without a reconnect, such as a failed upgrade reopening admission. A redelivery
+  re-assembles the runtime, sends a ready reconcile, and proves the target's current authority. It does not check the
+  sender's connection, which may have restarted.
+- **Order.** Each target's held messages go oldest first, one at a time, and stop at the first refusal. A new message
+  to a target with an older held message joins the queue without a frame.
+- **Duplicates.** A redelivery bumps `attempt_count` and keeps the held code until a final answer is written, so a Server
+  that stops midway delivers again. The Client deduplicates by message ID, and answers a replay of a refused message
+  by evaluating it again. A Client older than that fix answered with a false `accepted`, so a refusal from a connected
+  Client is held only once it has negotiated `runtime.sessionRecovery`, which shipped just before the fix.
+- **Expiry and notices.** A held message older than 24 hours (`SESSION_MESSAGE_HELD_TTL_MS`, the IM ambient delivery TTL)
+  ends as `unreachable / delivery_expired`. A sweep every 10 minutes applies this and finds held Computers after a
+  Server restart. It is a sequential scan of `session_messages`, because `last_error_code` has no index. A held message
+  that ends in failure produces one notice to its sender, from the target, starting with
+  `[openTag notice] Session message was not delivered` (`SESSION_DELIVERY_FAILURE_NOTICE_HEADER`), under a deterministic ID.
+  The notice is held like any message. A failed notice is only logged, so two Sessions never exchange notices. A sender
+  that ended or is not on a Local Computer gets no notice, and that is logged.
+- **Scheduled messages.** A Local occurrence that provably never reached the Client is held the same way, as an exception
+  to the one-shot hand-off. An `unknown` hand-off is not retried. Once the next occurrence is claimed, the schedule is
+  edited or paused, or the message expires, the held occurrence ends as `unreachable` (`delivery_superseded` or
+  `delivery_expired`) and is never delivered late. The schedule's latest summary shows `unknown / delivery_held` meanwhile.
+- **Client queue.** The inbox FIFO is 256 per Session and 1024 in total, so a Client rarely refuses for a full queue. When
+  it does, the refusal is an ordinary `client_busy` and the Server holds the message.
+- **Not covered.** Cloud targets keep their own Runner queue and retry contract. IM delivery already persists each
+  message and makes it due on registration; it keeps its 30-second retry while a connected Client refuses.
 
 ## Run outcome notices
 

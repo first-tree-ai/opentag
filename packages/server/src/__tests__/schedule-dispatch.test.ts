@@ -41,6 +41,11 @@ import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.j
  */
 
 const T0 = new Date("2026-09-28T01:00:00.000Z");
+const EVERY_MINUTE = {
+  kind: "every",
+  intervalSeconds: 60,
+  anchorAt: new Date(T0.getTime() - 60_000).toISOString(),
+} as const;
 const PUBLIC_URL = "https://opentag.example.com";
 
 let db: UnitDatabase;
@@ -268,7 +273,9 @@ function makeStack(
       if (capability === RUNTIME_CAPABILITY.imCredentialGrant) return 2;
       return undefined;
     }),
-    supportsCapability: vi.fn(() => true),
+    supportsCapability: vi.fn(
+      (_computerId: string, _instanceId: string, capability: string) => capability !== "runtime.sessionRecovery",
+    ),
   };
   const assembler = { assembleForSession: vi.fn(async () => runtimeSnapshot(seed.agentId)) };
   const cloud = { deliver: vi.fn(async () => ({ status: "unreachable" as const, code: "runtime_unavailable" })) };
@@ -280,6 +287,7 @@ function makeStack(
     cloud: cloud as never,
     logger: { error: vi.fn() },
     scheduledBudgets: options.scheduledBudgets,
+    scheduleDetailUrl: (agentId, scheduleId) => `${PUBLIC_URL}/agents/${agentId}?schedule=${scheduleId}`,
   });
   const scheduler = new ScheduleScheduler({
     database: db.database,
@@ -822,17 +830,103 @@ describe("dispatch outcomes and the conditional summary (D09, D10, D16)", () => 
       new Date(T0.getTime() + 180_000).toISOString(),
     );
 
-    // No runtime connection at all: provably zero frames, unreachable.
+    // No runtime connection at all: provably zero frames, so the occurrence is held for the Client.
     stack.registry.currentInstanceId.mockReturnValue(undefined);
     currentTime = new Date(T0.getTime() + 180_000);
     const third = await claimOf(stack, row.id);
     if (third.kind !== "claimed") throw new Error("expected a claim");
     await expect(stack.collaboration.dispatchScheduledMessage(third.snapshot)).resolves.toEqual({
-      outcome: "unreachable",
-      code: "runtime_unavailable",
+      outcome: "unknown",
+      code: "delivery_held",
     });
     const framesBefore = stack.deliveryFrames.length;
     expect(stack.deliveryFrames).toHaveLength(framesBefore);
+  });
+
+  it("holds an occurrence a recovering Client refused and delivers it once on redelivery", async () => {
+    const seed = await seedStack();
+    const stack = makeStack(seed);
+    stack.registry.supportsCapability.mockReturnValue(true);
+    const row = await insertSchedule(seed, { schedule: EVERY_MINUTE, nextTriggerAt: T0 });
+    currentTime = T0;
+    const refuse = (reason: "client_busy" | undefined) =>
+      stack.domain.requestSessionMessageDelivery.mockImplementation(
+        async (
+          _c: string,
+          _i: string,
+          request: SessionMessageDeliveryRequestV3,
+          onDispatched?: () => void,
+          admission?: RuntimeDispatchAdmission<SessionMessageDeliveryResult>,
+        ) =>
+          dispatchWithAdmission(
+            async () => {
+              stack.deliveryFrames.push(request);
+              return {
+                type: "session:message:deliver:result",
+                requestId: request.requestId,
+                messageId: request.messageId,
+                targetSessionId: request.targetSessionId,
+                placementGeneration: request.placementGeneration,
+                ...(reason ? { status: "rejected", reason } : { status: "accepted" }),
+              } as SessionMessageDeliveryResult;
+            },
+            admission,
+            onDispatched,
+          ),
+      );
+    refuse("client_busy");
+    const claim = await claimOf(stack, row.id);
+    if (claim.kind !== "claimed") throw new Error("expected a claim");
+    await expect(stack.collaboration.dispatchScheduledMessage(claim.snapshot)).resolves.toEqual({
+      outcome: "unknown",
+      code: "delivery_held",
+    });
+    await expect(messageRow(claim.snapshot.messageId)).resolves.toMatchObject({ lastErrorCode: "delivery_held" });
+
+    refuse(undefined);
+    const held = await stack.sessions.listHeldMessagesForComputer(seed.computerId, new Date(0), 10);
+    expect(held.map(({ id }) => id)).toEqual([claim.snapshot.messageId]);
+    const redelivered = held[0];
+    if (!redelivered) throw new Error("expected a held message");
+    await expect(stack.collaboration.redeliverHeld(redelivered)).resolves.toBe("settled");
+
+    expect(await messageRow(claim.snapshot.messageId)).toMatchObject({ lastOutcome: "accepted", lastErrorCode: null });
+    expect((await scheduleRow(row.id))?.lastDispatch).toMatchObject({ outcome: "accepted", code: null });
+    expect(stack.deliveryFrames.at(-1)).toMatchObject({
+      messageId: claim.snapshot.messageId,
+      scheduledOrigin: claim.snapshot.origin,
+    });
+    await expect(stack.sessions.listHeldMessagesForComputer(seed.computerId, new Date(0), 10)).resolves.toEqual([]);
+  });
+
+  it("drops a held occurrence once the next one has been claimed", async () => {
+    const seed = await seedStack();
+    const stack = makeStack(seed);
+    stack.registry.supportsCapability.mockReturnValue(true);
+    stack.registry.currentInstanceId.mockReturnValue(undefined);
+    const row = await insertSchedule(seed, { schedule: EVERY_MINUTE, nextTriggerAt: T0 });
+    currentTime = T0;
+    const first = await claimOf(stack, row.id);
+    if (first.kind !== "claimed") throw new Error("expected a claim");
+    await stack.collaboration.dispatchScheduledMessage(first.snapshot);
+
+    currentTime = new Date(T0.getTime() + 60_000);
+    const second = await claimOf(stack, row.id);
+    if (second.kind !== "claimed") throw new Error("expected a claim");
+    await stack.collaboration.dispatchScheduledMessage(second.snapshot);
+
+    stack.registry.currentInstanceId.mockReturnValue(seed.instanceId);
+    const held = await stack.sessions.listHeldMessagesForComputer(seed.computerId, new Date(0), 10);
+    expect(held.map(({ id }) => id)).toEqual([first.snapshot.messageId, second.snapshot.messageId]);
+    const [older] = held;
+    if (!older) throw new Error("expected a held message");
+    await expect(stack.collaboration.redeliverHeld(older)).resolves.toBe("settled");
+    expect(await messageRow(first.snapshot.messageId)).toMatchObject({
+      lastOutcome: "unreachable",
+      lastErrorCode: "delivery_superseded",
+    });
+    expect(stack.deliveryFrames.map(({ messageId }) => messageId)).not.toContain(first.snapshot.messageId);
+    expect((await scheduleRow(row.id))?.lastDispatch).toMatchObject({ messageId: second.snapshot.messageId });
   });
 
   it("refuses to send a scheduled origin to a v2-only peer with zero frames", async () => {

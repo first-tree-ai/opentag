@@ -9,9 +9,10 @@ import type {
   SessionCliListQuery,
   SessionCliListResponse,
   SessionKind,
+  SessionMessageScheduledOrigin,
   SessionPlacement,
 } from "@opentag/shared";
-import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   agentSchedules,
@@ -26,6 +27,7 @@ import {
 } from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import type { CloudModelCatalog } from "../sandboxes/cloud-model-catalog.js";
+import { SESSION_MESSAGE_HELD_CODE } from "./session-held-delivery.js";
 
 type SessionRow = typeof sessions.$inferSelect;
 type PlacementRow = typeof sessionPlacements.$inferSelect;
@@ -133,6 +135,35 @@ export interface AuthorizedSessionMessageRoute {
   targetSessionKind: SessionKind;
   targetCreatorSessionId: string | null;
 }
+
+/** The target-only authority a held message is redelivered under; the sender is no longer checked. */
+export type AuthorizedHeldMessageRoute = Omit<
+  AuthorizedSessionMessageRoute,
+  "sourceSessionId" | "sourceComputerId" | "sourcePlacementGeneration" | "sourceConnectionInstanceId"
+>;
+
+export interface HeldSessionMessage {
+  id: string;
+  sourceSessionId: string | null;
+  scheduledOrigin: SessionMessageScheduledOrigin | null;
+  targetSessionId: string;
+  targetCreatorSessionId: string | null;
+  /** Null only for an expired message whose target lost its binding; it is never redelivered. */
+  agentId: string | null;
+  content: string;
+  attemptCount: number;
+}
+
+const HELD_MESSAGE_COLUMNS = {
+  id: sessionMessages.id,
+  sourceSessionId: sessionMessages.sourceSessionId,
+  scheduledOrigin: sessionMessages.scheduledOrigin,
+  targetSessionId: sessionMessages.targetSessionId,
+  targetCreatorSessionId: sessions.createdBySessionId,
+  agentId: imBindings.agentId,
+  content: sessionMessages.content,
+  attemptCount: sessionMessages.attemptCount,
+};
 
 export interface SessionMessageAttempt {
   route: AuthorizedSessionMessageRoute;
@@ -586,8 +617,213 @@ export class SessionService {
     route: AuthorizedSessionMessageRoute,
     operation: (onDispatched: () => void) => Promise<T>,
   ): Promise<{ admitted: false } | { admitted: true; result: Promise<T> }> {
+    return this.#admitDispatch((transaction) => this.#authorityAdmits(transaction, route), operation);
+  }
+
+  /**
+   * The final admission for a held message. The sender was authorized when the message was recorded and
+   * may since have restarted or ended, so this proves only the target's current authority.
+   */
+  async withHeldDispatchAdmission<T>(
+    route: AuthorizedHeldMessageRoute,
+    operation: (onDispatched: () => void) => Promise<T>,
+  ): Promise<{ admitted: false } | { admitted: true; result: Promise<T> }> {
+    const targetRoute: AuthorizedSessionMessageRoute = {
+      ...route,
+      sourceSessionId: route.targetSessionId,
+      sourceComputerId: route.targetComputerId,
+      sourcePlacementGeneration: route.targetPlacementGeneration,
+      sourceConnectionInstanceId: "",
+    };
+    return this.#admitDispatch(async (transaction) => {
+      const agent = await this.#agentAndBindingAdmit(transaction, targetRoute);
+      if (!agent) return false;
+      const placements = await this.#sessionsAndPlacementsAdmit(transaction, targetRoute);
+      if (!placements) return false;
+      return this.#computersAdmit(transaction, targetRoute, placements, agent.createdByUserId);
+    }, operation);
+  }
+
+  /** Whether an older held message must be delivered to this target first. */
+  async hasOlderHeldMessage(
+    targetSessionId: string,
+    message: { id: string; createdAt: Date },
+    cutoff: Date,
+  ): Promise<boolean> {
+    const [row] = await this.#database
+      .select({ id: sessionMessages.id })
+      .from(sessionMessages)
+      .where(
+        and(
+          eq(sessionMessages.targetSessionId, targetSessionId),
+          gt(sessionMessages.createdAt, cutoff),
+          eq(sessionMessages.lastOutcome, "unknown"),
+          eq(sessionMessages.lastErrorCode, SESSION_MESSAGE_HELD_CODE),
+          sql`(${sessionMessages.createdAt}, ${sessionMessages.id}) < (${message.createdAt.toISOString()}::timestamptz, ${message.id}::uuid)`,
+        ),
+      )
+      .limit(1);
+    return row !== undefined;
+  }
+
+  /** Held messages placed on one Computer, oldest first per target, using the target and time index. */
+  async listHeldMessagesForComputer(computerId: string, cutoff: Date, limit: number): Promise<HeldSessionMessage[]> {
+    return this.#database
+      .select(HELD_MESSAGE_COLUMNS)
+      .from(sessionPlacements)
+      .innerJoin(sessionMessages, eq(sessionMessages.targetSessionId, sessionPlacements.sessionId))
+      .innerJoin(sessions, eq(sessions.id, sessionPlacements.sessionId))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .where(
+        and(
+          eq(sessionPlacements.computerId, computerId),
+          gt(sessionMessages.createdAt, cutoff),
+          eq(sessionMessages.lastOutcome, "unknown"),
+          eq(sessionMessages.lastErrorCode, SESSION_MESSAGE_HELD_CODE),
+        ),
+      )
+      .orderBy(sessionMessages.targetSessionId, sessionMessages.createdAt, sessionMessages.id)
+      .limit(limit);
+  }
+
+  /** The Computers that hold messages, and the messages past their expiry. A sequential scan by design. */
+  async sweepHeldMessages(
+    cutoff: Date,
+    limit: number,
+  ): Promise<{ computerIds: string[]; expired: HeldSessionMessage[] }> {
+    const held = and(
+      eq(sessionMessages.lastOutcome, "unknown"),
+      eq(sessionMessages.lastErrorCode, SESSION_MESSAGE_HELD_CODE),
+    );
+    const computerRows = await this.#database
+      .selectDistinct({ computerId: sessionPlacements.computerId })
+      .from(sessionMessages)
+      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessionMessages.targetSessionId))
+      .where(and(held, gt(sessionMessages.createdAt, cutoff)));
+    const expired = await this.#database
+      .select(HELD_MESSAGE_COLUMNS)
+      .from(sessionMessages)
+      .innerJoin(sessions, eq(sessions.id, sessionMessages.targetSessionId))
+      .leftJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .where(and(held, lte(sessionMessages.createdAt, cutoff)))
+      .orderBy(sessionMessages.createdAt, sessionMessages.id)
+      .limit(limit);
+    return { computerIds: computerRows.map(({ computerId }) => computerId), expired };
+  }
+
+  /**
+   * Fence one redelivery. The held code stays until a final answer is written, so a Server that crashes
+   * after this write still redelivers; the Client deduplicates by message ID.
+   */
+  async beginHeldAttempt(messageId: string, attemptCount: number): Promise<number | undefined> {
+    const now = this.#now();
+    const [updated] = await this.#database
+      .update(sessionMessages)
+      .set({ attemptCount: attemptCount + 1, lastAttemptAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(sessionMessages.id, messageId),
+          eq(sessionMessages.attemptCount, attemptCount),
+          eq(sessionMessages.lastOutcome, "unknown"),
+          eq(sessionMessages.lastErrorCode, SESSION_MESSAGE_HELD_CODE),
+        ),
+      )
+      .returning({ attemptCount: sessionMessages.attemptCount });
+    return updated?.attemptCount;
+  }
+
+  /** Mark an attempt that is still unanswered as held; a final answer already written is left alone. */
+  async markMessageHeld(messageId: string, attemptCount: number): Promise<void> {
+    await this.#database
+      .update(sessionMessages)
+      .set({ lastErrorCode: SESSION_MESSAGE_HELD_CODE, updatedAt: this.#now() })
+      .where(
+        and(
+          eq(sessionMessages.id, messageId),
+          eq(sessionMessages.attemptCount, attemptCount),
+          eq(sessionMessages.lastOutcome, "unknown"),
+          isNull(sessionMessages.lastErrorCode),
+        ),
+      );
+  }
+
+  /** The facts that decide whether a held scheduled occurrence is still the one to deliver. */
+  async readHeldSchedule(scheduleId: string): Promise<
+    | {
+        enabled: boolean;
+        revision: number;
+        prompt: string;
+        lastDispatch: AgentScheduleLastDispatch | null;
+      }
+    | undefined
+  > {
+    const [row] = await this.#database
+      .select({
+        enabled: agentSchedules.enabled,
+        revision: agentSchedules.revision,
+        prompt: agentSchedules.prompt,
+        lastDispatch: agentSchedules.lastDispatch,
+      })
+      .from(agentSchedules)
+      .where(eq(agentSchedules.id, scheduleId))
+      .limit(1);
+    return row;
+  }
+
+  /**
+   * Record the Server's notice to a sender whose message was given up. It is written as held, so it
+   * waits for the sender's Client like any other message. The notice comes from the failed target,
+   * which supplies the source the row requires. Answers the sender's Computer when a Local notice now
+   * waits there, and undefined when the sender cannot receive one.
+   */
+  async recordDeliveryFailureNotice(input: {
+    noticeId: string;
+    failedTargetSessionId: string;
+    senderSessionId: string;
+    content: string;
+  }): Promise<{ computerId: string } | undefined> {
     return this.#database.transaction(async (transaction) => {
-      if (!(await this.#authorityAdmits(transaction, route))) return { admitted: false } as const;
+      const [sender] = await transaction
+        .select({
+          endedAt: sessions.endedAt,
+          computerId: sessionPlacements.computerId,
+          computerKind: computers.kind,
+        })
+        .from(sessions)
+        .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+        .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
+        .where(eq(sessions.id, input.senderSessionId))
+        .limit(1);
+      if (!sender || sender.endedAt !== null || sender.computerKind !== "local") return undefined;
+      const now = this.#now();
+      const [message] = await transaction
+        .insert(sessionMessages)
+        .values({
+          id: input.noticeId,
+          sourceSessionId: input.failedTargetSessionId,
+          targetSessionId: input.senderSessionId,
+          content: input.content,
+          contentHash: hashSessionMessage(input.content),
+          lastOutcome: "unknown",
+          lastErrorCode: SESSION_MESSAGE_HELD_CODE,
+          attemptCount: 1,
+          lastAttemptAt: now,
+          createdAt: now,
+          updatedAt: now,
+        })
+        .onConflictDoNothing()
+        .returning();
+      if (message) await this.#recordSessionActivity(transaction, message, [input.senderSessionId]);
+      return { computerId: sender.computerId };
+    });
+  }
+
+  async #admitDispatch<T>(
+    admits: (transaction: DatabaseTransaction) => Promise<boolean>,
+    operation: (onDispatched: () => void) => Promise<T>,
+  ): Promise<{ admitted: false } | { admitted: true; result: Promise<T> }> {
+    return this.#database.transaction(async (transaction) => {
+      if (!(await admits(transaction))) return { admitted: false } as const;
       let markDispatched: () => void = () => undefined;
       const dispatched = new Promise<void>((resolve) => {
         markDispatched = resolve;
@@ -850,10 +1086,9 @@ export class SessionService {
    * ---------------------------------------------------------------------------------------- */
 
   /**
-   * The scheduled one-shot fence: the single hand-off attempt moves `attempt_count` 0 -> 1
-   * atomically. Unlike the ordinary path there is no retry ladder — a fenced message is never
-   * dispatched again, and a missing, ordinary-origin, or already-fenced row answers `undefined`
-   * so the caller can never send it.
+   * The scheduled claim's fence: its hand-off attempt moves `attempt_count` 0 -> 1 atomically. Only a
+   * held occurrence is offered again, through `beginHeldAttempt`. A missing, ordinary-origin, or
+   * already-fenced row answers `undefined` so the caller can never send it.
    */
   async beginScheduledMessageAttempt(messageId: string): Promise<SessionMessageRow | undefined> {
     const now = this.#now();

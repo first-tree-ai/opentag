@@ -321,6 +321,7 @@ function serviceFixture(
         placement: { sessionId: targetSessionId },
         message: { ...attempt.message, id: input.messageId, content: input.initialMessage },
       })),
+    hasOlderHeldMessage: vi.fn().mockResolvedValue(false),
     recordMessageOutcome: vi.fn().mockResolvedValue(true),
     resolveRunOutcomeNotice: vi
       .fn()
@@ -349,7 +350,9 @@ function serviceFixture(
   const registry = {
     capabilityVersion: vi.fn().mockReturnValue(2),
     currentInstanceId: vi.fn().mockReturnValue(instanceId),
-    supportsCapability: vi.fn().mockReturnValue(true),
+    supportsCapability: vi.fn(
+      (_computerId: string, _instanceId: string, capability: string) => capability !== "runtime.sessionRecovery",
+    ),
   };
   const assembler = { assembleForSession: vi.fn().mockResolvedValue(snapshot(agentId)) };
   return {

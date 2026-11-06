@@ -13,7 +13,7 @@ const activePolicyStorage = new AsyncLocalStorage<
 
 export type PolicyErrorCategory = "security" | "transient" | "validation" | "availability";
 export type PolicyRetryability = "retryable" | "not_retryable";
-export type PolicyPhase = "request" | "response" | "stream" | "circuit";
+export type PolicyPhase = "admission" | "request" | "response" | "stream" | "circuit";
 
 type ExternalCallPolicyErrorCategoryOption = { category?: PolicyErrorCategory };
 type ExternalCallPolicyErrorRetryabilityOption = { retryability?: PolicyRetryability };
@@ -636,7 +636,7 @@ export class ExternalCallPolicy {
       const error = new ExternalCallPolicyError("IM_PROVIDER_OVERLOADED", "The provider call queue is full", {
         category: "availability",
         retryability: "retryable",
-        phase: "request",
+        phase: "admission",
         requestId,
       });
       this.#onMetric({
@@ -678,7 +678,7 @@ export class ExternalCallPolicy {
           new ExternalCallPolicyError("IM_PROVIDER_CALL_ABORTED", "Provider call was cancelled", {
             category: "availability",
             retryability: "retryable",
-            phase: "request",
+            phase: "admission",
             requestId,
             cause: options.signal?.reason,
           }),
@@ -697,7 +697,7 @@ export class ExternalCallPolicy {
               {
                 category: "availability",
                 retryability: "retryable",
-                phase: "request",
+                phase: "admission",
                 requestId,
               },
             ),

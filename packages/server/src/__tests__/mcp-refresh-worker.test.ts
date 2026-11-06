@@ -214,7 +214,7 @@ describe("McpRefreshWorker", () => {
   }
 
   it("runs >= 5 pending probes and due OAuth refreshes in the same Account at default concurrency and reuses OAuth metadata across a pass", async () => {
-    expect(MCP_REFRESH_CONCURRENCY).toBe(4);
+    expect(MCP_REFRESH_CONCURRENCY).toBe(3);
     const now = new Date();
     const accountId = randomUUID();
     await unit.database
@@ -434,6 +434,27 @@ describe("McpRefreshWorker", () => {
     }
     expect(rows.some((row) => row.refreshGeneration === 0)).toBe(true);
     expect(rows.some((row) => row.probeState === "pending")).toBe(true);
+
+    // Direct callers (`POST .../probe`, `setMcpBearerKey`, `createMcpServer`) do not pass
+    // `rethrowConcurrencyLimit` and receive the current probe snapshot instead of a 503 error.
+    const cappedFetcher = new McpOutboundFetcher({
+      allowLoopback: false,
+      fetch: fetchImpl,
+      maxConcurrentPerAccount: 0,
+      resolveAddresses: async () => ["93.184.216.34"],
+    });
+    const cappedAuth = new McpAuthorizationService({
+      database: unit.database,
+      cipher,
+      servers,
+      probe: new RealMcpProbe({ fetcher: cappedFetcher, now: () => now }),
+      now: () => now,
+    });
+    const targetRow = rows[0];
+    if (!targetRow) throw new Error("Expected at least one authorization row");
+    const directOutcome = await cappedAuth.probe(accountId, targetRow.agentId, targetRow.mcpServerId);
+    expect(directOutcome.probeState).toBe(targetRow.probeState);
+    expect(directOutcome.probeError).toBeNull();
   });
 
   it("stops scheduling remaining items once stop() is called while awaiting in-flight work", async () => {

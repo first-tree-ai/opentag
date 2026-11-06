@@ -158,15 +158,17 @@ export class AgentSelfService {
         { kind: "bearer", bearerKey: input.apiKey },
         "agent-self",
       );
-      // Synchronous so `add --api-key` reports the tool catalogue it just earned, rather than an
-      // object that is still `pending` and needs a second command to interpret.
-      await this.#options.authorization.probe(scope.accountId, scope.agentId, created.mcpServerId);
     }
     this.#audit(scope, "agent_self.mcp_server_created", {
       mcpServerId: created.mcpServerId,
       defaultAuthKind: input.defaultAuthKind,
       credentialWritten: input.apiKey !== undefined,
     });
+    if (input.apiKey !== undefined) {
+      // Synchronous so `add --api-key` reports the tool catalogue it just earned, rather than an
+      // object that is still `pending` and needs a second command to interpret.
+      await this.#options.authorization.probe(scope.accountId, scope.agentId, created.mcpServerId);
+    }
     return this.#options.mcp.readAgentServer(scope.accountId, scope.agentId, created.mcpServerId);
   }
 
@@ -222,9 +224,9 @@ export class AgentSelfService {
       { kind: "bearer", bearerKey: apiKey },
       "agent-self",
     );
-    await this.#options.authorization.probe(scope.accountId, scope.agentId, mcpServerId);
     // The key itself is never logged, not even masked.
     this.#audit(scope, "agent_self.mcp_credential_written", { mcpServerId, kind: "bearer" });
+    await this.#options.authorization.probe(scope.accountId, scope.agentId, mcpServerId);
     return this.#options.mcp.readAgentServer(scope.accountId, scope.agentId, mcpServerId);
   }
 

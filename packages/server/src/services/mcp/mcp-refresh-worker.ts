@@ -7,7 +7,11 @@ import type { McpServerService } from "./mcp-server-service.js";
 
 export const MCP_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 export const MCP_REFRESH_BATCH_SIZE = 100;
-export const MCP_REFRESH_CONCURRENCY = 4;
+/**
+ * Stays one slot below `MCP_DEFAULT_MAX_CONCURRENT_PER_ACCOUNT` (4) so interactive OAuth flows and
+ * manual probes still have a free per-Account outbound slot while a refresh pass is running.
+ */
+export const MCP_REFRESH_CONCURRENCY = 3;
 /** Missing `expires_in` is treated as this lifetime, matching the general default. */
 const DEFAULT_EXPIRES_IN_SECONDS = 300;
 const MAX_LEAD_MS = 5 * 60 * 1000;
@@ -158,7 +162,9 @@ export class McpRefreshWorker {
       .limit(this.#batchSize);
     await this.#runWithConcurrency(pending, async (row) => {
       try {
-        await this.#authorization.probe(row.accountId, row.agentId, row.mcpServerId);
+        await this.#authorization.probe(row.accountId, row.agentId, row.mcpServerId, {
+          rethrowConcurrencyLimit: true,
+        });
       } catch (error) {
         // Rotate only failures whose probe did not persist its own outcome.
         this.#onError(error);

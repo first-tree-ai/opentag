@@ -833,15 +833,7 @@ export class McpOAuthClient {
       accept: "application/json",
       "content-type": "application/x-www-form-urlencoded",
     };
-    if (client.clientSecret && client.tokenEndpointAuthMethod === "client_secret_basic") {
-      headers.authorization = `Basic ${Buffer.from(`${client.clientId}:${client.clientSecret}`).toString("base64")}`;
-    } else {
-      body.set("client_id", client.clientId);
-      // HubSpot's token endpoint accepts only this method; sending a Basic header there is refused.
-      if (client.clientSecret && client.tokenEndpointAuthMethod === "client_secret_post") {
-        body.set("client_secret", client.clientSecret);
-      }
-    }
+    applyTokenClientAuth(headers, body, client);
     try {
       const response = await this.#fetcher.fetchOutbound(accountId, metadata.tokenEndpoint, {
         method: "POST",
@@ -862,13 +854,37 @@ export class McpOAuthClient {
       const document = response.text.trim().length > 0 ? json(response) : {};
       return parseTokenResponse(document, response.status);
     } catch (error) {
-      // Evict the cached metadata on any token endpoint failure so a rotated or moved token
-      // endpoint is re-fetched from the discovery document on the next attempt rather than pinned
-      // for the remainder of the TTL.
-      this.#metadataCache.delete(this.#metadataCacheKey(accountId, metadata.issuer));
+      // Evict the cached metadata on any token endpoint failure that reached (or attempted to dial)
+      // the endpoint so a rotated or moved token endpoint is re-fetched from the discovery document
+      // on the next attempt rather than pinned for the remainder of the TTL. Skip eviction when a
+      // local pre-dispatch refusal (`dispatched === false`, such as the per-Account concurrency cap)
+      // prevented the request from ever leaving the process.
+      if (shouldEvictMetadataOnTokenError(error)) {
+        this.#metadataCache.delete(this.#metadataCacheKey(accountId, metadata.issuer));
+      }
       throw error;
     }
   }
+}
+
+function applyTokenClientAuth(
+  headers: Record<string, string>,
+  body: URLSearchParams,
+  client: McpClientCredentials,
+): void {
+  if (client.clientSecret && client.tokenEndpointAuthMethod === "client_secret_basic") {
+    headers.authorization = `Basic ${Buffer.from(`${client.clientId}:${client.clientSecret}`).toString("base64")}`;
+    return;
+  }
+  body.set("client_id", client.clientId);
+  // HubSpot's token endpoint accepts only this method; sending a Basic header there is refused.
+  if (client.clientSecret && client.tokenEndpointAuthMethod === "client_secret_post") {
+    body.set("client_secret", client.clientSecret);
+  }
+}
+
+function shouldEvictMetadataOnTokenError(error: unknown): boolean {
+  return !(error instanceof McpServiceError && error.detail?.dispatched === false);
 }
 
 const FEISHU_INVALID_GRANT_CODES = new Set([20003, 20004, 20024, 20025, 20026, 20037, 20063, 20064, 20073, 20074]);

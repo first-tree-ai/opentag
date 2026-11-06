@@ -1426,4 +1426,80 @@ describe("MCP authorization server metadata caching", () => {
     });
     expect(tokens.accessToken).toBe("at-fresh");
   });
+
+  it("keeps cached authorization server metadata when a token request is refused locally before dispatch", async () => {
+    let metadataRequests = 0;
+    let releaseTokenCall: (() => void) | undefined;
+    const tokenGate = new Promise<void>((resolve) => {
+      releaseTokenCall = resolve;
+    });
+    const fetchImpl = vi.fn(async (url: URL | string) => {
+      const urlStr = String(url);
+      if (urlStr === `${AS}/.well-known/oauth-authorization-server`) {
+        metadataRequests += 1;
+        return new Response(
+          JSON.stringify({
+            issuer: AS,
+            authorization_endpoint: `${AS}/authorize`,
+            token_endpoint: `${AS}/token`,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      if (urlStr === `${AS}/token`) {
+        await tokenGate;
+        return new Response(
+          JSON.stringify({
+            access_token: "at-1",
+            refresh_token: "rt-2",
+            token_type: "Bearer",
+            expires_in: 3600,
+          }),
+          { status: 200, headers: { "content-type": "application/json" } },
+        );
+      }
+      return new Response("", { status: 404 });
+    }) as unknown as typeof globalThis.fetch;
+
+    const fetcher = new McpOutboundFetcher({
+      allowLoopback: false,
+      fetch: fetchImpl,
+      maxConcurrentPerAccount: 1,
+      resolveAddresses: async (): Promise<string[]> => ["93.184.216.34"],
+    });
+    const client = new McpOAuthClient({
+      fetcher,
+      publicUrl: PUBLIC_URL,
+      now: () => new Date("2026-04-20T12:00:00.000Z"),
+    });
+
+    const meta = await client.authorizationServerMetadata(ACCOUNT, AS);
+    expect(metadataRequests).toBe(1);
+
+    const inflight = client.refreshAccessToken(ACCOUNT, meta, {
+      refreshToken: "rt-1",
+      client: { source: "cimd", clientId: "client-1", tokenEndpointAuthMethod: "none" },
+      resource: "https://mcp.example.com/mcp",
+    });
+    // Wait a microtask so `inflight` occupies the single per-Account outbound slot.
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    await expect(
+      client.refreshAccessToken(ACCOUNT, meta, {
+        refreshToken: "rt-2",
+        client: { source: "cimd", clientId: "client-1", tokenEndpointAuthMethod: "none" },
+        resource: "https://mcp.example.com/mcp",
+      }),
+    ).rejects.toMatchObject({
+      code: MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE,
+      detail: { cause: "concurrency_limit", dispatched: false },
+    });
+
+    releaseTokenCall?.();
+    await inflight;
+
+    // The pre-dispatch refusal (`dispatched === false`) must not evict the cached metadata.
+    await client.authorizationServerMetadata(ACCOUNT, AS);
+    expect(metadataRequests).toBe(1);
+  });
 });

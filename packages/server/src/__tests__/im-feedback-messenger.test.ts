@@ -172,21 +172,10 @@ describe("native feedback transport", () => {
       data: { message_id: "text-message", chat_id: t.channelId },
     });
     await messenger.post(t);
-    const data = mocks.feishu.im.v1.message.reply.mock.calls[0]?.[0].data;
-    expect(data.msg_type).toBe("post");
-    expect(JSON.parse(data.content)).toEqual({
-      zh_cn: {
-        content: [
-          [{ tag: "text", text: "模型额度用完了，任务没有完成。" }],
-          [{ tag: "text", text: "可能已经执行了部分操作，重发前请先检查结果。" }],
-          [
-            { tag: "text", text: "请 Agent 所有者处理后再发一次。" },
-            { tag: "text", text: " " },
-            { tag: "a", text: "查看详情", href: `https://app.example.test/im-feedback/${t.id}` },
-          ],
-        ],
-      },
-    });
+    const sent = JSON.parse(mocks.feishu.im.v1.message.reply.mock.calls[0]?.[0].data.content).text as string;
+    expect(sent).toBe(
+      `模型额度用完了，任务没有完成。\n可能已经执行了部分操作，重发前请先检查结果。\n请 Agent 所有者处理后再发一次。 [查看详情](https://app.example.test/im-feedback/${t.id})`,
+    );
   });
   it.each(["slack", "feishu"] as const)(
     "sends, edits and finds %s text without an interactive card",
@@ -218,12 +207,12 @@ describe("native feedback transport", () => {
         });
       } else {
         expect(mocks.feishu.im.v1.message.reply).toHaveBeenCalledWith(
-          expect.objectContaining({ data: expect.objectContaining({ msg_type: "post" }) }),
+          expect.objectContaining({ data: expect.objectContaining({ msg_type: "text" }) }),
         );
         expect(mocks.feishu.im.v1.message.update).toHaveBeenCalledWith(
           expect.objectContaining({
             path: { message_id: "text-message" },
-            data: expect.objectContaining({ msg_type: "post" }),
+            data: expect.objectContaining({ msg_type: "text" }),
           }),
         );
         expect(mocks.feishu.im.v1.message.patch).not.toHaveBeenCalled();

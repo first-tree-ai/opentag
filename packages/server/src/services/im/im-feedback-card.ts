@@ -63,27 +63,10 @@ function cardActions(
   return [];
 }
 
-type MessageSegment = { text: string; href?: string };
-
-/**
- * A plain message for each provider, with the link as clickable words. Feishu `post` carries the link as
- * an `a` element, which does not depend on the provider recognizing link syntax in `text` content. Both
- * forms keep the URL in the stored message, which is what unknown-send readback matches.
- */
-function renderMessage(lines: MessageSegment[][], language: FeedbackLanguage) {
-  return {
-    slack: lines.map((line) => line.map(({ text, href }) => (href ? `<${href}|${text}>` : text)).join(" ")).join("\n"),
-    feishu: JSON.stringify({
-      [language === "zh" ? "zh_cn" : "en_us"]: {
-        content: lines.map((line) =>
-          line.flatMap(({ text, href }, index) => [
-            ...(index > 0 ? [{ tag: "text", text: " " }] : []),
-            href ? { tag: "a", text, href } : { tag: "text", text },
-          ]),
-        ),
-      },
-    }),
-  };
+/** The link stays in the text so readback can match the exact details URL on both providers. */
+function detailsLink(provider: FeedbackTarget["provider"], url: string, language: FeedbackLanguage): string {
+  const label = FEEDBACK_LABELS.details[language];
+  return provider === "slack" ? `<${url}|${label}>` : `[${label}](${url})`;
 }
 
 export function renderFeedbackText(
@@ -91,16 +74,13 @@ export function renderFeedbackText(
   publicUrl: string,
   action?: FeedbackAction,
   language: FeedbackLanguage = "en",
-) {
+): string {
   const content = feedbackCardContent(target, action, language);
-  const href = new URL(`/im-feedback/${encodeURIComponent(target.id)}`, publicUrl).href;
-  const link = { text: FEEDBACK_LABELS.details[language], href };
-  return renderMessage(
-    content.result
-      ? [[{ text: content.title }, link]]
-      : [[{ text: content.title }], [{ text: content.impact }], [{ text: content.availability }, link]],
-    language,
-  );
+  const detailsUrl = new URL(`/im-feedback/${encodeURIComponent(target.id)}`, publicUrl).href;
+  const link = detailsLink(target.provider, detailsUrl, language);
+  return content.result
+    ? `${content.title} ${link}`
+    : [content.title, content.impact, `${content.availability} ${link}`].join("\n");
 }
 
 export function renderFeedbackCard(

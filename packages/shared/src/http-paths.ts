@@ -39,11 +39,6 @@ export const SLACK_EVENTS_PATH = `${API_V1_PREFIX}/im-bindings/slack/events`;
 export const SLACK_INTERACTIONS_PATH = `${API_V1_PREFIX}/im-bindings/slack/interactions`;
 export const AGENT_SLACK_INTERACTIONS_TEMPLATE = `${AGENT_BY_ID_TEMPLATE}/im-binding/slack/interactions`;
 export const SLACK_OAUTH_CALLBACK_PATH = `${API_V1_PREFIX}/im-bindings/slack/oauth/callback`;
-/*
- * Account-scoped GitHub integration management. One deployment-level GitHub App, one current
- * connection per Account; the OAuth callback and webhook are the only unauthenticated paths and
- * each has its own verification (state+session claim, raw-body HMAC).
- */
 export const RUNTIME_IM_RESOURCE_TEMPLATE = `${API_V1_PREFIX}/runtime/im-messages/:imMessageId/resources/:ordinal`;
 export const RUNTIME_INTERNAL_SESSIONS_PATH = `${API_V1_PREFIX}/runtime/sessions/internal`;
 export const RUNTIME_SESSION_MESSAGES_PATH = `${API_V1_PREFIX}/runtime/session-messages`;

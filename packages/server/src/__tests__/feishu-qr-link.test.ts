@@ -187,7 +187,28 @@ describe("FeishuSetupService QR link", () => {
   afterAll(async () => unitDatabase?.close());
   beforeEach(async () => unitDatabase?.reset());
 
-  async function fixture(publicUrl: string | undefined) {
+  function serviceWith(cipher: ApplicationCipher, publicUrl: string | undefined, clock: { now: Date }) {
+    return new FeishuSetupService({
+      database: unitDatabase.database,
+      cipher,
+      instanceId: crypto.randomUUID(),
+      imBindings: new ImBindingService(unitDatabase.database, cipher, { now: () => clock.now }),
+      registrations: {
+        start: () => {
+          let abort = (): void => undefined;
+          const result = new Promise<never>((_, reject) => {
+            abort = () => reject(Object.assign(new Error("Registration canceled"), { code: "abort" }));
+          });
+          return { qrReady: Promise.resolve({ url: LAUNCHER_URL, expiresAt }), result, abort: () => abort() };
+        },
+      },
+      activation: { activateAtomicAttempt: vi.fn() },
+      now: () => clock.now,
+      ...(publicUrl ? { publicUrl } : {}),
+    });
+  }
+
+  async function fixture(publicUrl: string | undefined, cipher = new ApplicationCipher(Buffer.alloc(32, 7))) {
     const bootstrap = await bootstrapInitialAdmin(unitDatabase.database, {
       displayName: "Admin",
       email: `qr-${crypto.randomUUID()}@example.com`,
@@ -210,26 +231,8 @@ describe("FeishuSetupService QR link", () => {
       runtimeProvider: "codex",
       computerId: computer.id,
     });
-    const cipher = new ApplicationCipher(Buffer.alloc(32, 7));
     const clock = { now };
-    const setup = new FeishuSetupService({
-      database: unitDatabase.database,
-      cipher,
-      instanceId: crypto.randomUUID(),
-      imBindings: new ImBindingService(unitDatabase.database, cipher, { now: () => clock.now }),
-      registrations: {
-        start: () => {
-          let abort = (): void => undefined;
-          const result = new Promise<never>((_, reject) => {
-            abort = () => reject(Object.assign(new Error("Registration canceled"), { code: "abort" }));
-          });
-          return { qrReady: Promise.resolve({ url: LAUNCHER_URL, expiresAt }), result, abort: () => abort() };
-        },
-      },
-      activation: { activateAtomicAttempt: vi.fn() },
-      now: () => clock.now,
-      ...(publicUrl ? { publicUrl } : {}),
-    });
+    const setup = serviceWith(cipher, publicUrl, clock);
     return { bootstrap, agent, cipher, clock, setup };
   }
 
@@ -310,6 +313,35 @@ describe("FeishuSetupService QR link", () => {
         .where(eq(imBindings.setupAttemptId, attempt.id));
       await expect(setup.resolveQrLink(token)).resolves.toBeUndefined();
     } finally {
+      await setup.stop();
+    }
+  });
+
+  it("treats a context this instance cannot read as temporary, not as a dead link", async () => {
+    const legacyKey = Buffer.alloc(32, 7);
+    const oldKey = Buffer.alloc(32, 1);
+    const newKey = Buffer.alloc(32, 2);
+    const complete = new ApplicationCipher({
+      legacyKey,
+      keys: { old: oldKey, new: newKey },
+      activeKeyId: "new",
+      writeVersion: 2,
+    });
+    const skewed = new ApplicationCipher({ legacyKey, keys: { old: oldKey }, activeKeyId: "old", writeVersion: 2 });
+    const { bootstrap, agent, setup } = await fixture(PUBLIC_URL, complete);
+    const skewedSetup = serviceWith(skewed, PUBLIC_URL, { now });
+    try {
+      const attempt = await setup.createOrReuse(bootstrap.userId, agent.id, "create");
+      const token = tokenOf(attempt.qrUrl);
+      await expect(skewedSetup.resolveQrLink(token)).rejects.toThrow();
+      await expect(setup.resolveQrLink(token)).resolves.toBe(LAUNCHER_URL);
+      const [row] = await unitDatabase.database
+        .select()
+        .from(imBindings)
+        .where(eq(imBindings.setupAttemptId, attempt.id));
+      expect(row?.setupState).toBe("awaiting_user");
+    } finally {
+      await skewedSetup.stop();
       await setup.stop();
     }
   });

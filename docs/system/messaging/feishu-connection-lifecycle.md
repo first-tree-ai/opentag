@@ -28,8 +28,10 @@ launcher. Everything that reads `qrUrl` gets it: the QR code, the open-link butt
   code. It keeps working across repeat scans, because link previews and a second scan must not use it
   up. Authorization, cancellation, expiry and owner loss all end it.
 - **Anonymous and bare.** A phone has no openTag session, so `GET /q/:token` takes no authentication.
-  It returns the redirect or one fixed page (410 when the link no longer works, 503 on a temporary
-  read failure) that says the same thing for a forged, unknown, expired or finished token. A forged
+  It returns the redirect or a fixed page. A forged, unknown, expired or finished token gets one 410
+  page that says the same thing for all of them. A read failure gets a 503 page that says to try again,
+  and that includes a saved context this instance cannot decrypt, because key-ring skew between
+  instances is temporary and another instance may be able to answer. A forged
   token is refused before any database read. Responses are `no-store` and send no referrer.
 - **Kept out of logs.** `sanitizeRequestUrl` redacts the token from request logs and trace attributes.
   A reverse proxy or platform access log in front of the Server can still record the path; what that

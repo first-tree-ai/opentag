@@ -688,7 +688,8 @@ export class FeishuSetupService {
    * The launcher URL behind a QR link, while its attempt is still waiting to be scanned. The caller is
    * an anonymous phone: the token is the whole authority, this only reads, and a forged token never
    * reaches the database. Repeat scans keep working, because link previews and an impatient second
-   * scan must not use the code up.
+   * scan must not use the code up. Undefined means the link is known to be unusable; a context this
+   * instance cannot read rejects instead, because another instance may still be able to.
    */
   async resolveQrLink(token: string): Promise<string | undefined> {
     const attemptId = readFeishuQrLinkToken(this.#cipher, token);
@@ -698,6 +699,8 @@ export class FeishuSetupService {
     const now = this.#now();
     if ((row.setupExpiresAt && row.setupExpiresAt <= now) || this.#qrOwnerLost(row, now)) return undefined;
     const read = this.#readContext(row);
+    // Key-ring skew between instances looks like this and passes, so it must not read as a dead link.
+    if (read.status === "undecryptable") throw unreadableContextError();
     return read.status === "decoded" && read.context.kind === "qr" ? read.context.qrUrl : undefined;
   }
 

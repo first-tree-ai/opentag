@@ -192,7 +192,13 @@ describe("PostgreSQL feedback operations", () => {
     const worker = new ImFeedbackWorker({
       store: new ImFeedbackStore(client.database, () => clock),
       postOfflineNotice: async () => {},
-      transport: { reaction, post: async () => "card", update: async () => {}, find: async () => ({ ids: [] }) },
+      transport: {
+        reaction,
+        post: async () => "card",
+        postOfflineNotice: async () => {},
+        update: async () => {},
+        find: async () => ({ ids: [] }),
+      },
       logger: { warn: vi.fn() },
     });
     const pass = worker.runOnce();

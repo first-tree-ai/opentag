@@ -245,7 +245,7 @@ describe("ExternalCallPolicy", () => {
     const controller = new AbortController();
     const queued = policy.run("queued-cancel", async () => "unexpected", { signal: controller.signal });
     controller.abort("queued cancellation");
-    await expect(queued).rejects.toMatchObject({ code: "IM_PROVIDER_CALL_ABORTED" });
+    await expect(queued).rejects.toMatchObject({ code: "IM_PROVIDER_CALL_ABORTED", phase: "admission" });
     release();
     await first;
   });
@@ -278,6 +278,7 @@ describe("ExternalCallPolicy", () => {
       code: "IM_PROVIDER_OVERLOADED",
       category: "availability",
       retryability: "retryable",
+      phase: "admission",
     });
     expect(Date.now() - startedAt).toBeLessThan(100);
     expect(metrics).toEqual(
@@ -337,7 +338,7 @@ describe("ExternalCallPolicy", () => {
     );
     await vi.waitFor(() => expect(entered).toBe(true));
     const queued = policy.run("queued", async () => "unexpected");
-    await expect(queued).rejects.toMatchObject({ code: "IM_PROVIDER_CALL_DEADLINE_EXCEEDED" });
+    await expect(queued).rejects.toMatchObject({ code: "IM_PROVIDER_CALL_DEADLINE_EXCEEDED", phase: "admission" });
     release();
     await first;
   });

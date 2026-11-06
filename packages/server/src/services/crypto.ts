@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHmac, hkdfSync, randomBytes } from "node:crypto";
 
 const VERSION_V1 = "v1";
 const VERSION_V2 = "v2";
@@ -95,6 +95,16 @@ export class ApplicationCipher {
     this.#ring = ring;
     this.#activeKeyId = keyOrOptions.activeKeyId;
     this.#writeVersion = keyOrOptions.writeVersion ?? 1;
+  }
+
+  /**
+   * An HMAC under a subkey derived for this purpose, so it can never collide with an encryption use
+   * of the key. Derived from the legacy key because every instance holds it and ring rotation leaves
+   * it alone, which keeps a MAC verifiable while the ring changes.
+   */
+  authenticate(purpose: string, message: Uint8Array): Buffer {
+    const subkey = hkdfSync("sha256", this.#legacyKey, Buffer.alloc(0), `opentag/hmac/${purpose}`, KEY_BYTES);
+    return createHmac("sha256", Buffer.from(subkey)).update(message).digest();
   }
 
   /** Legacy v1 envelope under the dedicated legacy key. No key ID, no AAD. */

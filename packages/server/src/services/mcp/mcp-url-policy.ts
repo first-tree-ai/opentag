@@ -222,7 +222,7 @@ export class McpOutboundFetcher {
      * too, but only after a body was assembled and a slot taken, and the answer would say the peer
      * was unreachable when nothing was ever sent.
      */
-    if (init.signal?.aborted === true) throw unreachable({ cause: "aborted" });
+    if (init.signal?.aborted === true) throw unreachable({ cause: "aborted", dispatched: false });
     /*
      * The counter is taken before resolving, not after. A DNS lookup is a network round trip the
      * Account asked for, so a hostile Server answering with many distinct names could otherwise spend
@@ -232,6 +232,7 @@ export class McpOutboundFetcher {
       throw new McpServiceError(
         MCP_ERROR_CODES.UPSTREAM_UNAVAILABLE,
         "Too many concurrent MCP requests for this Account",
+        { cause: "concurrency_limit", dispatched: false },
       );
     }
     this.#inFlight.set(accountId, (this.#inFlight.get(accountId) ?? 0) + 1);
@@ -253,17 +254,19 @@ export class McpOutboundFetcher {
    * `fetchOutbound` when this settles, which is at the deadline rather than after the resolver.
    */
   #request(url: URL, init: McpFetchInit, onAttempt: () => void): Promise<McpFetchResponse> {
+    let dispatched = false;
     return withOutboundDeadline(
       {
         timeoutMs: this.#timeoutMs,
         ...(init.signal === undefined ? {} : { signal: init.signal }),
-        failure: (reason) => unreachable({ cause: reason }),
+        failure: (reason) => unreachable({ cause: reason, ...(dispatched ? {} : { dispatched: false }) }),
       },
       async (deadline) => {
         await this.#assertPublicDestination(url);
         // The resolver cannot be interrupted, so it may answer after this call already failed. No
         // request may follow it: that would spend the Account's slot on a call nobody is waiting for.
         deadline.throwIfEnded();
+        dispatched = true;
         onAttempt();
         return this.#perform(url, init, deadline.signal);
       },
@@ -301,6 +304,7 @@ export class McpOutboundFetcher {
       throw unreachable({
         ...(verdict.failure.cause === undefined ? {} : { cause: verdict.failure.cause }),
         host: verdict.failure.host,
+        dispatched: false,
       });
     }
     throw blocked("The outbound URL resolves to a non-public address", { host: verdict.failure.host });

@@ -80,7 +80,7 @@ export function renderFeedbackText(
   const link = detailsLink(target.provider, detailsUrl, language);
   return content.result
     ? `${content.title} ${link}`
-    : [content.title, content.impact, `${content.availability} ${link}`].join("\n");
+    : [content.title, content.impact, `${content.availability} ${link}`].join("\n\n");
 }
 
 export function renderFeedbackCard(

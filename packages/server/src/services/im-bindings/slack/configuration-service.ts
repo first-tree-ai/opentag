@@ -14,6 +14,7 @@ import { and, eq, isNull, ne } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../../db/client.js";
 import { agents, computers, imBindings } from "../../../db/schema/index.js";
 import type { ApplicationCipher } from "../../crypto.js";
+import { DomainServiceError } from "../../domain-service-error.js";
 import { currentBindingOf } from "../current-binding.js";
 import { releaseTerminalNeverActivatedSlotForAgent } from "../disable-im-binding.js";
 import {
@@ -39,14 +40,10 @@ export interface SlackOAuthActivationInput {
   signingSecret: string;
 }
 
-export class SlackConfigurationServiceError extends Error {
-  constructor(
-    readonly code: string,
-    readonly statusCode: number,
-    message: string,
-    readonly category: ErrorCategory = "deterministic",
-  ) {
-    super(message);
+export class SlackConfigurationServiceError extends DomainServiceError<string, ErrorCategory, number> {
+  constructor(code: string, statusCode: number, message: string, category: ErrorCategory = "deterministic") {
+    super({ code, category, message, statusCode });
+    this.name = "SlackConfigurationServiceError";
   }
 }
 

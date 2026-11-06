@@ -43,6 +43,24 @@ is joined with its sibling before returning, and that a late read after the dead
 480 ms RTT model measures the Server component, not native provider latency; record actual provider timing
 separately when an authorized test deployment is available.
 
+## Feedback queue concurrency and drain
+
+Use the controlled worker and PostgreSQL feedback suites to queue eight independent inputs with delayed transports.
+Verify at most four projections run concurrently and the eighth can start after one round of completions. Multiple
+attempts for one binding/channel/native input remain sequential within a worker, while other inputs keep progressing.
+Concurrent store claimants must never own the same live target claim. A stale claim cannot settle a replacement claim.
+
+Hold a projection across several timer ticks and explicit `runOnce` calls. Verify one `ImFeedbackWorker.runPass`
+start/end pair for the actual pass, including a failed pass. Fail or time out one target and verify independent targets
+still settle. Block the failed target's settlement with a PostgreSQL row lock after a cooldown-storage failure, then let
+its siblings finish. No fifth target may be claimed or started while the failed settlement is waiting; releasing the
+lock drains all already-admitted work. Saturate the shared provider-call pool, verify an unsent card stays pending, then
+release capacity and verify one send succeeds. Queue deadlines remain definitely unsent, while in-flight send deadlines
+retain unknown-send reconciliation. During controlled shutdown,
+verify all admitted projections settle before the worker stops and a claim returned after stop starts no provider call.
+Cancel an in-flight working task and verify its working reaction is removed without creating a failure card or replaying
+execution. These deterministic checks do not establish native provider latency or deployment acceptance.
+
 ## Daemon crash (power loss)
 
 1. Start a long Run in a DM or thread, then kill the daemon process group (`kill -9` of the daemon and its children).
@@ -134,6 +152,18 @@ separately when an authorized test deployment is available.
    no "[openTag notice] Internal Session Run did not complete" notice. A third crash, each within a minute or so of the
    previous resume, produces exactly one such notice naming the failure.
 3. A child whose budget expires does not retry: the parent receives one notice with outcome `timed_out`.
+4. Delay a Local creator's reconcile or delivery receipt, and repeat with a Cloud creator waiting for a cold start.
+   The Local child's `session:message:outcome` frame returns `retry` after notice persistence, before the delayed
+   receipt. Measure that frame response separately from target Runtime acceptance and the creator's callback Run.
+   The child's durable report remains pending; after acceptance is recorded, a replay returns `notified` without
+   delivering another notice. Do not count the frame response as Runtime receipt or business completion.
+5. Repeat with an offline creator, a database failure, a lost database commit response, concurrent duplicate reports,
+   and a Server restart during delivery. The report stays retryable and the same notice ID is reconciled before any
+   retry; a recorded acceptance is never dispatched again. On shutdown, preparation and outcome writes drain, active
+   transport cancellation is signalled, and no later reconcile or delivery is sent. Runtime route shutdown rejects
+   pending receipt waits; an unconfirmed delivery stays `unknown`, and restart replay reconciles the same notice ID
+   through the target's deduplication. Cloud-origin settlement acknowledgements
+   retain their existing bounded, final-notification wait.
 
 ## Steered Session messages
 

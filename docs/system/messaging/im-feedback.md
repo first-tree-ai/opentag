@@ -52,7 +52,9 @@ working reaction like any successful Turn.
 Ordinary failures are plain text in the original conversation or thread. Workspace failures are the only cards,
 because they need Retry save and Discard buttons. A message has three sentences: what happened, whether operations
 ran, and what to do next, followed by the authenticated details link as clickable words, never a raw URL: Feishu
-`text` with `[words](url)`, or Slack `<url|words>`. Error codes and technical details stay on the details page: an IM failure is read by people who cannot act on a code, and a plain message keeps a failure from
+`text` with `[words](url)`, or Slack `<url|words>`. Sentences are separated by a blank line, as on cards. Neither text
+nor cards show an error code: codes and technical details appear only on the details page, which is also where support
+reads them. The reason: an IM failure is read by people who cannot act on a code, and a plain message keeps a failure from
 taking more of the conversation than the work did.
 
 The roughly twenty-four failure reasons map onto five next steps, so the reader is told what to do rather than why
@@ -135,9 +137,18 @@ the only execution authority. Terminal report and feedback transitions commit to
 invalid report acceptable. Reads use a short owner-authorized snapshot. Mutation admission locks Agent custody,
 Agent/binding, Session/placement/delivery, then feedback/action; no provider I/O holds database locks.
 
-One worker processes at most eight due targets per pass with `SKIP LOCKED`, a random ninety-second claim, and the
-shared provider call policy. It checks authority again before I/O and cannot settle a newer desired revision as its
-own. Binding rotation fences new calls and callbacks; it cannot revoke a request already in flight.
+One worker processes at most eight due targets per pass, with up to four independent native inputs in flight.
+Claims remain sequential and exclude inputs already active in that process (binding, channel, and external input ID),
+so separate attempts for the same input do not overlap locally or block other inputs. Selection retains due-time/ID
+ordering, `SKIP LOCKED`, a random ninety-second claim, and the shared provider call policy. The existing claim fences
+each target across replicas; input exclusion is local, not a cross-replica native-message lock. The worker checks authority
+again before I/O and cannot settle a newer desired revision as its own. Binding rotation fences new calls and callbacks;
+it cannot revoke a request already in flight. Timer ticks and explicit wakeups join the active pass; performance logging
+records `ImFeedbackWorker.runPass` once per actual pass. Provider failures are rescheduled independently. A claim or
+settlement storage failure stops further admission while joining every projection already in flight.
+Cooldown-storage failure stops admission as soon as it is observed, before waiting for its settlement write; a blocked
+settlement does not permit more targets to start.
+Shutdown stops new claims, releases a claim that finishes admission after shutdown, and drains every admitted projection.
 
 Before a new card request, the worker persists `sending` and a stable request identity. A lost acknowledgement or
 abandoned send becomes `send_unknown`. Bounded readback searches the original conversation for this Bot and feedback
@@ -151,6 +162,10 @@ New workspace actions expire after twenty-four hours. Previously admitted task r
 settled projections and actions retain ninety days of diagnostics; cleanup is bounded to one hundred records per
 retention tick. Unknown sends and operations survive expiry. Referenced source deliveries/messages remain available
 until their feedback is safely removed. No historical error-card backfill runs.
+
+The shared call policy distinguishes rejection before capacity admission from a request already started. Queue overflow,
+queue deadline, queued cancellation, and an open circuit are definitely not submitted and keep an unsent card pending
+for a later bounded retry. A deadline after the provider action begins remains unknown and requires readback.
 
 ## Slack rate-limit coordination
 
@@ -170,7 +185,7 @@ method deadlines. A request already admitted before the deadline was persisted m
 Success, completion, target retention and legacy cleanup cannot shorten the deadline. Reauthorizing the same
 installation preserves an already committed cooldown, while old-generation responses cannot extend it afterward.
 Expired timestamps remain on the installation and need no cleanup. A cooldown read failure prevents submission.
-If recording a confirmed 429 fails, the current worker pass stops and retains a definitely-unsent pending card;
+If recording a confirmed 429 fails, the current worker pass stops claiming new work, drains its admitted calls, and retains a definitely-unsent pending card;
 coordination is not claimed successful while storage is unavailable. Other replicas and in-flight calls cannot be
 revoked by that local failure. Unknown provider sends retain their separate reconciliation rules.
 

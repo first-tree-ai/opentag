@@ -2,16 +2,15 @@ import type { AccountSetupCompletion } from "@opentag/shared";
 import { and, eq } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
 import { agents, users } from "../../db/schema/index.js";
+import { DomainServiceError } from "../domain-service-error.js";
 
-export class AccountSetupServiceError extends Error {
-  readonly category = "deterministic" as const;
-
-  constructor(
-    readonly code: "ACCOUNT_SETUP_AGENT_NOT_FOUND",
-    readonly statusCode: 404,
-    message: string,
-  ) {
-    super(message);
+export class AccountSetupServiceError extends DomainServiceError<
+  "ACCOUNT_SETUP_AGENT_NOT_FOUND",
+  "deterministic",
+  404
+> {
+  constructor(code: "ACCOUNT_SETUP_AGENT_NOT_FOUND", statusCode: 404, message: string) {
+    super({ code, category: "deterministic", message, statusCode });
     this.name = "AccountSetupServiceError";
   }
 }

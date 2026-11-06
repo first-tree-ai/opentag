@@ -60,5 +60,6 @@ export {
   FeishuSetupQrContextSchema,
   readFeishuSetupContext,
 } from "./setup-context.js";
+export { FEISHU_QR_LINK_PATH_PREFIX } from "./setup-qr-link.js";
 export type { AgentSetupMessagingObservation, FeishuBindingActivation, FeishuSetupTiming } from "./setup-service.js";
 export { DEFAULT_FEISHU_CANDIDATE_TTL_MS, FeishuSetupService } from "./setup-service.js";

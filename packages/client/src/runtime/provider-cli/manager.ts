@@ -208,6 +208,15 @@ export class ProviderCliManager {
       };
     }
 
+    return await this.#inspectSelectedRecord(provider, entry, record, globalCommand);
+  }
+
+  async #inspectSelectedRecord(
+    provider: ProviderCliProvider,
+    entry: ProviderCliCatalogEntry,
+    record: ProviderCliSelectionRecord,
+    globalCommand: ProviderCliGlobalCommandStatus,
+  ): Promise<ProviderCliInspection> {
     const selection = record.selection;
     const targetPath = providerCliSelectionTargetPath(selection);
     const summary = {
@@ -371,19 +380,7 @@ export class ProviderCliManager {
     } catch (error) {
       rethrowCancellation(options.signal, error);
       logger.debug({ code: "ensure_failed", provider, error: String(error) }, "Provider CLI ensure failed");
-      if (error instanceof ProviderCliLockBusyError) {
-        return failed("operation_in_progress", []);
-      }
-      if (error instanceof ProviderCliInstallError) {
-        return failed(error.code, []);
-      }
-      if (error instanceof RuntimeStorageError && error.code === "invalid") {
-        return failed("selection_invalid", []);
-      }
-      if (isStorageOrPermissionError(error)) {
-        return failed("global_bin_unavailable", []);
-      }
-      return failed("install_incomplete", []);
+      return failed(ensureErrorDiagnosticCode(error), []);
     }
   }
 
@@ -413,25 +410,7 @@ export class ProviderCliManager {
     detection: ProviderCliDetection,
     session: EnsureSession,
   ): Promise<ProviderCliEnsureResult> {
-    const ranked = rankProviderCliCandidates(detection.candidates);
-    const upgradeManaged = shouldInstallManagedUpgrade(selection, entry, ranked.ordered);
-    const ordered = upgradeManaged
-      ? ranked.ordered.filter((candidate) => !(candidate.kind === "managed" && candidate.incumbent))
-      : ranked.ordered;
-    const reranked = upgradeManaged ? rankProviderCliCandidates(ordered) : ranked;
-    const winner = reranked.ordered[0];
-    const candidates = buildCandidateReports(detection, reranked.ordered, winner, reranked.reasons, [
-      ...(upgradeManaged && selection
-        ? [
-            {
-              path: providerCliSelectionTargetPath(selection.selection),
-              sourceDir: "selection",
-              version: selection.selection.version,
-              reason: "older-managed-version",
-            },
-          ]
-        : []),
-    ]);
+    const { winner, candidates } = rankDryRunCandidates(selection, entry, detection);
     const globalStatus = await inspectGlobalCommand(this.#layout, entry.command, this.#env);
     const globalWarnings = this.#globalCommandWarnings(globalStatus, selection !== undefined);
     const globalCommand = {
@@ -442,32 +421,7 @@ export class ProviderCliManager {
     const base = { provider, candidates, globalCommand, dryRun: true } as const;
 
     if (winner) {
-      const unchanged = isUnchangedIncumbent(selection, winner);
-      const action = unchanged || winner.kind === "managed" ? "noop" : "selected-existing";
-      session.recordPhase(
-        "select",
-        "completed",
-        unchanged
-          ? "dry-run: the current selection is already the best candidate"
-          : `dry-run: would select ${winner.version} ${winner.kind} ${winner.path}`,
-      );
-      return {
-        ...base,
-        ok: true,
-        action,
-        phases: session.phases,
-        selected: {
-          path: winner.path,
-          version: winner.version,
-          source: winner.kind === "managed" ? "managed" : winner.sourceDir,
-          trust: winner.trust,
-        },
-        readiness: "ready",
-        warnings: [
-          ...globalWarnings,
-          ...(winner.trust === "compatible-unverified" ? [warning("external_candidate_unverified")] : []),
-        ],
-      };
+      return buildDryRunWinnerResult(base, selection, winner, globalWarnings, session);
     }
     if (incompatibleManagedIncumbent(selection, entry, detection)) {
       session.recordPhase("managed-install", "failed", "dry-run: blocked by an incompatible managed installation");
@@ -504,15 +458,15 @@ export class ProviderCliManager {
     };
   }
 
-  async #ensureLocked(
-    provider: ProviderCliProvider,
-    entry: ProviderCliCatalogEntry,
+  async #selectVerifiedWinner(
     selection: ProviderCliSelectionRecord | undefined,
+    entry: ProviderCliCatalogEntry,
     detection: ProviderCliDetection,
-    pathUpdate: boolean,
-    session: EnsureSession,
-    signal: AbortSignal | undefined,
-  ): Promise<ProviderCliEnsureResult> {
+  ): Promise<{
+    ranked: ReturnType<typeof rankProviderCliCandidates>;
+    winner: ProviderCliCandidate | undefined;
+    extraIgnored: { path: string; sourceDir?: string; version?: string; reason: string }[];
+  }> {
     let ranked = rankProviderCliCandidates(detection.candidates);
     let winner = ranked.ordered[0];
     const extraIgnored: { path: string; sourceDir?: string; version?: string; reason: string }[] = [];
@@ -548,6 +502,120 @@ export class ProviderCliManager {
       }
     }
 
+    return { ranked, winner, extraIgnored };
+  }
+
+  async #installManagedSelection(
+    provider: ProviderCliProvider,
+    entry: ProviderCliCatalogEntry,
+    selection: ProviderCliSelectionRecord | undefined,
+    detection: ProviderCliDetection,
+    extraIgnored: readonly { path: string; sourceDir?: string; version?: string; reason: string }[],
+    session: EnsureSession,
+    signal: AbortSignal | undefined,
+  ): Promise<{ ok: true; selection: ProviderCliSelection } | { ok: false; code: ProviderCliDiagnostic["code"] }> {
+    if (
+      incompatibleManagedIncumbent(selection, entry, {
+        candidates: [],
+        ignored: [...detection.ignored, ...extraIgnored],
+      })
+    ) {
+      session.recordPhase("managed-install", "failed", "version_incompatible");
+      return { ok: false, code: "version_incompatible" };
+    }
+    if (!findCatalogArtifact(entry, this.#platform, this.#arch)) {
+      session.recordPhase("managed-install", "failed", "unsupported_platform");
+      return { ok: false, code: "unsupported_platform" };
+    }
+    session.recordPhase("managed-install", "started", `${entry.version} from the reviewed catalog`);
+    const installer = new ProviderCliInstaller({
+      layout: this.#layout,
+      platform: this.#platform,
+      arch: this.#arch,
+      ...(this.#deps.fetcher ? { fetcher: this.#deps.fetcher } : {}),
+      ...(this.#deps.execFile ? { execFile: this.#deps.execFile } : {}),
+    });
+    let installed: Awaited<ReturnType<ProviderCliInstaller["install"]>>;
+    try {
+      installed = await installer.install(entry, provider, signal);
+    } catch (error) {
+      rethrowCancellation(signal, error);
+      logger.debug(
+        { code: "managed_install_failed", provider, error: String(error) },
+        "Provider CLI managed install failed",
+      );
+      const code = managedInstallFailureCode(error);
+      session.recordPhase("managed-install", "failed", code);
+      return { ok: false, code };
+    }
+    const identity = await computeFileIdentity(installed.executablePath);
+    return {
+      ok: true,
+      selection: {
+        kind: "managed",
+        artifactId: installed.artifactId,
+        version: installed.version,
+        targetPath: identity.path,
+        fingerprint: computeTargetFingerprint(identity, installed.version, installed.archiveSha256),
+      },
+    };
+  }
+
+  async #reconcileAndPersistSelection(
+    provider: ProviderCliProvider,
+    entry: ProviderCliCatalogEntry,
+    selection: ProviderCliSelectionRecord | undefined,
+    newSelection: ProviderCliSelection | undefined,
+    winner: ProviderCliCandidate | undefined,
+    reasons: ReadonlyMap<string, string>,
+    pathUpdate: boolean,
+    session: EnsureSession,
+  ): Promise<void> {
+    if (newSelection) {
+      await reconcileProviderCliLauncher(this.#layout, entry, newSelection);
+      if (pathUpdate) {
+        await reconcileProviderCliShim(this.#layout, entry);
+      }
+      const now = this.#deps.now?.() ?? new Date();
+      await writeProviderCliSelection(this.#layout, provider, newSelection, selection, now);
+      if (newSelection.kind === "external") {
+        session.recordPhase(
+          "select",
+          "completed",
+          `${newSelection.version} external ${newSelection.executablePath} (${reasons.get(winner?.id ?? "") ?? "selected"})`,
+        );
+      } else {
+        session.recordPhase(
+          "managed-install",
+          "completed",
+          `${newSelection.version} ${providerCliSelectionTargetPath(newSelection)}`,
+        );
+      }
+      return;
+    }
+
+    // No-op: still reconcile a drifted launcher/shim back to the healthy selection.
+    const current = selection?.selection;
+    if (current) {
+      await reconcileProviderCliLauncher(this.#layout, entry, current);
+      if (pathUpdate) {
+        await reconcileProviderCliShim(this.#layout, entry);
+      }
+    }
+    session.recordPhase("select", "completed", "current selection is already the best candidate");
+  }
+
+  async #ensureLocked(
+    provider: ProviderCliProvider,
+    entry: ProviderCliCatalogEntry,
+    selection: ProviderCliSelectionRecord | undefined,
+    detection: ProviderCliDetection,
+    pathUpdate: boolean,
+    session: EnsureSession,
+    signal: AbortSignal | undefined,
+  ): Promise<ProviderCliEnsureResult> {
+    const { ranked, winner, extraIgnored } = await this.#selectVerifiedWinner(selection, entry, detection);
+
     const finalize = (
       partial: Omit<ProviderCliEnsureResult, "provider" | "phases" | "candidates">,
     ): ProviderCliEnsureResult => ({
@@ -573,110 +641,41 @@ export class ProviderCliManager {
       };
       action = "selected-existing";
     } else {
-      if (
-        incompatibleManagedIncumbent(selection, entry, {
-          candidates: [],
-          ignored: [...detection.ignored, ...extraIgnored],
-        })
-      ) {
-        session.recordPhase("managed-install", "failed", "version_incompatible");
+      const installOutcome = await this.#installManagedSelection(
+        provider,
+        entry,
+        selection,
+        detection,
+        extraIgnored,
+        session,
+        signal,
+      );
+      if (!installOutcome.ok) {
         return finalize({
           ok: false,
           action: "failed",
           readiness: "unavailable",
           globalCommand: { active: false },
           warnings: [],
-          diagnostic: diagnostic("version_incompatible"),
+          diagnostic: diagnostic(installOutcome.code),
         });
       }
-      if (!findCatalogArtifact(entry, this.#platform, this.#arch)) {
-        session.recordPhase("managed-install", "failed", "unsupported_platform");
-        return finalize({
-          ok: false,
-          action: "failed",
-          readiness: "unavailable",
-          globalCommand: { active: false },
-          warnings: [],
-          diagnostic: diagnostic("unsupported_platform"),
-        });
-      }
-      session.recordPhase("managed-install", "started", `${entry.version} from the reviewed catalog`);
-      const installer = new ProviderCliInstaller({
-        layout: this.#layout,
-        platform: this.#platform,
-        arch: this.#arch,
-        ...(this.#deps.fetcher ? { fetcher: this.#deps.fetcher } : {}),
-        ...(this.#deps.execFile ? { execFile: this.#deps.execFile } : {}),
-      });
-      let installed: Awaited<ReturnType<ProviderCliInstaller["install"]>>;
-      try {
-        installed = await installer.install(entry, provider, signal);
-      } catch (error) {
-        rethrowCancellation(signal, error);
-        logger.debug(
-          { code: "managed_install_failed", provider, error: String(error) },
-          "Provider CLI managed install failed",
-        );
-        const code =
-          error instanceof ProviderCliInstallError
-            ? error.code
-            : isStorageOrPermissionError(error)
-              ? "global_bin_unavailable"
-              : "install_incomplete";
-        session.recordPhase("managed-install", "failed", code);
-        return finalize({
-          ok: false,
-          action: "failed",
-          readiness: "unavailable",
-          globalCommand: { active: false },
-          warnings: [],
-          diagnostic: diagnostic(code),
-        });
-      }
-      const identity = await computeFileIdentity(installed.executablePath);
-      newSelection = {
-        kind: "managed",
-        artifactId: installed.artifactId,
-        version: installed.version,
-        targetPath: identity.path,
-        fingerprint: computeTargetFingerprint(identity, installed.version, installed.archiveSha256),
-      };
+      newSelection = installOutcome.selection;
       action = "installed-managed";
     }
 
     // Launcher and shim reconcile before the atomic selection replace; a failure here
     // leaves the prior selection unchanged.
-    if (newSelection) {
-      await reconcileProviderCliLauncher(this.#layout, entry, newSelection);
-      if (pathUpdate) {
-        await reconcileProviderCliShim(this.#layout, entry);
-      }
-      const now = this.#deps.now?.() ?? new Date();
-      await writeProviderCliSelection(this.#layout, provider, newSelection, selection, now);
-      if (newSelection.kind === "external") {
-        session.recordPhase(
-          "select",
-          "completed",
-          `${newSelection.version} external ${newSelection.executablePath} (${ranked.reasons.get(winner?.id ?? "") ?? "selected"})`,
-        );
-      } else {
-        session.recordPhase(
-          "managed-install",
-          "completed",
-          `${newSelection.version} ${providerCliSelectionTargetPath(newSelection)}`,
-        );
-      }
-    } else {
-      // No-op: still reconcile a drifted launcher/shim back to the healthy selection.
-      const current = selection?.selection;
-      if (current) {
-        await reconcileProviderCliLauncher(this.#layout, entry, current);
-        if (pathUpdate) {
-          await reconcileProviderCliShim(this.#layout, entry);
-        }
-      }
-      session.recordPhase("select", "completed", "current selection is already the best candidate");
-    }
+    await this.#reconcileAndPersistSelection(
+      provider,
+      entry,
+      selection,
+      newSelection,
+      winner,
+      ranked.reasons,
+      pathUpdate,
+      session,
+    );
 
     session.recordPhase("verify", "started");
     const inspection = await this.inspect(provider);
@@ -687,35 +686,7 @@ export class ProviderCliManager {
       ok ? "ready" : (inspection.diagnostic?.code ?? "unavailable"),
     );
 
-    const selected = newSelection
-      ? {
-          path: providerCliSelectionTargetPath(newSelection),
-          version: newSelection.version,
-          source: newSelection.kind === "managed" ? "managed" : (winner?.sourceDir ?? "external"),
-          trust: newSelection.kind === "managed" ? ("catalog-verified" as const) : newSelection.trust,
-        }
-      : inspection.selection
-        ? {
-            path: inspection.selection.path,
-            version: inspection.selection.version,
-            source: inspection.selection.kind,
-            trust: inspection.selection.trust,
-          }
-        : undefined;
-
-    return finalize({
-      ok,
-      action: ok ? action : "failed",
-      ...(selected ? { selected } : {}),
-      readiness: ok ? "ready" : "unavailable",
-      globalCommand: {
-        active: inspection.globalCommand.active,
-        ...(inspection.globalCommand.path ? { path: inspection.globalCommand.path } : {}),
-        ...(inspection.globalCommand.resolvedPath ? { resolvedPath: inspection.globalCommand.resolvedPath } : {}),
-      },
-      warnings: [...inspection.warnings],
-      ...(inspection.diagnostic && !ok ? { diagnostic: inspection.diagnostic } : {}),
-    });
+    return finalize(buildVerifiedEnsureOutcome(action, newSelection, winner, inspection));
   }
 }
 
@@ -800,4 +771,147 @@ function isStorageOrPermissionError(error: unknown): boolean {
   if (error instanceof RuntimeStorageError) return true;
   const code = (error as NodeJS.ErrnoException | undefined)?.code;
   return code === "EACCES" || code === "EPERM" || code === "EROFS";
+}
+
+function ensureErrorDiagnosticCode(error: unknown): ProviderCliDiagnostic["code"] {
+  if (error instanceof ProviderCliLockBusyError) {
+    return "operation_in_progress";
+  }
+  if (error instanceof ProviderCliInstallError) {
+    return error.code;
+  }
+  if (error instanceof RuntimeStorageError && error.code === "invalid") {
+    return "selection_invalid";
+  }
+  if (isStorageOrPermissionError(error)) {
+    return "global_bin_unavailable";
+  }
+  return "install_incomplete";
+}
+
+function managedInstallFailureCode(error: unknown): ProviderCliDiagnostic["code"] {
+  if (error instanceof ProviderCliInstallError) {
+    return error.code;
+  }
+  if (isStorageOrPermissionError(error)) {
+    return "global_bin_unavailable";
+  }
+  return "install_incomplete";
+}
+
+function rankDryRunCandidates(
+  selection: ProviderCliSelectionRecord | undefined,
+  entry: ProviderCliCatalogEntry,
+  detection: ProviderCliDetection,
+): {
+  readonly winner: ProviderCliCandidate | undefined;
+  readonly candidates: ProviderCliCandidateReport[];
+} {
+  const ranked = rankProviderCliCandidates(detection.candidates);
+  const upgradeManaged = shouldInstallManagedUpgrade(selection, entry, ranked.ordered);
+  const ordered = upgradeManaged
+    ? ranked.ordered.filter((candidate) => !(candidate.kind === "managed" && candidate.incumbent))
+    : ranked.ordered;
+  const reranked = upgradeManaged ? rankProviderCliCandidates(ordered) : ranked;
+  const winner = reranked.ordered[0];
+  const candidates = buildCandidateReports(detection, reranked.ordered, winner, reranked.reasons, [
+    ...(upgradeManaged && selection
+      ? [
+          {
+            path: providerCliSelectionTargetPath(selection.selection),
+            sourceDir: "selection",
+            version: selection.selection.version,
+            reason: "older-managed-version",
+          },
+        ]
+      : []),
+  ]);
+  return { winner, candidates };
+}
+
+function buildDryRunWinnerResult(
+  base: {
+    readonly provider: ProviderCliProvider;
+    readonly candidates: ProviderCliCandidateReport[];
+    readonly globalCommand: ProviderCliEnsureResult["globalCommand"];
+    readonly dryRun: true;
+  },
+  selection: ProviderCliSelectionRecord | undefined,
+  winner: ProviderCliCandidate,
+  globalWarnings: readonly ProviderCliWarning[],
+  session: EnsureSession,
+): ProviderCliEnsureResult {
+  const unchanged = isUnchangedIncumbent(selection, winner);
+  const action = unchanged || winner.kind === "managed" ? "noop" : "selected-existing";
+  session.recordPhase(
+    "select",
+    "completed",
+    unchanged
+      ? "dry-run: the current selection is already the best candidate"
+      : `dry-run: would select ${winner.version} ${winner.kind} ${winner.path}`,
+  );
+  return {
+    ...base,
+    ok: true,
+    action,
+    phases: session.phases,
+    selected: {
+      path: winner.path,
+      version: winner.version,
+      source: winner.kind === "managed" ? "managed" : winner.sourceDir,
+      trust: winner.trust,
+    },
+    readiness: "ready",
+    warnings: [
+      ...globalWarnings,
+      ...(winner.trust === "compatible-unverified" ? [warning("external_candidate_unverified")] : []),
+    ],
+  };
+}
+
+function resolveEnsureSelectedSummary(
+  newSelection: ProviderCliSelection | undefined,
+  winner: ProviderCliCandidate | undefined,
+  inspection: ProviderCliInspection,
+): ProviderCliEnsureResult["selected"] {
+  if (newSelection) {
+    return {
+      path: providerCliSelectionTargetPath(newSelection),
+      version: newSelection.version,
+      source: newSelection.kind === "managed" ? "managed" : (winner?.sourceDir ?? "external"),
+      trust: newSelection.kind === "managed" ? ("catalog-verified" as const) : newSelection.trust,
+    };
+  }
+  if (inspection.selection) {
+    return {
+      path: inspection.selection.path,
+      version: inspection.selection.version,
+      source: inspection.selection.kind,
+      trust: inspection.selection.trust,
+    };
+  }
+  return undefined;
+}
+
+function buildVerifiedEnsureOutcome(
+  action: ProviderCliEnsureResult["action"],
+  newSelection: ProviderCliSelection | undefined,
+  winner: ProviderCliCandidate | undefined,
+  inspection: ProviderCliInspection,
+): Omit<ProviderCliEnsureResult, "provider" | "phases" | "candidates"> {
+  const ok = inspection.state === "ready";
+  const selected = resolveEnsureSelectedSummary(newSelection, winner, inspection);
+  return {
+    ok,
+    action: ok ? action : "failed",
+    ...(selected ? { selected } : {}),
+    readiness: ok ? "ready" : "unavailable",
+    globalCommand: {
+      active: inspection.globalCommand.active,
+      ...(inspection.globalCommand.path ? { path: inspection.globalCommand.path } : {}),
+      ...(inspection.globalCommand.resolvedPath ? { resolvedPath: inspection.globalCommand.resolvedPath } : {}),
+    },
+    warnings: [...inspection.warnings],
+    ...(inspection.diagnostic && !ok ? { diagnostic: inspection.diagnostic } : {}),
+  };
 }

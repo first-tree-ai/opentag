@@ -23,6 +23,7 @@ import {
   slackInstallations,
   users,
 } from "../../db/schema/index.js";
+import { DomainServiceError } from "../domain-service-error.js";
 import { WorkspaceSaveFailedError } from "../sandboxes/errors.js";
 import type { SandboxRunnerService } from "../sandboxes/sandbox-runner-service.js";
 import {
@@ -33,14 +34,14 @@ import {
 } from "./im-feedback-store.js";
 import { lockImAgentCustody } from "./inbound-admission.js";
 
-export class ImFeedbackServiceError extends Error {
-  readonly category = "deterministic" as const;
-  constructor(
-    readonly code: "IM_FEEDBACK_NOT_FOUND" | "IM_FEEDBACK_CONFLICT",
-    message: string,
-    readonly statusCode: number,
-  ) {
-    super(message);
+export class ImFeedbackServiceError extends DomainServiceError<
+  "IM_FEEDBACK_NOT_FOUND" | "IM_FEEDBACK_CONFLICT",
+  "deterministic",
+  number
+> {
+  constructor(code: "IM_FEEDBACK_NOT_FOUND" | "IM_FEEDBACK_CONFLICT", message: string, statusCode: number) {
+    super({ code, category: "deterministic", message, statusCode });
+    this.name = "ImFeedbackServiceError";
   }
 }
 const conflict = () =>

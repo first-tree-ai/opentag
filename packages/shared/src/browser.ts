@@ -1,4 +1,5 @@
 export * from "./account.js";
+export * from "./account-api-endpoints.js";
 export * from "./agent.js";
 export * from "./agent-permissions.js";
 export * from "./agent-setup.js";

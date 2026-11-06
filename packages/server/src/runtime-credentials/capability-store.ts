@@ -4,6 +4,7 @@ import {
   RUNTIME_CREDENTIAL_CAPABILITY_TTL_MS,
   type RuntimeCredentialProvider,
 } from "@opentag/shared";
+import { RuntimeStoreCapacityError } from "./capacity-error.js";
 import { capabilitySlotKey, type RuntimeExecutionPurpose } from "./types.js";
 
 export interface RuntimeCapabilityRecord {
@@ -41,7 +42,7 @@ export interface RuntimeCapabilityStoreOptions {
   maxRecords?: number;
 }
 
-export class RuntimeCapabilityStoreCapacityError extends Error {
+export class RuntimeCapabilityStoreCapacityError extends RuntimeStoreCapacityError {
   constructor() {
     super("The runtime capability store is full");
     this.name = "RuntimeCapabilityStoreCapacityError";

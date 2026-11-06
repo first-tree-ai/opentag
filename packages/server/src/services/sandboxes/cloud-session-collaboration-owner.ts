@@ -52,6 +52,14 @@ import type {
 } from "../sessions/session-collaboration-service.js";
 import type { SessionService } from "../sessions/session-service.js";
 import type { CloudModelGrantPort } from "./cloud-delivery-owner.js";
+import {
+  cloudConnectionSocket,
+  isExactCloudConnection,
+  recordCloudActivity,
+  resolveCloudRuntimeModel,
+  revokeCloudModelGrant,
+  sendToCloudConnection,
+} from "./cloud-runner-helpers.js";
 import { type CloudConnectionRecord, type CloudRuntimeFence, cloudInstanceIdFor } from "./cloud-runtime-fence.js";
 import { CloudCapacityExceededError } from "./errors.js";
 import { loadManagedSandboxBySessionId, loadSandboxRecordBySessionId } from "./owned-sandbox.js";
@@ -2070,12 +2078,8 @@ export class CloudSessionCollaborationOwner {
       );
   }
 
-  async #resolveRuntimeModel(runtime: EffectiveRuntimeSnapshot): Promise<EffectiveRuntimeSnapshot | undefined> {
-    const grants = this.#modelGrants;
-    if (!grants || !this.#modelBaseUrl) return undefined;
-    if (runtime.model) return (await grants.isModelAllowed(runtime.model)) ? runtime : undefined;
-    const fallback = await grants.defaultModel();
-    return fallback ? { ...runtime, model: fallback } : undefined;
+  #resolveRuntimeModel(runtime: EffectiveRuntimeSnapshot): Promise<EffectiveRuntimeSnapshot | undefined> {
+    return resolveCloudRuntimeModel(runtime, this.#modelGrants, this.#modelBaseUrl);
   }
 
   async #assembleRuntime(sessionId: string): Promise<EffectiveRuntimeSnapshot | undefined> {
@@ -2088,43 +2092,24 @@ export class CloudSessionCollaborationOwner {
   }
 
   #revokeGrant(turnId: string): void {
-    this.#modelGrants?.revokeExecution(turnId);
+    revokeCloudModelGrant(this.#modelGrants, turnId);
   }
 
-  async #recordActivity(sandboxId: string): Promise<void> {
-    const note = this.#noteActivity;
-    if (!note) return;
-    try {
-      await note(sandboxId);
-    } catch {
-      this.#logger?.warn(
-        { code: "CLOUD_SESSION_ACTIVITY_TOUCH_FAILED", sandboxId },
-        "Sandbox business-activity clock update failed",
-      );
-    }
+  #recordActivity(sandboxId: string): Promise<void> {
+    return recordCloudActivity(sandboxId, this.#noteActivity, this.#logger, "CLOUD_SESSION_ACTIVITY_TOUCH_FAILED");
   }
 
   #isExactConnection(connection: CloudConnectionRecord): boolean {
-    return this.#fence.isCurrent(connection.computerId, connection.instanceId, connection.connectionId);
+    return isExactCloudConnection(this.#fence, connection);
   }
 
   #socketFor(connection: CloudConnectionRecord): RunnerControlSocket | undefined {
-    if (this.#fence.connectionForSandbox(connection.scope.sandboxId)?.connectionId !== connection.connectionId) {
-      return undefined;
-    }
-    if (connection.socket) {
-      return this.#hub.isCurrent(connection.scope.sandboxId, connection.socket) ? connection.socket : undefined;
-    }
-    // Fence-only fixtures (tests/recovery snapshots) carry no socket; the hub's current socket is
-    // only acceptable while this exact connection is still the fence's current one (checked above).
-    return this.#hub.currentSocket(connection.scope.sandboxId);
+    return cloudConnectionSocket(this.#fence, this.#hub, connection);
   }
 
   #sendToConnection(connection: CloudConnectionRecord, frame: Parameters<RunnerHub["sendToCurrent"]>[2]): boolean {
     if (this.#stop.signal.aborted) return false;
-    const socket = this.#socketFor(connection);
-    if (!socket) return false;
-    return this.#hub.sendToCurrent(connection.scope.sandboxId, socket, frame);
+    return sendToCloudConnection(this.#fence, this.#hub, connection, frame);
   }
 }
 

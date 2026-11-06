@@ -1,4 +1,6 @@
 import {
+  type AccountApiEndpoint,
+  type AccountApiNoContentEndpoint,
   type AccountCloudComputerEnsureResponse,
   AccountCloudComputerEnsureResponseSchema,
   type AccountComputerConnectCodeIssueRequest,
@@ -8,23 +10,14 @@ import {
   type AccountSetupCompletion,
   AccountSetupCompletionSchema,
   type AccountSetupResetMode,
-  AGENT_ACTIVITY_QUEUED_COUNT_HEADER,
-  AGENT_ACTIVITY_QUEUED_COUNT_VERSION,
-  AGENT_ACTIVITY_TASK_COUNT_HEADER,
-  AGENT_ACTIVITY_TASK_COUNT_VERSION,
-  AGENT_STATUS_HEADER,
-  AGENT_STATUS_VERSION,
   type AgentAdminConfig,
-  AgentAdminConfigSchema,
   type AgentCloudOverview,
   AgentCloudOverviewSchema,
   type AgentDetail,
-  AgentDetailSchema,
   type AgentRuntimeOptions,
   AgentRuntimeOptionsSchema,
   type AgentRuntimeTestRequest,
   type AgentRuntimeTestResponse,
-  AgentRuntimeTestResponseSchema,
   type AgentSchedule,
   type AgentScheduleListResponse,
   AgentScheduleListResponseSchema,
@@ -34,35 +27,24 @@ import {
   type AgentStatusResponse,
   AgentStatusResponseSchema,
   type AgentUsageDetail,
-  AgentUsageDetailSchema,
   type AgentUsageWindowDays,
   type AttachMCPServerRequest,
   type AuthProvidersResponse,
   AuthProvidersResponseSchema,
+  accountApiEndpoints,
   accountComputerByIdPath,
-  accountComputerConnectCodePath,
   accountComputerDisconnectPath,
   accountSandboxRunnerPath,
   accountSandboxRunnerStopPath,
-  agentByIdPath,
   agentCloudPath,
-  agentComputerRebindPath,
-  agentConfigPath,
   agentContextTreePath,
   agentFeishuSetupAttemptsPath,
-  agentImBindingConfigPath,
   agentImBindingHandoffPath,
-  agentImBindingPath,
   agentImBindingUnbindPath,
   agentImFeedbackPath,
-  agentMcpAuthorizationOAuthPath,
   agentMcpAuthorizationPath,
-  agentMcpProbePath,
-  agentMcpServerPath,
   agentMcpServersPath,
-  agentReactivatePath,
   agentRuntimeOptionsPath,
-  agentRuntimeTestPath,
   agentSchedulePath,
   agentSchedulePausePath,
   agentScheduleResumePath,
@@ -72,20 +54,14 @@ import {
   agentSkillBundlePath,
   agentSkillFilePath,
   agentSkillPath,
-  agentSkillPresetInstallPath,
-  agentSkillPresetsPath,
   agentSkillsInstallPath,
   agentSkillsInstallResolvePath,
   agentSkillsPath,
   agentSlackAutoSetupPath,
   agentSlackConfigurationPath,
-  agentSlackOAuthStartPath,
   agentStatusesPath,
-  agentSuspendPath,
-  agentUsagePath,
   CLOUD_BILLING_CHECKOUT_PATH,
   CLOUD_BILLING_PATH,
-  CLOUD_IDENTITY_CAPABILITY_HEADER,
   CLOUD_USAGE_PATH,
   type CloudAvailability,
   CloudAvailabilitySchema,
@@ -96,11 +72,8 @@ import {
   CloudModelOptionsSchema,
   CloudUsageSummarySchema,
   type CloudUsageWindowDays,
-  COMPUTER_ACCESS_CAPABILITY_HEADER,
   type ComputerConnectCodeIssueResponse,
-  ComputerConnectCodeIssueResponseSchema,
   type ComputerConnectCodeStatus,
-  ComputerConnectCodeStatusSchema,
   ConnectMCPOAuthResponseSchema,
   type ContextTreeAvailabilityResponse,
   ContextTreeAvailabilityResponseSchema,
@@ -114,9 +87,7 @@ import {
   ErrorEnvelopeSchema,
   type FeishuSetupAttempt,
   FeishuSetupAttemptSchema,
-  feishuSetupAttemptCancelPath,
   feishuSetupAttemptCheckPath,
-  feishuSetupAttemptPath,
   GITHUB_INTEGRATION_AUTHORIZATION_PATH,
   GITHUB_INTEGRATION_DISCONNECT_PATH,
   GITHUB_INTEGRATION_PATH,
@@ -129,14 +100,11 @@ import {
   githubIntegrationRepositoriesPath,
   HTTP_PATHS,
   type ImBindingAdminDetail,
-  ImBindingAdminDetailSchema,
   type ImBindingDiagnostics,
-  ImBindingDiagnosticsSchema,
   type ImBindingHandoffStatus,
   ImBindingHandoffStatusSchema,
   type ImBindingMessagingExpectation,
   type ImBindingSummary,
-  ImBindingSummarySchema,
   type ImBindingUnbindRequiredDetail,
   type ImFeedbackActionRequest,
   type ImFeedbackList,
@@ -146,51 +114,31 @@ import {
   type InstallRemoteSkillsResponse,
   InstallRemoteSkillsResponseSchema,
   type InstallSkillPresetResponse,
-  InstallSkillPresetResponseSchema,
-  imBindingDiagnosticsPath,
-  imBindingDisablePath,
   imFeedbackActionsPath,
   imFeedbackPath,
   type ListAccountComputersResponse,
-  ListAccountComputersResponseSchema,
   type ListAgentMCPServersResponse,
-  ListAgentMCPServersResponseSchema,
   type ListAgentSkillsResponse,
-  ListAgentSkillsResponseSchema,
   type ListAgentsResponse,
-  ListAgentsResponseSchema,
   type ListAvailableMCPServersResponse,
-  ListAvailableMCPServersResponseSchema,
   type ListMCPServersResponse,
-  ListMCPServersResponseSchema,
   type ListSkillPresetsResponse,
-  ListSkillPresetsResponseSchema,
   type ListTaskRepliesResponse,
   ListTaskRepliesResponseSchema,
   type ListTasksResponse,
   ListTasksResponseSchema,
   MCP_CATALOG_ENDPOINTS_PATH,
   type MCPAgentServer,
-  MCPAgentServerSchema,
   type MCPCatalogEndpointsResponse,
   MCPCatalogEndpointsResponseSchema,
   type MCPProbeResponse,
-  MCPProbeResponseSchema,
   type MCPServer,
   type MCPServerDetail,
-  MCPServerDetailSchema,
-  MCPServerSchema,
   type MeResponse,
-  MeResponseSchema,
-  mcpServerPath,
-  mcpServersPath,
   PROVIDER_CLI_REASON_V2_HEADER,
-  PROVIDER_READINESS_V1_HEADER,
-  PROVIDER_READINESS_V2_HEADER,
   parseResponseIgnoringUnknownKeys,
   type ReadSkillFileResponse,
   ReadSkillFileResponseSchema,
-  type RebindAgentComputerRequest,
   type RemoteSkillSelection,
   type ResolveRemoteSkillsResponse,
   ResolveRemoteSkillsResponseSchema,
@@ -217,10 +165,8 @@ import {
   StartGitHubAuthorizationResponseSchema,
   type StartMCPOAuthRequest,
   type StartMCPOAuthResponse,
-  StartMCPOAuthResponseSchema,
   type StartSlackOAuthRequest,
   type StartSlackOAuthResponse,
-  StartSlackOAuthResponseSchema,
   TaskCancelResponseSchema,
   type TaskCollaborationMessagePage,
   TaskCollaborationMessagePageSchema,
@@ -239,6 +185,7 @@ import {
   taskDetailPath,
   taskDetailSectionPath,
   taskRepliesPath,
+  toAccountApiRequestInit,
   type UnbindAgentMessagingRequest,
   type UpdateAgentRequest,
   type UpdateMCPBindingRequest,
@@ -437,7 +384,7 @@ export class BrowserApi {
   }
 
   me(): Promise<MeResponse> {
-    return this.request("/api/v1/me", MeResponseSchema);
+    return this.requestAccount(accountApiEndpoints.me());
   }
 
   updateProfile(input: UpdateUserProfileRequest): Promise<UserProfile> {
@@ -461,13 +408,7 @@ export class BrowserApi {
   }
 
   agents(): Promise<ListAgentsResponse> {
-    return this.request(HTTP_PATHS.accountAgents, ListAgentsResponseSchema, {
-      headers: {
-        [AGENT_ACTIVITY_TASK_COUNT_HEADER]: AGENT_ACTIVITY_TASK_COUNT_VERSION,
-        [AGENT_ACTIVITY_QUEUED_COUNT_HEADER]: AGENT_ACTIVITY_QUEUED_COUNT_VERSION,
-        [AGENT_STATUS_HEADER]: AGENT_STATUS_VERSION,
-      },
-    });
+    return this.requestAccount(accountApiEndpoints.listAgents({ includeActivityAndStatus: true }));
   }
 
   agentStatuses(ids: readonly string[]): Promise<AgentStatusResponse> {
@@ -539,12 +480,7 @@ export class BrowserApi {
   }
 
   agent(agentId: string): Promise<AgentDetail> {
-    return this.request(agentByIdPath(agentId), AgentDetailSchema, {
-      headers: {
-        [AGENT_ACTIVITY_TASK_COUNT_HEADER]: AGENT_ACTIVITY_TASK_COUNT_VERSION,
-        [AGENT_ACTIVITY_QUEUED_COUNT_HEADER]: AGENT_ACTIVITY_QUEUED_COUNT_VERSION,
-      },
-    });
+    return this.requestAccount(accountApiEndpoints.getAgent(agentId, { includeActivity: true }));
   }
 
   agentSchedules(agentId: string, query: { limit?: number; cursor?: string } = {}): Promise<AgentScheduleListResponse> {
@@ -588,11 +524,11 @@ export class BrowserApi {
     windowDays: AgentUsageWindowDays,
     timezone = viewerTimezone(),
   ): Promise<AgentUsageDetail> {
-    return this.request(agentUsagePath(agentId, windowDays, timezone), AgentUsageDetailSchema);
+    return this.requestAccount(accountApiEndpoints.getAgentUsage(agentId, windowDays, timezone));
   }
 
   agentConfig(agentId: string): Promise<AgentAdminConfig> {
-    return this.request(agentConfigPath(agentId), AgentAdminConfigSchema);
+    return this.requestAccount(accountApiEndpoints.getAgentConfig(agentId));
   }
 
   /**
@@ -618,19 +554,11 @@ export class BrowserApi {
   }
 
   createAgent(input: CreateAgentRequest): Promise<AgentAdminConfig> {
-    return this.request(HTTP_PATHS.accountAgents, AgentAdminConfigSchema, {
-      method: "POST",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
+    return this.requestAccount(accountApiEndpoints.createAgent(input));
   }
 
   updateAgent(agentId: string, input: UpdateAgentRequest): Promise<AgentAdminConfig> {
-    return this.request(agentByIdPath(agentId), AgentAdminConfigSchema, {
-      method: "PATCH",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
+    return this.requestAccount(accountApiEndpoints.updateAgent(agentId, input));
   }
 
   contextTreeAvailability(agentId: string): Promise<ContextTreeAvailabilityResponse> {
@@ -659,34 +587,19 @@ export class BrowserApi {
     input: AgentRuntimeTestRequest,
     signal?: AbortSignal,
   ): Promise<AgentRuntimeTestResponse> {
-    return this.request(agentRuntimeTestPath(agentId), AgentRuntimeTestResponseSchema, {
-      method: "POST",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-      ...(signal ? { signal } : {}),
-    });
+    return this.requestAccount(accountApiEndpoints.testAgentRuntime(agentId, input), signal ? { signal } : undefined);
   }
 
   suspendAgent(agentId: string): Promise<AgentAdminConfig> {
-    return this.request(agentSuspendPath(agentId), AgentAdminConfigSchema, {
-      method: "POST",
-      headers: this.csrfHeaders(),
-    });
+    return this.requestAccount(accountApiEndpoints.suspendAgent(agentId));
   }
 
   rebindAgentComputer(agentId: string, computerId: string): Promise<AgentAdminConfig> {
-    return this.request(agentComputerRebindPath(agentId), AgentAdminConfigSchema, {
-      method: "POST",
-      body: JSON.stringify({ computerId } satisfies RebindAgentComputerRequest),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
+    return this.requestAccount(accountApiEndpoints.rebindAgentComputer(agentId, computerId));
   }
 
   reactivateAgent(agentId: string): Promise<AgentAdminConfig> {
-    return this.request(agentReactivatePath(agentId), AgentAdminConfigSchema, {
-      method: "POST",
-      headers: this.csrfHeaders(),
-    });
+    return this.requestAccount(accountApiEndpoints.reactivateAgent(agentId));
   }
 
   disconnectComputer(computerId: string): Promise<void> {
@@ -707,14 +620,11 @@ export class BrowserApi {
   }
 
   deleteAgent(agentId: string): Promise<void> {
-    return this.requestNoContent(agentByIdPath(agentId), {
-      method: "DELETE",
-      headers: this.csrfHeaders(),
-    });
+    return this.requestNoContentAccount(accountApiEndpoints.deleteAgent(agentId));
   }
 
   imBinding(agentId: string): Promise<ImBindingSummary | undefined> {
-    return this.requestOptional(agentImBindingPath(agentId), ImBindingSummarySchema);
+    return this.requestOptionalAccount(accountApiEndpoints.getAgentImBinding(agentId));
   }
 
   imBindingHandoff(agentId: string): Promise<ImBindingHandoffStatus | undefined> {
@@ -724,7 +634,7 @@ export class BrowserApi {
   }
 
   imBindingConfig(agentId: string): Promise<ImBindingAdminDetail | undefined> {
-    return this.requestOptional(agentImBindingConfigPath(agentId), ImBindingAdminDetailSchema);
+    return this.requestOptionalAccount(accountApiEndpoints.getAgentImBindingConfig(agentId));
   }
 
   unbindAgentMessaging(agentId: string, input: UnbindAgentMessagingRequest): Promise<void> {
@@ -740,15 +650,11 @@ export class BrowserApi {
     intent: "create" | "reauthorize" | "replace" = "create",
     expectedMessaging?: ImBindingMessagingExpectation,
   ): Promise<FeishuSetupAttempt> {
-    return this.request(agentFeishuSetupAttemptsPath(agentId), FeishuSetupAttemptSchema, {
-      method: "POST",
-      body: JSON.stringify({ intent, ...(expectedMessaging ? { expectedMessaging } : {}) }),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
+    return this.requestAccount(accountApiEndpoints.createFeishuSetupAttempt(agentId, intent, expectedMessaging));
   }
 
   feishuSetupAttempt(attemptId: string): Promise<FeishuSetupAttempt> {
-    return this.request(feishuSetupAttemptPath(attemptId), FeishuSetupAttemptSchema);
+    return this.requestAccount(accountApiEndpoints.getFeishuSetupAttempt(attemptId));
   }
 
   currentFeishuSetupAttempt(agentId: string): Promise<FeishuSetupAttempt | undefined> {
@@ -763,18 +669,11 @@ export class BrowserApi {
   }
 
   cancelFeishuSetupAttempt(attemptId: string): Promise<FeishuSetupAttempt> {
-    return this.request(feishuSetupAttemptCancelPath(attemptId), FeishuSetupAttemptSchema, {
-      method: "POST",
-      headers: this.csrfHeaders(),
-    });
+    return this.requestAccount(accountApiEndpoints.cancelFeishuSetupAttempt(attemptId));
   }
 
   startSlackOAuth(agentId: string, input: StartSlackOAuthRequest): Promise<StartSlackOAuthResponse> {
-    return this.request(agentSlackOAuthStartPath(agentId), StartSlackOAuthResponseSchema, {
-      method: "POST",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
+    return this.requestAccount(accountApiEndpoints.startSlackOAuth(agentId, input));
   }
 
   autoSetupSlack(agentId: string, input: SlackAutoSetupRequest): Promise<SlackAutoSetupResponse> {
@@ -800,28 +699,15 @@ export class BrowserApi {
   }
 
   imBindingDiagnostics(imBindingId: string): Promise<ImBindingDiagnostics> {
-    return this.request(imBindingDiagnosticsPath(imBindingId), ImBindingDiagnosticsSchema, {
-      headers: { [PROVIDER_CLI_REASON_V2_HEADER]: "2" },
-    });
+    return this.requestAccount(accountApiEndpoints.getImBindingDiagnostics(imBindingId));
   }
 
   disableImBinding(imBindingId: string): Promise<void> {
-    return this.requestNoContent(imBindingDisablePath(imBindingId), {
-      method: "POST",
-      headers: this.csrfHeaders(),
-    });
+    return this.requestNoContentAccount(accountApiEndpoints.disableImBinding(imBindingId));
   }
 
   computers(): Promise<ListAccountComputersResponse> {
-    return this.request(HTTP_PATHS.accountComputers, ListAccountComputersResponseSchema, {
-      headers: {
-        [CLOUD_IDENTITY_CAPABILITY_HEADER]: "1",
-        [COMPUTER_ACCESS_CAPABILITY_HEADER]: "1",
-        [PROVIDER_READINESS_V1_HEADER]: "1",
-        [PROVIDER_READINESS_V2_HEADER]: "2",
-        [PROVIDER_CLI_REASON_V2_HEADER]: "2",
-      },
-    });
+    return this.requestAccount(accountApiEndpoints.listAccountComputers({ includeBrowserCapabilities: true }));
   }
 
   cloudAvailability(): Promise<CloudAvailability> {
@@ -892,11 +778,7 @@ export class BrowserApi {
    * it keeps its identity rather than becoming a second Computer beside the one it replaced.
    */
   issueComputerConnectCode(input?: AccountComputerConnectCodeIssueRequest): Promise<ComputerConnectCodeIssueResponse> {
-    return this.request(HTTP_PATHS.accountComputerConnectCodes, ComputerConnectCodeIssueResponseSchema, {
-      method: "POST",
-      ...(input ? { body: JSON.stringify(input) } : {}),
-      headers: { ...(input ? { "content-type": "application/json" } : {}), ...this.csrfHeaders() },
-    });
+    return this.requestAccount(accountApiEndpoints.issueComputerConnectCode(input));
   }
 
   /**
@@ -952,7 +834,7 @@ export class BrowserApi {
    * deployment-fixed rather than chosen here.
    */
   mcpServers(): Promise<ListMCPServersResponse> {
-    return this.request(mcpServersPath(), ListMCPServersResponseSchema);
+    return this.requestAccount(accountApiEndpoints.listMcpServers());
   }
 
   /** The catalog endpoints this deployment replaces because it configured a client for them. */
@@ -961,7 +843,7 @@ export class BrowserApi {
   }
 
   mcpServer(mcpServerId: string): Promise<MCPServerDetail> {
-    return this.request(mcpServerPath(mcpServerId), MCPServerDetailSchema);
+    return this.requestAccount(accountApiEndpoints.getMcpServer(mcpServerId));
   }
 
   reusableMcpInstallation(agentId: string, input: CreateMCPServerRequest, scopes: readonly string[] = []) {
@@ -977,30 +859,19 @@ export class BrowserApi {
   }
 
   createMcpServer(input: CreateMCPServerRequest): Promise<MCPServer> {
-    return this.request(mcpServersPath(), MCPServerSchema, {
-      method: "POST",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
+    return this.requestAccount(accountApiEndpoints.createMcpServer(input));
   }
 
   updateMcpServer(mcpServerId: string, input: UpdateMCPServerRequest): Promise<MCPServer> {
-    return this.request(mcpServerPath(mcpServerId), MCPServerSchema, {
-      method: "PATCH",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
+    return this.requestAccount(accountApiEndpoints.updateMcpServer(mcpServerId, input));
   }
 
   removeMcpServer(mcpServerId: string): Promise<void> {
-    return this.requestNoContent(mcpServerPath(mcpServerId), {
-      method: "DELETE",
-      headers: this.csrfHeaders(),
-    });
+    return this.requestNoContentAccount(accountApiEndpoints.removeMcpServer(mcpServerId));
   }
 
   agentMcpServers(agentId: string): Promise<ListAgentMCPServersResponse> {
-    return this.request(agentMcpServersPath(agentId), ListAgentMCPServersResponseSchema);
+    return this.requestAccount(accountApiEndpoints.listAgentMcpServers(agentId));
   }
 
   connectMcpOAuth(agentId: string, mcpServerId: string, scopes: readonly string[] = []) {
@@ -1012,30 +883,19 @@ export class BrowserApi {
   }
 
   availableMcpServers(agentId: string): Promise<ListAvailableMCPServersResponse> {
-    return this.request(`${agentMcpServersPath(agentId)}/available`, ListAvailableMCPServersResponseSchema);
+    return this.requestAccount(accountApiEndpoints.listAvailableMcpServers(agentId));
   }
 
   attachMcpServer(agentId: string, input: AttachMCPServerRequest): Promise<MCPAgentServer> {
-    return this.request(agentMcpServersPath(agentId), MCPAgentServerSchema, {
-      method: "POST",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
+    return this.requestAccount(accountApiEndpoints.attachMcpServer(agentId, input));
   }
 
   updateAgentMcpServer(agentId: string, mcpServerId: string, input: UpdateMCPBindingRequest): Promise<MCPAgentServer> {
-    return this.request(agentMcpServerPath(agentId, mcpServerId), MCPAgentServerSchema, {
-      method: "PATCH",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
+    return this.requestAccount(accountApiEndpoints.updateAgentMcpServer(agentId, mcpServerId, input));
   }
 
   detachMcpServer(agentId: string, mcpServerId: string): Promise<void> {
-    return this.requestNoContent(agentMcpServerPath(agentId, mcpServerId), {
-      method: "DELETE",
-      headers: this.csrfHeaders(),
-    });
+    return this.requestNoContentAccount(accountApiEndpoints.detachMcpServer(agentId, mcpServerId));
   }
 
   setMcpAuthorization(
@@ -1043,22 +903,11 @@ export class BrowserApi {
     mcpServerId: string,
     input: SetMCPAuthorizationRequest,
   ): Promise<MCPAgentServer> {
-    return this.request(agentMcpAuthorizationPath(agentId, mcpServerId), MCPAgentServerSchema, {
-      method: "PUT",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
+    return this.requestAccount(accountApiEndpoints.setMcpAuthorization(agentId, mcpServerId, input));
   }
 
   revokeMcpAuthorization(agentId: string, mcpServerId: string, expectedOAuthState?: string): Promise<MCPAgentServer> {
-    return this.request(agentMcpAuthorizationPath(agentId, mcpServerId), MCPAgentServerSchema, {
-      method: "DELETE",
-      ...(expectedOAuthState !== undefined ? { body: JSON.stringify({ expectedOAuthState }) } : {}),
-      headers: {
-        ...(expectedOAuthState !== undefined ? { "content-type": "application/json" } : {}),
-        ...this.csrfHeaders(),
-      },
-    });
+    return this.requestAccount(accountApiEndpoints.revokeMcpAuthorization(agentId, mcpServerId, expectedOAuthState));
   }
 
   startMcpOAuth(
@@ -1066,18 +915,11 @@ export class BrowserApi {
     mcpServerId: string,
     input: StartMCPOAuthRequest = {},
   ): Promise<StartMCPOAuthResponse> {
-    return this.request(agentMcpAuthorizationOAuthPath(agentId, mcpServerId), StartMCPOAuthResponseSchema, {
-      method: "POST",
-      body: JSON.stringify(input),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
+    return this.requestAccount(accountApiEndpoints.startMcpOAuth(agentId, mcpServerId, input));
   }
 
   probeMcpServer(agentId: string, mcpServerId: string): Promise<MCPProbeResponse> {
-    return this.request(agentMcpProbePath(agentId, mcpServerId), MCPProbeResponseSchema, {
-      method: "POST",
-      headers: this.csrfHeaders(),
-    });
+    return this.requestAccount(accountApiEndpoints.probeMcpServer(agentId, mcpServerId));
   }
 
   /*
@@ -1087,11 +929,11 @@ export class BrowserApi {
    * the browser's own navigation carries the session cookie and the Server's `Content-Disposition`.
    */
   agentSkills(agentId: string): Promise<ListAgentSkillsResponse> {
-    return this.request(agentSkillsPath(agentId), ListAgentSkillsResponseSchema);
+    return this.requestAccount(accountApiEndpoints.listAgentSkills(agentId));
   }
 
   agentSkill(agentId: string, skillId: string): Promise<SkillDetail> {
-    return this.request(agentSkillPath(agentId, skillId), SkillDetailSchema);
+    return this.requestAccount(accountApiEndpoints.getAgentSkill(agentId, skillId));
   }
 
   agentSkillFile(
@@ -1139,10 +981,7 @@ export class BrowserApi {
   }
 
   removeAgentSkill(agentId: string, skillId: string): Promise<void> {
-    return this.requestNoContent(agentSkillPath(agentId, skillId), {
-      method: "DELETE",
-      headers: this.csrfHeaders(),
-    });
+    return this.requestNoContentAccount(accountApiEndpoints.removeAgentSkill(agentId, skillId));
   }
 
   /** The same-origin bundle download path, built from the shared template rather than a string. */
@@ -1180,15 +1019,11 @@ export class BrowserApi {
    * `preset` provenance.
    */
   skillPresets(agentId: string): Promise<ListSkillPresetsResponse> {
-    return this.request(agentSkillPresetsPath(agentId), ListSkillPresetsResponseSchema);
+    return this.requestAccount(accountApiEndpoints.listSkillPresets(agentId));
   }
 
   installSkillPreset(agentId: string, presetName: string): Promise<InstallSkillPresetResponse> {
-    return this.request(agentSkillPresetInstallPath(agentId, presetName), InstallSkillPresetResponseSchema, {
-      method: "POST",
-      body: JSON.stringify({}),
-      headers: { "content-type": "application/json", ...this.csrfHeaders() },
-    });
+    return this.requestAccount(accountApiEndpoints.installSkillPreset(agentId, presetName));
   }
 
   /**
@@ -1209,7 +1044,7 @@ export class BrowserApi {
    * page learns which Computer its command connected.
    */
   computerConnectCodeStatus(connectCodeId: string): Promise<ComputerConnectCodeStatus> {
-    return this.request(accountComputerConnectCodePath(connectCodeId), ComputerConnectCodeStatusSchema);
+    return this.requestAccount(accountApiEndpoints.computerConnectCodeStatus(connectCodeId));
   }
 
   async health(path: "/healthz" | "/readyz"): Promise<{ latencyMs: number; observedAt: string; status: string }> {
@@ -1249,6 +1084,28 @@ export class BrowserApi {
       method: "POST",
       headers: this.csrfHeaders(),
     });
+  }
+
+  private requestAccount<T>(endpoint: AccountApiEndpoint<T>, options?: { signal?: AbortSignal }): Promise<T> {
+    return this.request(endpoint.path, endpoint.schema, {
+      ...toAccountApiRequestInit(endpoint, endpoint.method === "GET" ? undefined : this.csrfHeaders()),
+      ...(options?.signal ? { signal: options.signal } : {}),
+    });
+  }
+
+  private requestOptionalAccount<T>(endpoint: AccountApiEndpoint<T>): Promise<T | undefined> {
+    return this.requestOptional(
+      endpoint.path,
+      endpoint.schema,
+      toAccountApiRequestInit(endpoint, endpoint.method === "GET" ? undefined : this.csrfHeaders()),
+    );
+  }
+
+  private requestNoContentAccount(endpoint: AccountApiNoContentEndpoint): Promise<void> {
+    return this.requestNoContent(
+      endpoint.path,
+      toAccountApiRequestInit(endpoint, endpoint.method === "GET" ? undefined : this.csrfHeaders()),
+    );
   }
 
   private async request<T>(path: string, schema: RuntimeSchema<T>, init: RequestInit = {}): Promise<T> {
@@ -1347,7 +1204,7 @@ export class BrowserApi {
     throw new ResponseSchemaError(routeTemplate(path), issues);
   }
 
-  private csrfHeaders(): HeadersInit {
+  private csrfHeaders(): Record<string, string> {
     const token = this.csrfToken();
     return token ? { "X-OpenTag-CSRF": token } : {};
   }

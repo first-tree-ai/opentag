@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { RUNTIME_EXECUTION_MAX_LIFETIME_MS, type RuntimeCredentialRevokedCode } from "@opentag/shared";
+import { RuntimeStoreCapacityError } from "./capacity-error.js";
 import { type RuntimeExecutionCloseEvent, type RuntimeExecutionRecord, runtimeConnectionKey } from "./types.js";
 
 export interface RuntimeExecutionRegistryOptions {
@@ -9,7 +10,7 @@ export interface RuntimeExecutionRegistryOptions {
   maxPerConnection?: number;
 }
 
-export class RuntimeExecutionRegistryCapacityError extends Error {
+export class RuntimeExecutionRegistryCapacityError extends RuntimeStoreCapacityError {
   constructor() {
     super("The runtime execution registry is full");
     this.name = "RuntimeExecutionRegistryCapacityError";

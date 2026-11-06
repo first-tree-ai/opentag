@@ -63,48 +63,144 @@ Delivery responsibility is two-stage, split at the Client's acceptance:
    restart, without starting a second Turn. Placement generation and
    connection-instance checks fence every acceptance and report.
 
-What the Client does today with accepted work that does not complete on a
-Local Computer:
+What the Client does with accepted work that does not complete on a Local
+Computer is described next. Without the retry, or once it is spent, the
+outcomes are: an IM Turn reports `cancelled / client_shutdown` for an orderly
+stop, `unknown / turn_state_unknown` (`may_have_occurred`) when found starting
+or running after a restart, `failed / provider_start_failed` (`not_started`)
+when it never reached the Provider, and `failed / turn_timeout` for a timeout;
+the Server shows the person an [error card](messaging/im-feedback.md). A Session
+message ends `failed` and an internal Session's creator gets a
+[Run outcome notice](messaging/internal-session-collaboration.md#run-outcome-notices).
 
-- An IM Turn is never rerun, and the Server shows the person an
-  [error card](messaging/im-feedback.md) for its terminal report. A daemon
-  shutdown reports it `cancelled / client_shutdown` with `executionEffects:
-  may_have_occurred`. A Turn found unresolved after a restart reports `unknown /
-  turn_state_unknown` with `may_have_occurred` when it was starting or running,
-  and `failed / provider_start_failed` with `not_started` when it never reached
-  the Provider. A timeout reports `failed / turn_timeout`: with
-  `may_have_occurred` once the Provider has started, and with `not_started` when
-  the request was already past its deadline before the Provider started (see
-  [IM delivery claim queries](messaging/im-delivery-claim.md)).
-- A Session message follows the inbox retry policy: a failure not classified
-  `never` retries with backoff up to five attempts within 15 minutes, and a
-  message whose Run was in flight at a restart runs again unless that budget is
-  already exhausted, in which case it is dead-lettered. `turn_timeout` and an
-  interrupted steer are terminal. Each terminal failure, including a
-  dead-letter, produces a
-  [Run outcome notice](messaging/internal-session-collaboration.md#run-outcome-notices)
-  for an internal Session's creator.
+### Delivery of completed Turn reports
+
+The Client writes the immutable completed report into the Session binding before
+submitting it to the Turn Report owner. The owner's delivery record is separate:
+its failed writes retain volatile retry bookkeeping, without advancing the durable
+record or sending before persistence succeeds. Initial and retry-transition write
+failures use the same capped attempts, age limit and backoff as report delivery.
+Exhausting that budget retains the Session's report for a later recovery reconcile.
+
+A legal reconcile can advertise an exact retained report while the same live Turn
+is reporting, including after delivery enters dead-letter. It cannot take over a
+running Turn, another Turn or delivery, or a live reporting activity at a different
+placement generation. Replay joins an existing in-flight report or its retry timer;
+it reopens exhausted delivery only after the retained-report manifest is sent.
+Confirmation records the result through the live custody owner when present, then
+releases that Turn's admission and reporting activity. Disk-only recovery clears
+its recovery fence instead. Cancellation of an unsent manifest starts no replay.
+These paths resend the original report and never run the completed model task again.
+The Server still checks current ownership, connection instance, placement and
+terminal settlement before accepting a report.
 
 ### Automatic retry of accepted work
 
-> **Planned — not yet implemented.** Tracking: #1301
+Automatic retry of accepted work belongs to the Local Client daemon; the Server
+never redelivers accepted input and only records the outcome the Client reports.
+The rule ([#1301](https://github.com/first-tree-ai/opentag/issues/1301#issuecomment-6651237819)):
 
-Automatic retry of already-accepted work belongs to the Client daemon, not the
-Server. It replaces the current rules above that never rerun an interrupted or
-timed-out IM Turn and that retry a Session message up to five times.
+- A process interruption (a daemon crash or power loss, an orderly restart or
+  upgrade) and a model HTTP 429 (`provider_rate_limited`) share one count of at
+  most 2 automatic retries. A retry that actually ran for at least 5 minutes
+  resets the count (`MAX_AUTOMATIC_RETRIES`, `RETRY_RESET_AFTER_MS`); downtime,
+  waiting and backoff do not count. This does not stop work that crashes the
+  daemon only after running longer than that.
+- The Run's duration limit counts actual running time across retries and resumes.
+  A resume keeps what is left of the budget. Reaching the limit (`turn_timeout`)
+  is not retried, and neither is any other failure.
 
-- The Client retries only recoverable failures: a process crash or power loss,
-  an upgrade or restart interruption, a Run timeout, and a model API HTTP 429
-  rate limit. Non-recoverable failures, such as local validation errors, are
-  never retried automatically.
-- Each message gets at most one automatic retry. If the retry also fails, the
-  Client reports the failure to the Server, and the Server shows the error to
-  the person.
-- After a daemon restart, the Client injects a continuation message carrying
-  the interruption reason into every interrupted Session — IM channel and
-  thread Sessions as well as internal Sessions — and then processes the queued
-  messages that were not yet processed.
-- A person can always retry manually by sending another message.
+Run time is recorded durably about once a minute while a Run works, so a crash
+loses at most that much of it.
+
+A failure that is not retried, and running out of retries, are reported as
+before: an IM Turn gets its terminal report and error card, an internal Session's
+creator gets its [Run outcome notice](messaging/internal-session-collaboration.md#run-outcome-notices).
+While a retry is pending or running nothing is reported, so the Server shows no
+error card and sends no notice for it.
+
+The retry continues the same Session with a continuation notice as the first
+input item — `[OpenTag] Your previous turn was interrupted at <time> because
+<reason> (automatic retry). Before continuing, check your history …` — then
+the original input and, for an IM Turn, the messages steered into it, in their
+original order. Duplicates
+are acceptable: the Provider may or may not have persisted the interrupted turn.
+
+- A 429 retries in place, in the same daemon, after about 30 seconds. Its count
+  is settled when it fails. The ingress deadline bounds only the first attempt. An IM Turn keeps its delivery and Turn identity, so
+  the retry's report settles the original delivery.
+- An orderly stop (`opentag daemon restart`, upgrade) does not report
+  `cancelled / client_shutdown`; it records the interruption durably and leaves
+  the Turn unresolved for the restarted daemon to count. A crash leaves no
+  record of its own: an unresolved Turn found on restart is a crash.
+- On startup the daemon counts the retry durably before anything runs, unless a
+  429 already counted it and only the wait was interrupted. When the
+  retries have run out, the Turn gets its recovery report and the Session
+  messages steered into it fail with it. The IM Turn's original
+  input lives in a per-Session file under `data/runtime/turn-retries/`, written
+  at acceptance and removed when the Turn's result is recorded. It is part of
+  the acceptance boundary: when it cannot be written, the just-committed
+  custody is undone and the delivery is rejected as retryable. If that undo
+  cannot be confirmed either, the durable custody stands and the Turn is
+  accepted without an automatic retry, so an interruption is reported through
+  ordinary recovery. Every steered message is captured in the input before it
+  is steered; when it cannot be (storage failure, or more than 16 steered
+  messages), the steer is deferred and the Server delivers the message after
+  the Turn. A retry replays only captured steers with a durable steer receipt,
+  that is, the ones the Server settled with this Turn. When a Turn has captured
+  steers and its Session binding is unreadable or no longer holds the Turn, the
+  receipts are unknown, so no retry runs and the original failure is reported
+  rather than completing without acknowledged input. An in-place retry first
+  waits briefly for steers still in flight, so one acknowledged as the Run ends
+  is not lost; if one does not settle in time, the failure is reported the same
+  way. A Session message's
+  interruption and run time are kept on its durable inbox record, updated in
+  place so the inbox order survives a restart; the Server-backed durability
+  adapter does not store them, so a recovered Run there resumes as a crash, gets
+  its whole budget again, and its count never resets.
+- Only the Server can prepare a Session for the new connection (current
+  snapshot and a fresh Session CLI proof), so after connecting the daemon sends
+  `session:recover` for each Session with interrupted or waiting work (see
+  [Session recovery](runtime/runtime-protocol.md#session-recovery)). The Server
+  moves the IM Turn's report ownership to the new connection and sends a ready
+  reconcile, admitted at its send boundary only while the Agent, Session and
+  placement are still live, so a concurrent Agent stop is never overtaken. The
+  daemon prepares the Session around its unresolved Turn and resumes it;
+  when it cannot start yet (for example admission is full), the resume stays
+  pending and the daemon asks for another reconcile. Before and during the resume the Session answers the
+  Server's accepted-recovery reconcile with `busy / active_turn`, which defers
+  recovery without a diagnostic and is never a report.
+- The daemon owns each recovery until the Session is actually prepared: after
+  `scheduled` it waits for the ready reconcile, and sends the request again
+  when the reconcile does not arrive. A refused reconcile, a refused request
+  (for example the Session ended), a missing capability, or running out of
+  attempts falls back: the IM Turn gets its `unknown / turn_state_unknown`
+  recovery report and waiting Session messages fail (with a creator notice
+  when the target is an internal Session).
+- Session messages waiting for that preparation are not failures. Once the
+  Turn is resumed they are steered into it in order; see
+  [Session messages steered into an IM Turn](messaging/internal-session-collaboration.md#session-messages-steered-into-an-im-turn).
+- An automatic upgrade does not wait for running Sessions. It installs the new
+  version while they keep running and new work keeps arriving, so a failed
+  install costs them nothing. It then closes admission and stops the daemon
+  through the orderly stop above. That stop still finishes its durable writes
+  (interruption records, inbox records, Turn reports and Session message outcome
+  reports); a report not yet sent is replayed after the restart. Background
+  processes a Run started are lost with it.
+- An automatic upgrade waits only while the Client is registered with a Server
+  that did not negotiate `runtime.sessionRecovery`, that is, one older than this
+  retry. Then it closes admission and waits for protected work, and new input is
+  refused with `client_busy` until the wait ends or that changes. An IM delivery
+  stays pending on the Server and arrives later; a scheduled message is recorded
+  as `unreachable`. A Client that is not registered does not wait: while
+  disconnected nothing can be delivered, and a Client the Server rejected for its
+  version can finish its work only after upgrading.
+- Manual `opentag upgrade` and `opentag daemon restart` still stop the daemon
+  without waiting.
+
+Cloud is unchanged: accepted Cloud custody is never replayed automatically (see
+[Cloud Runner execution](cloud/cloud-runner-execution.md)); the Cloud model proxy
+retries model 429 responses within a model call.
 
 Computer repair commits installation replacement, old credential revocation,
 new credential issuance, and connect-code consumption in one transaction. The

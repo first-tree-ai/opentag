@@ -104,6 +104,24 @@ describe("Feishu tenant token exchange and cache", () => {
     expect(token.expiresAt).toBe(1_000 + 7_200_000);
   });
 
+  it.each([
+    ["an invalid secret on HTTP 200", 200, { code: 10014 }, { kind: "rejected", providerCode: 10014 }],
+    ["an invalid secret on HTTP 400", 400, { code: 10014 }, { kind: "rejected", providerCode: 10014 }],
+    ["the rate limit code on HTTP 200", 200, { code: 99991400 }, { kind: "rate_limited" }],
+    ["the rate limit code on HTTP 400", 400, { code: 99991400 }, { kind: "rate_limited" }],
+    ["HTTP 429", 429, {}, { kind: "rate_limited" }],
+    ["a 5xx with a code", 503, { code: 10014 }, { kind: "upstream" }],
+  ])("classifies %s", async (_name, status, body, expected) => {
+    await expect(
+      exchangeFeishuTenantToken({
+        origin: "https://open.feishu.cn",
+        appId: "a",
+        appSecret: "b",
+        fetchImpl: (async () => new Response(JSON.stringify(body), { status })) as typeof fetch,
+      }),
+    ).rejects.toMatchObject(expected);
+  });
+
   it("rejects non-zero platform codes and non-OK upstream responses", async () => {
     const rejected = (async () =>
       new Response(JSON.stringify({ code: 10003, msg: "invalid" }), { status: 200 })) as typeof fetch;

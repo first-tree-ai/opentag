@@ -8,7 +8,6 @@ import {
   type RuntimeImDeliveryContent,
   type RuntimeImSteerRequest,
   RuntimeImSteerRequestSchema,
-  type SessionReconcileResult,
 } from "@opentag/shared";
 import { and, eq, inArray, isNotNull, isNull, ne, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
@@ -83,7 +82,7 @@ import {
 } from "./im-delivery-janitor.js";
 import { validateRecoveryPayload } from "./im-delivery-pinned-hash.js";
 import { ImDeliveryReadyWakeup } from "./im-delivery-ready-wakeup.js";
-import { acceptedReportClosed } from "./im-delivery-retry.js";
+import { acceptedReportClosed, recoveryRetryCode } from "./im-delivery-retry.js";
 import { ImDeliverySelector, lockEligibleDelivery } from "./im-delivery-selector.js";
 import { advanceParkedRetries } from "./im-delivery-work-query.js";
 import type {
@@ -96,21 +95,13 @@ import type {
 } from "./im-delivery-worker.types.js";
 import { KeyedTaskScheduler } from "./keyed-task-scheduler.js";
 import { PostgresRuntimeCustodyStore } from "./runtime-custody-store.js";
-import type { RuntimeDomainOwner } from "./runtime-domain-owner.js";
+import type { RuntimeDomainOwner, RuntimeReconcileResult } from "./runtime-domain-owner.js";
 
 const DEFAULT_INTERVAL_MS = 500;
 const RETRY_DELAY_MS = 2_000;
 const CLAIM_LEASE_MS = 15_000;
 const CLAIM_RENEW_MS = 5_000;
-const RECOVERY_RETRY_CODES: Record<SessionReconcileResult["status"], string> = {
-  ready: "IM_DELIVERY_RECOVERY_AWAITING_REPORT",
-  stopped: "IM_DELIVERY_RECOVERY_AWAITING_REPORT",
-  running: "IM_DELIVERY_RECOVERY_RUNNING",
-  reporting: "IM_DELIVERY_RECOVERY_REPORTING",
-  busy: "IM_DELIVERY_RECOVERY_BUSY",
-  recovery_required: "IM_DELIVERY_RECOVERY_REQUIRED",
-  rejected: "IM_DELIVERY_RECOVERY_REJECTED",
-};
+
 function positiveWorkerLimit(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 1) throw new Error(`${name} must be a positive safe integer`);
   return value;
@@ -1339,7 +1330,7 @@ export class ImDeliveryWorker {
     signal.throwIfAborted();
     if (!(await lease.assertOwned())) return;
     signal.throwIfAborted();
-    let result: SessionReconcileResult;
+    let result: RuntimeReconcileResult;
     try {
       result = await this.#domain.requestReconcile(
         row.computer.id,
@@ -1367,7 +1358,8 @@ export class ImDeliveryWorker {
       return;
     }
     await lease.stop();
-    if (!signal.aborted) await this.#deferRecovery(attempt, claim.attemptCount, RECOVERY_RETRY_CODES[result.status]);
+    if (!signal.aborted)
+      await this.#deferRecovery(attempt, claim.attemptCount, recoveryRetryCode(result, row.delivery));
   }
 
   /** A reconcile response is not a report; preserve custody until the actual report settles it. */

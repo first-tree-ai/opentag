@@ -40,6 +40,7 @@ export const AgentStatusReasonSchema = z.enum([
   "credential_validation_failed",
   "credential_validation_timeout",
   "credential_rate_limited",
+  "credential_provider_unreachable",
   "first_validation",
   "legacy_checking",
 ]);

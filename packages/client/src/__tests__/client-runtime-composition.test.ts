@@ -1193,6 +1193,35 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       handlers.onReconcileResultSendFailed({} as never, {} as never, new Error("send")),
     ).resolves.toBeUndefined();
     await expect(handlers.onReconciled({} as never, {} as never)).resolves.toBeUndefined();
+    const prepared = { sessionPrepared: vi.fn(), reconcileRejected: vi.fn() };
+    const withRecovery = createClientRuntimeHandlers(
+      custody as never,
+      reportOwner as never,
+      recovery as never,
+      prepared,
+    );
+    for (const [desired, status] of [
+      ["ready", "ready"],
+      ["ready", "running"],
+      ["ready", "recovery_required"],
+      ["ready", "rejected"],
+      ["stopped", "stopped"],
+    ] as const) {
+      await withRecovery.onReconciled(
+        { desired, sessionId: `${desired}-${status}` } as never,
+        { status, ...(status === "rejected" ? { reason: "session_binding_conflict" } : {}) } as never,
+      );
+    }
+    await withRecovery.onReconciled(
+      { desired: "ready", sessionId: "no-reason" } as never,
+      { status: "rejected" } as never,
+    );
+    // A ready Session releases waiting Session messages; so does a resumed Turn (`running`), to steer them in.
+    expect(prepared.sessionPrepared.mock.calls).toEqual([["ready-ready"], ["ready-running"]]);
+    expect(prepared.reconcileRejected.mock.calls).toEqual([
+      ["ready-rejected", "session_binding_conflict"],
+      ["no-reason", "session_recovery_rejected"],
+    ]);
 
     const request = delivery(snapshot());
     const verifyAgent = vi.fn(async () => undefined);
@@ -1471,6 +1500,45 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
     finishRuntime();
     await expect(running).resolves.toBeUndefined();
     expect(reconcilerClose).toHaveBeenCalledOnce();
+  });
+
+  it("holds an upgrade only for a registered connection to a Server without Session recovery", () => {
+    let version: number | undefined;
+    let state = "registered";
+    const runtimeFor = (connection: unknown) =>
+      new ComposedClientRuntime(
+        {} as never,
+        {
+          admission: {},
+          bindingStore: {},
+          custody: {},
+          credentialEnvironment: {},
+          reconciler: {},
+          sessionMessageInbox: {},
+          reportOwner: {},
+          runner: {},
+          runtimeManager: {},
+          workspace: {},
+          refreshCapability: async () => undefined,
+          capabilityRefreshIntervalMs: 10,
+          capabilityAbort: new AbortController(),
+          connection,
+        } as never,
+      );
+    const runtime = runtimeFor({
+      get state() {
+        return state;
+      },
+      capabilityVersion: (capability: string) =>
+        capability === RUNTIME_CAPABILITY.sessionRecovery ? version : undefined,
+      subscribeBusinessFrames: () => () => undefined,
+    });
+    expect(runtime.canInterruptWorkForUpgrade()).toBe(false);
+    version = 1;
+    expect(runtime.canInterruptWorkForUpgrade()).toBe(true);
+    version = undefined;
+    for (state of ["connecting", "stopped"]) expect(runtime.canInterruptWorkForUpgrade()).toBe(true);
+    expect(runtimeFor(undefined).canInterruptWorkForUpgrade()).toBe(true);
   });
 
   it("aggregates protected work from every authoritative owner", () => {

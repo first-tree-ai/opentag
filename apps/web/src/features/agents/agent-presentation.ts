@@ -460,14 +460,15 @@ export function agentSetupContinuation(agent: {
  * project to (`handoff_unavailable`, `runtime_unavailable`) must not be read as setup left
  * unfinished: the card names the verdict, and its action has to repair that verdict.
  *
- * `null` marks a verdict that resolves on its own -- a check that timed out or was rate limited is
- * retried by the Computer, and an expired report is replaced by the next one -- so it offers nothing.
+ * `null` marks a verdict that resolves on its own -- a check that timed out, was rate limited or could
+ * not reach the provider is retried by the Computer, and an expired report is replaced by the next one -- so it offers nothing.
  */
 const SERVER_REPAIRS: Partial<Record<AgentStatusReason, { label: () => string } | null>> = {
   credential_validation_failed: { label: m.agents_status_action_reconnect_channel },
   messaging_cli_unavailable: { label: m.agents_status_action_fix_messaging },
   credential_validation_timeout: null,
   credential_rate_limited: null,
+  credential_provider_unreachable: null,
   messaging_cli_check_timed_out: null,
   runtime_check_timed_out: null,
   self_check_report_stale: null,
@@ -744,6 +745,7 @@ function serverStatusPresentation(
     credential_validation_failed: m.agents_status_credential_failed,
     credential_validation_timeout: m.agents_status_credential_timeout,
     credential_rate_limited: m.agents_status_credential_rate_limited,
+    credential_provider_unreachable: m.agents_status_credential_provider_unreachable,
     computer_access_required: m.agents_status_computer_access,
   };
   const label = status.reason ? labels[status.reason]?.() : undefined;

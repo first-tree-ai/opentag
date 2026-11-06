@@ -18,6 +18,8 @@ const BINDING_CONFLICT_REASONS: Record<SessionBindingConflictError["code"], stri
   stale: "stale_configuration",
 };
 
+const RESUME_KEEPS_RETRY = new Set<SessionReconcileResult["status"]>(["running", "recovery_required"]);
+
 export type SessionActivityPhase = "running" | "reporting";
 
 export interface SessionTurnIdentity {
@@ -43,6 +45,7 @@ export interface RuntimePreparation {
   prepareSession(
     request: SessionReconcileRequest,
     hashes: RuntimeSnapshotHashes,
+    options?: { resumeTurnId?: string },
   ): Promise<{ unresolvedTurn?: SessionTurnIdentity } | undefined>;
   stopSession(sessionId: string, placementGeneration: number): Promise<void>;
 }
@@ -52,8 +55,25 @@ export interface RuntimeLocalPolicy {
   validateDelivery?(snapshot: EffectiveRuntimeSnapshot): InputRejectReason | undefined;
 }
 
+/**
+ * The owner of automatic retries of Turns that a daemon restart interrupted. A ready reconcile of
+ * such a Session prepares it around its unresolved Turn and hands the Turn back for the retry.
+ */
+export interface InterruptedTurnResumer {
+  /** True when this unresolved Turn waits for its automatic retry. */
+  pending(sessionId: string, turn: SessionTurnIdentity): boolean;
+  /**
+   * Called under the Agent lock once the Session is prepared. Starts the retry and returns true,
+   * or returns false so the Turn falls back to an ordinary recovery report.
+   */
+  resume(sessionId: string, turn: SessionTurnIdentity): boolean;
+  /** The retry cannot run (preparation failed or was refused): fall back to recovery reporting. */
+  abandon(sessionId: string, turn: SessionTurnIdentity, reason: string): void;
+}
+
 export interface SessionReconcilerOptions {
   installationId: string;
+  resumer?: InterruptedTurnResumer;
   localPolicy?: RuntimeLocalPolicy;
   maxRememberedRequests?: number;
   preparation?: RuntimePreparation;
@@ -94,6 +114,7 @@ export class SessionReconciler {
   readonly #installationId: string;
   readonly #preparation: RuntimePreparation;
   readonly #localPolicy?: RuntimeLocalPolicy;
+  #resumer?: InterruptedTurnResumer;
   readonly #maxRememberedRequests: number;
   readonly #agents = new Map<string, AgentRuntimeState>();
   readonly #sessions = new Map<string, SessionRuntimeState>();
@@ -106,10 +127,16 @@ export class SessionReconciler {
     this.#installationId = options.installationId;
     this.#preparation = options.preparation ?? noopPreparation;
     this.#localPolicy = options.localPolicy;
+    this.#resumer = options.resumer;
     this.#maxRememberedRequests = options.maxRememberedRequests ?? 256;
     if (!Number.isSafeInteger(this.#maxRememberedRequests) || this.#maxRememberedRequests < 1) {
       throw new Error("maxRememberedRequests must be a positive safe integer");
     }
+  }
+
+  /** Late binding: the resumer and the reconciler depend on each other. */
+  setResumer(resumer: InterruptedTurnResumer): void {
+    this.#resumer = resumer;
   }
 
   getAgent(agentId: string): AgentRuntimeState | undefined {
@@ -154,8 +181,16 @@ export class SessionReconciler {
     return this.#recoveries.delete(sessionId);
   }
 
-  claimRecovery(sessionId: string, turn: SessionTurnIdentity): boolean {
-    if (this.#activities.has(sessionId)) return false;
+  claimRecovery(sessionId: string, turn: SessionTurnIdentity, options: { reportReady?: boolean } = {}): boolean {
+    const activity = this.#activities.get(sessionId);
+    if (activity) {
+      return (
+        options.reportReady === true &&
+        activity.phase === "reporting" &&
+        activity.turnId === turn.turnId &&
+        activity.deliveryId === turn.deliveryId
+      );
+    }
     const current = this.#recoveries.get(sessionId);
     if (current) return current.turnId === turn.turnId && current.deliveryId === turn.deliveryId;
     this.#recoveries.set(sessionId, turn);
@@ -254,7 +289,44 @@ export class SessionReconciler {
     }
   }
 
-  async #reconcileLocked(request: SessionReconcileRequest): Promise<SessionReconcileResult> {
+  /**
+   * The answer for a Session with an unresolved recovered Turn: `recovery_required`, unless this
+   * ready reconcile prepares the Session for that Turn's automatic retry. Undefined otherwise.
+   */
+  async #recoveryResult(
+    request: SessionReconcileRequest,
+    resumeTurn: SessionTurnIdentity | undefined,
+  ): Promise<SessionReconcileResult | undefined> {
+    const recovery = this.#recoveries.get(request.sessionId);
+    if (!recovery || resumeTurn) return undefined;
+    const pending = this.#resumer?.pending(request.sessionId, recovery) === true;
+    // A Turn waiting for its automatic retry is live work, not a Turn that needs recovery reporting.
+    if (pending && request.desired !== "ready") return this.#result(request, "busy", "active_turn");
+    if (!pending) return { ...this.#result(request, "recovery_required", "unresolved_turn"), turn: recovery };
+    const result = await this.#reconcileLocked(request, recovery).catch((error: unknown) => {
+      this.#resumer?.abandon(request.sessionId, recovery, "preparation_failed");
+      throw error;
+    });
+    // `recovery_required` after preparation means the resumer could not start the Turn yet: it keeps
+    // the pending retry and asks for another reconcile. Anything else ends the retry.
+    if (!RESUME_KEEPS_RETRY.has(result.status)) {
+      this.#resumer?.abandon(request.sessionId, recovery, result.reason ?? result.status);
+    }
+    return result;
+  }
+
+  /** Under the Agent lock: hand a prepared interrupted Turn to the resumer for its automatic retry. */
+  #resumed(sessionId: string, unresolved: SessionTurnIdentity, resumeTurn: SessionTurnIdentity | undefined): boolean {
+    if (!resumeTurn || unresolved.turnId !== resumeTurn.turnId || unresolved.deliveryId !== resumeTurn.deliveryId) {
+      return false;
+    }
+    return this.#resumer?.resume(sessionId, unresolved) === true;
+  }
+
+  async #reconcileLocked(
+    request: SessionReconcileRequest,
+    resumeTurn?: SessionTurnIdentity,
+  ): Promise<SessionReconcileResult> {
     if (request.installationId !== this.#installationId) return this.#result(request, "rejected", "target_mismatch");
 
     const existingSession = this.#sessions.get(request.sessionId);
@@ -309,10 +381,8 @@ export class SessionReconciler {
       const status = activity.phase === "running" ? "running" : "reporting";
       return { ...this.#result(request, status), turn: { turnId: activity.turnId, deliveryId: activity.deliveryId } };
     }
-    const recovery = this.#recoveries.get(request.sessionId);
-    if (recovery) {
-      return { ...this.#result(request, "recovery_required", "unresolved_turn"), turn: recovery };
-    }
+    const recovered = await this.#recoveryResult(request, resumeTurn);
+    if (recovered) return recovered;
 
     if (request.desired === "stopped") {
       await this.#preparation.stopSession(request.sessionId, request.placementGeneration);
@@ -368,13 +438,21 @@ export class SessionReconciler {
     }
 
     const shouldPrepareAgent = !existingAgent || snapshot.revision.agent.sequence > existingAgent.revisionSequence;
+    // A resumed Turn always follows a restart, so its Session has no prepared entry yet.
     const shouldPrepareSession =
       !existingSession ||
       request.placementGeneration > existingSession.placementGeneration ||
       hashes.effectiveSnapshotHash !== existingSession.effectiveSnapshotHash ||
       existingSession.status === "stopped" ||
       this.#preparation.requiresSessionPreparation?.(request, hashes) === true;
-    const prepared = await this.#prepareOrReject(request, snapshot, hashes, shouldPrepareAgent, shouldPrepareSession);
+    const prepared = await this.#prepareOrReject(
+      request,
+      snapshot,
+      hashes,
+      shouldPrepareAgent,
+      shouldPrepareSession,
+      resumeTurn,
+    );
     if ("rejected" in prepared) return prepared.rejected;
     const preparedSession = prepared.value;
 
@@ -405,6 +483,9 @@ export class SessionReconciler {
         deliveryId: preparedSession.unresolvedTurn.deliveryId,
         turnId: preparedSession.unresolvedTurn.turnId,
       };
+      if (this.#resumed(request.sessionId, recovery, resumeTurn)) {
+        return { ...this.#result(request, "running"), turn: recovery };
+      }
       this.setRecovery(request.sessionId, recovery);
       return {
         ...this.#result(request, "recovery_required", "unresolved_turn"),
@@ -420,6 +501,7 @@ export class SessionReconciler {
     hashes: RuntimeSnapshotHashes,
     shouldPrepareAgent: boolean,
     shouldPrepareSession: boolean,
+    resumeTurn?: SessionTurnIdentity,
   ): Promise<
     { value: Awaited<ReturnType<RuntimePreparation["prepareSession"]>> } | { rejected: SessionReconcileResult }
   > {
@@ -431,7 +513,9 @@ export class SessionReconciler {
     if (shouldPrepareAgent) await this.#preparation.prepareAgent(snapshot, hashes);
     else await this.#preparation.verifyAgent?.(snapshot, hashes);
     if (!shouldPrepareSession) return { value: undefined };
-    return this.#rejectBindingConflict(request, () => this.#preparation.prepareSession(request, hashes));
+    return this.#rejectBindingConflict(request, () =>
+      this.#preparation.prepareSession(request, hashes, resumeTurn ? { resumeTurnId: resumeTurn.turnId } : undefined),
+    );
   }
 
   async #rejectBindingConflict<T>(

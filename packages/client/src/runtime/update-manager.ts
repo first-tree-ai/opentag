@@ -43,7 +43,12 @@ export interface UpdateManagerOptions {
   /** Authoritative protected-work count from the Session runtime boundary. */
   protectedWork(): ProtectedWorkCount;
   /**
-   * Atomically close new-work admission before checking the protected-work snapshot. The returned
+   * Whether the upgrade may interrupt running work. Absent or false means the updater waits for
+   * protected work before installing.
+   */
+  canInterruptWork?(): boolean;
+  /**
+   * Atomically close new-work admission, before the handoff or the protected-work wait. The returned
    * function reopens admission if the target is superseded or the attempt fails.
    */
   quiesce?(): () => void;
@@ -59,7 +64,7 @@ export interface UpdateManagerOptions {
   onHandoff(): void | Promise<void>;
   loadState(): Promise<UpdaterStateSnapshot | undefined>;
   saveState(state: UpdaterStateSnapshot): Promise<void>;
-  /** Protected-work re-check cadence. This is a poll interval, never a force timeout. */
+  /** Re-check cadence of the protected-work wait. This is a poll interval, never a force timeout. */
   checkIntervalMs?: number;
   /** Read the configured release channel without relying on a runtime heartbeat. */
   discoverTarget?: () => Promise<RuntimeChannelTarget | undefined>;
@@ -83,10 +88,10 @@ const defaultSleep = (milliseconds: number): Promise<void> =>
 
 /**
  * Drives automatic upgrades for the portable install mode. One decision loop, one durable attempt
- * per exact target, monotonic SemVer comparisons only (never an automatic downgrade), and an
- * indefinite protected-work gate: the updater adds no force timeout of its own, because the Session
- * module already bounds every unit of protected work (Turn budgets, delivery deadlines, report
- * retries with terminal outcomes) and therefore owns hang prevention.
+ * per exact target, and monotonic SemVer comparisons only (never an automatic downgrade). The
+ * upgrade interrupts running Sessions, because the restarted daemon recovers them; `quiesce` closes
+ * admission only for the handoff itself. When the connected Server could not recover them
+ * (`canInterruptWork` is false), the updater closes admission and waits for protected work instead.
  *
  * npm-global installs never attach a manager: they upgrade only through the manual CLI command.
  */
@@ -389,22 +394,72 @@ export class UpdateManager {
   }
 
   async #attemptTarget(target: string, state: UpdaterStateSnapshot): Promise<"finished" | "superseded"> {
-    state.state = "awaiting_protected_work";
-    state.target = target;
-    await this.#options.saveState(state);
-    const resumeAdmission = this.#options.quiesce?.() ?? (() => undefined);
+    let resumeAdmission: (() => void) | undefined;
     let keepQuiesced = false;
     try {
-      await this.#waitForProtectedWork(target);
-      if (this.#stopped) return "finished";
-      if (this.#latestTarget !== target) return "superseded";
+      if (!this.#canInterruptWork()) {
+        state.state = "awaiting_protected_work";
+        state.target = target;
+        await this.#options.saveState(state);
+        resumeAdmission = this.#options.quiesce?.() ?? (() => undefined);
+        await this.#waitForProtectedWork(target);
+        if (this.#canInterruptWork()) {
+          // Recovery became available: new work no longer has to wait through the install.
+          resumeAdmission();
+          resumeAdmission = undefined;
+        }
+      }
+      const cancelled = this.#cancellation(target);
+      if (cancelled) return cancelled;
+      const previousAttempt = state.lastAttempt;
       const started = await this.#recordStartedAttempt(target, state);
+      const cancelledDuringWrite = this.#cancellation(target);
+      if (cancelledDuringWrite) {
+        await this.#withdrawAttempt(target, state, previousAttempt);
+        return cancelledDuringWrite;
+      }
+      // Without a wait there is nothing to drain: Sessions keep running and new work keeps arriving
+      // through the install, and a failed install costs them nothing.
       if (!(await this.#executeAttempt(target, state, started))) return "finished";
+      resumeAdmission ??= this.#options.quiesce?.() ?? (() => undefined);
       keepQuiesced = true;
       await this.#requestHandoff(target);
       return "finished";
     } finally {
-      if (!keepQuiesced) resumeAdmission();
+      if (!keepQuiesced) resumeAdmission?.();
+    }
+  }
+
+  #canInterruptWork(): boolean {
+    return this.#options.canInterruptWork?.() ?? false;
+  }
+
+  /** Why a new attempt must not start: the awaits before it can outlive a stop or a newer target. */
+  #cancellation(target: string): "finished" | "superseded" | undefined {
+    if (this.#stopped) return "finished";
+    return this.#latestTarget === target ? undefined : "superseded";
+  }
+
+  /**
+   * Remove an attempt whose install never started. Left in place, it would read as an interrupted
+   * attempt after a restart and block this target.
+   */
+  async #withdrawAttempt(
+    target: string,
+    state: UpdaterStateSnapshot,
+    previous: UpdaterAttempt | undefined,
+  ): Promise<void> {
+    delete state.attempts[target];
+    state.state = "idle";
+    if (previous) state.lastAttempt = previous;
+    else delete state.lastAttempt;
+    try {
+      await this.#options.saveState(state);
+    } catch (error) {
+      this.#logger.warn(
+        { target, error: error instanceof Error ? error.message : String(error) },
+        "An attempt whose install never started could not be withdrawn; the target stays blocked",
+      );
     }
   }
 
@@ -461,15 +516,16 @@ export class UpdateManager {
   }
 
   /**
-   * Wait for the Session module to report no protected work. Indefinite by design: there is no
-   * force timeout here, because the Session module owns the bounded lifetime of every protected
-   * unit. The wait is re-checked on a fixed cadence and logged at a throttled rate.
+   * The fallback while the connected Server could not recover interrupted work: wait for the Session
+   * module to report no protected work, or for that to change (a reconnect or a Server upgrade). There
+   * is no force timeout here, because an interruption would surface as a failure. The wait is
+   * re-checked on a fixed cadence and logged at a throttled rate.
    */
   async #waitForProtectedWork(target: string): Promise<void> {
     let lastLogAt = Number.NEGATIVE_INFINITY;
     while (!this.#stopped) {
       const work = this.#options.protectedWork();
-      if (work.total === 0) return;
+      if (work.total === 0 || this.#canInterruptWork()) return;
       const now = this.#now();
       if (now - lastLogAt >= QUIET_LOG_THROTTLE_MS) {
         lastLogAt = now;

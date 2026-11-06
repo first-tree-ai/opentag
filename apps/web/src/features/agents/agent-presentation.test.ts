@@ -303,6 +303,7 @@ describe("Server status reasons across the list and dependency rows", () => {
     credential_validation_failed: "action_required",
     credential_validation_timeout: "action_required",
     credential_rate_limited: "action_required",
+    credential_provider_unreachable: "action_required",
   };
   const cases = AgentStatusReasonSchema.options.flatMap((reason) =>
     (states[reason] === "unconfirmed" ? [false, true] : [reason !== "im_not_connected"]).map((hasBinding) => ({
@@ -408,6 +409,7 @@ describe("Server status reasons across the list and dependency rows", () => {
     credential_validation_failed: "Reconnect channel",
     credential_validation_timeout: undefined,
     credential_rate_limited: undefined,
+    credential_provider_unreachable: undefined,
   };
   const messagingRepairs = new Set<AgentStatusReason>([
     "im_reauthorization_required",
@@ -423,6 +425,7 @@ describe("Server status reasons across the list and dependency rows", () => {
     "credential_validation_failed",
     "credential_validation_timeout",
     "credential_rate_limited",
+    "credential_provider_unreachable",
   ]);
   it.each(cases)("offers the row action that matches $reason with binding=$hasBinding", ({ reason, hasBinding }) => {
     const agent = boundAgent();
@@ -466,6 +469,15 @@ describe("Server status reasons across the list and dependency rows", () => {
       });
     },
   );
+
+  it("names an unreachable messaging provider without asking the user to reconnect", () => {
+    const agent = boundAgent();
+    const detail = applyAgentStatus(agent, statusForReason(agent, "credential_provider_unreachable", true));
+    const list = listed(detail);
+    expect(agentCardStatus(list)).toMatchObject({ label: "Messaging provider unreachable", tone: "warning" });
+    expect(agentRowAction(list)).toBeUndefined();
+    expect(agentMessagingStatus(detail).action).toBeUndefined();
+  });
 
   it("keeps continuing setup for an Agent whose messaging was never connected", () => {
     const agent = boundAgent();

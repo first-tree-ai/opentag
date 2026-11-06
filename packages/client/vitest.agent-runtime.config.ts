@@ -49,6 +49,8 @@ export default defineConfig({
       "src/__tests__/runtime-durability.test.ts",
       "src/__tests__/runtime-tool-host.test.ts",
       "src/__tests__/session-runtime-manager.test.ts",
+      "src/__tests__/interruption-retry.test.ts",
+      "src/__tests__/session-message-joined-retry.test.ts",
     ],
     maxWorkers: 1,
     coverage: {

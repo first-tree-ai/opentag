@@ -24,6 +24,13 @@ native `Warning` identifier in its reaction catalogue. Only this application's d
 Frozen batches retain per-input reactions but publish one failure card at the execution root. Unexecuted steered
 children requeued by custody retain their existing execution authority.
 
+A Local Client's [automatic retry](../server-client-boundary.md#automatic-retry-of-accepted-work) of an interrupted
+Turn (crash, restart or upgrade, Run timeout, model 429) is part of the same accepted Turn: no report is written
+while the retry is pending or running, so the working reaction stays on the input and no failure marker or error card
+appears. Failure feedback appears only once the Turn is terminal — when the one retry also fails, or when the failure
+was not recoverable — and then follows the rules above for that final report. A retry that completes removes the
+working reaction like any successful Turn.
+
 ## Error cards
 
 A card stays in the original conversation or thread. It contains a sanitized cause and error code, task-effects

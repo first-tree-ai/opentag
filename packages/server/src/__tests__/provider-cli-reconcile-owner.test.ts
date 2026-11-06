@@ -3183,3 +3183,219 @@ describe("ProviderCliReconcileOwner", () => {
     ).toBe(true);
   });
 });
+
+describe("ProviderCliReconcileOwner credential check false alarms", () => {
+  /** A live self-checking Computer whose messaging CLI is ready, with the first credential grants sent. */
+  async function checkedBindings(count = 1) {
+    const registry = new ConnectionRegistry();
+    const agents = Array.from({ length: count }, () => ({ agentId: randomUUID(), integrationId: randomUUID() }));
+    let computerKindDelayMs = 0;
+    const bindings = {
+      listActiveProviderCliRequirements: vi.fn(async () =>
+        agents.map((agent) => ({
+          ...agent,
+          provider: "slack" as const,
+          credentialGeneration: 1,
+          expectedIdentity: identity,
+        })),
+      ),
+      issueIntegrationCliValidationGrant: vi.fn(async () => ({
+        expectedIdentity: identity,
+        grant: { provider: "slack" as const, botAccessToken: "xoxb-test" },
+      })),
+      computerKind: vi.fn(async () => {
+        if (computerKindDelayMs) await new Promise((resolve) => setTimeout(resolve, computerKindDelayMs));
+        return "local" as const;
+      }),
+    };
+    const owner = new ProviderCliReconcileOwner(registry, bindings, { grantTtlMs: 15_000 });
+    const connection = await registered(registry, { selfCheck: true });
+    await owner.onComputerRegistered(connection);
+    const frames = () => connection.socket.send.mock.calls.map((call) => JSON.parse(call[0] as string));
+    const context = {
+      ...contextOf(connection),
+      negotiatedCapabilities: { [RUNTIME_CAPABILITY.selfCheckHeartbeat]: 1 },
+    };
+    const selfCheck = frames().find((frame) => frame.type === "runtime:self-check");
+    let sequence = 0;
+    const report = async () => {
+      sequence += 1;
+      registry.touch(connection.computerId, connection.instanceId, connection.socket as never);
+      await owner.businessOptions().handle(
+        {
+          type: "runtime:self-check:report",
+          requestId: randomUUID(),
+          selfCheckId: selfCheck.requestId,
+          sequence,
+          checkedAt: new Date().toISOString(),
+          problems: [],
+          providerReadiness: [{ provider: "codex", status: "ready" }],
+          imCliReadiness: [{ provider: "slack", status: "ready" }],
+        },
+        context,
+      );
+    };
+    await report();
+    for (const requirement of frames().filter((frame) => frame.type === "provider-cli:requirement")) {
+      await owner
+        .businessOptions()
+        .handle({ ...requirement, type: "provider-cli:artifact:status", status: "ready" }, context);
+    }
+    await vi.advanceTimersByTimeAsync(0);
+    const grants = (agent = agents[0]) =>
+      frames().filter(
+        (frame) => frame.type === "provider-cli:validation:grant" && frame.integrationId === agent?.integrationId,
+      );
+    const answer = (result: { status: "retrying" | "ready" | "needs_attention"; reason?: string }, agent = agents[0]) =>
+      owner.businessOptions().handle(
+        {
+          type: "provider-cli:validation:result",
+          requestId: grants(agent).at(-1).requestId,
+          provider: "slack",
+          ...agent,
+          credentialGeneration: 1,
+          ...result,
+        },
+        context,
+      );
+    const observation = (agent = agents[0]) =>
+      registry
+        .providerCliCredentialReadiness(connection.computerId, Date.now())
+        .find((item) => item.observation.integrationId === agent?.integrationId)?.observation;
+    /** Lets time pass the way a live Computer does: self-check reports keep arriving. */
+    const advance = async (ms: number) => {
+      for (let left = ms; left > 0; left -= 30_000) {
+        await vi.advanceTimersByTimeAsync(Math.min(left, 30_000));
+        await report();
+      }
+    };
+    return {
+      advance,
+      agents,
+      answer,
+      grants,
+      observation,
+      owner,
+      slowComputerKind: (ms: number) => {
+        computerKindDelayMs = ms;
+      },
+    };
+  }
+
+  async function withBindings(run: (binding: Awaited<ReturnType<typeof checkedBindings>>) => Promise<void>, count = 1) {
+    vi.useFakeTimers();
+    const binding = await checkedBindings(count);
+    try {
+      await run(binding);
+    } finally {
+      await binding.owner.close();
+      vi.useRealTimers();
+    }
+  }
+
+  const tenMinutes = 10 * 60_000;
+
+  it("records an unreachable provider as such and checks again on the ten-minute timer", () =>
+    withBindings(async (binding) => {
+      await binding.answer({ status: "ready" });
+      await binding.advance(tenMinutes);
+      expect(binding.grants()).toHaveLength(2);
+      await binding.answer({ status: "retrying", reason: "provider_unreachable" });
+      expect(binding.observation()).toMatchObject({
+        status: "needs_attention",
+        reason: "provider_unreachable",
+        timedOut: false,
+      });
+      await binding.advance(tenMinutes);
+      expect(binding.grants()).toHaveLength(3);
+      await binding.answer({ status: "ready" });
+      expect(binding.observation()).toMatchObject({ status: "ready" });
+    }));
+
+  it("keeps a proven rejection when a later check cannot reach the provider or times out", () =>
+    withBindings(async (binding) => {
+      await binding.answer({ status: "needs_attention", reason: "credential_rejected" });
+      expect(binding.observation()).toMatchObject({ status: "needs_attention", reason: "credential_rejected" });
+      await binding.advance(tenMinutes);
+      expect(binding.grants()).toHaveLength(2);
+      await binding.answer({ status: "retrying", reason: "provider_unreachable" });
+      expect(binding.observation()).toMatchObject({ status: "needs_attention", reason: "credential_rejected" });
+      await binding.advance(tenMinutes);
+      expect(binding.grants()).toHaveLength(3);
+      await binding.advance(15_000);
+      expect(binding.observation()).toMatchObject({ status: "needs_attention", reason: "credential_rejected" });
+      expect(binding.observation()?.timedOut).toBeFalsy();
+      await binding.advance(tenMinutes - 15_000);
+      expect(binding.grants()).toHaveLength(4);
+      await binding.answer({ status: "ready" });
+      expect(binding.observation()).toMatchObject({ status: "ready" });
+    }));
+
+  it("re-sends a check the Computer was too busy to run instead of reporting a failure", () =>
+    withBindings(async (binding) => {
+      await binding.answer({ status: "ready" });
+      await binding.advance(tenMinutes);
+      expect(binding.grants()).toHaveLength(2);
+      // The single validation process is running another binding's check, so no attempt was made.
+      await binding.answer({ status: "retrying", reason: "validation_busy" });
+      expect(binding.observation()).toMatchObject({ status: "ready" });
+      await binding.advance(1_000);
+      expect(binding.grants()).toHaveLength(3);
+      await binding.answer({ status: "ready" });
+      expect(binding.observation()).toMatchObject({ status: "ready" });
+    }));
+
+  it("settles a check that stays busy as timed out when its one budget ends", () =>
+    withBindings(async (binding) => {
+      await binding.answer({ status: "ready" });
+      await binding.advance(tenMinutes);
+      for (let second = 0; second < 16; second++) {
+        const sent = binding.grants().length;
+        if (binding.observation()?.status === "needs_attention") break;
+        await binding.answer({ status: "retrying", reason: "validation_busy" });
+        await binding.advance(1_000);
+        if (binding.grants().length === sent) await binding.advance(1_000);
+      }
+      expect(binding.observation()).toMatchObject({
+        status: "needs_attention",
+        reason: "provider_unreachable",
+        timedOut: true,
+      });
+    }));
+
+  it("reports a check that ran out of its budget on the Computer as timed out", () =>
+    withBindings(async (binding) => {
+      await binding.answer({ status: "ready" });
+      await binding.advance(tenMinutes);
+      await binding.answer({ status: "retrying", reason: "validation_expired" });
+      expect(binding.observation()).toMatchObject({ status: "needs_attention", timedOut: true });
+    }));
+
+  it("keeps the previous answer while a recheck started late by the shared pump is still running", () =>
+    withBindings(async (binding) => {
+      const [first, second] = binding.agents;
+      await binding.answer({ status: "ready" }, first);
+      await binding.answer({ status: "ready" }, second);
+      // Rechecks run one binding at a time, so a slow first binding delays the start of the next.
+      binding.slowComputerKind(5_000);
+      await binding.advance(tenMinutes + 6_000);
+      await binding.answer({ status: "ready" }, first);
+      expect(binding.grants(second)).toHaveLength(1);
+      await binding.advance(5_000);
+      expect(binding.grants(second)).toHaveLength(2);
+      // Second binding's check is inside its 15-second budget, past 10m15s since its last answer.
+      await binding.advance(5_000);
+      expect(binding.observation(second)).toMatchObject({ status: "ready" });
+      await binding.answer({ status: "ready" }, second);
+      expect(binding.observation(second)).toMatchObject({ status: "ready" });
+    }, 2));
+
+  it("still reports a credential the provider rejected", () =>
+    withBindings(async (binding) => {
+      await binding.answer({ status: "ready" });
+      await binding.advance(tenMinutes);
+      await binding.answer({ status: "needs_attention", reason: "credential_rejected" });
+      expect(binding.observation()).toMatchObject({ status: "needs_attention", reason: "credential_rejected" });
+      expect(binding.observation()?.timedOut).toBeFalsy();
+    }));
+});

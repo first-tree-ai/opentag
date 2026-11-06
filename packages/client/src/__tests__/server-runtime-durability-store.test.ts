@@ -44,5 +44,13 @@ describe("ServerRuntimeDurabilityStore", () => {
     expect(api.listRuntimeDurableWork).toHaveBeenCalledWith("machine-token", "turn-report");
     expect(api.writeRuntimeDurableWork).toHaveBeenCalledWith("machine-token", record);
     expect(clockReads).toBe(1);
+
+    // Local-only fields never reach the strict Server schema.
+    await store.write({
+      ...record,
+      outcomeReport: "pending",
+      interruption: { reason: "client_shutdown", at: "2026-11-05T00:00:00.000Z" },
+    });
+    expect(api.writeRuntimeDurableWork).toHaveBeenLastCalledWith("machine-token", record);
   });
 });

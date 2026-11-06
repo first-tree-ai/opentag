@@ -5,6 +5,9 @@ import {
   CommandError,
   commandExitCode,
   EXIT_CODES,
+  hasBrokenPipeCode,
+  isBrokenPipeError,
+  markOutputBrokenPipeError,
   observeCommandFailures,
   presentCommand,
   toCommandError,
@@ -15,6 +18,51 @@ import {
   resolveCommandPath,
 } from "../core/diagnostics/error-reporting.js";
 import { createProgram } from "./program.js";
+
+export interface OutputErrorStream {
+  on(event: "error", listener: (error: unknown) => void): unknown;
+  write?: ((...args: never[]) => unknown) | undefined;
+}
+
+const guardedOutputStreams = new WeakSet<OutputErrorStream>();
+const guardedOutputWrites = new WeakMap<OutputErrorStream, unknown>();
+
+function guardOutputStreamWrite(stream: OutputErrorStream): void {
+  if (typeof stream.write !== "function") return;
+  if (guardedOutputWrites.get(stream) === stream.write) return;
+  const currentWrite = stream.write as (...args: unknown[]) => unknown;
+  const guardedWrite = function (this: unknown, ...args: unknown[]) {
+    try {
+      return currentWrite.apply(this ?? stream, args);
+    } catch (error) {
+      if (hasBrokenPipeCode(error)) {
+        markOutputBrokenPipeError(error);
+      }
+      throw error;
+    }
+  };
+  stream.write = guardedWrite as OutputErrorStream["write"];
+  guardedOutputWrites.set(stream, stream.write);
+}
+
+/**
+ * Ignore `EPIPE` on an output stream when a downstream pipe consumer (`head`, `grep -q`) closes
+ * early, and mark synchronous `EPIPE` write throws as originating from this output boundary.
+ * The `"error"` listener is installed once per stream and left attached because Node's async
+ * `WriteWrap.onWriteComplete` can emit `"error"` on the next tick after `runCli` has already returned.
+ */
+export function ignoreBrokenPipeOnStream(stream: OutputErrorStream): void {
+  guardOutputStreamWrite(stream);
+  if (guardedOutputStreams.has(stream)) return;
+  guardedOutputStreams.add(stream);
+  stream.on("error", (error: unknown) => {
+    if (hasBrokenPipeCode(error)) {
+      markOutputBrokenPipeError(error);
+      return;
+    }
+    throw error;
+  });
+}
 
 export interface RunCliOptions {
   argv: readonly string[];
@@ -27,6 +75,9 @@ export interface RunCliOptions {
   exit?: (code: number) => void;
   /** Whether to install the process-level uncaught-failure handlers; on by default. */
   processHandlers?: boolean;
+  /** Output streams to guard against `EPIPE`; `process.stdout` and `process.stderr` by default. */
+  stdoutStream?: OutputErrorStream;
+  stderrStream?: OutputErrorStream;
 }
 
 interface RunState {
@@ -42,6 +93,8 @@ interface RunState {
  * `reportCommandFailure` keeps the two from reporting the same thrown value twice.
  */
 export async function runCli(options: RunCliOptions): Promise<number> {
+  ignoreBrokenPipeOnStream(options.stdoutStream ?? process.stdout);
+  ignoreBrokenPipeOnStream(options.stderrStream ?? process.stderr);
   const argv = [...options.argv];
   const env = options.env ?? process.env;
   const json = argv.includes("--json");
@@ -57,8 +110,10 @@ export async function runCli(options: RunCliOptions): Promise<number> {
       { ok: false, error: commandError, exitCode: commandExitCode(commandError) },
       { json },
     );
-    // After the failure is presented, so reporting can only ever delay the exit, never the answer.
-    await report(error, commandError, { command: state.command, environment: env });
+    if (!isBrokenPipeError(commandError)) {
+      // After the failure is presented, so reporting can only ever delay the exit, never the answer.
+      await report(error, commandError, { command: state.command, environment: env });
+    }
     return exitCode;
   } finally {
     state.detachObserver?.();

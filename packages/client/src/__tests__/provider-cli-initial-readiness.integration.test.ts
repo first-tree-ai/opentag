@@ -209,6 +209,8 @@ describe("provider CLI initial readiness", () => {
         ensureRuntime: harness.ensureRuntime as never,
         sessionKind: vi.fn(() => "visible" as const),
       },
+      // The timed-out Run's automatic retry is not under test here; keep it from running.
+      scheduler: { schedule: () => ({ cancel: () => undefined }) },
       timeoutScheduler: {
         schedule(_delay, task) {
           fireTimeout = task;

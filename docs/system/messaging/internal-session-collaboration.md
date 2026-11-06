@@ -41,11 +41,11 @@ existing Session in the same Agent and conversation scope. Both accept an option
 reuse the same ID and identical semantic input after an uncertain result. `accepted` means the target accepted the
 message into its bounded FIFO, not that the task completed. On a Local Computer, a message whose target Session is
 running a Turn on a steer-capable runtime is steered into that Turn instead of waiting for it to end. Runtime acceptance
-is not delivery: the durable record stays `running` until that Turn's Run settles. It becomes `succeeded` when the Run
-completed; returns to the FIFO when the provider reports that it never started the input (Claude Code `command_lifecycle`),
-so the message is delivered again as its own Run; and fails permanently without replay when the provider may have started
-it but the Run failed or was cancelled. Codex and Pi report no per-input start, so their acknowledged steer counts as
-possibly started. A restart while the record is `running` recovers it like any interrupted Session message Run.
+is not delivery: the durable record stays `running` until that Turn ends. It becomes `succeeded` when the Turn completed;
+returns to the FIFO when the provider reports that it never started the input (Claude Code `command_lifecycle`), so the
+message is delivered again as its own Run; and otherwise follows the Turn, as described in
+[Session messages steered into an IM Turn](#session-messages-steered-into-an-im-turn). Codex and Pi report no per-input
+start, so their acknowledged steer counts as possibly started.
 Steering applies only while the target is busy with a Turn the inbox does not own, such as an IM Turn: each target
 Session has one serial inbox drain, and that drain awaits its own Session message Run until the Run settles and releases
 admission, so a message that arrives while the target runs another Session message waits in the FIFO and then starts as
@@ -59,6 +59,18 @@ The locked rows supply the current authority checks. Only targets in the full bi
 conversation-kind and thread scope enter this lock chain; foreign-scope targets are classified by
 an unlocked read. Create retries first read the immutable target hint for that message and creator;
 the later message lock and input-conflict checks remain authoritative. There is no automatic database retry.
+
+A temporary refusal returns `unreachable` with its cause as the code. `client_busy` means the Client is not admitting new
+work: an upgrade is switching over, the Client is stopping, or the bounded FIFO is full. The Cloud Runner reports the same
+code. `session_busy` and `agent_busy` map to their own codes, though the Local inbox does not return them today. Messages
+recorded before this split keep `capacity`.
+
+The Server does not hold or replay a refused message (decision by yuezengwu, 2026-11-05,
+[#1327](https://github.com/first-tree-ai/opentag/issues/1327)). The Client keeps the upgrade switch window as small as it
+can instead. A sender retries with the same `--message-id`, and the inbox evaluates that replay again rather than answering
+from memory, so the message runs once admission reopens. A permanent rejection stays rejected on replay. A scheduled
+message has no sender to retry it, so one refused in that window stays `unreachable` and the next occurrence is the next
+chance; this is an accepted cost. The Client logs every refused Session message with its reason.
 
 `session list` returns direct children by default, ordered by recent message activity. Pages default to 20 items and
 are capped at 100; `--cursor` continues a page, `--recursive` includes descendants, `--since` filters recent activity,
@@ -122,22 +134,38 @@ publishes any user-facing result through the official provider CLI during that c
 child's text automatically. Channel callbacks target the existing chat or channel, while thread callbacks retain the
 existing thread scope. Internal targets never receive provider credentials or outbox context.
 
+Default Local (`legacy`) Turns retain the non-secret context from their existing credential grant after credential
+materialization succeeds. Session messages steered into that live Turn use the same Server-authorized channel or thread
+target without requesting another grant. Cleanup, shutdown, or cancellation withdraws that context; a failed or superseded
+preparation cannot restore it. The Client never derives an outbox target from the Session message's sender or content.
+Each legacy preparation returns an execution cleanup token, also recorded in its environment manifest. Materialization
+and cleanup share one serial lifecycle per Session: a replacement waits for older writes and teardown, and cleanup carrying
+an older token cannot remove the replacement's context or files. A Run that never prepared credentials does not perform
+Session-wide cleanup. Other Sessions prepare independently.
+An older grant without outbox context still leaves visible Session messages queued until the Turn ends.
+
 ## Run outcome notices
 
 `accepted` and `session list` describe delivery only. When an internal Session's Run ends without completing, the
 Server tells the Session that created it (`created_by_session_id`):
 
-- Local: a Run that reaches its maximum duration fails terminally with `turn_timeout` and is never rerun from scratch.
-  Other permanent failures and exhausted retries are also terminal. The daemon then reports the outcome with
+- Local: a message whose Run a daemon crash, restart or upgrade interrupts, or that hits a model HTTP 429, gets at most 2
+  automatic retries, as described in
+  [Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work). The retried Run
+  starts with the continuation notice and the original message. Every other failure, including `turn_timeout`, is terminal
+  without a retry, and so is running out of retries (`provider_rate_limited`, or `run_interrupted` after a crash).
+  After a restart, accepted messages wait without failing until the Server prepares their Session; if the Server
+  refuses (for example the Session ended), they fail with that reason. The daemon then reports the outcome with
   `session:message:outcome`. Reports are kept in a local durable file and resent until the Server gives a final
   answer or one day passes. The terminal inbox record and an `outcomeReport: pending` marker are written in one
   record write; the marker becomes `published` once the report is durable in the reporter's file. On startup a
   terminal record still marked `pending` (for example after a crash between the two writes) hands its report over
   again, and the child is never rerun. Terminal records written before the marker existed carry no marker and are
   not backfilled. The Server-backed Runtime durability adapter does not store the marker. A steered message follows
-  its steer receipt: `interrupted` takes this same terminal path (reason `session_message_steer_interrupted`, never
-  replayed), `processed` succeeds, and `not_started` returns to the FIFO with no report. Eligibility is unchanged, so
-  a message steered into a visible Session's IM Turn produces no notice.
+  the Turn it joined: when that Turn ends without completing, the message takes this same
+  terminal path (reason `session_message_steer_interrupted`), a completed Turn makes it succeed, and a message the
+  provider never started returns to the FIFO with no report. Eligibility is unchanged, so a message steered into a
+  visible Session's IM Turn produces no notice.
 - Cloud: the Runner's `session:message:settled` frame carries the failure `reason` (for example `turn_timeout`) on a
   collaboration-v3 channel. Every non-completed outcome (`failed`, `cancelled`, `unknown`) produces a notice. The
   Server makes up to three delivery attempts, 30 seconds apart. The notice's source authority is the settling
@@ -218,11 +246,41 @@ included; see [Agent, Session, and Computer model](../agent-session-computer-mod
 
 ## Automatic retry before a notice
 
-> **Planned — not yet implemented.** Tracking: #1301
-
-The Client daemon will retry a Session message automatically at most once, and only for a recoverable failure: a crash or
-power loss, a restart or upgrade interruption, `turn_timeout`, or a model HTTP 429. This replaces the terminal
-`turn_timeout` and interrupted-steer rules above and the current five-attempt inbox retry; non-recoverable failures stay terminal.
-When the one retry fails, the creator receives the notice. After a daemon restart, each interrupted internal Session
-receives a continuation message with the interruption reason before its queued messages run. See
+On a Local Computer a Session message running on its own gets at most 2 automatic retries after a crash, power loss,
+restart, upgrade, or model HTTP 429; a retry that actually ran for at least 5 minutes resets the count. The Run's duration
+limit counts actual running time across its retries and resumes. Reaching it (`turn_timeout`) and non-recoverable failures
+are not retried, and the five-attempt inbox retry is gone. The retried
+Run starts with the continuation notice and the original message. The creator receives the notice only when the message
+finally fails, so the superior hears about a timeout directly. After a daemon restart, each interrupted Session's message
+runs once the Server has prepared the Session again, before the Session's queued messages. See
 [Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work).
+
+### Session messages steered into an IM Turn
+
+On a Local Computer a Session message is steered into the Session's IM Turn whenever the runtime can take it, including
+that Turn's retry and the Turn resumed after a process interruption
+([#1301](https://github.com/first-tree-ai/opentag/issues/1301#issuecomment-6651237819)). A steered message has no count of its own: it
+shares the count of the Turn it joined, so they retry together and fail together.
+
+- **Model HTTP 429, retried in place.** Messages already steered into the Turn join the same retry, in their original order
+  among the Turn's IM steers, and stay `running`. They are not queued again. The list is kept in memory, not in the Turn's
+  retry file. A message steered into that retry joins the next one the same way.
+- **Crash or restart.** The Turn is resumed with the continuation notice, without its Session messages. Messages already
+  steered before the interruption, then queued messages, are steered into the resumed Turn in order once it is running. A
+  message that was already steered carries the continuation notice, without a specific cause, so the Agent knows it may
+  have handled it already. Until then they wait in the FIFO, re-checking about once per second. If the Turn ends first, they
+  run as their own Runs, in order and with a fresh count, as they do when the runtime cannot steer. If the Turn cannot be
+  resumed, the existing fallback applies: the waiting messages fail.
+- **Running out of retries, `turn_timeout`, or any other failure** ends the Turn, and the messages in it fail with it. When
+  the count runs out at a restart, the messages steered into that Turn fail rather than run again; a message whose failure
+  cannot be written yet stays queued and does not run. Queued messages run on their own.
+
+A message stays queued and waits for the Turn to end when the runtime cannot steer or refuses the steer, when the Turn
+already carries 16 Session messages, or when a visible Session has no IM outbox context.
+
+The accepted cost is extra delivery and repeated handling around a process interruption: each retry can replay the Turn and
+its messages, and work that runs at least 5 minutes between crashes is never stopped by the count. After a crash the resumed Turn may already have the steered message
+in its history, and the message is delivered again; the continuation notice tells the Agent, but cannot prevent every
+repeat. A message steered just before a crash, whose `running` state was not yet written, is delivered again without the
+notice. Steering
+into a child's Session message Run, and Cloud, are not covered ([#1303](https://github.com/first-tree-ai/opentag/issues/1303)).

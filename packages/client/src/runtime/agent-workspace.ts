@@ -22,7 +22,11 @@ import {
   writeDurableJson,
 } from "../storage/durable-file.js";
 import { agentRuntimePaths } from "./runtime-paths.js";
-import type { SessionBindingStore, SessionPreparationResult } from "./session-binding-store.js";
+import type {
+  SessionBindingStore,
+  SessionPreparationOptions,
+  SessionPreparationResult,
+} from "./session-binding-store.js";
 import type { RuntimePreparation } from "./session-reconciler.js";
 
 const logger = createLogger("runtime-agent-workspace");
@@ -123,8 +127,9 @@ export class AgentWorkspaceManager implements RuntimePreparation {
   async prepareSession(
     request: SessionReconcileRequest,
     hashes: RuntimeSnapshotHashes,
+    options: SessionPreparationOptions = {},
   ): Promise<SessionPreparationResult> {
-    return this.#bindingStore.prepare(request, hashes);
+    return this.#bindingStore.prepare(request, hashes, options);
   }
 
   verifyAgent(snapshot: EffectiveRuntimeSnapshot, hashes: RuntimeSnapshotHashes): Promise<void> {

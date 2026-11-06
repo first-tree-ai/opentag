@@ -15,7 +15,12 @@ import type { AgentRuntimeProviderRegistry } from "./agent-runtime-provider-regi
 import type { AgentWorkspaceManager } from "./agent-workspace.js";
 import type { ContextTreeManager, ContextTreeStatus } from "./context-tree.js";
 import { renderManagedSystemPrompt } from "./managed-instructions.js";
-import type { LocalSessionBinding, SessionBindingStore, SessionPreparationResult } from "./session-binding-store.js";
+import type {
+  LocalSessionBinding,
+  SessionBindingStore,
+  SessionPreparationOptions,
+  SessionPreparationResult,
+} from "./session-binding-store.js";
 import type { SessionCliProofManager } from "./session-cli-proof-manager.js";
 import type { RuntimeLocalPolicy, RuntimePreparation } from "./session-reconciler.js";
 
@@ -190,9 +195,13 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
     return current.proofId !== request.sessionCliProof?.proofId;
   }
 
-  prepareSession(request: SessionReconcileRequest, hashes: RuntimeSnapshotHashes): Promise<SessionPreparationResult> {
+  prepareSession(
+    request: SessionReconcileRequest,
+    hashes: RuntimeSnapshotHashes,
+    options: SessionPreparationOptions = {},
+  ): Promise<SessionPreparationResult> {
     this.#assertOpen();
-    const operation = this.#prepareSession(request, hashes);
+    const operation = this.#prepareSession(request, hashes, options);
     this.#prepares.add(operation);
     void operation
       .finally(() => this.#prepares.delete(operation))
@@ -205,10 +214,12 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
   async #prepareSession(
     request: SessionReconcileRequest,
     hashes: RuntimeSnapshotHashes,
+    options: SessionPreparationOptions,
   ): Promise<SessionPreparationResult> {
-    const prepared = await this.#workspace.prepareSession(request, hashes);
+    const prepared = await this.#workspace.prepareSession(request, hashes, options);
     this.#assertOpen();
-    if (prepared.unresolvedTurn) return prepared;
+    // An unresolved Turn fences preparation unless this preparation resumes exactly that Turn.
+    if (fencedByUnresolvedTurn(prepared, options)) return prepared;
     const snapshot = request.runtime;
     if (!snapshot) throw new Error("A ready Session requires a runtime snapshot");
     if (!this.#providers.registration(snapshot.provider)) {
@@ -290,6 +301,11 @@ export class SessionRuntimeManager implements RuntimePreparation, RuntimeLocalPo
       logger.debug({ code: "runtime_start_failed", error: String(error) }, "Session Runtime start failed");
     });
     return waitForStart(start, signal);
+  }
+
+  /** Whether the Session has a prepared runtime entry on this process. */
+  isPrepared(sessionId: string): boolean {
+    return this.#sessions.has(sessionId);
   }
 
   sessionKind(sessionId: string): "visible" | "internal" {
@@ -661,4 +677,8 @@ async function prepareConfigurationRoots(environment: NodeJS.ProcessEnv): Promis
     );
     return [];
   }
+}
+
+function fencedByUnresolvedTurn(prepared: SessionPreparationResult, options: SessionPreparationOptions): boolean {
+  return prepared.unresolvedTurn !== undefined && prepared.unresolvedTurn.turnId !== options.resumeTurnId;
 }

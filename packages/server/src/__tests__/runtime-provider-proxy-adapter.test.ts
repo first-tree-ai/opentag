@@ -3,6 +3,7 @@ import { FEISHU_TENANT_TOKEN_LOCAL_SENTINEL } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import type { RuntimeProxyAuthorization } from "../runtime-credentials/credential-broker.js";
 import { FEISHU_OPERATIONS } from "../runtime-credentials/feishu-operations.js";
+import { FeishuTenantTokenExchangeError } from "../runtime-credentials/feishu-tenant-token.js";
 import { ProviderOperationRegistry } from "../runtime-credentials/operation-registry.js";
 import {
   ImProviderProxyAdapter,
@@ -696,6 +697,45 @@ describe("ImProviderProxyAdapter write outcomes", () => {
       code: "execution_closed",
     });
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["rejected", 10014, 400],
+    ["rate_limited", 99991400, 429],
+  ] as const)(
+    "answers a %s Feishu token exchange in Feishu's shape without any upstream call",
+    async (kind, code, status) => {
+      const fetchImpl = vi.fn();
+      const { instance } = adapter({ fetchImpl: fetchImpl as unknown as typeof fetch });
+      const response = await instance.handle(
+        request({ body: jsonBody({ channel: "C1" }) }),
+        authorization({
+          resolveMaterial: async () => {
+            throw new FeishuTenantTokenExchangeError(kind, code);
+          },
+        }),
+      );
+      expect(response.status).toBe(status);
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of response.body) chunks.push(chunk);
+      expect(JSON.parse(Buffer.concat(chunks).toString())).toMatchObject({ code });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  it("keeps an unreachable Feishu token endpoint a proxy failure", async () => {
+    const { instance } = adapter({ fetchImpl: vi.fn() as unknown as typeof fetch });
+    const error = new FeishuTenantTokenExchangeError("upstream");
+    await expect(
+      instance.handle(
+        request({ body: jsonBody({ channel: "C1" }) }),
+        authorization({
+          resolveMaterial: async () => {
+            throw error;
+          },
+        }),
+      ),
+    ).rejects.toBe(error);
   });
 
   it("never replays a write after a transport failure; a caller retry is a fresh upstream request", async () => {

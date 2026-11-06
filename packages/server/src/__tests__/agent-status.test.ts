@@ -94,7 +94,12 @@ async function fixture() {
     providerReadiness: [{ provider: "codex" as const, status: "ready" as const }],
     imCliReadiness: [{ provider: "feishu" as const, status: "ready" as const }],
   });
-  const credential = (status: "ready" | "needs_attention", generation = 1) =>
+  const credential = (
+    status: "ready" | "needs_attention",
+    generation = 1,
+    details: { reason?: "credential_rejected" | "provider_unreachable" | "rate_limited"; timedOut?: boolean } = {},
+    observedAt = now + elapsed,
+  ) =>
     registry.setProviderCliCredentialObservation(
       computer.id,
       instanceId,
@@ -106,8 +111,9 @@ async function fixture() {
         requestId: randomUUID(),
         status,
         ...(status === "needs_attention" ? { reason: "credential_rejected" as const } : {}),
+        ...details,
       },
-      now + elapsed,
+      observedAt,
     );
   registry.setProviderCliArtifactObservation(
     computer.id,
@@ -165,6 +171,31 @@ describe("Agent status snapshots", () => {
     expect(await f.read()).toMatchObject({ state: "ready" });
     f.advance(90_000);
     expect(await f.read()).toMatchObject({ state: "computer_offline", reason: "computer_offline" });
+  });
+  it.each([
+    [{ reason: "provider_unreachable" }, "credential_provider_unreachable"],
+    [{ reason: "provider_unreachable", timedOut: true }, "credential_validation_timeout"],
+    [{ reason: "rate_limited" }, "credential_rate_limited"],
+    [{ reason: "credential_rejected" }, "credential_validation_failed"],
+    [{}, "credential_validation_failed"],
+  ] as const)("names a credential check answer %j as %s", async (details, reason) => {
+    const f = await fixture();
+    f.registry.recordSelfCheck(f.computer.id, f.instanceId, f.connectionId, f.sample(), f.now);
+    f.credential("needs_attention", 1, details);
+    expect(await f.read()).toMatchObject({ state: "problem", reason });
+  });
+  it("never reports an overdue credential answer as a failed check", async () => {
+    const f = await fixture();
+    f.registry.recordSelfCheck(f.computer.id, f.instanceId, f.connectionId, f.sample(), f.now);
+    const ageSeconds = (seconds: number) => f.credential("ready", 1, {}, f.now - seconds * 1_000);
+    // Still inside the room a recheck that started late needs to settle.
+    ageSeconds(10 * 60 + 16);
+    expect(await f.read()).toMatchObject({ state: "ready", reason: null });
+    ageSeconds(10 * 60 + 59);
+    expect(await f.read()).toMatchObject({ state: "ready", reason: null });
+    // Rechecks have stopped answering: no provider said anything about the credential.
+    ageSeconds(10 * 60 + 61);
+    expect(await f.read()).toMatchObject({ state: "problem", reason: "credential_validation_timeout" });
   });
   it("never borrows another generation's credential proof and exposes completed timeout reasons", async () => {
     const f = await fixture();

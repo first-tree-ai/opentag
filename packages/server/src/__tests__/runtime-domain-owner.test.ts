@@ -12,6 +12,7 @@ import {
   type SessionMessageOutcomeReport,
   type SessionReconcileRequest,
   type SessionReconcileResult,
+  type SessionRecoverRequest,
   type TurnActivityRequest,
   type TurnReportRequest,
 } from "@opentag/shared";
@@ -133,6 +134,41 @@ describe("RuntimeDomainOwner", () => {
     }
   });
 
+  it.each([undefined, 1])("gates Session recovery requests on runtime.sessionRecovery %s", async (version) => {
+    const onSessionRecover = vi.fn(async () => ({ status: "scheduled" as const }));
+    const h = await ownerFixture(1_000, { onSessionRecover });
+    const frame: SessionRecoverRequest = {
+      type: "session:recover",
+      requestId: randomUUID(),
+      sessionId: randomUUID(),
+      agentId: randomUUID(),
+      placementGeneration: 1,
+    };
+    try {
+      expect(h.owner.businessOptions().parse(frame)).toEqual(frame);
+      const context: RuntimeBusinessContext = {
+        ...h.context,
+        negotiatedCapabilities: version ? { [RUNTIME_CAPABILITY.sessionRecovery]: version } : {},
+      };
+      expect(await h.owner.handle(frame, context)).toEqual({
+        type: "session:recover:result",
+        requestId: frame.requestId,
+        sessionId: frame.sessionId,
+        status: version === 1 ? "scheduled" : "unsupported_capability",
+      });
+      expect(onSessionRecover).toHaveBeenCalledTimes(version === 1 ? 1 : 0);
+      // Only the current connection may recover: a superseded one is refused outright.
+      expect(await h.owner.handle(frame, { ...context, instanceId: randomUUID() })).toMatchObject({
+        status: "rejected",
+        reason: "stale_connection",
+      });
+      expect(h.owner.businessOptions().failureResult(frame as never)).toMatchObject({ status: "retry" });
+      expect(h.owner.businessOptions().laneKey(frame as never)).toBe(`session-recover:${frame.sessionId}`);
+    } finally {
+      h.owner.close();
+    }
+  });
+
   it.each([undefined, 1, 2, 3])("gates provider failure categories on report capability %s", async (version) => {
     const fixture = await ownerFixture();
     try {
@@ -238,6 +274,7 @@ describe("RuntimeDomainOwner", () => {
       vi.spyOn(f.custody, "claimRetainedReports").mockImplementation(async () => {
         entered.resolve();
         await finish.promise;
+        return [];
       });
       const abort = new AbortController();
       const request = reconcileRequest(f.computerId);
@@ -271,7 +308,7 @@ describe("RuntimeDomainOwner", () => {
       finish.resolve();
       await processing;
       if (nativeDeadline) await expect(pending).resolves.toMatchObject({ code: "timeout" });
-      else await expect(pending).resolves.toEqual(result);
+      else await expect(pending).resolves.toEqual({ ...result, claimedRetainedReports: [] });
       await f.owner.close();
     },
   );
@@ -1273,10 +1310,11 @@ describe("RuntimeDomainOwner", () => {
       expect(onResult).toHaveBeenCalledOnce();
       release();
       await completion;
-      await expect(pending).resolves.toEqual(result);
-      await expect(fixture.owner.requestReconcile(fixture.computerId, fixture.instanceId, request)).resolves.toEqual(
-        result,
-      );
+      await expect(pending).resolves.toEqual({ ...result, claimedRetainedReports: [] });
+      await expect(fixture.owner.requestReconcile(fixture.computerId, fixture.instanceId, request)).resolves.toEqual({
+        ...result,
+        claimedRetainedReports: [],
+      });
       expect(onResult).toHaveBeenCalledOnce();
     } finally {
       fixture.owner.close();
@@ -1330,6 +1368,7 @@ describe("RuntimeDomainOwner", () => {
     if (stage === "custody")
       claim.mockImplementation(async () => {
         await blocked;
+        return [];
       });
     const request = reconcileRequest(fixture.computerId);
     try {
@@ -1838,7 +1877,8 @@ class MemoryRuntimeCustodyStore implements RuntimeCustodyStore {
     request: SessionReconcileRequest,
     claims: NonNullable<SessionReconcileResult["retainedReports"]>,
     context: RuntimeBusinessContext,
-  ): Promise<void> {
+  ): Promise<NonNullable<SessionReconcileResult["retainedReports"]>> {
+    const claimed: NonNullable<SessionReconcileResult["retainedReports"]> = [];
     for (const claim of claims) {
       const delivery = this.#deliveries.get(claim.deliveryId);
       if (
@@ -1864,7 +1904,9 @@ class MemoryRuntimeCustodyStore implements RuntimeCustodyStore {
         });
       }
       this.#expectedResultHashes.set(claim.turnId, claim.resultHash);
+      claimed.push(claim);
     }
+    return claimed;
   }
 
   async getDelivery(deliveryId: string): Promise<AcceptedDeliveryRecord | undefined> {

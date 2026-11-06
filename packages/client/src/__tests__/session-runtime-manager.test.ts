@@ -196,6 +196,7 @@ describe("SessionRuntimeManager", () => {
     expect(manager.requiresSessionPreparation(request)).toBe(true);
     await expect(reconciler.reconcile(request)).resolves.toMatchObject({ status: "ready" });
     expect(manager.sessionKind(request.sessionId)).toBe("internal");
+    expect(manager.isPrepared(request.sessionId)).toBe(true);
     await manager.ensureRuntime(request.sessionId);
 
     expect(proofManager.materialize).toHaveBeenCalledWith(request.sessionId, request.sessionCliProof);
@@ -1195,6 +1196,7 @@ describe("SessionRuntimeManager", () => {
 
     await expect(manager.ensureRuntime("missing")).rejects.toThrow(SessionRuntimeNotPreparedError);
     expect(() => manager.sessionKind("missing")).toThrow(SessionRuntimeNotPreparedError);
+    expect(manager.isPrepared("missing")).toBe(false);
     expect(() => manager.cwd("missing")).toThrow(SessionRuntimeNotPreparedError);
     expect(ensureProviderReady).not.toHaveBeenCalled();
     expect(factory.created).toHaveLength(0);

@@ -144,10 +144,16 @@ the abandonment diagnostic. Neither observation authorizes a new input dispatch 
 
 For accepted Local custody, a reconcile response does not settle the delivery. `busy`, `running`,
 `reporting`, `recovery_required`, and `rejected` are recorded as distinct deferred status codes.
-`ready` and `stopped` without a recorded report mean `IM_DELIVERY_RECOVERY_AWAITING_REPORT`.
+For `ready` and `stopped`, an unreported retained claim that the Server successfully commits for
+the current delivery and Turn means `IM_DELIVERY_RECOVERY_REPORTING`, even before the actual
+`turn:report` arrives. The domain owner supplies this Server-only claim evidence separately from
+the Client's manifest, after the existing placement, identity, dispatch and hash checks. An absent,
+rejected or mismatched claim, or a successfully claimed report for another delivery, does not
+establish reporting for the current delivery. Without that evidence, an unreported `ready` or
+`stopped` response means `IM_DELIVERY_RECOVERY_AWAITING_REPORT`.
 `busy`, `running`, and `reporting` keep the operation span's `deferred` outcome and retry metric
 without emitting an error diagnostic. Transport failures, `rejected`, `recovery_required`, and
-unreported `ready`/`stopped` responses remain diagnostic. The stopped reconciliation used here
+unreported `ready`/`stopped` responses without a matching committed claim remain diagnostic. The stopped reconciliation used here
 returns `busy / active_turn` for live activity; `running` and `reporting` are handled defensively,
 not observed from this request shape.
 These responses and reconcile transport failures use the existing capped exponential schedule:

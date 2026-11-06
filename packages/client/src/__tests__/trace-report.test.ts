@@ -616,6 +616,33 @@ describe("TurnReportOwner", () => {
     owner.stop();
   });
 
+  it("joins a retrying report without bypassing its backoff", async () => {
+    const connection = new FakeConnection("registered", new Error("socket unavailable"));
+    const scheduled: Array<() => void> = [];
+    const owner = new TurnReportOwner({
+      connection,
+      scheduler: {
+        schedule: (_delay, run) => {
+          scheduled.push(run);
+          return { cancel() {} };
+        },
+      },
+    });
+    const report = owner.create(reportInput());
+    const confirm = vi.fn();
+    const pending = owner.submit(report, confirm);
+    void pending.catch(() => undefined);
+    await owner.settled();
+    expect(owner.getState(report.turnId)).toMatchObject({ status: "retryable", attempts: 1 });
+    expect(owner.submit(report, confirm, { resume: true })).toBe(pending);
+    await owner.settled();
+    expect(connection.sent).toHaveLength(1);
+    expect(scheduled).toHaveLength(1);
+    expect(owner.getState(report.turnId)?.attempts).toBe(1);
+    owner.stop();
+    await expect(pending).rejects.toThrow("stopped");
+  });
+
   it("D-20 releases only after durable confirmation succeeds", async () => {
     const connection = new FakeConnection("registered");
     const owner = new TurnReportOwner({ connection, id: () => REPORT_REQUEST_ID, retryDelayMs: 100 });

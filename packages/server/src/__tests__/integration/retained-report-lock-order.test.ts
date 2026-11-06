@@ -165,7 +165,7 @@ it("ignores a foreign-Session manifest before waiting on its placement", async (
     entered.resolve();
     await release.promise;
   });
-  let claiming: Promise<void> | undefined;
+  let claiming: ReturnType<PostgresRuntimeCustodyStore["claimRetainedReports"]> | undefined;
   try {
     await entered.promise;
     let done = false;
@@ -188,7 +188,7 @@ it("ignores a foreign-Session manifest before waiting on its placement", async (
         done = true;
       });
     await vi.waitFor(() => expect(done).toBe(true), { timeout: 2_000 });
-    await expect(claiming).resolves.toBeUndefined();
+    await expect(claiming).resolves.toEqual([]);
     const [row] = await owner.database
       .select()
       .from(imMessageDeliveries)

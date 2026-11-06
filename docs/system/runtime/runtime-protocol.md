@@ -146,6 +146,30 @@ require the expected status. Runtime test callers wait on their existing result
 TTL/cancellation promise immediately after dispatch; a delayed send callback does
 not extend that budget. Transport completion remains owned by the registry/socket.
 
+## Session recovery
+
+The optional `runtime.sessionRecovery` capability (version 1) lets a restarted Local daemon ask the Server to prepare
+a Session whose accepted work it is about to retry. The Client sends `session:recover` with the Session, Agent and
+placement generation, plus the delivery and Turn identity when the interrupted work is an accepted IM Turn. The Server
+answers `session:recover:result`:
+
+- `scheduled`: it moved the named Turn's report ownership to the requesting connection and will send an ordinary
+  `session:reconcile` (`desired: ready`) for the Session. For an IM Turn the reconcile carries the frozen dispatch
+  snapshot; otherwise it carries the current assembled snapshot (with `sessionKind: internal` and the creator for an
+  internal Session).
+- `rejected` (final, with a reason such as `session_ended`, `placement_stale` or `turn_not_recoverable`), `retry`
+  (transient), or `unsupported_capability`.
+
+Only the exact current connection of the Session's placement Computer is served; a superseded connection is rejected.
+Authorization and the report-owner takeover run in one transaction that locks the Agent and binding, the Session,
+its placement, and the Computer (whose `current_instance_id` must equal the requesting connection) before the delivery
+row, so a concurrent end, move, suspend, or reconnect either wins and refuses the request or waits for it. `scheduled`
+does not end the Client's ownership: the Client keeps the recovery until the ready reconcile prepares the Session and
+sends the request again when it does not arrive.
+The request never redelivers input and never writes a Turn Report. A Client whose Server did not negotiate the
+capability keeps the previous behavior: it reports interrupted IM Turns and fails waiting Session messages instead of
+retrying them. See [Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work).
+
 ## Channel target advertisement
 
 The optional `runtime.channelTarget` capability (version 1) lets a connected Client learn the exact channel latest target for automatic upgrades. When the capability is negotiated, every v2 `heartbeat:result` may carry an optional `channelTarget` field: the Server's release channel and the exact SemVer it currently advertises, read from the channel's published release pointer. The field is additive and negotiated, so older Clients with strict heartbeat schemas never receive it, and a Client behind an older Server simply sees no target. The Client treats only an exact version-string match as already current; SemVer precedence is used solely to reject an older target, while an equal-precedence target with different build metadata is installed. A target for another channel is rejected before any upgrade decision.
@@ -206,12 +230,22 @@ uses a monotonic 90-second deadline; the stale socket sweep runs at most five se
 Credential validation runs on registration or a changed binding generation, explicit Check again,
 a scoped authentication-failure hint, and a ten-minute timer. A new-protocol validation episode
 makes one external attempt within the existing 15-second grant budget and the provider's ten-second
-request deadline. It does not add automatic retry attempts. Rate limiting sets a ten-minute cooldown;
-manual checks and hints cannot bypass it. Current scoped proxy HTTP 401 responses and Slack's
+request deadline. It does not add automatic retry attempts. A Computer runs one validation process,
+so a check it answers as busy made no external attempt; the Server sends it again within the same
+budget. Rate limiting sets a ten-minute cooldown; manual checks and hints cannot bypass it. Current scoped proxy HTTP 401 responses and Slack's
 recognized revoked/invalid authentication responses trigger a debounced recheck, without changing
 or replaying the original operation. The first check can expose a neutral initialization for at most
 15 seconds. Later checks preserve the previous complete answer until they settle, including an
-explicit timeout failure. A reconnect may reuse one unexpired credential result only for the same
+explicit timeout failure. A ready answer stands for 60 seconds past the ten-minute interval, because
+a recheck can start late and still use its whole budget; after that it reads as a timeout.
+
+Only a verdict from the provider is a failed credential check. A check that could not reach the
+provider (network, DNS, HTTP 5xx, a token endpoint outage) reads as provider unreachable, and rate
+limiting and timeouts keep their own reasons. These resolve on the next check, so they never ask the
+user to reconnect, and they do not replace a rejection the provider already gave for the same
+credential generation. Feishu's rate limit code `99991400` counts as rate limiting on any HTTP status.
+A Server-side token exchange that Feishu refuses is answered to the CLI in Feishu's own shape, so
+proxied checks reach the same verdict as direct ones. A reconnect may reuse one unexpired credential result only for the same
 Computer, installation, binding and credential generation, until its original ten-minute expiry.
 Offline presence always overrides it. No readiness survives Server restart.
 

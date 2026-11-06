@@ -23,7 +23,7 @@ function harness(options: { readyAt?: number; preparationTimeoutMs?: number; cle
   let sequence = 0;
   let deleting = false;
   const hooks: {
-    before?: (method: string, v2: boolean) => void;
+    before?: (method: string, v2: boolean) => Response | undefined;
     after?: (method: string) => void;
     sleep?: (signal?: AbortSignal) => void;
     delayDelete?: boolean;
@@ -57,7 +57,8 @@ function harness(options: { readyAt?: number; preparationTimeoutMs?: number; cle
   const fetchImpl = vi.fn<typeof fetch>(async (input, init) => {
     const method = init?.method ?? "GET";
     const v2 = String(input).includes("/v2/");
-    hooks.before?.(method, v2);
+    const override = hooks.before?.(method, v2);
+    if (override) return override;
     let response: Response;
     if (method === "POST") {
       const body = JSON.parse(String(init?.body)) as View;
@@ -146,6 +147,187 @@ describe("Runner image preparation", () => {
     expect(h.deleted()).toBe(true);
   });
 
+  it("keeps polling after a successful readiness read followed by HTTP 503", async () => {
+    const h = harness({ readyAt: 4_000 });
+    let reads = 0;
+    let deletedAt: number | undefined;
+    h.hooks.before = (method, v2) => {
+      if (method === "GET" && !v2 && ++reads === 3) return new Response(null, { status: 503 });
+      if (method === "DELETE") deletedAt = h.now();
+    };
+    await expect(h.prewarmer.prepare()).resolves.toMatchObject({ preparationMs: 4_000 });
+    expect(h.calls("POST")).toHaveLength(1);
+    expect(h.calls("DELETE")).toHaveLength(1);
+    expect(deletedAt).toBe(4_000);
+    expect(h.deleted()).toBe(true);
+  });
+
+  it.each([429, 500, 502, 503, 504])("retries initial HTTP %s reads before creating a probe", async (status) => {
+    const h = harness();
+    h.fetchImpl.mockResolvedValueOnce(new Response(null, { status }));
+    await expect(h.prewarmer.prepare()).resolves.toMatchObject({ preparationMs: 2_000 });
+    expect(h.calls("POST")).toHaveLength(1);
+    expect(h.calls("DELETE")).toHaveLength(1);
+    expect(h.tokenProvider).toHaveBeenCalledTimes(h.fetchImpl.mock.calls.length);
+  });
+
+  it.each(["transport", "request timeout"])("retries a GET %s failure", async (failure) => {
+    const h = harness();
+    h.hooks.after = (method) => {
+      if (method === "POST") {
+        const error =
+          failure === "transport" ? new TypeError("private network error") : new DOMException("", "TimeoutError");
+        h.fetchImpl.mockRejectedValueOnce(error);
+      }
+    };
+    await expect(h.prewarmer.prepare()).resolves.toMatchObject({ preparationMs: 2_000 });
+    expect(h.calls("POST")).toHaveLength(1);
+    expect(h.deleted()).toBe(true);
+  });
+
+  it.each([503, "transport"] as const)(
+    "bounds repeated readiness %s failures by the original preparation deadline",
+    async (failure) => {
+      const h = harness({ preparationTimeoutMs: 5_000 });
+      h.hooks.before = (method, v2) => {
+        if (method === "GET" && !v2 && h.calls("POST").length > 0) {
+          if (failure === "transport") throw new TypeError("private network error");
+          return new Response(null, { status: failure });
+        }
+      };
+      await expect(h.prewarmer.prepare()).rejects.toThrow("deadline exceeded");
+      expect(h.now()).toBe(5_000);
+      expect(h.calls("GET").filter(([url]) => !String(url).includes("/v2/"))).toHaveLength(4);
+      expect(h.calls("POST")).toHaveLength(1);
+      expect(h.calls("DELETE")).toHaveLength(1);
+      expect(h.deleted()).toBe(true);
+    },
+  );
+
+  it("does not create a probe when initial GET retries exhaust the preparation budget", async () => {
+    const h = harness({ preparationTimeoutMs: 3_000 });
+    h.fetchImpl.mockImplementation(async () => new Response(null, { status: 503 }));
+    await expect(h.prewarmer.prepare()).rejects.toThrow("deadline exceeded");
+    expect(h.now()).toBe(3_000);
+    expect(h.calls("GET")).toHaveLength(2);
+    expect(h.calls("POST")).toHaveLength(0);
+    expect(h.calls("DELETE")).toHaveLength(0);
+  });
+
+  it.each([400, 401, 403, 409, 501])("fails immediately on readiness HTTP %s and cleans up", async (status) => {
+    const h = harness();
+    h.hooks.after = (method) => {
+      if (method === "POST") h.fetchImpl.mockResolvedValueOnce(new Response("private provider body", { status }));
+    };
+    await expect(h.prewarmer.prepare()).rejects.toThrow(`GET failed with HTTP ${status}`);
+    expect(h.now()).toBe(0);
+    expect(h.calls("GET")).toHaveLength(4);
+    expect(h.deleted()).toBe(true);
+  });
+
+  it("keeps waiting on readiness 404 without repeating creation", async () => {
+    const h = harness();
+    h.hooks.after = (method) => {
+      if (method === "POST") h.fetchImpl.mockResolvedValueOnce(new Response(null, { status: 404 }));
+    };
+    await expect(h.prewarmer.prepare()).resolves.toMatchObject({ preparationMs: 2_000 });
+    expect(h.calls("POST")).toHaveLength(1);
+    expect(h.deleted()).toBe(true);
+  });
+
+  it("does not retry invalid GET JSON", async () => {
+    const h = harness();
+    h.fetchImpl.mockResolvedValueOnce(new Response("private invalid JSON"));
+    await expect(h.prewarmer.prepare()).rejects.toThrow("GET returned invalid JSON");
+    expect(h.now()).toBe(0);
+    expect(h.fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["fetch", "retry wait"])("aborts preparation during a failed GET %s and drains cleanup", async (phase) => {
+    const h = harness();
+    const controller = new AbortController();
+    h.hooks.before = (method, v2) => {
+      if (method === "GET" && !v2 && h.calls("POST").length > 0) {
+        if (phase === "fetch") controller.abort();
+        return new Response(null, { status: 503 });
+      }
+    };
+    h.hooks.sleep = (signal) => {
+      if (signal) controller.abort();
+    };
+    await expect(h.prewarmer.prepare(controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+    expect(h.calls("POST")).toHaveLength(1);
+    expect(h.calls("DELETE")).toHaveLength(1);
+    expect(h.now()).toBe(phase === "fetch" ? 0 : 2_000);
+    expect(h.deleted()).toBe(true);
+  });
+
+  it.each(["ownership read", "deletion poll"])(
+    "retries a cleanup %s failure without repeating DELETE",
+    async (phase) => {
+      const h = harness();
+      let failed = false;
+      h.hooks.before = (method, v2) => {
+        const deletionStarted = h.calls("DELETE").length > 0;
+        if (method === "GET" && v2 && deletionStarted === (phase === "deletion poll") && !failed) {
+          failed = true;
+          return new Response(null, { status: 503 });
+        }
+      };
+      await expect(h.prewarmer.prepare()).resolves.toMatchObject({ preparationMs: 0 });
+      expect(h.now()).toBe(2_000);
+      expect(h.calls("DELETE")).toHaveLength(1);
+      expect(h.deleted()).toBe(true);
+    },
+  );
+
+  it.each(["ownership read", "deletion poll"])(
+    "bounds repeated cleanup %s failures by its own deadline",
+    async (phase) => {
+      const h = harness({ readyAt: 2_000, cleanupTimeoutMs: 3_000 });
+      h.hooks.delayDelete = true;
+      h.hooks.before = (method, v2) => {
+        if (method === "GET" && v2 && (phase === "ownership read" || h.calls("DELETE").length > 0))
+          return new Response(null, { status: 503 });
+      };
+      await expect(h.prewarmer.prepare()).rejects.toMatchObject({
+        message: "Runner image prewarm cleanup failed",
+        errors: [expect.objectContaining({ message: "Runner image prewarm request deadline exceeded" })],
+      });
+      expect(h.now()).toBe(5_000);
+      expect(h.calls("DELETE")).toHaveLength(phase === "ownership read" ? 0 : 1);
+      expect(h.deleted()).toBe(false);
+    },
+  );
+
+  it("still checks cleanup UID after a transient read failure", async () => {
+    const h = harness();
+    let reads = 0;
+    h.hooks.before = (method, v2) => {
+      if (method === "GET" && v2) {
+        if (++reads === 1) return new Response(null, { status: 503 });
+        h.seed();
+      }
+    };
+    await expect(h.prewarmer.prepare()).rejects.toMatchObject({
+      errors: [expect.objectContaining({ message: "Runner image prewarm cleanup UID changed" })],
+    });
+    expect(h.calls("DELETE")).toHaveLength(0);
+    expect(h.deleted()).toBe(false);
+  });
+
+  it.each(["POST", "DELETE"])("does not retry HTTP 503 for %s", async (writeMethod) => {
+    const h = harness();
+    h.hooks.before = (method) => {
+      if (method === writeMethod) return new Response(null, { status: 503 });
+    };
+    await expect(h.prewarmer.prepare()).rejects.toThrow(
+      writeMethod === "POST" ? "POST failed with HTTP 503" : "cleanup failed",
+    );
+    expect(h.calls(writeMethod)).toHaveLength(1);
+    expect(h.now()).toBe(0);
+  });
+
   it("requires final 404 after a soft delete and retries cleanup on the next preparation", async () => {
     const h = harness({ cleanupTimeoutMs: 3_000 });
     h.hooks.delayDelete = true;
@@ -173,6 +355,19 @@ describe("Runner image preparation", () => {
     expect(h.calls("POST")).toHaveLength(1);
     expect(h.calls("DELETE")).toHaveLength(1);
     expect(h.deleted()).toBe(true);
+  });
+
+  it("never retries an unknown delete response", async () => {
+    const h = harness();
+    h.hooks.after = (method) => {
+      if (method === "DELETE") throw new TypeError("private provider response");
+    };
+    await expect(h.prewarmer.prepare()).rejects.toMatchObject({
+      message: "Runner image prewarm cleanup failed",
+      errors: [expect.objectContaining({ message: "Runner image prewarm DELETE transport failure" })],
+    });
+    expect(h.calls("DELETE")).toHaveLength(1);
+    expect(h.now()).toBe(0);
   });
 
   it("adopts its current probe after restart without posting again", async () => {

@@ -24,6 +24,7 @@ import {
   classifySlackAuthTest,
   classifySpawnFailure,
   extractBoundedJson,
+  isFeishuRateLimitCode,
   type ProviderCliValidationClassification,
 } from "./validation-classify.js";
 
@@ -625,8 +626,13 @@ export async function exchangeFeishuTenantToken(
     );
     throw new FeishuTokenExchangeError(response.status >= 500 ? "provider_unreachable" : "invalid");
   }
-  if (!response.ok) throw new FeishuTokenExchangeError("credential_rejected");
-  if (!isRecord(body) || body.code !== 0 || typeof body.tenant_access_token !== "string") {
+  return tenantTokenFromBody(body, response.ok);
+}
+
+function tenantTokenFromBody(body: unknown, ok: boolean): string {
+  if (!isRecord(body)) throw new FeishuTokenExchangeError("credential_rejected");
+  if (isFeishuRateLimitCode(body.code)) throw new FeishuTokenExchangeError("rate_limited");
+  if (!ok || body.code !== 0 || typeof body.tenant_access_token !== "string") {
     throw new FeishuTokenExchangeError("credential_rejected");
   }
   return body.tenant_access_token;

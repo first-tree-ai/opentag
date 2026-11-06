@@ -111,12 +111,13 @@ The daemon's updater follows a strict contract:
 - **Exact target identity, monotonic precedence.** Only an exact version-string match is already current, so a target
   that differs only by SemVer build metadata is still installed. SemVer precedence is used only to reject an older
   target; the target must also belong to the Client's own channel, and an automatic downgrade never happens.
-- **Protected work comes first.** Before installing, the updater waits indefinitely until the Session module reports
-  no protected work — no accepted Turn under local custody, no pending Turn completion or report, and no accepted
-  IM delivery could be lost or duplicated by the handoff. The Session module bounds every one of those units (Turn
-  budgets, delivery deadlines, report retries with terminal outcomes), so the updater adds no force timeout of its
-  own. New-work admission is closed before the zero-work snapshot; deliveries accepted before that point continue
-  draining, while later deliveries receive a retryable busy result.
+- **Running Sessions do not hold an upgrade.** The updater installs while Sessions keep running and new work keeps
+  arriving, then closes admission and stops the daemon, which finishes its durable writes first. The restarted daemon
+  recovers interrupted work; see
+  [Automatic retry of accepted work](../system/server-client-boundary.md#automatic-retry-of-accepted-work). A failed
+  install interrupts nothing. Only while the Client is registered with a Server that did not negotiate
+  `runtime.sessionRecovery` does the updater close admission and wait for no protected work, with no force timeout,
+  reporting `awaiting_protected_work`; later deliveries receive a retryable busy result during that wait.
 - **One attempt per target.** The attempt is recorded durably before any install work starts. A failure — including
   an interrupted attempt — becomes a blocked state that is never retried automatically: the updater waits for a
   newer target or a manual `opentag upgrade`, which prevents retry and restart storms.

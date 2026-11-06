@@ -827,6 +827,45 @@ export const SessionMessageOutcomeResultSchema = z
   })
   .strict();
 
+/**
+ * Client -> Server: re-prepare a Session whose accepted work was interrupted (daemon crash or
+ * restart) so the Client can run its one automatic retry. The Server answers with this result
+ * and, when `scheduled`, sends an ordinary `session:reconcile` (`desired: ready`) afterwards.
+ * For an IM Turn, `deliveryId`/`turnId` name the accepted, unreported delivery; the Server moves
+ * its report ownership to the requesting connection. Requires `runtime.sessionRecovery` v1.
+ */
+export const SessionRecoverRequestSchema = z
+  .object({
+    type: z.literal("session:recover"),
+    requestId: RuntimeRequestIdSchema,
+    sessionId: z.string().uuid(),
+    agentId: z.string().uuid(),
+    placementGeneration: RuntimeSequenceSchema,
+    deliveryId: z.string().uuid().optional(),
+    turnId: RuntimeOpaqueIdSchema.optional(),
+  })
+  .strict()
+  .superRefine((frame, context) => {
+    if ((frame.deliveryId === undefined) !== (frame.turnId === undefined)) {
+      context.addIssue({ code: "custom", path: ["turnId"], message: "A recovered Turn names both delivery and Turn" });
+    }
+  });
+
+/**
+ * `scheduled`: a ready reconcile follows. `rejected`: the Session or Turn cannot be recovered on this
+ * connection (final; the Client reports the interrupted work as failed). `retry`: transient, resend.
+ * `unsupported_capability`: the connection did not negotiate `runtime.sessionRecovery`.
+ */
+export const SessionRecoverResultSchema = z
+  .object({
+    type: z.literal("session:recover:result"),
+    requestId: RuntimeRequestIdSchema,
+    sessionId: z.string().uuid(),
+    status: z.enum(["scheduled", "rejected", "retry", "unsupported_capability"]),
+    reason: SessionMessageRunOutcomeReasonSchema.optional(),
+  })
+  .strict();
+
 const TraceEventBaseSchema = z.object({
   sequence: z.number().int().safe().positive(),
   at: z.string().datetime({ offset: true }),
@@ -1328,6 +1367,7 @@ export const ServerRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
    */
   SessionMessageDeliveryRequestV3Schema,
   SessionMessageOutcomeResultSchema,
+  SessionRecoverResultSchema,
   TurnReportResultSchema,
   TurnActivityResultSchema,
   RuntimeImCredentialGrantResultSchema,
@@ -1352,6 +1392,7 @@ export const ClientRuntimeBusinessFrameSchema = z.discriminatedUnion("type", [
   RuntimeImSteerResultSchema,
   SessionMessageDeliveryResultSchema,
   SessionMessageOutcomeReportSchema,
+  SessionRecoverRequestSchema,
   AgentTraceBatchSchema,
   TurnReportRequestSchema,
   TurnActivityRequestSchema,
@@ -1392,6 +1433,8 @@ export type SessionMessageDeliveryResult = z.infer<typeof SessionMessageDelivery
 export type SessionMessageRunOutcome = z.infer<typeof SessionMessageRunOutcomeSchema>;
 export type SessionMessageOutcomeReport = z.infer<typeof SessionMessageOutcomeReportSchema>;
 export type SessionMessageOutcomeResult = z.infer<typeof SessionMessageOutcomeResultSchema>;
+export type SessionRecoverRequest = z.infer<typeof SessionRecoverRequestSchema>;
+export type SessionRecoverResult = z.infer<typeof SessionRecoverResultSchema>;
 export type AgentTraceEvent = z.infer<typeof AgentTraceEventSchema>;
 export type AgentTraceBatch = z.infer<typeof AgentTraceBatchSchema>;
 export type TurnReportRequest = z.infer<typeof TurnReportRequestSchema>;

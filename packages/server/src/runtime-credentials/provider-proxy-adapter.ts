@@ -3,6 +3,7 @@ import type { RuntimeCredentialProvider, RuntimeExecutionSource } from "@opentag
 import type { ServiceLogger } from "../observability/service-logger.js";
 import { decodeBufferedBody, slackBufferedBodyKind } from "./buffered-body.js";
 import type { RuntimeProxyAuthorization } from "./credential-broker.js";
+import { FeishuTenantTokenExchangeError } from "./feishu-tenant-token.js";
 import {
   bufferProxyBody,
   type ProviderOperation,
@@ -204,7 +205,7 @@ export class ImProviderProxyAdapter implements ProviderProxyAdapter {
       request.signal.throwIfAborted();
     } catch (error) {
       if (request.signal.aborted) throw new RuntimeProxyError("cancelled");
-      throw error;
+      return answerFeishuTokenRefusal(error);
     }
     try {
       const response = await this.#fetchUpstream(operation, annotated.bytes, headers, request, material);
@@ -913,4 +914,19 @@ function annotateFeishuSend(
       : undefined;
   }
   return undefined;
+}
+
+/**
+ * Feishu refused the Server-side token exchange, so no request reached the operation. Answer in
+ * Feishu's own shape: a generic proxy outage would make a dead credential read as an unreachable
+ * provider, and the CLI classifies this answer exactly as it would a direct one.
+ */
+function answerFeishuTokenRefusal(error: unknown): ProviderProxyResponse {
+  if (!(error instanceof FeishuTenantTokenExchangeError) || error.providerCode === undefined) throw error;
+  const body = JSON.stringify({ code: error.providerCode, msg: "Feishu refused the tenant token exchange" });
+  return {
+    status: error.kind === "rate_limited" ? 429 : 400,
+    headers: { "content-type": "application/json" },
+    body: singleChunk(new TextEncoder().encode(body)),
+  };
 }

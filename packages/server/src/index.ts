@@ -60,6 +60,7 @@ import { RuntimeApprovalOwner } from "./runtime/runtime-approval-owner.js";
 import { PostgresRuntimeCustodyStore } from "./runtime/runtime-custody-store.js";
 import { RuntimeDomainOwner } from "./runtime/runtime-domain-owner.js";
 import { PostgresRuntimeDurableWorkStore } from "./runtime/runtime-durable-work-store.js";
+import { SessionRecoveryService } from "./runtime/session-recovery.js";
 import { SlackAutoSetupOwner } from "./runtime/slack-auto-setup-owner.js";
 import { AgentRuntimeOptionsService } from "./services/agents/agent-runtime-options-service.js";
 import { AgentSlackProvisionService } from "./services/agents/agent-slack-provision-service.js";
@@ -969,7 +970,20 @@ export async function startServer(): Promise<void> {
     const slackWorkingStore = new SlackWorkingStore(database);
     // Bound after the collaboration service exists; the service itself depends on this owner.
     let runOutcomeNotifier: RunOutcomeNotifier | undefined;
+    // Late-bound like the notifier: recovery schedules its reconcile through this same owner.
+    let recoveryDomain: RuntimeDomainOwner | undefined;
+    const sessionRecovery = new SessionRecoveryService({
+      assembler: runtimeSnapshotAssembler,
+      database,
+      logger: serviceLogger("session-recovery"),
+      registry,
+      requestReconcile: (computerId, instanceId, request, admission) => {
+        if (!recoveryDomain) return Promise.reject(new Error("The runtime domain owner is not ready"));
+        return recoveryDomain.requestReconcile(computerId, instanceId, request, undefined, admission);
+      },
+    });
     const domainOwner = new RuntimeDomainOwner(registry, custody, {
+      onSessionRecover: (frame, context) => sessionRecovery.recover(frame, context),
       onTurnActivity: (frame, context) => acknowledgeFeedbackActivity(database, frame, context),
       onSessionMessageOutcome: async (frame, context) =>
         (await runOutcomeNotifier?.notifyRunOutcome({
@@ -988,6 +1002,7 @@ export async function startServer(): Promise<void> {
       prepareReconcile: (computerId, connectionInstanceId, request) =>
         sessionCliProofService.prepareReconcile(computerId, connectionInstanceId, request),
     });
+    recoveryDomain = domainOwner;
     const approvalOwner = new RuntimeApprovalOwner({
       store: new PostgresApprovalStore(database),
       registry,

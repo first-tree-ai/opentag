@@ -98,6 +98,8 @@ interface CurrentRequest {
   hintNotBefore?: number;
   grantExpiresAt?: number;
   credentialCheckDeadlineAt?: number;
+  /** Set while a busy Computer holds a check: re-sent grants share this one budget. */
+  busyCheckDeadlineAt?: number;
   cooldownUntil?: number;
   grantIssue?: Promise<void>;
   grantRepairStopped: boolean;
@@ -916,13 +918,22 @@ export class ProviderCliReconcileOwner {
     if (!this.#acceptsGrantResult(current, frame, context)) return undefined;
     if (frame.status === "retrying") {
       if (this.#selfCheckingComputer(current.computerId)) {
-        this.#failCredential(current, frame.reason === "rate_limited" ? "rate_limited" : "provider_unreachable");
+        if (frame.reason === "validation_busy") {
+          this.#resendBusyCheck(current);
+          return undefined;
+        }
+        this.#failCredential(
+          current,
+          frame.reason === "rate_limited" ? "rate_limited" : "provider_unreachable",
+          frame.reason === "validation_expired",
+        );
         return undefined;
       }
       return this.#handleRetryingValidation(current, frame, context);
     }
     current.forceCredentialCheck = false;
     current.credentialCheckDeadlineAt = undefined;
+    current.busyCheckDeadlineAt = undefined;
     current.grantConsumed = true;
     this.#registry.setProviderCliCredentialObservation(
       context.computerId,
@@ -942,6 +953,22 @@ export class ProviderCliReconcileOwner {
     if (frame.status === "needs_attention") current.grantRepairStopped = true;
     this.#armCredentialTimer();
     return undefined;
+  }
+
+  /**
+   * The Computer runs one validation process, so bindings checked together answer busy. Nothing
+   * reached the provider, so this says nothing about the credential: send it again within the same
+   * budget, and let the deadline settle it as a timeout if the Computer stays busy.
+   */
+  #resendBusyCheck(current: CurrentRequest): void {
+    current.busyCheckDeadlineAt = current.credentialCheckDeadlineAt ?? this.#now() + this.#grantTtlMs;
+    this.#armTimer(
+      current,
+      () => {
+        void this.#issueGrant(current).catch(() => this.#failCredential(current, "provider_unreachable"));
+      },
+      this.#jitteredDelay(500),
+    );
   }
 
   async #handleRetryingValidation(
@@ -1003,7 +1030,7 @@ export class ProviderCliReconcileOwner {
   async #performIssueGrant(current: CurrentRequest): Promise<void> {
     if (this.#requests.get(requestKey(current.computerId, current.integrationId)) !== current) return;
     if (this.#shouldSkipGrant(current)) return;
-    const episodeDeadline = this.#now() + this.#grantTtlMs;
+    const episodeDeadline = current.busyCheckDeadlineAt ?? this.#now() + this.#grantTtlMs;
     if (!this.#artifactIsReady(current)) return;
     if (this.#selfCheckingComputer(current.computerId)) {
       current.credentialCheckDeadlineAt = episodeDeadline;
@@ -1440,10 +1467,25 @@ export class ProviderCliReconcileOwner {
   #failCredential(current: CurrentRequest, reason: "rate_limited" | "provider_unreachable", timedOut = false): void {
     if (this.#requests.get(requestKey(current.computerId, current.integrationId)) !== current) return;
     current.credentialCheckDeadlineAt = undefined;
+    current.busyCheckDeadlineAt = undefined;
     if (reason === "rate_limited") current.cooldownUntil = this.#now() + RUNTIME_CREDENTIAL_CHECK_INTERVAL_MS;
     current.grantConsumed = true;
     current.forceCredentialCheck = false;
     current.grantRepairStopped = true;
+    // A check that could not reach the provider cannot overturn a verdict the provider already gave.
+    const previous = matchObservation(
+      this.#registry.providerCliCredentialReadiness(current.computerId, this.#now()),
+      current.snapshot,
+    );
+    if (
+      previous?.status === "needs_attention" &&
+      previous.reason &&
+      previous.reason !== "provider_unreachable" &&
+      previous.reason !== "rate_limited"
+    ) {
+      this.#armCredentialTimer();
+      return;
+    }
     this.#registry.setProviderCliCredentialObservation(
       current.computerId,
       current.instanceId,
@@ -1474,6 +1516,7 @@ export class ProviderCliReconcileOwner {
     }
     if (current.grantRequestId && !current.grantConsumed && (current.grantExpiresAt ?? 0) > this.#now()) return;
     current.nextCredentialCheckAt = this.#now() + RUNTIME_CREDENTIAL_CHECK_INTERVAL_MS;
+    current.busyCheckDeadlineAt = undefined;
     current.forceCredentialCheck = true;
     current.grantRepairStopped = false;
     current.grantRequestId = undefined;

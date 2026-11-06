@@ -346,6 +346,7 @@ const statusReasons: Record<NonNullable<AgentStatusSnapshot["reason"]>, AgentAva
   credential_validation_failed: "handoff_unavailable",
   credential_validation_timeout: "handoff_unavailable",
   credential_rate_limited: "handoff_unavailable",
+  credential_provider_unreachable: "handoff_unavailable",
 };
 function availabilityState(status: AgentStatusSnapshot): AgentAvailability["state"] {
   if (status.state === "ready") return "ready";
@@ -369,6 +370,7 @@ function messagingStateFromStatus(status: AgentStatusSnapshot): AgentAvailabilit
     case "credential_validation_failed":
     case "credential_validation_timeout":
     case "credential_rate_limited":
+    case "credential_provider_unreachable":
       return "action_required";
     case "computer_not_bound":
     case "computer_access_required":

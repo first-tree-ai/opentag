@@ -17,6 +17,7 @@ import {
   RUNTIME_PROTOCOL_V2,
   RUNTIME_PROVIDER_CLI_ARTIFACT_TTL_MS,
   RUNTIME_PROVIDER_CLI_CREDENTIAL_TTL_MS,
+  RUNTIME_PROVIDER_CLI_VALIDATION_GRANT_TTL_MS,
   RUNTIME_SELF_CHECK_STALE_MS,
   type RuntimeClientCapabilities,
   type RuntimeImCliReadinessCollection,
@@ -129,6 +130,13 @@ export interface ConnectionRegistryOptions {
   logger?: ServiceLogger;
   monotonicNow?: () => number;
 }
+
+/**
+ * How long past the check interval a ready answer stands. A recheck can start late, because the
+ * shared pump works through bindings one at a time, and may then use its whole grant budget. An
+ * answer older than this means rechecks stopped answering, which is overdue rather than a verdict.
+ */
+const CREDENTIAL_ANSWER_GRACE_MS = 4 * RUNTIME_PROVIDER_CLI_VALIDATION_GRANT_TTL_MS;
 
 export class ConnectionRegistry {
   readonly #entries = new Map<string, RuntimeConnectionEntry>();
@@ -550,9 +558,14 @@ export class ConnectionRegistry {
         return [
           {
             observation:
-              now - observation.observedAt > RUNTIME_CREDENTIAL_CHECK_INTERVAL_MS + 15_000 &&
+              now - observation.observedAt > RUNTIME_CREDENTIAL_CHECK_INTERVAL_MS + CREDENTIAL_ANSWER_GRACE_MS &&
               observation.status === "ready"
-                ? { ...observation, status: "needs_attention" as const, reason: "provider_unreachable" as const }
+                ? {
+                    ...observation,
+                    status: "needs_attention" as const,
+                    reason: "provider_unreachable" as const,
+                    timedOut: true,
+                  }
                 : { ...observation },
             observedAt: observation.observedAt,
           },

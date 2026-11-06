@@ -295,7 +295,10 @@ function messagingConnected({ binding, installation }: BindingScope, now: Date):
 }
 function credentialProblem(credential: { timedOut?: boolean; reason?: string }): AgentStatusReason {
   if (credential.timedOut) return "credential_validation_timeout";
-  return credential.reason === "rate_limited" ? "credential_rate_limited" : "credential_validation_failed";
+  if (credential.reason === "rate_limited") return "credential_rate_limited";
+  // The provider could not answer, so the check says nothing about the credential.
+  if (credential.reason === "provider_unreachable") return "credential_provider_unreachable";
+  return "credential_validation_failed";
 }
 
 function computerOnline(computer: typeof computers.$inferSelect | undefined, registry: ConnectionRegistry): boolean {

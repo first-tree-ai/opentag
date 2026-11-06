@@ -155,6 +155,17 @@ export interface DurableWorkRecord<T = unknown> {
    * existed, which are deliberately not backfilled.
    */
   readonly outcomeReport?: "pending" | "published";
+  /**
+   * Session-message only: the recoverable interruption that the record's one automatic retry
+   * continues from. Its presence makes the next Run start with the continuation notice.
+   */
+  /** Session-message only: actual run time of its own Runs, against the Run's duration limit. */
+  readonly ranMs?: number;
+  /** Session-message only: actual run time of its latest retry; long enough, and `attempts` resets. */
+  readonly retryRanMs?: number;
+  /** Session-message only: the Run this message was steered into, whose retry count it shares. */
+  readonly joinedRunId?: string;
+  readonly interruption?: { readonly reason: string; readonly at: string };
   readonly payload: T;
   readonly status: DurableWorkStatus;
   readonly updatedAt: number;
@@ -198,8 +209,11 @@ export class FileRuntimeDurabilityStore implements RuntimeDurabilityStore {
       await ensurePrivateDirectory(dirname(this.#directory), this.#directory);
       const path = durabilityPath(this.#directory, record.kind);
       const records = (await readDurableJson(path, (value) => parseRecords(value, record.kind))) ?? [];
-      const next = records.filter((candidate) => candidate.key !== record.key);
-      next.push(record as DurableWorkRecord);
+      // Replace an existing record in place: list order is the durable FIFO that hydration restores.
+      const index = records.findIndex((candidate) => candidate.key === record.key);
+      const next = [...records];
+      if (index === -1) next.push(record as DurableWorkRecord);
+      else next[index] = record as DurableWorkRecord;
       await writeDurableJson(path, next);
     });
   }

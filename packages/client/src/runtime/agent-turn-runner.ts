@@ -13,6 +13,7 @@ import {
   type RuntimeImSteerResult,
   redactForLog,
   redactSensitive,
+  type SessionMessageDeliveryRequestV3,
   type TurnActivityResult,
   type TurnFailureReason,
   type TurnOutgoingReplySnapshot,
@@ -26,12 +27,27 @@ import type {
   AgentRunResult,
   AgentRuntime,
   AgentRuntimeEvent,
+  AgentSteerOutcome,
+  AgentSteerReceipt,
   JsonValue,
 } from "../agent-runtime/types.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { AgentRuntimeProviderUnavailableError } from "./agent-runtime-provider-registry.js";
 import { ImCredentialEnvironmentError } from "./im-credential-environment-manager.js";
 import type { ImResourceFetcher } from "./im-resource-fetcher.js";
+import {
+  acknowledgedSteers,
+  buildContinuationNotice,
+  type Interruption,
+  MAX_AUTOMATIC_RETRIES,
+  MAX_RECORDED_STEERS,
+  nextRetry,
+  RATE_LIMIT_RETRY_DELAY_MS,
+  recoverableFailure,
+  type TurnRetryRecord,
+  type TurnRetryStore,
+  trackRunTime,
+} from "./interruption-retry.js";
 import {
   budgetTurnReportHashInput,
   emptyCompleteOutgoingReplies,
@@ -61,7 +77,7 @@ import { TurnTraceBuffer } from "./trace-buffer.js";
 import { TurnActivityReporter } from "./turn-activity-reporter.js";
 import type { LiveTurnOwner, TurnCustodyOwner } from "./turn-custody-owner.js";
 import type { TurnReportOwner } from "./turn-report-owner.js";
-import { abortExpiredTurn, turnTimeoutMs } from "./turn-timeout.js";
+import { abortExpiredTurn, remainingBudgetMs, turnTimeoutMs } from "./turn-timeout.js";
 
 export { turnTimeoutMs } from "./turn-timeout.js";
 
@@ -98,6 +114,32 @@ export interface AgentTurnRunnerOptions {
    * without touching the execution path.
    */
   readonly agentErrorReporter?: AgentTurnErrorReporter;
+  /**
+   * Durable input of accepted Turns. When present, a recoverable failure (timeout, HTTP 429) gets
+   * one automatic retry in place, and an orderly shutdown leaves the Turn unresolved for the
+   * restarted daemon instead of reporting it cancelled.
+   */
+  readonly retries?: Pick<TurnRetryStore, "appendSteer" | "removeSteer" | "update">;
+  /** Whether a Turn interrupted by shutdown can be retried after restart (`runtime.sessionRecovery`). */
+  readonly restartRetryAvailable?: () => boolean;
+  /** The owner of Session messages steered into a Turn; an in-place retry carries them along. */
+  readonly sessionMessages?: {
+    /** The message's input for a retry, built once the retry's credentials are prepared. */
+    input(message: SessionMessageDeliveryRequestV3, processedAt: Date): AgentInput;
+    /** Resolves once the message's outcome is durable. */
+    settle(message: SessionMessageDeliveryRequestV3, outcome: AgentSteerOutcome): Promise<void>;
+  };
+}
+
+export interface TurnStartOptions {
+  /** Set when this start is the automatic retry of an interrupted Turn. */
+  readonly continuation?: Interruption;
+  readonly steers?: readonly RuntimeImSteerRequest[];
+}
+
+interface TurnAttempt {
+  readonly completion: TurnCompletion;
+  readonly turnPlanInput?: ProviderCliTurnPlanPrepareInput;
 }
 
 /**
@@ -119,6 +161,12 @@ export interface AgentTurnFailure {
 /** Never throws and never awaited: a tracker that is slow or broken must not hold a turn open. */
 export type AgentTurnErrorReporter = (failure: AgentTurnFailure) => void;
 
+/** A message that joined a running Turn; a retry replays them in the order they arrived. */
+type SteeredInput = RuntimeImSteerRequest | SessionMessageDeliveryRequestV3;
+
+/** How long an automatic retry waits for steers still in flight before it gives up. */
+const STEER_SETTLE_TIMEOUT_MS = 10_000;
+
 interface RunningTurn {
   readonly abort: AbortController;
   readonly approvals: Map<string, string>;
@@ -128,6 +176,23 @@ interface RunningTurn {
   promise: Promise<void>;
   runtime?: AgentRuntime;
   expiresAt?: string;
+  continuation?: Interruption;
+  /** Negotiation is cleared on disconnect, and shutdown disconnects first: sample it at start. */
+  readonly restartRetry: boolean;
+  /** Steers not yet answered; each one settles and never rejects. */
+  steering: Set<Promise<unknown>>;
+  /** Session messages that joined the current attempt, with what the provider did with them. */
+  joined: Map<string, { message: SessionMessageDeliveryRequestV3; receipt: AgentSteerReceipt }>;
+  /** Session messages being steered: how to end each one's place in `steering`. */
+  joining: Map<string, () => void>;
+  /** When each steered message arrived, across IM and Session messages. */
+  arrivals: Map<string, number>;
+  /** Set once the Turn's outcome is decided; a message acknowledged later follows its own receipt. */
+  finalized: boolean;
+  /** Run time of the latest attempt that is not recorded yet. */
+  unrecordedRunMs: number;
+  /** Messages an earlier attempt held, replayed in the current attempt's input. */
+  steers: readonly SteeredInput[];
 }
 
 export interface TurnCompletion {
@@ -158,6 +223,9 @@ export class AgentTurnRunner {
   readonly #turnPlan: AgentTurnRunnerOptions["turnPlan"];
   readonly #outgoingReplies: AgentTurnRunnerOptions["outgoingReplies"];
   readonly #agentErrorReporter: AgentTurnErrorReporter;
+  readonly #retries: NonNullable<AgentTurnRunnerOptions["retries"]>;
+  readonly #sessionMessages: NonNullable<AgentTurnRunnerOptions["sessionMessages"]>;
+  readonly #restartRetryAvailable: () => boolean;
   readonly #turns = new Map<string, RunningTurn>();
   #stopped = false;
   readonly #activity: TurnActivityReporter;
@@ -182,6 +250,9 @@ export class AgentTurnRunner {
     // Defaulted rather than optional so the failure path calls it unconditionally: a composition that
     // wants no tracker gets a runner that reports into nothing, not a second branch to get wrong.
     this.#agentErrorReporter = options.agentErrorReporter ?? (() => undefined);
+    this.#retries = options.retries ?? NO_TURN_RETRIES;
+    this.#sessionMessages = options.sessionMessages ?? NO_SESSION_MESSAGES;
+    this.#restartRetryAvailable = options.restartRetryAvailable ?? (() => false);
   }
 
   handleActivityResult(result: TurnActivityResult): void {
@@ -192,7 +263,7 @@ export class AgentTurnRunner {
     return this.#turns.size;
   }
 
-  start(owner: LiveTurnOwner): void {
+  start(owner: LiveTurnOwner, options: TurnStartOptions = {}): void {
     if (this.#stopped || this.#turns.has(owner.turnId)) return;
     const abort = new AbortController();
     const turn: RunningTurn = {
@@ -204,6 +275,15 @@ export class AgentTurnRunner {
       reportVersion: this.#connection.capabilityVersion?.(RUNTIME_CAPABILITY.turnReport) ?? 1,
       phase: "starting",
       promise: Promise.resolve(),
+      ...(options.continuation ? { continuation: options.continuation } : {}),
+      restartRetry: this.#restartRetryAvailable(),
+      steering: new Set(),
+      joined: new Map(),
+      joining: new Map(),
+      arrivals: new Map(),
+      finalized: false,
+      unrecordedRunMs: 0,
+      steers: options.steers ?? [],
     };
     turn.promise = this.#run(turn, abort.signal)
       .catch(
@@ -245,22 +325,79 @@ export class AgentTurnRunner {
       return steerResult(request, "deferred", "turn_not_running");
     }
 
+    turn.arrivals.set(steeredInputId(request), turn.arrivals.size);
+    const steering = this.#steerRunningTurn(turn, runtime, request, semanticHash);
+    turn.steering.add(steering);
+    void steering.finally(() => turn.steering.delete(steering));
+    return steering;
+  }
+
+  async #steerRunningTurn(
+    turn: RunningTurn,
+    runtime: AgentRuntime,
+    request: RuntimeImSteerRequest,
+    semanticHash: string,
+  ): Promise<RuntimeImSteerResult> {
+    // Every acknowledged steer must be in the Turn's retry input, so capture it before steering. A
+    // full input or a storage failure leaves the message with the Server to deliver after this Turn.
+    const capture = await this.#retries.appendSteer(request).catch(() => "failed" as const);
+    if (capture === "full") return steerResult(request, "deferred", "steer_unsupported");
+    if (capture !== "appended") return steerResult(request, "deferred", "turn_not_running");
+
+    // Only a steer with a durable receipt transfers to this Turn; a retry replays exactly those, so a
+    // capture whose steer or receipt failed (answered `deferred`) is dropped and stays with the Server.
     try {
       await runtime.steer({
         expectedRunId: request.expectedTurnId,
         // Steer input assembles at the moment of the steer, so it carries its own UTC sample.
-        input: buildAgentInput(request, undefined, owner.request.runtime, new Date(this.#now())),
+        input: buildAgentInput(request, undefined, turn.owner.request.runtime, new Date(this.#now())),
       });
-    } catch {
-      return steerResult(request, "deferred", "steer_state_unknown");
-    }
-
-    try {
       await this.#bindingStore.recordSteer(request, semanticHash);
     } catch {
+      await this.#retries.removeSteer(request).catch(() => undefined);
       return steerResult(request, "deferred", "steer_state_unknown");
     }
     return steerResult(request, "steered");
+  }
+
+  /**
+   * Hold a place in this running Turn for a Session message about to be steered into it. False leaves
+   * the message queued: the Turn is not running here, or it holds as many as it can carry.
+   */
+  reserveSessionMessage(message: SessionMessageDeliveryRequestV3, turnId: string): boolean {
+    const turn = this.#turns.get(turnId);
+    if (!turn || turn.phase !== "running" || turn.owner.request.sessionId !== message.targetSessionId) return false;
+    const held = turn.steers.filter((steer) => steer.type === "session:message:deliver").length;
+    if (held + turn.joined.size + turn.joining.size >= MAX_RECORDED_STEERS) return false;
+    turn.arrivals.set(steeredInputId(message), turn.arrivals.size);
+    let done!: () => void;
+    const steering = new Promise<void>((resolve) => {
+      done = () => {
+        turn.steering.delete(steering);
+        resolve();
+      };
+    });
+    turn.steering.add(steering);
+    turn.joining.set(message.messageId, done);
+    return true;
+  }
+
+  /** The reserved message was steered: an in-place retry of this Turn now carries it. */
+  sessionMessageSteered(message: SessionMessageDeliveryRequestV3, turnId: string, receipt: AgentSteerReceipt): void {
+    const turn = this.#turns.get(turnId);
+    if (!turn || turn.finalized) {
+      void receipt.outcome.then((outcome) => this.#sessionMessages.settle(message, outcome));
+    } else {
+      turn.joined.set(message.messageId, { message, receipt });
+    }
+    this.releaseSessionMessage(message, turnId);
+  }
+
+  /** The reserved message's place is over, whether it was steered or stays with the inbox. */
+  releaseSessionMessage(message: SessionMessageDeliveryRequestV3, turnId: string): void {
+    const turn = this.#turns.get(turnId);
+    turn?.joining.get(message.messageId)?.();
+    turn?.joining.delete(message.messageId);
   }
 
   async respondToApproval(request: RuntimeApprovalDecision): Promise<RuntimeApprovalResult> {
@@ -383,7 +520,106 @@ export class AgentTurnRunner {
 
   async #run(turn: RunningTurn, shutdownSignal: AbortSignal): Promise<void> {
     const owner = turn.owner;
+    const fields = {
+      agentId: owner.request.agentId,
+      deliveryId: owner.request.deliveryId,
+      sessionId: owner.request.sessionId,
+      turnId: owner.turnId,
+    };
+    const trace = new TurnTraceBuffer({
+      sender: this.#connection,
+      sessionId: owner.request.sessionId,
+      turnId: owner.turnId,
+      placementGeneration: owner.request.placementGeneration,
+      now: this.#now,
+    });
+    const attempt = await this.#attempts(turn, shutdownSignal, trace);
+    // The interruption is durable; the restarted daemon runs the automatic retry.
+    if (!attempt) return;
+    const { completion, turnPlanInput } = attempt;
+    await this.#settleSessionMessages(turn, completion);
+
+    const traceSummary = await trace.finish();
+    const outgoingReplies = await this.#collectOutgoingReplies(turnPlanInput, owner, turn.reportVersion >= 2);
+    const reportInput = budgetTurnReportHashInput({
+      deliveryId: owner.request.deliveryId,
+      turnId: owner.turnId,
+      sessionId: owner.request.sessionId,
+      agentId: owner.request.agentId,
+      placementGeneration: owner.request.placementGeneration,
+      outcome: completion.outcome,
+      executionEffects: completion.executionEffects,
+      ...(completion.finalText ? { finalText: completion.finalText } : {}),
+      ...(completion.errorReason ? { errorReason: completion.errorReason } : {}),
+      ...(completion.usage ? { usage: completion.usage } : {}),
+      traceSummary,
+      ...(outgoingReplies ? { outgoingReplies } : {}),
+    });
+    let report: TurnReportRequest;
+    try {
+      report = this.#reportOwner.create(reportInput, turn.reportVersion);
+      await this.#custody.markReporting(owner.turnId, report);
+    } catch {
+      this.#logger.warn(fields, "Turn could not enter the reporting phase");
+      // Receipts remain the only durable evidence if report persistence fails.
+      return;
+    }
+    await this.#cleanupOutgoingReplies(turnPlanInput, owner.turnId);
+    void this.#reportOwner
+      .submit(report, () => this.#custody.recordResult(owner.turnId, report.resultHash))
+      .catch((error: unknown) => {
+        this.#logger.warn(
+          {
+            ...fields,
+            reason: redactForLog(error instanceof Error ? error.message : "Unknown Turn Report submission failure"),
+          },
+          "Turn Report submission failed",
+        );
+      });
+  }
+
+  /**
+   * Runs the Turn and, after a recoverable failure, its one automatic retry. Undefined means an
+   * orderly stop left the retry to the restarted daemon, so nothing is reported now.
+   */
+  async #attempts(
+    turn: RunningTurn,
+    shutdownSignal: AbortSignal,
+    trace: TurnTraceBuffer,
+  ): Promise<TurnAttempt | undefined> {
+    const fields = { sessionId: turn.owner.request.sessionId, turnId: turn.owner.turnId };
+    let interruption = turn.continuation;
+    // Outgoing-reply receipts of every attempt share the Turn's run id; collect them once at the end.
+    let planInput: ProviderCliTurnPlanPrepareInput | undefined;
+    for (;;) {
+      const attempt = await this.#attempt(turn, shutdownSignal, trace, interruption);
+      planInput = attempt.turnPlanInput ?? planInput;
+      const next = await this.#nextRetry(turn, attempt.completion, shutdownSignal);
+      // An in-place retry only follows a 429, which waits first; false when an orderly stop interrupts it.
+      const ready = next && next !== "deferred" && (await waitUnlessAborted(RATE_LIMIT_RETRY_DELAY_MS, shutdownSignal));
+      if (next === "deferred" || ready === false) {
+        this.#logger.info({ ...fields, reason: attempt.completion.errorReason }, "Turn left for retry after restart");
+        await trace.finish();
+        return undefined;
+      }
+      if (!next || !(await this.#claimRetry(turn))) {
+        return { completion: attempt.completion, ...(planInput ? { turnPlanInput: planInput } : {}) };
+      }
+      this.#logger.info({ ...fields, reason: next.reason }, "Turn automatic retry started");
+      interruption = next;
+    }
+  }
+
+  /** One provider attempt of the Turn; a retry runs it again with the continuation notice. */
+  async #attempt(
+    turn: RunningTurn,
+    shutdownSignal: AbortSignal,
+    trace: TurnTraceBuffer,
+    interruption: Interruption | undefined,
+  ): Promise<TurnAttempt> {
+    const owner = turn.owner;
     const startedAt = this.#now();
+    turn.phase = "starting";
     const fields = {
       agentId: owner.request.agentId,
       deliveryId: owner.request.deliveryId,
@@ -392,33 +628,35 @@ export class AgentTurnRunner {
     };
     this.#logger.info(fields, "Turn started");
     const timeout = new AbortController();
-    const timeoutMs = turnTimeoutMs(owner.request, startedAt);
+    // The ingress deadline bounds only the first attempt; later ones get what is left of the Run's budget.
+    const timeoutMs = interruption
+      ? remainingBudgetMs(owner.request.runtime.budget?.maxDurationMs, await this.#ranMs(turn))
+      : turnTimeoutMs(owner.request, startedAt);
     turn.expiresAt = new Date(startedAt + timeoutMs).toISOString();
     const timer = setTimeout(() => timeout.abort("turn_timeout"), timeoutMs);
     timer.unref();
-    abortExpiredTurn(owner.request, startedAt, timeout);
+    const runTime = trackRunTime(this.#now, (ranMs) =>
+      this.#retries.update(owner.request.sessionId, owner.turnId, (record) => withRunTime(record, ranMs)),
+    );
+    if (!interruption) abortExpiredTurn(owner.request, startedAt, timeout);
     const expiredBeforeStart = timeout.signal.aborted;
     const signal = AbortSignal.any([shutdownSignal, timeout.signal]);
-    const trace = new TurnTraceBuffer({
-      sender: this.#connection,
-      sessionId: owner.request.sessionId,
-      turnId: owner.turnId,
-      placementGeneration: owner.request.placementGeneration,
-      now: this.#now,
-    });
     let completion: TurnCompletion;
     let terminalObserved = false;
     let releaseObserver: () => void = () => undefined;
     let turnPlanInput: ProviderCliTurnPlanPrepareInput | undefined;
     let preparedExecutionId: string | undefined;
+    let credentialPrepared = false;
     const phaseTimings: TurnPhaseTimings = {};
     try {
       signal.throwIfAborted();
-      const started = await this.#startTurn(owner, turn, signal);
+      const started = await this.#startTurn(owner, signal, interruption !== undefined);
+      credentialPrepared = true;
       preparedExecutionId = started.preparedExecutionId;
-      turnPlanInput = started.turnPlanInput;
       phaseTimings.credentialPrepareMs = started.credentialPrepareMs;
-      phaseTimings.turnPlanPrepareMs = started.turnPlanPrepareMs;
+      const turnPlanStartedAt = this.#now();
+      turnPlanInput = await this.#prepareTurnPlanForRun(owner, turn, started.credentials, signal);
+      phaseTimings.turnPlanPrepareMs = Math.max(0, this.#now() - turnPlanStartedAt);
       const runSignal = started.runSignal;
       runSignal.throwIfAborted();
       const ensureStartedAt = this.#now();
@@ -437,7 +675,15 @@ export class AgentTurnRunner {
          * preparation, at the last moment before the Run dispatch — never
          * at delivery receipt. It is prompt input only and never enters a persistent hash.
          */
-        input: buildAgentInput(owner.request, undefined, undefined, new Date(this.#now())),
+        input: interruption
+          ? buildRetryAgentInput(
+              owner.request,
+              turn.steers,
+              interruption,
+              new Date(this.#now()),
+              this.#sessionMessages.input,
+            )
+          : buildAgentInput(owner.request, undefined, undefined, new Date(this.#now())),
         signal: runSignal,
         /*
          * Provider-specific launch facts are resolved only when this execution actually carries
@@ -475,12 +721,13 @@ export class AgentTurnRunner {
         /* v8 ignore next -- turn-plan teardown is best-effort. */
         await this.#turnPlan?.cleanup(turnPlanInput).catch(() => undefined);
       }
-      /* v8 ignore next -- credential teardown is best-effort. */
-      await this.#credentialEnvironment.cleanup(owner.request.sessionId, preparedExecutionId).catch(() => undefined);
+      if (credentialPrepared) {
+        /* v8 ignore next -- credential teardown is best-effort. */
+        await this.#credentialEnvironment.cleanup(owner.request.sessionId, preparedExecutionId).catch(() => undefined);
+      }
       clearTimeout(timer);
+      turn.unrecordedRunMs = await runTime.finish();
     }
-
-    const traceSummary = await trace.finish();
     if (completion.outcome === "completed") {
       this.#logger.info(
         {
@@ -492,42 +739,137 @@ export class AgentTurnRunner {
         "Turn completed",
       );
     }
-    const outgoingReplies = await this.#collectOutgoingReplies(turnPlanInput, owner, turn.reportVersion >= 2);
-    const reportInput = budgetTurnReportHashInput({
-      deliveryId: owner.request.deliveryId,
-      turnId: owner.turnId,
-      sessionId: owner.request.sessionId,
-      agentId: owner.request.agentId,
-      placementGeneration: owner.request.placementGeneration,
-      outcome: completion.outcome,
-      executionEffects: completion.executionEffects,
-      ...(completion.finalText ? { finalText: completion.finalText } : {}),
-      ...(completion.errorReason ? { errorReason: completion.errorReason } : {}),
-      ...(completion.usage ? { usage: completion.usage } : {}),
-      traceSummary,
-      ...(outgoingReplies ? { outgoingReplies } : {}),
-    });
-    let report: TurnReportRequest;
+    return { completion, ...(turnPlanInput ? { turnPlanInput } : {}) };
+  }
+
+  /**
+   * Decide what follows a finished attempt. Returns the recorded
+   * interruption for an in-process retry, `deferred` when an orderly shutdown leaves the retry to
+   * the restarted daemon, or undefined when the outcome is reported as is.
+   */
+  async #nextRetry(
+    turn: RunningTurn,
+    completion: TurnCompletion,
+    shutdownSignal: AbortSignal,
+  ): Promise<Interruption | "deferred" | undefined> {
+    if (completion.outcome === "completed") return undefined;
+    const reason = recoverableFailure(completion.errorReason);
+    if (!reason) return undefined;
+    const restart = reason === "client_shutdown" || shutdownSignal.aborted;
+    if (restart && !turn.restartRetry) return undefined;
+    const interruption: Interruption = { reason, at: new Date(this.#now()).toISOString() };
+    let record: Awaited<ReturnType<TurnRetryStore["update"]>>;
     try {
-      report = this.#reportOwner.create(reportInput, turn.reportVersion);
-      await this.#custody.markReporting(owner.turnId, report);
-    } catch {
-      this.#logger.warn(fields, "Turn could not enter the reporting phase");
-      // Receipts remain the only durable evidence if report persistence fails.
-      return;
-    }
-    await this.#cleanupOutgoingReplies(turnPlanInput, owner.turnId);
-    void this.#reportOwner
-      .submit(report, () => this.#custody.recordResult(owner.turnId, report.resultHash))
-      .catch((error: unknown) => {
-        this.#logger.warn(
-          {
-            ...fields,
-            reason: redactForLog(error instanceof Error ? error.message : "Unknown Turn Report submission failure"),
-          },
-          "Turn Report submission failed",
-        );
+      // The count is decided now: the backoff before a retry is not run time.
+      record = await this.#retries.update(turn.owner.request.sessionId, turn.owner.turnId, (current) => {
+        const ran = withRunTime(current, turn.unrecordedRunMs);
+        if (restart) return { ...ran, interruption };
+        const { count } = nextRetry({ count: ran.retries, ranMs: ran.retryRanMs });
+        return { ...ran, retries: count, retryRanMs: 0, interruption };
       });
+    } catch {
+      return undefined;
+    }
+    if (!record) return undefined;
+    // The restarted daemon counts a process interruption and decides whether the Turn resumes.
+    if (restart) return "deferred";
+    return record.retries > MAX_AUTOMATIC_RETRIES ? undefined : interruption;
+  }
+
+  /** What the Turn has actually run so far, across its attempts. */
+  async #ranMs(turn: RunningTurn): Promise<number> {
+    const { sessionId } = turn.owner.request;
+    const record = await this.#retries
+      .update(sessionId, turn.owner.turnId, (current) => current)
+      .catch(() => undefined);
+    return record?.ranMs ?? 0;
+  }
+
+  /** The retry starts: its interruption is done with. False leaves the failure reported. */
+  async #claimRetry(turn: RunningTurn): Promise<boolean> {
+    const { sessionId } = turn.owner.request;
+    // No new steer joins once the attempt ended, but one in flight may still be acknowledged: its
+    // capture and receipt must be durable before the retry input is read.
+    if (!(await this.#steersSettled(turn))) {
+      this.#logger.warn(
+        { code: "TURN_RETRY_STEER_UNSETTLED", sessionId, turnId: turn.owner.turnId },
+        "Turn automatic retry refused: a steer is still in flight",
+      );
+      return false;
+    }
+    await this.#returnUnstartedSessionMessages(turn);
+    const spent = await this.#retries.update(sessionId, turn.owner.turnId, withoutInterruption).catch(() => undefined);
+    if (!spent) return false;
+    const steers = spent.steers.length === 0 ? [] : await this.#acknowledgedImSteers(turn, spent);
+    if (!steers) return false;
+    // Session messages share this Turn's count: every retry carries the ones an earlier attempt held
+    // and the ones that joined this attempt. They are not counted themselves.
+    const messages = [
+      ...turn.steers.filter((steer) => steer.type === "session:message:deliver"),
+      ...[...turn.joined.values()].map(({ message }) => message),
+    ];
+    turn.joined = new Map();
+    const arrival = (input: SteeredInput) => turn.arrivals.get(steeredInputId(input)) ?? 0;
+    turn.steers = [...steers, ...messages].sort((left, right) => arrival(left) - arrival(right));
+    return true;
+  }
+
+  async #acknowledgedImSteers(
+    turn: RunningTurn,
+    spent: Pick<TurnRetryRecord, "steers">,
+  ): Promise<RuntimeImSteerRequest[] | undefined> {
+    const { agentId, sessionId } = turn.owner.request;
+    // Only the binding that still holds this Turn can say which steers it owns. Without it an
+    // acknowledged steer cannot be told from an unacknowledged one, so a retry could silently drop
+    // input the Server settled with this Turn: report the failure instead.
+    const binding = await this.#bindingStore.read(agentId, sessionId).catch(() => undefined);
+    if (binding?.unresolvedTurn?.turnId !== turn.owner.turnId) {
+      this.#logger.warn(
+        { code: "TURN_RETRY_STEER_RECEIPTS_UNAVAILABLE", sessionId, turnId: turn.owner.turnId },
+        "Turn automatic retry refused: steer receipts are unavailable",
+      );
+      return undefined;
+    }
+    return acknowledgedSteers(spent.steers, binding);
+  }
+
+  /** A message the provider never began goes back to the inbox's FIFO instead of into the retry. */
+  async #returnUnstartedSessionMessages(turn: RunningTurn): Promise<void> {
+    for (const [id, { message, receipt }] of [...turn.joined]) {
+      if ((await receipt.outcome) !== "not_started") continue;
+      turn.joined.delete(id);
+      await this.#sessionMessages.settle(message, "not_started");
+    }
+  }
+
+  /** Every Session message that joined the Turn ends with it. */
+  async #settleSessionMessages(turn: RunningTurn, completion: TurnCompletion): Promise<void> {
+    turn.finalized = true;
+    const completed = completion.outcome === "completed";
+    const settle = (message: SessionMessageDeliveryRequestV3, outcome: AgentSteerOutcome) =>
+      this.#sessionMessages.settle(message, outcome);
+    await Promise.allSettled([
+      ...turn.steers.flatMap((steer) =>
+        steer.type === "session:message:deliver" ? [settle(steer, completed ? "processed" : "interrupted")] : [],
+      ),
+      ...[...turn.joined.values()].map(async ({ message, receipt }) => {
+        const outcome = await receipt.outcome;
+        await settle(message, outcome === "processed" && !completed ? "interrupted" : outcome);
+      }),
+    ]);
+  }
+
+  async #steersSettled(turn: RunningTurn): Promise<boolean> {
+    if (turn.steering.size === 0) return true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), STEER_SETTLE_TIMEOUT_MS);
+    });
+    try {
+      return await Promise.race([Promise.all(turn.steering).then(() => true), expired]);
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /**
@@ -573,19 +915,26 @@ export class AgentTurnRunner {
    */
   async #startTurn(
     owner: LiveTurnOwner,
-    turn: RunningTurn,
     signal: AbortSignal,
+    retry = false,
   ): Promise<{
+    credentials: PreparedRuntimeCredentialEnvironment;
     preparedExecutionId?: string;
     allowedUnixSockets?: readonly string[];
     runSignal: AbortSignal;
-    turnPlanInput?: ProviderCliTurnPlanPrepareInput;
     webTools?: PreparedWebToolsLaunch;
     mcpGateway?: PreparedMcpGatewayLaunch;
     credentialPrepareMs: number;
-    turnPlanPrepareMs: number;
   }> {
-    await this.#bindingStore.updateUnresolved(owner.request.agentId, owner.request.sessionId, owner.turnId, "starting");
+    // A retry keeps the phase it reached: the durable custody phase never moves backwards.
+    if (!retry) {
+      await this.#bindingStore.updateUnresolved(
+        owner.request.agentId,
+        owner.request.sessionId,
+        owner.turnId,
+        "starting",
+      );
+    }
     const credentialStartedAt = this.#now();
     const credentials = await this.#credentialEnvironment.prepare(
       {
@@ -601,18 +950,14 @@ export class AgentTurnRunner {
     );
     const credentialPrepareMs = Math.max(0, this.#now() - credentialStartedAt);
     const runSignal = credentials.signal ? AbortSignal.any([signal, credentials.signal]) : signal;
-    const turnPlanStartedAt = this.#now();
-    const turnPlanInput = await this.#prepareTurnPlanForRun(owner, turn, credentials, signal);
-    const turnPlanPrepareMs = Math.max(0, this.#now() - turnPlanStartedAt);
     return {
+      credentials,
       ...(credentials.executionId ? { preparedExecutionId: credentials.executionId } : {}),
       ...(credentials.allowedUnixSockets ? { allowedUnixSockets: credentials.allowedUnixSockets } : {}),
       runSignal,
-      ...(turnPlanInput ? { turnPlanInput } : {}),
       ...(credentials.web ? { webTools: credentials.web } : {}),
       ...(credentials.mcp ? { mcpGateway: credentials.mcp } : {}),
       credentialPrepareMs,
-      turnPlanPrepareMs,
     };
   }
 
@@ -766,6 +1111,93 @@ export function buildAgentInput(
       ...(resourceContext ? [{ type: "text" as const, text: resourceContext }] : []),
     ],
   };
+}
+
+/**
+ * The input of an automatic retry: the continuation notice, then the original input, then any
+ * messages that had been steered into the interrupted Turn.
+ */
+export function buildRetryAgentInput(
+  request: DirectImMessageDeliveryRequest,
+  steers: readonly SteeredInput[],
+  interruption: Interruption,
+  processedAt: Date = new Date(),
+  sessionMessageInput: NonNullable<AgentTurnRunnerOptions["sessionMessages"]>["input"] = NO_SESSION_MESSAGES.input,
+): AgentInput {
+  const original = buildAgentInput(request, undefined, undefined, processedAt);
+  const steered = steers.flatMap((steer): AgentInput["items"] => {
+    if (steer.type === "im:steer") {
+      return [
+        {
+          type: "text",
+          text: `[${steer.content.providerRef.provider} message ${JSON.stringify(steer.content.providerRef)}]: ${steer.content.text}`,
+        },
+      ];
+    }
+    return [...sessionMessageInput(steer, processedAt).items];
+  });
+  return {
+    items: [
+      { type: "text", text: buildContinuationNotice(interruption) },
+      ...original.items,
+      ...(steered.length
+        ? [
+            {
+              type: "text" as const,
+              text: "Messages that arrived during the interrupted turn, in order (they may also be in your history):",
+            },
+            ...steered,
+          ]
+        : []),
+    ],
+  };
+}
+
+function steeredInputId(input: SteeredInput): string {
+  return input.type === "im:steer" ? `im:${input.deliveryId}` : `session:${input.messageId}`;
+}
+
+/** Without an owner no Session message can be carried by a retry. */
+const NO_SESSION_MESSAGES: NonNullable<AgentTurnRunnerOptions["sessionMessages"]> = {
+  input: () => {
+    throw new Error("A Session message joined the Turn without an owner to build its input");
+  },
+  settle: async () => undefined,
+};
+
+/** Without durable Turn input no automatic retry is possible. */
+const NO_TURN_RETRIES: NonNullable<AgentTurnRunnerOptions["retries"]> = {
+  appendSteer: async () => "appended",
+  removeSteer: async () => undefined,
+  update: async () => undefined,
+};
+
+function withRunTime(record: TurnRetryRecord, ranMs: number): TurnRetryRecord & { retryRanMs: number } {
+  return { ...record, ranMs: (record.ranMs ?? 0) + ranMs, retryRanMs: (record.retryRanMs ?? 0) + ranMs };
+}
+
+function withoutInterruption(record: TurnRetryRecord): TurnRetryRecord {
+  const { interruption: _interruption, ...rest } = record;
+  return rest;
+}
+
+/**
+ * Resolves true after the delay, or false as soon as the signal aborts. Callers pass a signal that
+ * is not aborted yet: an in-process retry is never chosen after shutdown began.
+ */
+function waitUnlessAborted(delayMs: number, signal: AbortSignal): Promise<boolean> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve(true);
+    }, delayMs);
+    timer.unref();
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve(false);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 /** Older/frozen requests carry resource metadata only in the wire field, never in their text. */

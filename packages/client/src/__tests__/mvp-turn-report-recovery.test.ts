@@ -148,7 +148,10 @@ describe("MvpTurnReportRecovery", () => {
     recovery.afterReconciled(firstRequest, firstResult);
     recovery.afterReconciled(secondRequest, secondResult);
     await vi.waitFor(() => expect(submit).toHaveBeenCalledTimes(1));
-    expect(submit).toHaveBeenLastCalledWith(first, expect.any(Function), { onTerminal: expect.any(Function) });
+    expect(submit).toHaveBeenLastCalledWith(first, expect.any(Function), {
+      resume: true,
+      onTerminal: expect.any(Function),
+    });
 
     const reloadedSecond = { ...second, requestId: randomUUID() };
     bindings.set(bindingKey(second.agentId, second.sessionId), reportingBinding(reloadedSecond, second.requestId));
@@ -156,6 +159,7 @@ describe("MvpTurnReportRecovery", () => {
 
     await vi.waitFor(() => expect(submit).toHaveBeenCalledTimes(2));
     expect(submit).toHaveBeenLastCalledWith(reloadedSecond, expect.any(Function), {
+      resume: true,
       onTerminal: expect.any(Function),
     });
     await vi.waitFor(() =>
@@ -343,6 +347,9 @@ function turnReport(agentId: string, sessionId: string, suffix: string): TurnRep
 
 function reportingBinding(report: TurnReportRequest, dispatchRequestId = report.requestId) {
   return {
+    agentId: report.agentId,
+    sessionId: report.sessionId,
+    placementGeneration: report.placementGeneration,
     unresolvedTurn: {
       requestId: dispatchRequestId,
       deliveryId: report.deliveryId,

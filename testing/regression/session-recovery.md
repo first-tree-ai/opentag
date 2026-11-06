@@ -39,6 +39,30 @@ the same Session after the daemon is back, its input begins with
    restarted or upgraded", with no error card and no creator notice. A second upgrade during the same Run also
    continues it.
 
+## Completed report delivery failures without restarting the daemon
+
+1. With a connected daemon, let an IM Turn complete and verify its immutable report
+   exists in the Session binding. Inject failures into the separate Turn Report
+   durability writes, including the first write and retry-transition writes.
+2. Restore those writes within the delivery retry budget without reconnecting.
+   Expected: the exact original report is delivered and acknowledged; failed writes
+   never appear as committed state. Persistent failure consumes the capped retry
+   budget and leaves the binding's report recoverable.
+3. Exhaust report delivery into dead-letter, then restore storage/transport and
+   request an ordinary recovery reconcile. Expected: the matching reporting Turn
+   advertises retained custody; successful manifest delivery wakes report replay.
+   Cancelling an unsent manifest sends no report. Repeated reconciles join an
+   in-flight delivery instead of duplicating its send or resetting its backoff.
+4. Expected: acknowledgement settles the original Turn once, releases its original
+   admission reservation and reporting activity, and lets queued input proceed.
+   No completed model task runs again. A running activity, mismatched Turn or
+   delivery, wrong installation, stale placement, or changed live generation must
+   not be taken over. Server terminal and authorization checks still apply.
+5. Stop the daemon during a persistence retry. Expected: its timers stop, no late
+   send occurs, and the retained Session report remains available on restart.
+   If writing the Session report itself failed, do not claim a durable completed
+   report or send an invented success.
+
 ## Retained report replay after reconnect
 
 1. On the authorized test Computer, disconnect its runtime transport after a Turn finishes locally

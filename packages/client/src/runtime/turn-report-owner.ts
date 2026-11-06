@@ -43,6 +43,8 @@ export interface TurnReportOwnerOptions {
 export type TurnReportTerminalStatus = "conflict" | "stale_generation";
 
 export interface TurnReportSubmitOptions {
+  /** Reconcile joins active delivery without bypassing its retry timer or in-flight send. */
+  resume?: boolean;
   onTerminal?(status: TurnReportTerminalStatus): void;
 }
 
@@ -66,6 +68,7 @@ interface PendingReport {
   terminalListeners: Set<NonNullable<TurnReportSubmitOptions["onTerminal"]>>;
   record: DurableWorkRecord<TurnReportRequest>;
   persistencePending: boolean;
+  persistenceRetry?: DurableWorkRecord<TurnReportRequest>;
 }
 
 export class TurnReportOwnerStoppedError extends Error {
@@ -184,7 +187,11 @@ export class TurnReportOwner {
       else existing.terminalListeners.add(options.onTerminal);
     }
     existing.confirm = confirm;
-    if (this.#connection.state === "registered" && !existing.serverStatus) {
+    if (
+      this.#connection.state === "registered" &&
+      !existing.serverStatus &&
+      (!options.resume || (!existing.sending && !this.#retryTimers.has(report.turnId)))
+    ) {
       if (existing.sending) existing.resendRequested = true;
       else this.#send(existing);
     }
@@ -359,7 +366,12 @@ export class TurnReportOwner {
   }
 
   #send(pending: PendingReport): void {
-    if (!this.#canWrite(pending) || !this.#canStartRunning(pending) || pending.sending || pending.serverStatus) return;
+    if (!this.#canWrite(pending) || pending.confirming) return;
+    if (pending.persistenceRetry) {
+      this.#scheduleRetry(pending, pending.persistenceRetry);
+      return;
+    }
+    if (!this.#canStartRunning(pending) || pending.sending || pending.serverStatus) return;
     if (!this.#canSendReport(pending)) return;
     this.#clearRetry(pending);
     pending.sending = true;
@@ -382,7 +394,7 @@ export class TurnReportOwner {
             pending.resendRequested = false;
             this.#send(pending);
           } else if (this.#isCurrent(pending) && !pending.serverStatus) {
-            const record = this.#records.get(pending.report.turnId);
+            const record = pending.persistenceRetry ?? this.#records.get(pending.report.turnId);
             if (record) this.#scheduleRetry(pending, record);
           }
         }),
@@ -390,7 +402,14 @@ export class TurnReportOwner {
   }
 
   #scheduleRetry(pending: PendingReport, record: DurableWorkRecord<TurnReportRequest>): void {
-    if (this.#retryTimers.has(record.key) || this.#stopped || pending.serverStatus || pending.settling) return;
+    if (
+      this.#retryTimers.has(record.key) ||
+      this.#stopped ||
+      pending.serverStatus ||
+      pending.settling ||
+      pending.confirming
+    )
+      return;
     if (!this.#canSendReport(pending)) return;
     const delay =
       record.nextAttemptAt === undefined ? this.#retryDelayMs : Math.max(0, record.nextAttemptAt - this.#now());
@@ -398,19 +417,31 @@ export class TurnReportOwner {
       this.#retryTimers.delete(record.key);
       if (this.#connection.state !== "registered") return;
       if (!this.#canSendReport(pending)) return;
-      const current = this.#records.get(record.key);
-      if (!current || current.status === "succeeded" || pending.serverStatus || !this.#canWrite(pending)) return;
+      const current = pending.persistenceRetry ?? this.#records.get(record.key);
+      if (
+        !current ||
+        current.status === "succeeded" ||
+        pending.serverStatus ||
+        pending.confirming ||
+        !this.#canWrite(pending)
+      )
+        return;
       if (current.status === "retryable") {
         void this.#track(
-          this.#transition(pending, "accepted", { nextAttemptAt: undefined })
-            .then(() => this.#send(pending))
-            .catch(() => undefined),
+          this.#retry(pending, current).catch((error) => this.#handleFailure(pending, "persist", error)),
         );
       } else {
         void this.#track(this.#handleFailure(pending, "transport", new Error("Turn Report acknowledgement timed out")));
       }
     });
     this.#retryTimers.set(record.key, timer);
+  }
+
+  async #retry(pending: PendingReport, record: DurableWorkRecord<TurnReportRequest>): Promise<void> {
+    if (pending.persistenceRetry && !(await this.#transition(pending, "retryable", record))) return;
+    if (!(await this.#transition(pending, "accepted", { ...record, nextAttemptAt: undefined }))) return;
+    pending.persistenceRetry = undefined;
+    this.#send(pending);
   }
 
   #clearRetry(pending: PendingReport): void {
@@ -496,7 +527,7 @@ export class TurnReportOwner {
 
   async #handleFailure(pending: PendingReport, phase: string, error: unknown): Promise<void> {
     if (!this.#canWrite(pending) || pending.serverStatus) return;
-    const record = this.#records.get(pending.report.turnId) ?? pending.record;
+    const record = pending.persistenceRetry ?? this.#records.get(pending.report.turnId) ?? pending.record;
     const failure = durableFailureFromUnknown(
       pending.report.requestId,
       phase,
@@ -524,14 +555,18 @@ export class TurnReportOwner {
       });
     } catch {
       if (this.#isCurrent(pending)) {
-        this.#scheduleRetry(pending, {
+        // Retry bookkeeping is volatile until a write succeeds; #records remains durable evidence.
+        pending.persistenceRetry = {
           ...candidate,
+          status: "retryable",
           nextAttemptAt: now + retryDelay(this.#retryPolicy, attempts),
-        });
+        };
+        this.#scheduleRetry(pending, pending.persistenceRetry);
       }
       return;
     }
     if (!retryable) return;
+    pending.persistenceRetry = undefined;
     this.#scheduleRetry(pending, retryable);
   }
 

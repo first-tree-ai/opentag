@@ -176,6 +176,81 @@ function manualScheduler() {
 }
 
 describe("Real-scheduler Client durable-work contract", () => {
+  it.each(["initial", "accepted", "retryable"] as const)(
+    "recovers a %s persistence outage without reconnecting or claiming an uncommitted write",
+    async (phase) => {
+      const persistence = new ObservedDurabilityStore();
+      const persistedWrite = persistence.write.bind(persistence);
+      let unavailable = phase === "initial";
+      let outageStarted = unavailable;
+      let acceptedWrites = 0;
+      persistence.write = async (record) => {
+        if (record.status === "accepted") acceptedWrites += 1;
+        if (unavailable) throw new Error("disk full");
+        if (!outageStarted && record.status === phase && (phase !== "accepted" || acceptedWrites > 1)) {
+          outageStarted = true;
+          unavailable = true;
+          throw new Error("disk full");
+        }
+        await persistedWrite(record);
+      };
+      const { owner, send } = ownerFixture(persistence);
+      if (phase !== "initial") send.mockRejectedValueOnce(new Error("socket unavailable"));
+      await owner.ready();
+      const report = reportFixture();
+      const pending = submit(owner, report);
+      await vi.waitFor(() => expect(outageStarted).toBe(true), { interval: 1 });
+      await sleep(35);
+      const sentDuringOutage = send.mock.calls.length;
+      expect(sentDuringOutage).toBe(phase === "initial" ? 0 : 1);
+      expect(owner.getState(report.turnId)).toEqual(
+        (await persistence.list("turn-report")).find((record) => record.key === report.turnId),
+      );
+      unavailable = false;
+      await vi.waitFor(() => expect(send).toHaveBeenCalledTimes(sentDuringOutage + 1), { interval: 1 });
+      await acknowledge(owner, report);
+      await pending;
+      expect(await persistence.status("turn-report", report.turnId)).toBe("succeeded");
+    },
+  );
+
+  it.each([{ maxAttempts: 3 }, { maxAttempts: 100, maxAgeMs: 8 }])(
+    "bounds persistence retries with %j",
+    async (policy) => {
+      const persistence = new ObservedDurabilityStore();
+      persistence.write = vi.fn(async () => {
+        throw new Error("disk full");
+      });
+      const { owner, send } = ownerFixture(persistence, "registered", policy);
+      await owner.ready();
+      await expect(submit(owner, reportFixture())).rejects.toMatchObject({ name: "RuntimeDurabilityFailure" });
+      expect(owner.pendingCount).toBe(0);
+      expect(send).not.toHaveBeenCalled();
+      const writes = vi.mocked(persistence.write).mock.calls.length;
+      await sleep(50);
+      expect(persistence.write).toHaveBeenCalledTimes(writes);
+      expect(await persistence.list("turn-report")).toEqual([]);
+    },
+  );
+
+  it("cancels a persistence retry when the owner stops and keeps the last durable state", async () => {
+    const persistence = new ObservedDurabilityStore();
+    persistence.write = vi.fn(async () => {
+      throw new Error("disk full");
+    });
+    const { owner, send } = ownerFixture(persistence);
+    const report = reportFixture();
+    const pending = submit(owner, report);
+    await owner.settled();
+    owner.stop();
+    await expect(pending).rejects.toThrow("stopped");
+    const writes = vi.mocked(persistence.write).mock.calls.length;
+    await sleep(50);
+    expect(persistence.write).toHaveBeenCalledTimes(writes);
+    expect(owner.getState(report.turnId)).toBeUndefined();
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it("accepts a late acknowledgement while the retained row is still accepted", async () => {
     const persistence = new ObservedDurabilityStore();
     const report = reportFixture();

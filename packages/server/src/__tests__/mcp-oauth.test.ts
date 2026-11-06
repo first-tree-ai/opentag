@@ -2,6 +2,7 @@ import { MCP_ERROR_CODES } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import {
   authorizationServerMetadataUrls,
+  MCP_OAUTH_METADATA_CACHE_TTL_MS,
   MCP_OAUTH_STATE_TTL_MS,
   McpOAuthClient,
   mcpCallbackRedirect,
@@ -1234,5 +1235,124 @@ describe("MCP callback redirect and refresh claim id", () => {
     // The window a callback has to land in: long enough for a consent screen, short enough that a
     // leaked callback URL is not redeemable a day later.
     expect(MCP_OAUTH_STATE_TTL_MS).toBe(10 * 60 * 1000);
+  });
+});
+
+describe("MCP authorization server metadata caching", () => {
+  it("reuses cached metadata within the TTL, defensively clones arrays, and refetches after expiry", async () => {
+    let clockMs = Date.parse("2026-04-20T12:00:00.000Z");
+    let fetchCount = 0;
+    const fetchImpl = vi.fn(async () => {
+      fetchCount += 1;
+      return new Response(
+        JSON.stringify({
+          issuer: AS,
+          authorization_endpoint: `${AS}/authorize`,
+          token_endpoint: `${AS}/token`,
+          scopes_supported: [`scope-${fetchCount}`],
+          token_endpoint_auth_methods_supported: ["client_secret_basic"],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+    const fetcher = new McpOutboundFetcher({
+      allowLoopback: false,
+      fetch: fetchImpl,
+      resolveAddresses: async (): Promise<string[]> => ["93.184.216.34"],
+    });
+    const client = new McpOAuthClient({
+      fetcher,
+      publicUrl: PUBLIC_URL,
+      now: () => new Date(clockMs),
+    });
+
+    const first = await client.authorizationServerMetadata(ACCOUNT, AS);
+    expect(first.scopesSupported).toEqual(["scope-1"]);
+    expect(fetchCount).toBe(1);
+
+    // Mutating the returned object must not corrupt the cached entry.
+    first.scopesSupported.push("mutated");
+    clockMs += MCP_OAUTH_METADATA_CACHE_TTL_MS - 1;
+    const second = await client.authorizationServerMetadata(ACCOUNT, AS);
+    expect(second.scopesSupported).toEqual(["scope-1"]);
+    expect(fetchCount).toBe(1);
+
+    // Advancing past the TTL triggers a fresh discovery request.
+    clockMs += 2;
+    const third = await client.authorizationServerMetadata(ACCOUNT, AS);
+    expect(third.scopesSupported).toEqual(["scope-2"]);
+    expect(fetchCount).toBe(2);
+  });
+
+  it("coalesces concurrent metadata lookups for the same account and issuer into one HTTP request", async () => {
+    let releaseFetch: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => {
+      releaseFetch = resolve;
+    });
+    let fetchCount = 0;
+    const fetchImpl = vi.fn(async () => {
+      fetchCount += 1;
+      await gate;
+      return new Response(
+        JSON.stringify({
+          issuer: AS,
+          authorization_endpoint: `${AS}/authorize`,
+          token_endpoint: `${AS}/token`,
+          scopes_supported: ["mcp.read"],
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+    const fetcher = new McpOutboundFetcher({
+      allowLoopback: false,
+      fetch: fetchImpl,
+      resolveAddresses: async (): Promise<string[]> => ["93.184.216.34"],
+    });
+    const client = new McpOAuthClient({ fetcher, publicUrl: PUBLIC_URL });
+
+    const lookups = Promise.all([
+      client.authorizationServerMetadata(ACCOUNT, AS),
+      client.authorizationServerMetadata(ACCOUNT, AS),
+      client.authorizationServerMetadata(ACCOUNT, AS),
+    ]);
+    releaseFetch?.();
+    const results = await lookups;
+    expect(fetchCount).toBe(1);
+    expect(results).toHaveLength(3);
+    for (const item of results) {
+      expect(item.tokenEndpoint).toBe(`${AS}/token`);
+    }
+  });
+
+  it("does not cache failed discovery lookups so the next call retries", async () => {
+    let attempt = 0;
+    const fetchImpl = vi.fn(async () => {
+      attempt += 1;
+      if (attempt <= 2) {
+        return new Response("", { status: 500 });
+      }
+      return new Response(
+        JSON.stringify({
+          issuer: AS,
+          authorization_endpoint: `${AS}/authorize`,
+          token_endpoint: `${AS}/token`,
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    }) as unknown as typeof globalThis.fetch;
+    const fetcher = new McpOutboundFetcher({
+      allowLoopback: false,
+      fetch: fetchImpl,
+      resolveAddresses: async (): Promise<string[]> => ["93.184.216.34"],
+    });
+    const client = new McpOAuthClient({ fetcher, publicUrl: PUBLIC_URL });
+
+    await expect(client.authorizationServerMetadata(ACCOUNT, AS)).rejects.toMatchObject({
+      code: MCP_ERROR_CODES.UPSTREAM_ERROR,
+    });
+    await expect(client.authorizationServerMetadata(ACCOUNT, AS)).resolves.toMatchObject({
+      issuer: AS,
+      tokenEndpoint: `${AS}/token`,
+    });
   });
 });

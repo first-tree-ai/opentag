@@ -214,6 +214,16 @@ cost because this change intentionally adds no scheduling index.
 
 ## Keeping active bindings connected
 
+Channel startup observes WebSocket readiness failures throughout its lifetime, including while
+outbound Bot identity is pending and after a failed or canceled call returns. Startup awaits outbound
+identity before readiness, preserving outbound error precedence when both fail. Gateway errors and
+rejected SDK startup retain their original cause for
+connection-failure classification. A failed or canceled startup closes the WebSocket and clears
+the channel identity; a late outbound success is disconnected as well. Disconnect settles pending
+readiness, and late SDK errors remain handled after the caller returns. Failed channels stay closed;
+the connection manager creates a fresh channel for its next attempt. Once startup succeeds, SDK
+reconnecting, error and reconnected callbacks continue to report connection transitions.
+
 Every 10 seconds each Server instance scans `active` Feishu bindings that no instance holds a
 connection lease for, claims one, and opens its long connection. A failed attempt releases the
 lease and waits before the next attempt on that binding: 0.5 seconds, doubling to at most 5 minutes.

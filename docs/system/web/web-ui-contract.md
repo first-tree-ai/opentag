@@ -268,6 +268,13 @@ messaging identity that has been disconnected offers **New Agent**, because the 
 Agent and states that resolve on their own offer no action. A fixable row without a way out reads as a dead end next
 to rows that have one, so every fixable state carries the same single link.
 
+The action answers the status the row shows. When the Server's status snapshot names a verdict about a
+dependency setup already finished, that verdict decides the action, not the setup-owned reason it maps to:
+a failed messaging credential check uses **Reconnect channel** and an unavailable messaging CLI uses
+**Fix messaging**, both opening the Agent's messaging settings, on the row and on the Agent's dependency
+rows alike. Check timeouts, rate-limited credential checks, an unreachable messaging provider and an expired
+Computer status report resolve on their own and offer no action. **Continue setup** stays for setup that is actually unfinished.
+
 Agent list and detail availability use the Server's current status snapshot. A foreground page polls
 `GET /api/v1/agents/status?ids=...` every ten seconds, batching up to 100 unique visible Agent IDs per
 request; hidden tabs do not poll. The Account identity list negotiates this resource with
@@ -285,7 +292,8 @@ status, add a Refreshing status hold, or start a preparation POST on entry. Norm
 request deduplication and error presentation remain. Offline overrides other dependencies. First
 credential initialization is neutral for at most 15 seconds; completed failures, stale reports and
 check timeouts name the problem. Rechecks retain the last complete result at the Server. The
-Agent's Work row still describes running Tasks separately from availability.
+Agent's Work row still describes running Tasks separately from availability, with the same running-Task or
+waiting-Task (**N tasks waiting**, **N 个任务等待中**, on every status) line as the list row.
 
 Dependency rows use the causal status reason. Computer, runtime and initializing verdicts
 leave messaging unconfirmed and offer no messaging repair; they do not establish a separate

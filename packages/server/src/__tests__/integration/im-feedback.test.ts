@@ -191,6 +191,7 @@ describe("PostgreSQL feedback operations", () => {
     });
     const worker = new ImFeedbackWorker({
       store: new ImFeedbackStore(client.database, () => clock),
+      postOfflineNotice: async () => {},
       transport: { reaction, post: async () => "card", update: async () => {}, find: async () => ({ ids: [] }) },
       logger: { warn: vi.fn() },
     });
@@ -239,6 +240,7 @@ describe("PostgreSQL feedback operations", () => {
     const worker = new ImFeedbackWorker({
       store,
       transport: {
+        postOfflineNotice: async () => {},
         reaction: async (target) => {
           admitted.push(target);
           if (admitted[0]?.id !== target.id) return siblings.promise;

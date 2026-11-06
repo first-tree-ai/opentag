@@ -433,7 +433,7 @@ describe("native feedback transport", () => {
     });
     expect(await harness().messenger.find(t)).toEqual({ ids: ["match"], cursor: "next" });
     expect(mocks.feishu.im.v1.message.list).toHaveBeenCalledWith({
-      params: { container_id_type: "thread", container_id: t.threadKey, page_size: 100, sort_type: "ByCreateTimeAsc" },
+      params: { container_id_type: "thread", container_id: t.threadKey, page_size: 50, sort_type: "ByCreateTimeAsc" },
     });
   });
   it.each(["slack", "feishu"] as const)(

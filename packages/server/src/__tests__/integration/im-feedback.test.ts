@@ -191,7 +191,6 @@ describe("PostgreSQL feedback operations", () => {
     });
     const worker = new ImFeedbackWorker({
       store: new ImFeedbackStore(client.database, () => clock),
-      postOfflineNotice: async () => {},
       transport: {
         reaction,
         post: async () => "card",

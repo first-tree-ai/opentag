@@ -120,6 +120,17 @@ separately when an authorized test deployment is available.
    no "[openTag notice] Internal Session Run did not complete" notice. A third crash, each within a minute or so of the
    previous resume, produces exactly one such notice naming the failure.
 3. A child whose budget expires does not retry: the parent receives one notice with outcome `timed_out`.
+4. Delay a Local creator's reconcile or delivery receipt, and repeat with a Cloud creator waiting for a cold start.
+   The Local child's `session:message:outcome` frame returns `retry` after notice persistence, before the delayed
+   receipt. Measure that frame response separately from target Runtime acceptance and the creator's callback Run.
+   The child's durable report remains pending; after acceptance is recorded, a replay returns `notified` without
+   delivering another notice. Do not count the frame response as Runtime receipt or business completion.
+5. Repeat with an offline creator, a database failure, a lost database commit response, concurrent duplicate reports,
+   and a Server restart during delivery. The report stays retryable and the same notice ID is reconciled before any
+   retry; a recorded acceptance is never dispatched again. On shutdown, preparation and outcome writes drain, active
+   transport cancellation is signalled, and no later reconcile or delivery is sent. Already-sent delivery receipts
+   drain with their normal timeout. Cloud-origin settlement acknowledgements
+   retain their existing bounded, final-notification wait.
 
 ## Steered Session messages
 

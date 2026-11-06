@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { Readable } from "node:stream";
 import { and, eq, isNull, ne } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
@@ -14,6 +15,7 @@ import type { ComputerAuthContext } from "../computers/index.js";
 import type { ImProviderAdapter, ReadableResource } from "../im-bindings/index.js";
 import { ImBindingServiceError } from "../im-bindings/index.js";
 import { ProviderAdapterResolutionError } from "../im-bindings/provider-adapter-resolver.js";
+import { AvatarCache } from "./avatar-cache.js";
 import { getAvatarTransport } from "./avatar-destination.js";
 import { ExternalCallPolicy, limitReadableStream } from "./external-call-policy.js";
 
@@ -34,6 +36,7 @@ export class ImResourceService {
   readonly #database: DatabaseClient;
   readonly #resolveAdapter: (imBindingId: string, generation: number) => Promise<ImProviderAdapter<unknown>>;
   readonly #policy: ExternalCallPolicy;
+  readonly #avatars = new AvatarCache();
 
   constructor(
     database: DatabaseClient,
@@ -49,13 +52,25 @@ export class ImResourceService {
 
   async openAvatar(callerUserId: string, agentId: string): Promise<AuthorizedAgentAvatar> {
     const [binding] = await this.#database
-      .select({ providerUrl: imBindings.botAvatarUrl })
+      .select({
+        bindingId: imBindings.id,
+        generation: imBindings.credentialGeneration,
+        providerUrl: imBindings.botAvatarUrl,
+      })
       .from(agents)
       .innerJoin(imBindings, and(eq(imBindings.agentId, agents.id), ne(imBindings.status, "disabled")))
       .where(and(eq(agents.id, agentId), eq(agents.createdByUserId, callerUserId), ne(agents.status, "deleted")))
       .limit(1);
     if (!binding?.providerUrl) {
       throw new ImBindingServiceError("IM_BINDING_NOT_FOUND", 404, "The Agent avatar was not found");
+    }
+
+    const cacheKey = createHash("sha256")
+      .update(JSON.stringify([callerUserId, agentId, binding.bindingId, binding.generation, binding.providerUrl]))
+      .digest("hex");
+    const cached = this.#avatars.get(cacheKey);
+    if (cached) {
+      return { stream: Readable.from(cached.body), mediaType: cached.mediaType, sizeBytes: cached.body.byteLength };
     }
 
     const upstreamHost = safeUpstreamHost(binding.providerUrl);
@@ -112,6 +127,7 @@ export class ImResourceService {
     }
 
     const body = await readAvatarBody(response.body, upstreamHost, agentId);
+    this.#avatars.set(cacheKey, { body, mediaType });
 
     return {
       stream: Readable.from(body),

@@ -373,6 +373,37 @@ describe("Feishu feedback with the real SDK and controlled HTTP", () => {
     },
   );
 
+  it.each(["page", "delete"] as const)("starts no further request after a timed-out %s resolves late", async (kind) => {
+    const h = harness();
+    await measured(() => h.messenger.reaction(h.target, "none"));
+    if (kind === "delete") h.reactions.push(h.owned("OnIt"), h.owned("OnIt"));
+    h.requests.length = 0;
+    let releaseRequest: (() => void) | undefined;
+    http.request.mockImplementation(async (request: Request) => {
+      h.requests.push(request);
+      if (request.method === (kind === "page" ? "GET" : "DELETE") && !releaseRequest) {
+        await new Promise<void>((resolve) => {
+          releaseRequest = resolve;
+        });
+        if (kind === "page") return { code: 0, data: { items: [], has_more: true, page_token: "next" } };
+      }
+      return h.response(request);
+    });
+    const result = expect(h.messenger.reaction(h.target, "none")).rejects.toMatchObject({
+      code: "IM_PROVIDER_CALL_DEADLINE_EXCEEDED",
+    });
+    await vi.advanceTimersByTimeAsync(8_000);
+    await result;
+    expect(releaseRequest).toBeTypeOf("function");
+    expect(h.requests).toHaveLength(kind === "page" ? 1 : 2);
+    expect(h.requests.at(-1)?.signal.aborted).toBe(true);
+    const calls = http.request.mock.calls.length;
+    releaseRequest?.();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(http.request).toHaveBeenCalledTimes(calls);
+    expect(h.reactions).toHaveLength(kind === "page" ? 0 : 1);
+  });
+
   it("starts no mutation after a timed-out read resolves late", async () => {
     const h = harness();
     await measured(() => h.messenger.reaction(h.target, "none"));

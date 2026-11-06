@@ -11,7 +11,8 @@ Regression defects are assigned to `yuezengwu`.
   test App and workspace. External messages, paid provider calls and environment operations require the applicable
   authorization; this catalogue does not grant it.
 - [Session interruption recovery](session-recovery.md): crash, restart, timeout and rate-limit retry of visible and
-  internal Session work on a Local Computer.
+  internal Session work on a Local Computer, plus Feishu system reaction projection and its controlled HTTP
+  cancellation and pagination regressions.
 
 When an Agent adds or changes a product feature, add or update the corresponding Markdown regression cases in the
 same change. Keep reusable prerequisites, steps and expected observations here. Put task plans, dated execution

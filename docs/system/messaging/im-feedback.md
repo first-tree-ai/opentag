@@ -35,6 +35,11 @@ material and checks its credential generation, and creates a request-scoped Clie
 tenant-token cache is shared across Clients by App ID and refreshes 180 seconds before expiry; constructing a
 Client does not itself force another token exchange.
 
+The unfiltered read scales with every reaction on the message, including unrelated emojis and operators. Unlike
+the earlier per-emoji filtered reads, a sufficiently busy message can exhaust the eight-second deadline before
+any writer starts. The worker keeps that projection pending; repeated scans do not guarantee progress when a
+complete read consistently exceeds the budget. Incomplete pagination never authorizes a mutation.
+
 A Local Client's [automatic retry](../server-client-boundary.md#automatic-retry-of-accepted-work) of an interrupted
 Turn (crash, restart or upgrade, Run timeout, model 429) is part of the same accepted Turn: no report is written
 while the retry is pending or running, so the working reaction stays on the input and no failure marker or error card

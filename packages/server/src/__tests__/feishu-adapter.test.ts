@@ -529,6 +529,8 @@ describe("Feishu adapter", () => {
     class FakeWsClient {
       static instances: FakeWsClient[] = [];
       static startCalls = 0;
+      static onStart?: (client: FakeWsClient) => void;
+      readonly close = vi.fn();
       readonly options: {
         onReady?: () => void;
         onError?: (error: unknown) => void;
@@ -541,10 +543,18 @@ describe("Feishu adapter", () => {
       }
       async start(): Promise<void> {
         FakeWsClient.startCalls += 1;
+        if (FakeWsClient.onStart) {
+          FakeWsClient.onStart(this);
+          return;
+        }
         this.options.onReady?.();
       }
-      close(): void {}
     }
+    const unhandledRejections: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => {
+      unhandledRejections.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandledRejection);
     vi.doMock("@larksuiteoapi/node-sdk", () => ({
       ...actual,
       WSClient: FakeWsClient,
@@ -611,7 +621,63 @@ describe("Feishu adapter", () => {
       await expect(racedAdapter.validateBinding(microtaskAbort.signal)).rejects.toThrow("FEISHU_MICROTASK_ABORT");
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(racedAdapter.channel.botIdentity).toBeUndefined();
+
+      // WSClient onError firing before outbound.connect() settles does not emit unhandledRejection
+      let resolveDelayedOutbound!: () => void;
+      outbound.connect.mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveDelayedOutbound = resolve;
+          }),
+      );
+      outbound.disconnect.mockClear();
+      const wsGatewayError = Object.assign(new Error("system busy"), { code: 1000040345 });
+      FakeWsClient.onStart = (client) => {
+        client.options.onError?.(wsGatewayError);
+      };
+      const earlyWsErrorAdapter = new module.FeishuAdapter({
+        appId: "cli_early_ws_error",
+        appSecret: "secret",
+        teamId: null,
+      });
+      const earlyWsValidate = earlyWsErrorAdapter.validateBinding();
+      // Let macrotask turns elapse while outbound.connect() is still pending after #ready rejected
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandledRejections).toEqual([]);
+      resolveDelayedOutbound();
+      await expect(earlyWsValidate).rejects.toSatisfy((caught: unknown) => {
+        expect(caught).toBeInstanceOf(Error);
+        expect((caught as Error).message).toBe("FEISHU_CONNECTION_ERROR");
+        expect((caught as Error).cause).toBe(wsGatewayError);
+        return true;
+      });
+      const earlyWsClient = FakeWsClient.instances.at(-1);
+      expect(earlyWsClient?.close).toHaveBeenCalledWith({ force: true });
+      expect(outbound.disconnect).toHaveBeenCalledTimes(1);
+      expect(earlyWsErrorAdapter.channel.botIdentity).toBeUndefined();
+
+      // outbound.connect() rejecting before/with WSClient onError closes WSClient and does not emit unhandledRejection
+      const outboundFailure = new Error("FEISHU_TOKEN_99991663");
+      outbound.connect.mockRejectedValueOnce(outboundFailure);
+      outbound.disconnect.mockClear();
+      FakeWsClient.onStart = () => undefined;
+      const outboundFailAdapter = new module.FeishuAdapter({
+        appId: "cli_outbound_fail",
+        appSecret: "secret",
+        teamId: null,
+      });
+      await expect(outboundFailAdapter.validateBinding()).rejects.toThrow("FEISHU_TOKEN_99991663");
+      const outboundFailWsClient = FakeWsClient.instances.at(-1);
+      expect(outboundFailWsClient?.close).toHaveBeenCalledWith({ force: true });
+      expect(outbound.disconnect).toHaveBeenCalledTimes(1);
+      expect(outboundFailAdapter.channel.botIdentity).toBeUndefined();
+      // Late WSClient onError after outbound.connect() already failed must not emit unhandledRejection
+      outboundFailWsClient?.options.onError?.(wsGatewayError);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandledRejections).toEqual([]);
     } finally {
+      process.off("unhandledRejection", onUnhandledRejection);
+      FakeWsClient.onStart = undefined;
       vi.doUnmock("@larksuiteoapi/node-sdk");
       vi.resetModules();
     }

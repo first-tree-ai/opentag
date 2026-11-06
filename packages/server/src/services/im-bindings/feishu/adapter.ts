@@ -484,6 +484,9 @@ class ReliableFeishuChannel implements FeishuChannel {
       this.#resolveReady = resolve;
       this.#rejectReady = reject;
     });
+    // Mark #ready as handled immediately so WSClient onError firing before `await this.#ready`
+    // (or after `await outboundPromise` rejects) never triggers process unhandledRejection.
+    void this.#ready.catch(() => undefined);
     this.#outbound = createLarkChannel({
       appId: input.appId,
       appSecret: input.appSecret,
@@ -563,15 +566,22 @@ class ReliableFeishuChannel implements FeishuChannel {
       },
       () => undefined,
     );
-    await outboundPromise;
-    if (state.cancelled || this.#closed || signal?.aborted) {
-      await this.#failAbortedConnect(signal);
+    try {
+      await outboundPromise;
+      if (state.cancelled || this.#closed || signal?.aborted) {
+        await this.#failAbortedConnect(signal);
+      }
+      await this.#ready;
+      if (state.cancelled || this.#closed || signal?.aborted) {
+        await this.#failAbortedConnect(signal);
+      }
+      this.botIdentity = this.#outbound.botIdentity;
+    } catch (error) {
+      this.botIdentity = undefined;
+      this.#wsClient.close({ force: true });
+      await this.#outbound.disconnect().catch(() => undefined);
+      throw error;
     }
-    await this.#ready;
-    if (state.cancelled || this.#closed || signal?.aborted) {
-      await this.#failAbortedConnect(signal);
-    }
-    this.botIdentity = this.#outbound.botIdentity;
   }
 
   async #failAbortedConnect(signal?: AbortSignal): Promise<never> {

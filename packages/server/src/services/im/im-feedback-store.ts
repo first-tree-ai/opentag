@@ -38,8 +38,6 @@ export const FEEDBACK_ACTION_TTL_MS = 24 * 60 * 60_000;
 const DORMANT = new Date("9999-12-31T00:00:00Z");
 /** Short disconnects, upgrades and restarts recover silently below this. */
 export const OFFLINE_NOTICE_DELAY_MS = 60_000;
-/** Input expires after seven days, so no target older than this can hold a notice for a pending message. */
-const OFFLINE_NOTICE_LOOKBACK_MS = 8 * 24 * 60 * 60_000;
 
 export async function createImFeedbackTarget(tx: DatabaseTransaction, deliveryId: string, now: Date): Promise<void> {
   const [row] = await tx
@@ -184,6 +182,51 @@ export async function finishImFeedback(tx: DatabaseTransaction, report: TurnRepo
       .set(terminalFeedbackUpdate(target, report, now))
       .where(eq(imFeedbackTargets.id, target.id));
   }
+}
+
+/**
+ * When the current offline period began, if this target's input is parked on a Local Computer that
+ * has been offline, by the Web's rule, long enough for a notice.
+ */
+async function offlinePeriodStart(
+  database: DatabaseClient | DatabaseTransaction,
+  target: FeedbackTarget,
+  now: Date,
+): Promise<Date | undefined> {
+  const [row] = await database
+    .select({
+      kind: computers.kind,
+      instanceId: computers.currentInstanceId,
+      lastSeenAt: computers.lastSeenAt,
+      disconnectedAt: computers.disconnectedAt,
+      deletedAt: computers.deletedAt,
+      agentStatus: agents.status,
+      receivedAt: imMessages.receivedAt,
+      deliveryState: imMessageDeliveries.state,
+      deliveryGeneration: imMessageDeliveries.placementGeneration,
+      placementGeneration: sessionPlacements.generation,
+    })
+    .from(imMessageDeliveries)
+    .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
+    .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, imMessageDeliveries.sessionId))
+    .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
+    .innerJoin(agents, eq(agents.id, target.agentId))
+    .where(eq(imMessageDeliveries.id, target.deliveryId))
+    .limit(1);
+  if (
+    !row ||
+    row.kind !== "local" ||
+    row.deletedAt ||
+    row.agentStatus !== "active" ||
+    row.deliveryState !== "pending" ||
+    row.deliveryGeneration !== row.placementGeneration
+  )
+    return;
+  const lastSeenMs = row.lastSeenAt?.getTime() ?? 0;
+  const offline =
+    row.disconnectedAt !== null || row.instanceId === null || lastSeenMs < now.getTime() - COMPUTER_PRESENCE_TIMEOUT_MS;
+  if (!offline || now.getTime() - Math.max(row.receivedAt.getTime(), lastSeenMs) < OFFLINE_NOTICE_DELAY_MS) return;
+  return new Date(lastSeenMs);
 }
 
 export class ImFeedbackStore {
@@ -434,60 +477,23 @@ export class ImFeedbackStore {
    * Reserves the one offline notice of this Session and offline period. `computers.last_seen_at` is
    * frozen while a Computer is offline and rewritten on reconnect, so a send started at or after it
    * belongs to the current period. The reservation commits before provider I/O, so a crash loses a
-   * notice rather than repeating it. The Session row lock serializes the targets of a Session.
+   * notice rather than repeating it. The Session row lock serializes the targets of a Session, and
+   * eligibility is read again under it because the Computer can reconnect during the lock wait.
    */
   async reserveOfflineNotice(target: FeedbackTarget): Promise<Date | undefined> {
     if (target.state !== "queued" || target.cardState !== "none") return;
     const now = this.now();
-    const [row] = await this.database
-      .select({
-        kind: computers.kind,
-        instanceId: computers.currentInstanceId,
-        lastSeenAt: computers.lastSeenAt,
-        disconnectedAt: computers.disconnectedAt,
-        deletedAt: computers.deletedAt,
-        agentStatus: agents.status,
-        receivedAt: imMessages.receivedAt,
-        deliveryState: imMessageDeliveries.state,
-        deliveryGeneration: imMessageDeliveries.placementGeneration,
-        placementGeneration: sessionPlacements.generation,
-      })
-      .from(imMessageDeliveries)
-      .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
-      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, imMessageDeliveries.sessionId))
-      .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
-      .innerJoin(agents, eq(agents.id, target.agentId))
-      .where(eq(imMessageDeliveries.id, target.deliveryId))
-      .limit(1);
-    if (
-      !row ||
-      row.kind !== "local" ||
-      row.deletedAt ||
-      row.agentStatus !== "active" ||
-      row.deliveryState !== "pending" ||
-      row.deliveryGeneration !== row.placementGeneration
-    )
-      return;
-    const lastSeenMs = row.lastSeenAt?.getTime() ?? 0;
-    const offline =
-      row.disconnectedAt !== null ||
-      row.instanceId === null ||
-      lastSeenMs < now.getTime() - COMPUTER_PRESENCE_TIMEOUT_MS;
-    if (!offline || now.getTime() - Math.max(row.receivedAt.getTime(), lastSeenMs) < OFFLINE_NOTICE_DELAY_MS) return;
-    const periodStart = new Date(lastSeenMs);
+    if ((await offlinePeriodStart(this.database, target, now)) === undefined) return;
     return this.database.transaction(async (tx) => {
       await tx.select({ id: sessions.id }).from(sessions).where(eq(sessions.id, target.sessionId)).for("update");
+      const periodStart = await offlinePeriodStart(tx, target, now);
+      if (periodStart === undefined) return;
       const [sent] = await tx
         .select({ id: imFeedbackTargets.id })
-        .from(imFeedbackTargets)
+        .from(imMessageDeliveries)
+        .innerJoin(imFeedbackTargets, eq(imFeedbackTargets.deliveryId, imMessageDeliveries.id))
         .where(
-          and(
-            eq(imFeedbackTargets.accountId, target.accountId),
-            eq(imFeedbackTargets.agentId, target.agentId),
-            gte(imFeedbackTargets.createdAt, new Date(now.getTime() - OFFLINE_NOTICE_LOOKBACK_MS)),
-            eq(imFeedbackTargets.sessionId, target.sessionId),
-            gte(imFeedbackTargets.sendStartedAt, periodStart),
-          ),
+          and(eq(imMessageDeliveries.sessionId, target.sessionId), gte(imFeedbackTargets.sendStartedAt, periodStart)),
         )
         .limit(1);
       if (sent) return;
@@ -598,10 +604,15 @@ function terminalFeedbackUpdate(target: FeedbackTarget, report: TurnReportReques
     state,
     desiredReaction: failed ? ("warning" as const) : ("none" as const),
     errorCode: failed ? report.errorReason : null,
-    // Only the recovery buttons need a card. The kind of failure is unknown when the target is created,
-    // so this is the one format change, and only while nothing has been sent in the stored format.
-    ...(state === "workspace_blocked" && !target.cardMessageId && ["none", "pending"].includes(target.cardState)
-      ? { messageFormat: "interactive_v1" as const }
+    // Only the recovery buttons need a card, and the kind of failure is unknown when the target is created.
+    // This is the one format change. The caller's snapshot is unlocked, so the decision reads the live row:
+    // a worker that has already started sending keeps the format it sent.
+    ...(state === "workspace_blocked"
+      ? {
+          messageFormat: sql<
+            FeedbackTarget["messageFormat"]
+          >`case when ${imFeedbackTargets.cardMessageId} is null and ${imFeedbackTargets.cardState} in ('none','pending') then 'interactive_v1' else ${imFeedbackTargets.messageFormat} end`,
+        }
       : {}),
     effects: report.executionEffects,
     reportHash: report.resultHash,

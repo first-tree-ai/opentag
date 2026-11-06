@@ -23,6 +23,7 @@ import { type FeedbackTransport, ImFeedbackMessenger } from "../../services/im/i
 import {
   createImFeedbackTarget,
   type FeedbackTarget,
+  finishImFeedback,
   ImFeedbackStore,
   startImFeedback,
 } from "../../services/im/im-feedback-store.js";
@@ -387,6 +388,55 @@ describe("IM offline notice", () => {
     release.resolve();
     await holder;
     expect(await racing).toBeUndefined();
+
+    // A reconnect committed during the lock wait wins over the earlier offline read.
+    await client.database.update(imFeedbackTargets).set({ sendStartedAt: null });
+    const releaseAgain = deferred<void>();
+    const lockedAgain = deferred<void>();
+    const holderAgain = client.database.transaction(async (tx) => {
+      await tx.select({ id: sessions.id }).from(sessions).where(eq(sessions.id, first.sessionId)).for("update");
+      lockedAgain.resolve();
+      await releaseAgain.promise;
+    });
+    await lockedAgain.promise;
+    const waiting = store.reserveOfflineNotice(other);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    await client.database.update(computers).set({ currentInstanceId: randomUUID(), lastSeenAt: clock });
+    releaseAgain.resolve();
+    await holderAgain;
+    expect(await waiting).toBeUndefined();
+  });
+});
+
+describe("workspace failure format", () => {
+  it("keeps the format of a send that started between the report's read and its update", async () => {
+    const h = await failed();
+    await client.database
+      .update(imFeedbackTargets)
+      .set({ messageFormat: "text_v1", cardState: "pending", cardMessageId: null })
+      .where(eq(imFeedbackTargets.id, h.target.id));
+    const started = deferred<void>();
+    const release = deferred<void>();
+    const worker = client.database.transaction(async (tx) => {
+      await tx.update(imFeedbackTargets).set({ cardState: "sending" }).where(eq(imFeedbackTargets.id, h.target.id));
+      started.resolve();
+      await release.promise;
+    });
+    await started.promise;
+    const report: TurnReportRequest = { ...h.report, errorReason: "workspace_failed" };
+    const finishing = client.database.transaction((tx) => finishImFeedback(tx, report, clock));
+    for (let i = 0; i < 100; i += 1) {
+      const blocked = await client.database.execute<{ count: string }>(
+        sql`select count(*)::text as count from pg_stat_activity where wait_event_type = 'Lock' and query ilike 'update "im_feedback_targets"%'`,
+      );
+      if (blocked[0]?.count !== "0") break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    release.resolve();
+    await worker;
+    await finishing;
+    const [row] = await client.database.select().from(imFeedbackTargets).where(eq(imFeedbackTargets.id, h.target.id));
+    expect(row).toMatchObject({ state: "workspace_blocked", messageFormat: "text_v1" });
   });
 });
 

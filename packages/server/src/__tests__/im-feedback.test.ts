@@ -245,6 +245,25 @@ describe("IM offline notice", () => {
     expect(await h.store.reserveOfflineNotice(secondTarget)).toEqual(clock);
   });
 
+  it("keeps one notice through an outage longer than the input lifetime", async () => {
+    const h = await queued();
+    await offlineSince(h, 120_000);
+    expect(await h.store.reserveOfflineNotice(await h.target())).toEqual(clock);
+    const later = await h.delivery();
+    await db.database.transaction((tx) => createImFeedbackTarget(tx, later.frame.deliveryId, clock));
+    await h.park(later.frame.deliveryId, 300_000);
+    await db.database
+      .update(imFeedbackTargets)
+      .set({ createdAt: new Date(clock.getTime() - 9 * 86_400_000) })
+      .where(eq(imFeedbackTargets.deliveryId, h.frame.deliveryId));
+    const [target] = await db.database
+      .select()
+      .from(imFeedbackTargets)
+      .where(eq(imFeedbackTargets.deliveryId, later.frame.deliveryId));
+    if (!target) throw new Error("Missing later target");
+    expect(await h.store.reserveOfflineNotice(target)).toBeUndefined();
+  });
+
   it("stays silent for a connected Computer, a Cloud Computer and a suspended Agent", async () => {
     const h = await queued();
     await setComputer(h, { lastSeenAt: new Date(clock.getTime() - 10_000), currentInstanceId: randomUUID() });

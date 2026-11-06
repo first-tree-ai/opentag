@@ -69,9 +69,10 @@ messages.
   disconnects stay silent. The feedback worker revisits queued targets every fifteen seconds, which is the extra delay.
 - **How often.** Once per Session and offline period. `last_seen_at` is frozen while offline and rewritten on
   reconnect, so a feedback send at or after it belongs to the current period. Any send counts, including a failure
-  message. `im_feedback_targets.send_started_at` records the reservation, so this adds no table or column; the Session
-  row lock makes concurrent targets of a Session take turns, and the check reads the Account and Agent index bounded to
-  eight days, since input expires after seven.
+  message. `im_feedback_targets.send_started_at` records the reservation, so this adds no table or column. The Session
+  row lock makes concurrent targets of a Session take turns, eligibility is read again under it because the Computer
+  can reconnect during the wait, and the check walks the Session's deliveries rather than the input's lifetime. An
+  outage longer than the ninety-day feedback retention can send another notice.
 - **Crash and provider outcomes.** The reservation commits before provider I/O, so a crash or lost acknowledgement can
   lose a notice but never repeats one. A send the provider definitely did not apply, such as a rate limit, is released
   for a later pass. The notice does not use the failure message's request identity, which Feishu would deduplicate.

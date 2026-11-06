@@ -113,9 +113,18 @@ the only execution authority. Terminal report and feedback transitions commit to
 invalid report acceptable. Reads use a short owner-authorized snapshot. Mutation admission locks Agent custody,
 Agent/binding, Session/placement/delivery, then feedback/action; no provider I/O holds database locks.
 
-One worker processes at most eight due targets per pass with `SKIP LOCKED`, a random ninety-second claim, and the
-shared provider call policy. It checks authority again before I/O and cannot settle a newer desired revision as its
-own. Binding rotation fences new calls and callbacks; it cannot revoke a request already in flight.
+One worker processes at most eight due targets per pass, with up to four independent native inputs in flight.
+Claims remain sequential and exclude inputs already active in that process (binding, channel, and external input ID),
+so separate attempts for the same input do not overlap locally or block other inputs. Selection retains due-time/ID
+ordering, `SKIP LOCKED`, a random ninety-second claim, and the shared provider call policy. The existing claim fences
+each target across replicas; input exclusion is local, not a cross-replica native-message lock. The worker checks authority
+again before I/O and cannot settle a newer desired revision as its own. Binding rotation fences new calls and callbacks;
+it cannot revoke a request already in flight. Timer ticks and explicit wakeups join the active pass; performance logging
+records `ImFeedbackWorker.runPass` once per actual pass. Provider failures are rescheduled independently. A claim or
+settlement storage failure stops further admission while joining every projection already in flight.
+Cooldown-storage failure stops admission as soon as it is observed, before waiting for its settlement write; a blocked
+settlement does not permit more targets to start.
+Shutdown stops new claims, releases a claim that finishes admission after shutdown, and drains every admitted projection.
 
 Before a new card request, the worker persists `sending` and a stable request identity. A lost acknowledgement or
 abandoned send becomes `send_unknown`. Bounded readback searches the original conversation for this Bot and feedback
@@ -129,6 +138,10 @@ New workspace actions expire after twenty-four hours. Previously admitted task r
 settled projections and actions retain ninety days of diagnostics; cleanup is bounded to one hundred records per
 retention tick. Unknown sends and operations survive expiry. Referenced source deliveries/messages remain available
 until their feedback is safely removed. No historical error-card backfill runs.
+
+The shared call policy distinguishes rejection before capacity admission from a request already started. Queue overflow,
+queue deadline, queued cancellation, and an open circuit are definitely not submitted and keep an unsent card pending
+for a later bounded retry. A deadline after the provider action begins remains unknown and requires readback.
 
 ## Slack rate-limit coordination
 
@@ -148,7 +161,7 @@ method deadlines. A request already admitted before the deadline was persisted m
 Success, completion, target retention and legacy cleanup cannot shorten the deadline. Reauthorizing the same
 installation preserves an already committed cooldown, while old-generation responses cannot extend it afterward.
 Expired timestamps remain on the installation and need no cleanup. A cooldown read failure prevents submission.
-If recording a confirmed 429 fails, the current worker pass stops and retains a definitely-unsent pending card;
+If recording a confirmed 429 fails, the current worker pass stops claiming new work, drains its admitted calls, and retains a definitely-unsent pending card;
 coordination is not claimed successful while storage is unavailable. Other replicas and in-flight calls cannot be
 revoked by that local failure. Unknown provider sends retain their separate reconciliation rules.
 

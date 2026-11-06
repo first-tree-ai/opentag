@@ -412,6 +412,7 @@ const WORKER_METHOD_OVERRIDES: Readonly<Record<string, readonly string[]>> = {
   FeishuConnectionManager: ["maintain"],
   RuntimeApprovalOwner: ["poll"],
   CloudModelService: ["reconcile"],
+  ImFeedbackWorker: ["runPass"],
 };
 
 const instrumentedWorkers = new WeakSet<object>();

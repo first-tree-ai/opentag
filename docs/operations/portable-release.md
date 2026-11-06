@@ -118,9 +118,18 @@ The daemon's updater follows a strict contract:
   install interrupts nothing. Only while the Client is registered with a Server that did not negotiate
   `runtime.sessionRecovery` does the updater close admission and wait for no protected work, with no force timeout,
   reporting `awaiting_protected_work`; later deliveries receive a retryable busy result during that wait.
-- **One attempt per target.** The attempt is recorded durably before any install work starts. A failure — including
-  an interrupted attempt — becomes a blocked state that is never retried automatically: the updater waits for a
-  newer target or a manual `opentag upgrade`, which prevents retry and restart storms.
+- **One install attempt per target, with transient download recovery.** The attempt is recorded durably before any
+  install work starts. When downloading `manifest.json` or the platform tarball fails with a transient transport error
+  (`fetch failed`, timeout, socket reset, or response body stream truncation) or a transient HTTP status (`408`, `429`,
+  `5xx`) after the installer's bounded download retries and before any release files are staged on disk, an updater
+  whose running work is recoverable (`runtime.sessionRecovery`) withdraws the attempt, returns to `idle`, and schedules
+  a retry with bounded exponential backoff (`5 s` doubling up to `30 min`). On the fallback path where the connected
+  Server did not negotiate `runtime.sessionRecovery` and the attempt had to pause admission first, only the installer's
+  bounded in-attempt download retries run so admission is not paused repeatedly for the same target. Any deterministic
+  download or verification failure (such as `404`, malformed JSON, manifest identity mismatch, or SHA-256/size
+  mismatch), stage/smoke/activation failure, or interrupted attempt becomes a `blocked` state that is never retried
+  automatically: the updater waits for a newer target or a manual `opentag upgrade`, which prevents retry and restart
+  storms.
 - **Failure classes stay separate.** A missing Server-required capability is a local `upgrade required` diagnosis and
   starts the metadata recovery path; if no newer eligible target is available, the daemon stays alive and rechecks on
   the bounded cadence. Authentication rejection never triggers an upgrade and reports `authentication repair` with a

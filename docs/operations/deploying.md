@@ -185,8 +185,9 @@ or not at all; the server refuses to start on a partially configured group.
 
 Bundles stream through the server under the caller's own credential — the Account session, a Computer
 machine token, or a Session CLI proof — so the bucket never needs presigned or public URLs and can be
-fully private. Object keys are derived server-side from the Account, Agent, Skill, and content hash;
-a caller never supplies a path. `docker-compose.yml` starts a local MinIO and a one-shot init
+fully private. Object keys are derived server-side from the Account, Agent, Skill, and an independent
+random object ID; the content hash verifies archive integrity rather than naming the object. A caller
+never supplies a path. `docker-compose.yml` starts a local MinIO and a one-shot init
 container that creates the `opentag-skills` bucket, and the commented block in `.env.example` points
 the server at it.
 

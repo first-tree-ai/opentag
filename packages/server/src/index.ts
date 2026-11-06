@@ -1236,7 +1236,9 @@ export async function startServer(): Promise<void> {
       registry,
       logger: serviceLogger("session-collaboration"),
     });
-    sessionCollaborationService.setHeldListener((computerId) => sessionHeldDeliveryWorker?.markHeld(computerId));
+    sessionCollaborationService.setHeldListener((computerId, options) =>
+      sessionHeldDeliveryWorker?.markHeld(computerId, options),
+    );
     runOutcomeNotifier = sessionCollaborationService;
     cloudSessionOwner?.setRunOutcomeNotifier(sessionCollaborationService);
     const imDeliveryLogger = serviceLogger("im-delivery");

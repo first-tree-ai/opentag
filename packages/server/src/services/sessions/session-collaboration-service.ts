@@ -238,6 +238,13 @@ type DispatchAdmission = <T>(
 /** Shorter than the CLI's request timeout, and much longer than a hand-off to a healthy Client. */
 const SEND_BUDGET_MS = 5_000;
 
+type HeldListener = (computerId: string, options?: { flushNow: boolean }) => void;
+
+/** Whether a first attempt that outlived its budget now belongs to the Server. */
+interface HandOffCustody {
+  heldByServer: boolean;
+}
+
 /** `refused`: the final admission found the authority gone and no frame left. That is not a Client outage. */
 type LocalHandOff =
   | { kind: "accepted" }
@@ -313,7 +320,8 @@ export class SessionCollaborationService {
   readonly #logger: SessionCollaborationServiceOptions["logger"];
   readonly #scheduleDetailUrl: SessionCollaborationServiceOptions["scheduleDetailUrl"];
   readonly #sendBudgetMs: number;
-  #onHeld: ((computerId: string) => void) | undefined;
+  readonly #inFlightHandOffs = new Set<string>();
+  #onHeld: HeldListener | undefined;
 
   constructor(options: SessionCollaborationServiceOptions) {
     this.#assembler = options.assembler;
@@ -330,7 +338,7 @@ export class SessionCollaborationService {
   }
 
   /** Tell the delivery worker a Computer now has a held message. */
-  setHeldListener(listener: (computerId: string) => void): void {
+  setHeldListener(listener: HeldListener): void {
     this.#onHeld = listener;
   }
 
@@ -905,7 +913,12 @@ export class SessionCollaborationService {
     runtime: EffectiveRuntimeSnapshot,
     attemptCount: number,
   ): Promise<SessionCliCommandResponse> {
-    const work = this.#deliverLocal(attempt, sessionId, runtime, attemptCount);
+    const custody: HandOffCustody = { heldByServer: false };
+    const messageId = attempt.message.id;
+    this.#inFlightHandOffs.add(messageId);
+    const work = this.#deliverLocal(attempt, sessionId, runtime, attemptCount, custody).finally(() => {
+      this.#inFlightHandOffs.delete(messageId);
+    });
     let timer: ReturnType<typeof setTimeout> | undefined;
     const budget = new Promise<undefined>((resolve) => {
       timer = setTimeout(() => resolve(undefined), this.#sendBudgetMs);
@@ -914,15 +927,19 @@ export class SessionCollaborationService {
     const answered = await Promise.race([work, budget]);
     clearTimeout(timer);
     if (answered) return answered;
-    if (!this.#canHold(attempt.route.targetComputerId, { code: "runtime_not_ready" })) return work;
-    await this.#sessions.markMessageHeld(attempt.message.id, attemptCount);
-    this.#onHeld?.(attempt.route.targetComputerId);
+    const computerId = attempt.route.targetComputerId;
+    if (!this.#canHold(computerId, { code: "runtime_not_ready" })) return work;
+    // From here the sender holds an `accepted` and may disconnect, so its connection stops being authority.
+    custody.heldByServer = true;
+    await this.#sessions.markMessageHeld(messageId, attemptCount);
     void work
       .then((result) => this.#notifyAfterLateFailure(attempt, attemptCount, result))
       .catch(() => {
-        this.#logInternalFailure("SESSION_HELD_LATE_HAND_OFF_FAILED", { messageId: attempt.message.id });
-      });
-    return response(attempt.message.id, "accepted", sessionId);
+        this.#logInternalFailure("SESSION_HELD_LATE_HAND_OFF_FAILED", { messageId });
+      })
+      // Only now may a redelivery run: this attempt no longer owns the row, and later messages can go.
+      .finally(() => this.#onHeld?.(computerId, { flushNow: true }));
+    return response(messageId, "accepted", sessionId);
   }
 
   async #notifyAfterLateFailure(
@@ -942,6 +959,7 @@ export class SessionCollaborationService {
         agentId: attempt.route.agentId,
         content: attempt.message.content,
         attemptCount,
+        createdAt: attempt.message.createdAt,
       },
       result.code ?? "target_unavailable",
     );
@@ -953,6 +971,7 @@ export class SessionCollaborationService {
     sessionId: string,
     runtime: EffectiveRuntimeSnapshot,
     attemptCount: number,
+    custody: HandOffCustody,
   ): Promise<SessionCliCommandResponse> {
     const handOff = await this.#handOffLocal(
       {
@@ -963,7 +982,10 @@ export class SessionCollaborationService {
         creatorSessionId: attempt.route.targetCreatorSessionId ?? attempt.route.sourceSessionId,
       },
       runtime,
-      (operation) => this.#sessions.withCollaborationDispatchAdmission(attempt.route, operation),
+      (operation) =>
+        custody.heldByServer
+          ? this.#sessions.withHeldDispatchAdmission(attempt.route, operation)
+          : this.#sessions.withCollaborationDispatchAdmission(attempt.route, operation),
     );
     if (handOff.kind === "accepted") {
       return this.#record(response(attempt.message.id, "accepted", sessionId), attemptCount);
@@ -971,7 +993,8 @@ export class SessionCollaborationService {
     if (handOff.kind === "rejected") {
       return this.#record(response(attempt.message.id, "rejected", sessionId, handOff.code), attemptCount);
     }
-    if (handOff.kind === "temporary" && this.#canHold(attempt.route.targetComputerId, handOff)) {
+    const heldAnyway = handOff.kind === "refused" && custody.heldByServer;
+    if (heldAnyway || (handOff.kind === "temporary" && this.#canHold(attempt.route.targetComputerId, handOff))) {
       return this.#hold(attempt.message.id, sessionId, attemptCount, attempt.route.targetComputerId);
     }
     const uncertain = handOff.code === "delivery_timeout";
@@ -1116,7 +1139,7 @@ export class SessionCollaborationService {
    * same target must wait; `settled` means it has a final answer and the next one may go.
    */
   async redeliverHeld(message: HeldSessionMessage): Promise<"held" | "settled"> {
-    if (!message.agentId) return "held";
+    if (!message.agentId || this.#inFlightHandOffs.has(message.id)) return "held";
     const resolved = await this.#sessions.resolveScheduledMessageRoute(message.targetSessionId, message.agentId);
     if (resolved.kind === "temporary") return "held";
     if (resolved.kind === "permanent") {
@@ -1192,8 +1215,8 @@ export class SessionCollaborationService {
       schedule.prompt !== message.content ||
       schedule.lastDispatch?.messageId !== message.id
     ) {
-      await this.#recordScheduled(snapshot, "unreachable", SESSION_MESSAGE_HELD_SUPERSEDED_CODE);
-      return "settled";
+      const dropped = await this.#recordScheduled(snapshot, "unreachable", SESSION_MESSAGE_HELD_SUPERSEDED_CODE);
+      return dropped.code === "outcome_write_failed" ? "held" : "settled";
     }
     const runtime = await this.#assembleHeldRuntime(message);
     if (!runtime) return "held";
@@ -1206,7 +1229,10 @@ export class SessionCollaborationService {
           stillHeld = true;
           return Promise.resolve({ outcome: "unknown", code: SESSION_MESSAGE_HELD_CODE });
         }
-        return this.#recordScheduled(snapshot, outcome, code);
+        return this.#recordScheduled(snapshot, outcome, code).then((recorded) => {
+          stillHeld = recorded.code === "outcome_write_failed";
+          return recorded;
+        });
       });
     } finally {
       clearTimeout(timer);
@@ -1236,7 +1262,7 @@ export class SessionCollaborationService {
     attemptCount: number,
     outcome: "rejected" | "unreachable",
     code: string,
-  ): Promise<"settled"> {
+  ): Promise<"held" | "settled"> {
     const updated = await this.#sessions.recordMessageOutcome({
       messageId: message.id,
       attemptCount,
@@ -1252,7 +1278,8 @@ export class SessionCollaborationService {
           }
         : {}),
     });
-    if (updated) await this.#notifySenderOfFailure(message, code);
+    if (!updated) return "held";
+    await this.#notifySenderOfFailure(message, code);
     return "settled";
   }
 

@@ -163,8 +163,11 @@ async function stack(options: { recovery?: boolean; now?: () => number; sendBudg
     computerId,
     placementGeneration: 1,
   } as SessionCliSourceContext;
-  const created = await collaboration.create({ messageId: randomUUID(), message: "start" } as never, source);
-  const targetSessionId = created.sessionId as string;
+  const createChild = async () => {
+    const created = await collaboration.create({ messageId: randomUUID(), message: "start" } as never, source);
+    return created.sessionId as string;
+  };
+  const targetSessionId = await createChild();
   frames.length = 0;
   const send = (message: string, messageId = randomUUID()) =>
     collaboration.send({ messageId, targetSessionId, message }, source).then((result) => ({ ...result, messageId }));
@@ -172,7 +175,7 @@ async function stack(options: { recovery?: boolean; now?: () => number; sendBudg
     const [found] = await db.database.select().from(sessionMessages).where(eq(sessionMessages.id, id));
     return found;
   };
-  return { collaboration, computerId, frames, row, send, senderSessionId, state, targetSessionId, worker };
+  return { collaboration, computerId, createChild, frames, row, send, senderSessionId, state, targetSessionId, worker };
 }
 
 describe("Server-held Session message delivery", () => {
@@ -316,6 +319,135 @@ describe("Server-held Session message delivery", () => {
       expect(await s.row(sent.messageId)).toMatchObject({ lastOutcome: "rejected", lastErrorCode: "target_mismatch" });
       expect(await s.row(noticeId)).toMatchObject({ targetSessionId: s.senderSessionId });
     });
+  });
+
+  it("keeps a stalled message held when the sender's connection changes after accepted", async () => {
+    const s = await stack({ sendBudgetMs: 20 });
+    let release = () => {};
+    s.state.stalled = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    s.state.answer = "stall";
+    const sent = await s.send("sender moves on");
+    expect(sent.status).toBe("accepted");
+
+    await db.database.update(computers).set({ currentInstanceId: randomUUID() }).where(eq(computers.id, s.computerId));
+    release();
+
+    await vi.waitFor(async () => expect((await s.row(sent.messageId))?.lastOutcome).toBe("accepted"));
+    await expect(s.row(deliveryFailureNoticeMessageId(sent.messageId))).resolves.toBeUndefined();
+  });
+
+  it("does not redeliver a message while its first hand-off is still running", async () => {
+    const s = await stack({ sendBudgetMs: 20 });
+    let release = () => {};
+    s.state.stalled = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    s.state.answer = "stall";
+    const sent = await s.send("single owner");
+    const before = await s.row(sent.messageId);
+
+    s.worker.notifyComputerReady(s.computerId);
+    await s.worker.flush(s.computerId);
+    expect((await s.row(sent.messageId))?.attemptCount).toBe(before?.attemptCount);
+
+    release();
+    await vi.waitFor(async () => expect((await s.row(sent.messageId))?.lastOutcome).toBe("accepted"));
+    expect(s.frames.filter((frame) => frame.messageId === sent.messageId)).toHaveLength(1);
+  });
+
+  it("delivers to other targets when one target stays blocked behind more than a page", async () => {
+    const s = await stack();
+    const blocked = s.targetSessionId;
+    const other = await s.createChild();
+    const held = (targetSessionId: string, n: number) => ({
+      id: randomUUID(),
+      sourceSessionId: s.senderSessionId,
+      targetSessionId,
+      content: `message ${n}`,
+      contentHash: "a".repeat(64),
+      lastOutcome: "unknown" as const,
+      lastErrorCode: "delivery_held",
+      attemptCount: 1,
+      lastAttemptAt: new Date(),
+      createdAt: new Date(Date.now() - 60_000 + n),
+    });
+    const [low, high] = [blocked, other].sort();
+    if (!low || !high) throw new Error("expected two targets");
+    await db.database.insert(sessionMessages).values(Array.from({ length: 205 }, (_, n) => held(low, n)));
+    await db.database.insert(sessionMessages).values(held(high, 0));
+    s.frames.length = 0;
+    s.state.answer = (frame) => (frame.targetSessionId === low ? "client_busy" : "accepted");
+
+    await s.worker.flush(s.computerId);
+
+    expect(s.frames.filter((frame) => frame.targetSessionId === low)).toHaveLength(1);
+    expect(s.frames.filter((frame) => frame.targetSessionId === high)).toHaveLength(1);
+  });
+
+  it("delivers a target's messages in order across more than one page", async () => {
+    const s = await stack();
+    const rows = Array.from({ length: 205 }, (_, n) => ({
+      id: randomUUID(),
+      sourceSessionId: s.senderSessionId,
+      targetSessionId: s.targetSessionId,
+      content: `message ${n}`,
+      contentHash: "a".repeat(64),
+      lastOutcome: "unknown" as const,
+      lastErrorCode: "delivery_held",
+      attemptCount: 1,
+      lastAttemptAt: new Date(),
+      createdAt: new Date(Date.now() - 60_000 + n),
+    }));
+    await db.database.insert(sessionMessages).values(rows);
+    s.frames.length = 0;
+
+    await s.worker.flush(s.computerId);
+
+    expect(s.frames.map((frame) => frame.content.text)).toEqual(rows.map((row) => row.content));
+  });
+
+  it("sweeps past a row it cannot settle and reads each page once", async () => {
+    const now = Date.now();
+    const row = (n: number) => ({
+      id: `id-${n}`,
+      createdAt: new Date(now - SESSION_MESSAGE_HELD_TTL_MS - 1_000 + n),
+      computerId: "computer",
+    });
+    const pages = [Array.from({ length: 100 }, (_, n) => row(n)), [row(100)]];
+    const sweepHeldMessages = vi.fn(async () => pages.shift() ?? []);
+    const expireHeld = vi.fn(async () => undefined);
+    const worker = new SessionHeldDeliveryWorker({
+      collaboration: { expireHeld, redeliverHeld: vi.fn() } as never,
+      sessions: { sweepHeldMessages, listHeldTargetsForComputer: vi.fn(async () => []) } as never,
+      registry: { currentInstanceId: () => undefined },
+      now: () => now,
+    });
+
+    await worker.sweep();
+
+    expect(sweepHeldMessages).toHaveBeenCalledTimes(2);
+    expect(sweepHeldMessages.mock.calls[0]).toEqual([null, 100]);
+    expect(sweepHeldMessages.mock.calls[1]).toEqual([{ createdAt: row(99).createdAt, id: "id-99" }, 100]);
+    expect(expireHeld).toHaveBeenCalledTimes(101);
+  });
+
+  it("does not spin on a held message whose answer loses its fence", async () => {
+    const s = await stack();
+    s.state.answer = "client_busy";
+    const sent = await s.send("fenced");
+    const redeliverHeld = vi.fn(async () => "settled" as const);
+    const worker = new SessionHeldDeliveryWorker({
+      collaboration: { expireHeld: vi.fn(), redeliverHeld } as never,
+      sessions: new SessionService(db.database),
+      registry: { currentInstanceId: () => "instance" },
+    });
+
+    await worker.flush(s.computerId);
+
+    expect(redeliverHeld).toHaveBeenCalledTimes(1);
+    expect((await s.row(sent.messageId))?.lastErrorCode).toBe("delivery_held");
   });
 
   it("still answers a permanent rejection on the first attempt", async () => {

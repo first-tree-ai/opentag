@@ -1,20 +1,22 @@
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import type { SessionCollaborationService } from "./session-collaboration-service.js";
 import { heldMessageCutoff } from "./session-held-delivery.js";
-import type { HeldSessionMessage, SessionService } from "./session-service.js";
+import type { HeldSweepCursor, SessionService } from "./session-service.js";
 
-const FLUSH_PAGE_SIZE = 200;
+const TARGET_PAGE_SIZE = 200;
+const MESSAGE_PAGE_SIZE = 200;
 const SWEEP_PAGE_SIZE = 100;
 const TARGET_CONCURRENCY = 4;
 /** Only Computers holding messages are visited; this covers a Client that recovers without reconnecting. */
 const DEFAULT_FALLBACK_INTERVAL_MS = 60_000;
-const DEFAULT_SWEEP_INTERVAL_MS = 10 * 60_000;
+/** The sweep scans the message table, so it runs rarely. A notice for an expired message can be this late. */
+const DEFAULT_SWEEP_INTERVAL_MS = 60 * 60_000;
 /** A Client finishes its own recovery shortly after it registers, so look again soon. */
 const DEFAULT_READY_FOLLOW_UPS_MS = [5_000, 20_000];
 
 export interface SessionHeldDeliveryWorkerOptions {
   collaboration: Pick<SessionCollaborationService, "expireHeld" | "redeliverHeld">;
-  sessions: Pick<SessionService, "listHeldMessagesForComputer" | "sweepHeldMessages">;
+  sessions: Pick<SessionService, "listHeldMessagesForTarget" | "listHeldTargetsForComputer" | "sweepHeldMessages">;
   registry: { currentInstanceId(computerId: string): string | undefined };
   logger?: Pick<ServiceLogger, "error">;
   now?: () => number;
@@ -23,12 +25,14 @@ export interface SessionHeldDeliveryWorkerOptions {
   readyFollowUpsMs?: readonly number[];
 }
 
+type TargetResult = "held" | "settled";
+
 /**
  * Delivers the Session messages the Server holds for a Local Client. A Client that registers triggers
  * delivery; a low-frequency pass covers recovery without a reconnect, such as a failed upgrade that
  * reopens admission. Each target gets its messages oldest first and stops at the first that must stay
- * held, so a batch keeps its order. A sweep expires what stayed held too long and, after a Server
- * restart or on another replica, finds the Computers that still hold messages.
+ * held, so a batch keeps its order and a refusal blocks only that target. A sweep expires what stayed
+ * held too long and, after a Server restart or on another replica, finds the Computers still holding.
  */
 export class SessionHeldDeliveryWorker {
   readonly #options: SessionHeldDeliveryWorkerOptions;
@@ -67,8 +71,9 @@ export class SessionHeldDeliveryWorker {
     await Promise.allSettled([...this.#active.values(), this.#sweeping]);
   }
 
-  markHeld(computerId: string): void {
+  markHeld(computerId: string, options?: { flushNow: boolean }): void {
     this.#pending.add(computerId);
+    if (options?.flushNow && !this.#stopped) void this.flush(computerId);
   }
 
   /** A Client registered: its messages go now, and again once its own recovery has had time to finish. */
@@ -119,14 +124,18 @@ export class SessionHeldDeliveryWorker {
   }
 
   async #runSweep(): Promise<void> {
-    for (;;) {
-      const swept = await this.#options.sessions.sweepHeldMessages(heldMessageCutoff(this.#now()), SWEEP_PAGE_SIZE);
-      for (const computerId of swept.computerIds) this.#pending.add(computerId);
-      for (const message of swept.expired) {
+    const cutoff = heldMessageCutoff(this.#now());
+    let cursor: HeldSweepCursor | null = null;
+    while (!this.#stopped) {
+      const page = await this.#options.sessions.sweepHeldMessages(cursor, SWEEP_PAGE_SIZE);
+      for (const message of page) {
         if (this.#stopped) return;
-        await this.#options.collaboration.expireHeld(message);
+        if (message.createdAt <= cutoff) await this.#options.collaboration.expireHeld(message);
+        else if (message.computerId) this.#pending.add(message.computerId);
       }
-      if (swept.expired.length < SWEEP_PAGE_SIZE || this.#stopped) break;
+      const last = page.at(-1);
+      if (!last || page.length < SWEEP_PAGE_SIZE) break;
+      cursor = { createdAt: last.createdAt, id: last.id };
     }
     this.#flushPending();
   }
@@ -138,45 +147,70 @@ export class SessionHeldDeliveryWorker {
 
   async #drain(computerId: string): Promise<void> {
     while (!this.#stopped && this.#options.registry.currentInstanceId(computerId)) {
-      const messages = await this.#options.sessions.listHeldMessagesForComputer(
-        computerId,
-        heldMessageCutoff(this.#now()),
-        FLUSH_PAGE_SIZE,
-      );
-      if (messages.length === 0) {
+      const { anyHeld, sawTarget } = await this.#visitTargets(computerId);
+      if (!sawTarget) {
         this.#pending.delete(computerId);
         return;
       }
-      const results = await this.#deliverByTarget(messages);
       // Anything left held waits for the next event or fallback pass; a pass never spins on a refusal.
-      if (results.includes("held")) return;
+      if (anyHeld) return;
     }
   }
 
-  /** Targets run side by side so one slow Session does not delay the others; each target stays in order. */
-  async #deliverByTarget(messages: readonly HeldSessionMessage[]): Promise<("held" | "settled")[]> {
-    const byTarget = new Map<string, HeldSessionMessage[]>();
-    for (const message of messages) {
-      const queue = byTarget.get(message.targetSessionId);
-      if (queue) queue.push(message);
-      else byTarget.set(message.targetSessionId, [message]);
+  /** Every holding target gets its turn, so one that stays blocked cannot hide the others behind it. */
+  async #visitTargets(computerId: string): Promise<{ anyHeld: boolean; sawTarget: boolean }> {
+    let after: string | null = null;
+    let anyHeld = false;
+    let sawTarget = false;
+    while (!this.#stopped) {
+      const targets: string[] = await this.#options.sessions.listHeldTargetsForComputer(
+        computerId,
+        heldMessageCutoff(this.#now()),
+        after,
+        TARGET_PAGE_SIZE,
+      );
+      const last = targets.at(-1);
+      if (!last) break;
+      sawTarget = true;
+      if ((await this.#deliverTargets(targets)).includes("held")) anyHeld = true;
+      if (targets.length < TARGET_PAGE_SIZE) break;
+      after = last;
     }
-    const queues = [...byTarget.values()];
-    const results: ("held" | "settled")[] = [];
+    return { anyHeld, sawTarget };
+  }
+
+  /** Targets run side by side so one slow Session does not delay the others. */
+  async #deliverTargets(targets: readonly string[]): Promise<TargetResult[]> {
+    const queue = [...targets];
+    const results: TargetResult[] = [];
     const worker = async () => {
-      for (let queue = queues.shift(); queue; queue = queues.shift()) {
-        for (const message of queue) {
-          if (this.#stopped) {
-            results.push("held");
-            return;
-          }
-          const result = await this.#options.collaboration.redeliverHeld(message);
-          results.push(result);
-          if (result === "held") break;
-        }
+      for (let target = queue.shift(); target; target = queue.shift()) {
+        results.push(await this.#deliverTarget(target));
       }
     };
     await Promise.all(Array.from({ length: TARGET_CONCURRENCY }, worker));
     return results;
+  }
+
+  /** One target, oldest first, until it is empty or a message must stay held. */
+  async #deliverTarget(targetSessionId: string): Promise<TargetResult> {
+    let previousFirst: string | undefined;
+    while (!this.#stopped) {
+      const page = await this.#options.sessions.listHeldMessagesForTarget(
+        targetSessionId,
+        heldMessageCutoff(this.#now()),
+        MESSAGE_PAGE_SIZE,
+      );
+      const first = page[0];
+      if (!first) return "settled";
+      // A row answered as settled that is still listed was not settled; do not spin on it.
+      if (first.id === previousFirst) return "held";
+      previousFirst = first.id;
+      for (const message of page) {
+        if (this.#stopped) return "held";
+        if ((await this.#options.collaboration.redeliverHeld(message)) === "held") return "held";
+      }
+    }
+    return "held";
   }
 }

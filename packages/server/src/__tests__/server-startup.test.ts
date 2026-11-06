@@ -230,8 +230,12 @@ vi.mock("../services/sessions/index.js", () => ({
       return state.sessionCliPrepareReconcile(computerId, connectionInstanceId, request);
     }
   },
-  SessionCollaborationService: class {},
-  SessionService: class {},
+  SessionCollaborationService: class {
+    setHeldListener(): void {}
+  },
+  SessionService: class {
+    sweepHeldMessages = async () => [];
+  },
   SessionServiceError: class extends Error {},
 }));
 vi.mock("../services/agents/index.js", () => ({

@@ -12,7 +12,7 @@ import type {
   SessionMessageScheduledOrigin,
   SessionPlacement,
 } from "@opentag/shared";
-import { and, eq, gt, inArray, isNotNull, isNull, lte, or, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   agentSchedules,
@@ -152,6 +152,16 @@ export interface HeldSessionMessage {
   agentId: string | null;
   content: string;
   attemptCount: number;
+  createdAt: Date;
+}
+
+export interface HeldSweepMessage extends HeldSessionMessage {
+  computerId: string | null;
+}
+
+export interface HeldSweepCursor {
+  createdAt: Date;
+  id: string;
 }
 
 const HELD_MESSAGE_COLUMNS = {
@@ -163,6 +173,7 @@ const HELD_MESSAGE_COLUMNS = {
   agentId: imBindings.agentId,
   content: sessionMessages.content,
   attemptCount: sessionMessages.attemptCount,
+  createdAt: sessionMessages.createdAt,
 };
 
 export interface SessionMessageAttempt {
@@ -666,49 +677,82 @@ export class SessionService {
     return row !== undefined;
   }
 
-  /** Held messages placed on one Computer, oldest first per target, using the target and time index. */
-  async listHeldMessagesForComputer(computerId: string, cutoff: Date, limit: number): Promise<HeldSessionMessage[]> {
-    return this.#database
-      .select(HELD_MESSAGE_COLUMNS)
+  /**
+   * Active Sessions on a Computer that hold messages, one page at a time. Each candidate is a probe of the
+   * target and time index, so the cost follows the Computer's Sessions, not the size of the message table.
+   * A message to an ended target is settled by the sweep instead.
+   */
+  async listHeldTargetsForComputer(
+    computerId: string,
+    cutoff: Date,
+    afterTargetSessionId: string | null,
+    limit: number,
+  ): Promise<string[]> {
+    const rows = await this.#database
+      .select({ id: sessions.id })
       .from(sessionPlacements)
-      .innerJoin(sessionMessages, eq(sessionMessages.targetSessionId, sessionPlacements.sessionId))
       .innerJoin(sessions, eq(sessions.id, sessionPlacements.sessionId))
-      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
       .where(
         and(
           eq(sessionPlacements.computerId, computerId),
+          isNull(sessions.endedAt),
+          afterTargetSessionId ? gt(sessions.id, afterTargetSessionId) : undefined,
+          sql`exists (
+            select 1 from ${sessionMessages}
+            where ${sessionMessages.targetSessionId} = ${sessions.id}
+              and ${sessionMessages.createdAt} > ${cutoff.toISOString()}::timestamptz
+              and ${sessionMessages.lastOutcome} = 'unknown'
+              and ${sessionMessages.lastErrorCode} = ${SESSION_MESSAGE_HELD_CODE}
+          )`,
+        ),
+      )
+      .orderBy(sessions.id)
+      .limit(limit);
+    return rows.map(({ id }) => id);
+  }
+
+  /** One target's held messages, oldest first. */
+  async listHeldMessagesForTarget(targetSessionId: string, cutoff: Date, limit: number): Promise<HeldSessionMessage[]> {
+    return this.#database
+      .select(HELD_MESSAGE_COLUMNS)
+      .from(sessionMessages)
+      .innerJoin(sessions, eq(sessions.id, sessionMessages.targetSessionId))
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .where(
+        and(
+          eq(sessionMessages.targetSessionId, targetSessionId),
           gt(sessionMessages.createdAt, cutoff),
           eq(sessionMessages.lastOutcome, "unknown"),
           eq(sessionMessages.lastErrorCode, SESSION_MESSAGE_HELD_CODE),
         ),
       )
-      .orderBy(sessionMessages.targetSessionId, sessionMessages.createdAt, sessionMessages.id)
+      .orderBy(sessionMessages.createdAt, sessionMessages.id)
       .limit(limit);
   }
 
-  /** The Computers that hold messages, and the messages past their expiry. A sequential scan by design. */
-  async sweepHeldMessages(
-    cutoff: Date,
-    limit: number,
-  ): Promise<{ computerIds: string[]; expired: HeldSessionMessage[] }> {
-    const held = and(
-      eq(sessionMessages.lastOutcome, "unknown"),
-      eq(sessionMessages.lastErrorCode, SESSION_MESSAGE_HELD_CODE),
-    );
-    const computerRows = await this.#database
-      .selectDistinct({ computerId: sessionPlacements.computerId })
-      .from(sessionMessages)
-      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessionMessages.targetSessionId))
-      .where(and(held, gt(sessionMessages.createdAt, cutoff)));
-    const expired = await this.#database
-      .select(HELD_MESSAGE_COLUMNS)
+  /**
+   * One page of every held message in `(created_at, id)` order. A sequential scan by design: there is no
+   * index on the held state, so the sweep runs rarely and pages with a keyset, which also gets it past a
+   * row it could not settle.
+   */
+  async sweepHeldMessages(cursor: HeldSweepCursor | null, limit: number): Promise<HeldSweepMessage[]> {
+    return this.#database
+      .select({ ...HELD_MESSAGE_COLUMNS, computerId: sessionPlacements.computerId })
       .from(sessionMessages)
       .innerJoin(sessions, eq(sessions.id, sessionMessages.targetSessionId))
       .leftJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
-      .where(and(held, lte(sessionMessages.createdAt, cutoff)))
+      .leftJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessionMessages.targetSessionId))
+      .where(
+        and(
+          eq(sessionMessages.lastOutcome, "unknown"),
+          eq(sessionMessages.lastErrorCode, SESSION_MESSAGE_HELD_CODE),
+          cursor
+            ? sql`(${sessionMessages.createdAt}, ${sessionMessages.id}) > (${cursor.createdAt.toISOString()}::timestamptz, ${cursor.id}::uuid)`
+            : undefined,
+        ),
+      )
       .orderBy(sessionMessages.createdAt, sessionMessages.id)
       .limit(limit);
-    return { computerIds: computerRows.map(({ computerId }) => computerId), expired };
   }
 
   /**

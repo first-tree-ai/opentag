@@ -884,7 +884,7 @@ describe("dispatch outcomes and the conditional summary (D09, D10, D16)", () => 
     await expect(messageRow(claim.snapshot.messageId)).resolves.toMatchObject({ lastErrorCode: "delivery_held" });
 
     refuse(undefined);
-    const held = await stack.sessions.listHeldMessagesForComputer(seed.computerId, new Date(0), 10);
+    const held = await stack.sessions.listHeldMessagesForTarget(seed.targetSessionId, new Date(0), 10);
     expect(held.map(({ id }) => id)).toEqual([claim.snapshot.messageId]);
     const redelivered = held[0];
     if (!redelivered) throw new Error("expected a held message");
@@ -896,7 +896,7 @@ describe("dispatch outcomes and the conditional summary (D09, D10, D16)", () => 
       messageId: claim.snapshot.messageId,
       scheduledOrigin: claim.snapshot.origin,
     });
-    await expect(stack.sessions.listHeldMessagesForComputer(seed.computerId, new Date(0), 10)).resolves.toEqual([]);
+    await expect(stack.sessions.listHeldMessagesForTarget(seed.targetSessionId, new Date(0), 10)).resolves.toEqual([]);
   });
 
   it("drops a held occurrence once the next one has been claimed", async () => {
@@ -916,7 +916,7 @@ describe("dispatch outcomes and the conditional summary (D09, D10, D16)", () => 
     await stack.collaboration.dispatchScheduledMessage(second.snapshot);
 
     stack.registry.currentInstanceId.mockReturnValue(seed.instanceId);
-    const held = await stack.sessions.listHeldMessagesForComputer(seed.computerId, new Date(0), 10);
+    const held = await stack.sessions.listHeldMessagesForTarget(seed.targetSessionId, new Date(0), 10);
     expect(held.map(({ id }) => id)).toEqual([first.snapshot.messageId, second.snapshot.messageId]);
     const [older] = held;
     if (!older) throw new Error("expected a held message");

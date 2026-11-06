@@ -107,7 +107,7 @@ export class ImFeedbackWorker {
       if (target.cardState === "send_unknown") await this.#recover(target, reaction);
       else if (target.cardState === "pending" && !target.cardMessageId) await this.#publish(target, reaction);
       else {
-        await this.#offlineNotice(target);
+        await this.#offlineNotice(target, halt);
         await this.#settleKnown(target, reaction);
       }
     } catch (error) {
@@ -116,19 +116,34 @@ export class ImFeedbackWorker {
     }
   }
   /** Queued targets are revisited every fifteen seconds, which bounds how late past sixty seconds this runs. */
-  async #offlineNotice(target: FeedbackTarget): Promise<void> {
+  async #offlineNotice(target: FeedbackTarget, halt: () => void): Promise<void> {
     if (target.state !== "queued" || target.cardState !== "none") return;
     let reservedAt: Date | undefined;
     try {
       reservedAt = await this.options.store.reserveOfflineNotice(target);
       if (reservedAt) await this.options.transport.postOfflineNotice(target);
     } catch (error) {
+      const cooldown = error instanceof FeedbackCooldownStorageError;
+      if (cooldown) halt();
       this.options.logger.warn(
         { code: "IM_FEEDBACK_OFFLINE_NOTICE_FAILED", feedbackId: target.id, provider: target.provider },
         "IM offline notice was not confirmed",
       );
       if (reservedAt && error instanceof FeedbackProviderError && error.knownNotApplied)
-        await this.options.store.releaseOfflineNotice(target, reservedAt);
+        await this.#releaseOfflineNotice(target, reservedAt, cooldown);
+      if (cooldown) throw error;
+    }
+  }
+  async #releaseOfflineNotice(target: FeedbackTarget, reservedAt: Date, cooldown: boolean): Promise<void> {
+    try {
+      await this.options.store.releaseOfflineNotice(target, reservedAt);
+    } catch (error) {
+      // A held reservation only loses this notice; it must not replace the cooldown failure.
+      if (!cooldown) throw error;
+      this.options.logger.warn(
+        { code: "IM_FEEDBACK_OFFLINE_NOTICE_RELEASE_FAILED", feedbackId: target.id },
+        "IM offline notice reservation was not released",
+      );
     }
   }
   async #failure(target: FeedbackTarget, error: unknown, retryAfterMs: number): Promise<void> {

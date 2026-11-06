@@ -77,7 +77,7 @@ messages.
   outage longer than the ninety-day feedback retention can send another notice.
 - **Crash and provider outcomes.** The reservation commits before provider I/O, so a crash or lost acknowledgement can
   lose a notice but never repeats one. A send the provider definitely did not apply, such as a rate limit, is released
-  for a later pass. The notice does not use the failure message's request identity, which Feishu would deduplicate.
+  for a later pass. A cooldown-storage failure stops the worker pass, as it does for other feedback calls. The notice does not use the failure message's request identity, which Feishu would deduplicate.
 - **Scope.** Local Computers only: Cloud placements never match. A paused or suspended Agent, an expired credential,
   and a deleted Computer are out of scope. Recovery sends no "back online" message, because the working reaction and
   reply are the signal, and an expired message keeps the existing failure message.

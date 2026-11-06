@@ -134,6 +134,7 @@ export interface SessionMessageRunOutcomeEvent {
 export const SESSION_MESSAGE_TURN_TIMEOUT_CODE = "turn_timeout";
 /** A Session stop withdrew or aborted the message. */
 export const SESSION_MESSAGE_STOPPED_CODE = "session_stopped";
+export const SESSION_STOP_GRACE_MS = 5_000;
 
 export class SessionMessageInbox {
   readonly #admission: AdmissionController;
@@ -419,7 +420,36 @@ export class SessionMessageInbox {
       this.#retryTimers.delete(record.key);
       await this.#recordStopped(record, "runtime");
     }
-    await this.#drains.get(sessionId);
+    const drain = this.#drains.get(sessionId);
+    if (running && drain) await this.#closeRuntimeAfterGrace(sessionId, drain);
+    await drain;
+  }
+
+  /** An abort asks the provider to interrupt; one that does not comply within the grace is closed. */
+  async #closeRuntimeAfterGrace(sessionId: string, drain: Promise<void>): Promise<void> {
+    let timer: { cancel(): void } | undefined;
+    const grace = new Promise<"elapsed">((resolve) => {
+      timer = this.#timeoutScheduler.schedule(SESSION_STOP_GRACE_MS, () => resolve("elapsed"));
+    });
+    const settled = drain.then(
+      () => "settled" as const,
+      () => "settled" as const,
+    );
+    const first = await Promise.race([settled, grace]);
+    timer?.cancel();
+    if (first === "settled") return;
+    this.#logger.warn(
+      { code: "SESSION_STOP_RUNTIME_CLOSED", sessionId },
+      "Session stop closed an unresponsive runtime",
+    );
+    await Promise.resolve()
+      .then(() => this.#runtimeManager.runtime?.(sessionId).close())
+      .catch(() =>
+        this.#logger.warn(
+          { code: "SESSION_STOP_RUNTIME_CLOSE_FAILED", sessionId },
+          "Session stop could not close a runtime",
+        ),
+      );
   }
 
   /** Terminal without a retry or an outcome report; a write that fails is settled by recovery after a restart. */

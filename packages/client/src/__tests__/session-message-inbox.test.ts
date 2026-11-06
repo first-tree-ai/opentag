@@ -44,6 +44,7 @@ import {
 import {
   buildSessionMessageInput,
   SESSION_MESSAGE_STOPPED_CODE,
+  SESSION_STOP_GRACE_MS,
   SessionMessageInbox,
   type SessionMessageRunOutcomeEvent,
 } from "../runtime/session-message-inbox.js";
@@ -2008,6 +2009,103 @@ describe("SessionMessageInbox", () => {
       inbox.stop();
     });
 
+    it("closes a runtime that ignores the abort after the grace", async () => {
+      const tasks: Array<{ delay: number; task: () => void }> = [];
+      const timeoutScheduler: RuntimeRetryScheduler = {
+        schedule(delay, task) {
+          tasks.push({ delay, task });
+          return { cancel: () => undefined };
+        },
+      };
+      let finishRun: (reason: Error) => void = () => undefined;
+      const prompt = vi.fn(
+        () =>
+          new Promise((_resolve, reject) => {
+            finishRun = reject;
+          }),
+      );
+      const close = vi.fn(async () => finishRun(new Error("closed")));
+      const inbox = new SessionMessageInbox({
+        admission: new AdmissionController(),
+        credentialEnvironment: credentialEnvironment(),
+        imCredentialGrantVersion: () => 2,
+        sessionCollaborationVersion: () => 4,
+        reconciler: inboxReconciler(),
+        runtimeManager: {
+          ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+          runtime: () => ({ close }) as never,
+          sessionKind: vi.fn(() => "internal" as const),
+        },
+        timeoutScheduler,
+      });
+      const request = delivery();
+      await inbox.accept(request);
+      await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce());
+
+      const stopping = inbox.stopSessionWork(request.targetSessionId, request.placementGeneration);
+      await vi.waitFor(() => expect(tasks.some(({ delay }) => delay === SESSION_STOP_GRACE_MS)).toBe(true));
+      expect(close).not.toHaveBeenCalled();
+      tasks.find(({ delay }) => delay === SESSION_STOP_GRACE_MS)?.task();
+      await stopping;
+
+      expect(close).toHaveBeenCalledOnce();
+      expect(inbox.getState(request.messageId)).toMatchObject({
+        status: "failed",
+        lastError: { code: SESSION_MESSAGE_STOPPED_CODE },
+      });
+      inbox.stop();
+    });
+
+    it("still waits for the Run when closing its runtime fails", async () => {
+      const tasks: Array<{ delay: number; task: () => void }> = [];
+      const timeoutScheduler: RuntimeRetryScheduler = {
+        schedule(delay, task) {
+          tasks.push({ delay, task });
+          return { cancel: () => undefined };
+        },
+      };
+      let finishRun: (reason: Error) => void = () => undefined;
+      const prompt = vi.fn(
+        () =>
+          new Promise((_resolve, reject) => {
+            finishRun = reject;
+          }),
+      );
+      const logger = { warn: vi.fn() };
+      const inbox = new SessionMessageInbox({
+        admission: new AdmissionController(),
+        credentialEnvironment: credentialEnvironment(),
+        imCredentialGrantVersion: () => 2,
+        logger,
+        sessionCollaborationVersion: () => 4,
+        reconciler: inboxReconciler(),
+        runtimeManager: {
+          ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+          runtime: () => {
+            throw new Error("The Session Agent Runtime is not ready");
+          },
+          sessionKind: vi.fn(() => "internal" as const),
+        },
+        timeoutScheduler,
+      });
+      const request = delivery();
+      await inbox.accept(request);
+      await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce());
+      const stopping = inbox.stopSessionWork(request.targetSessionId, request.placementGeneration);
+      await vi.waitFor(() => expect(tasks.some(({ delay }) => delay === SESSION_STOP_GRACE_MS)).toBe(true));
+      tasks.find(({ delay }) => delay === SESSION_STOP_GRACE_MS)?.task();
+      await vi.waitFor(() =>
+        expect(logger.warn).toHaveBeenCalledWith(
+          expect.objectContaining({ code: "SESSION_STOP_RUNTIME_CLOSE_FAILED" }),
+          expect.any(String),
+        ),
+      );
+      finishRun(new Error("ended"));
+      await stopping;
+      expect(inbox.getState(request.messageId)?.status).toBe("failed");
+      inbox.stop();
+    });
+
     it("cancels a pending retry", async () => {
       const cancel = vi.fn();
       const tasks: Array<() => void> = [];
@@ -3101,6 +3199,41 @@ describe("SessionMessageInbox steer custody with Claude Code", () => {
       steerInto,
     };
   }
+
+  it("kills the provider process of a Run its Session stop aborts", async () => {
+    const h = await harness();
+    try {
+      const replacement = await h.newRuntime();
+      h.held.reservation.release();
+      const inbox = h.inbox(() => replacement);
+      expect((await inbox.accept(h.message)).status).toBe("accepted");
+      await vi.waitFor(() => expect(h.children[1]?.written).toHaveLength(1));
+      const child = h.children[1] as ScriptedChild;
+      send(child, { type: "system", subtype: "init", session_id: CLAUDE_SESSION_ID });
+      Object.assign(child, { pid: 4242 });
+      const kill = vi.spyOn(process, "kill").mockImplementation((pid, signal) => {
+        if (pid === -4242) queueMicrotask(() => child.emit("exit", null, signal as NodeJS.Signals));
+        return true;
+      });
+
+      await inbox.stopSessionWork(h.message.targetSessionId, h.message.placementGeneration);
+
+      expect(kill).toHaveBeenCalledWith(-4242, "SIGINT");
+      kill.mockRestore();
+      expect(inbox.getState(h.message.messageId)).toMatchObject({
+        status: "failed",
+        lastError: { code: SESSION_MESSAGE_STOPPED_CODE },
+      });
+      expect(h.outcomes).toEqual([]);
+      expect(h.children).toHaveLength(2);
+      inbox.stop();
+      await inbox.settled();
+    } finally {
+      h.hostChild.emit("exit", 1, null);
+      await h.hostRun;
+      await h.close();
+    }
+  });
 
   it("redelivers a steer the provider never started once after a pre-start provider failure and restore", async () => {
     const h = await harness();

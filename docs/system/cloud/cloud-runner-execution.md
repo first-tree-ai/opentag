@@ -382,9 +382,9 @@ heartbeat cannot precede the authentication result.
 
 Boundary: E3 remains the native-execution acceptance path. The E4 acceptance path does not cover
 GCS workspace restore (E5), concurrent multi-Turn placement (E6), idle reuse/recycling (E7), or
-Context Tree synchronization (E8). Real native Cloud Run execution, real GCP acceptance, and real IM
-provider ingress/reply acceptance remain pending; current evidence is local composition and
-external local probes only. Do not claim E4 accepted from local results.
+Context Tree synchronization (E8). Local composition and external local probes do not establish
+native Cloud Run execution, GCP acceptance, or real IM ingress and reply delivery; verify those
+boundaries separately before claiming Cloud delivery acceptance.
 
 ## Required configuration
 

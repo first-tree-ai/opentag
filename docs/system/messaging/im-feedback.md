@@ -84,7 +84,8 @@ messages.
 
 Ordinary failures are plain text in the original conversation or thread. Workspace failures are the only cards,
 because they need Retry save and Discard buttons. A message has three sentences: what happened, whether operations
-ran, and what to do next, followed by the authenticated details link. Error codes and technical details stay on the
+ran, and what to do next, followed by the authenticated details link as clickable words, never a raw URL: a Feishu
+`post` with an `a` element, or Slack `<url|words>`. Error codes and technical details stay on the
 details page: an IM failure is read by people who cannot act on a code, and a plain message keeps a failure from
 taking more of the conversation than the work did.
 
@@ -154,7 +155,7 @@ stored value: a target that reaches `workspace_blocked` with nothing sent yet be
 buttons cannot be expressed as text. Once a message exists its format never changes.
 
 Known-message updates and unknown-send reconciliation use the stored format and the same native identity; text lookup
-matches the installed Bot and exact details URL, which is why the link target stays inside the text on both providers.
+matches the installed Bot and exact details URL, which both providers keep in the stored message.
 During a rollout overlap, an older worker that knows `text_v1` renders it with its older wording, and one from before
 the column existed ignores it and sends a card. Neither loses the message or sends it twice; a later edit or readback of
 such a message by a newer worker can fail and stays diagnosable. Save/discard and

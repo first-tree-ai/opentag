@@ -238,7 +238,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
               api.chat.postMessage({
                 channel: target.channelId,
                 thread_ts: target.threadKey ?? target.inputExternalId,
-                ...(text ? { text, unfurl_links: false, unfurl_media: false } : card.slack),
+                ...(text ? { text: text.slack, unfurl_links: false, unfurl_media: false } : card.slack),
               }),
             );
             if (!r.ok || !r.ts || r.channel !== target.channelId)
@@ -249,8 +249,8 @@ export class ImFeedbackMessenger implements FeedbackTransport {
           const r = await api.im.v1.message.reply({
             path: { message_id: target.inputExternalId },
             data: {
-              msg_type: text ? "text" : "interactive",
-              content: text ? JSON.stringify({ text }) : card.feishu,
+              msg_type: text ? "post" : "interactive",
+              content: text ? text.feishu : card.feishu,
               uuid: target.providerRequestId,
             },
           });
@@ -281,7 +281,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
               api.chat.postMessage({
                 channel: target.channelId,
                 thread_ts: target.threadKey ?? target.inputExternalId,
-                text,
+                text: text.slack,
                 unfurl_links: false,
                 unfurl_media: false,
               }),
@@ -292,7 +292,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
           const { api } = await this.#feishu(target, signal);
           const r = await api.im.v1.message.reply({
             path: { message_id: target.inputExternalId },
-            data: { msg_type: "text", content: JSON.stringify({ text }) },
+            data: { msg_type: "post", content: text.feishu },
           });
           if (r.code !== 0) throw new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false);
         },
@@ -319,7 +319,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
             api.chat.update({
               channel: target.channelId,
               ts: cardMessageId,
-              text: text ?? card.slack.text,
+              text: text?.slack ?? card.slack.text,
               ...(text ? {} : { blocks: card.slack.blocks }),
             }),
           );
@@ -329,7 +329,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
           const r = text
             ? await api.im.v1.message.update({
                 path: { message_id: cardMessageId },
-                data: { msg_type: "text", content: JSON.stringify({ text }) },
+                data: { msg_type: "post", content: text.feishu },
               })
             : await api.im.v1.message.patch({
                 path: { message_id: cardMessageId },

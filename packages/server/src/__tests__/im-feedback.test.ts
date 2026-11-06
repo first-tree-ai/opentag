@@ -337,9 +337,13 @@ describe("durable IM feedback", () => {
     await h.finish();
     const target = await h.target();
     expect(target.messageFormat).toBe("text_v1");
-    const text = renderFeedbackText(target, "https://example.test");
-    expect(text).not.toContain("provider_failed");
-    expect(text.split("\n")).toHaveLength(3);
+    const { slack, feishu } = renderFeedbackText(target, "https://example.test");
+    expect(slack).not.toContain("provider_failed");
+    expect(feishu).not.toContain("provider_failed");
+    expect(slack.split("\n")).toHaveLength(3);
+    const href = `https://example.test/im-feedback/${target.id}`;
+    expect(slack).toContain(`<${href}|View details>`);
+    expect(JSON.parse(feishu).en_us.content.at(-1).at(-1)).toEqual({ tag: "a", text: "View details", href });
   });
 
   it("reads the language of the input the target was created for", async () => {

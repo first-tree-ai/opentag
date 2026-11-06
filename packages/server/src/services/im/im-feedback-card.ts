@@ -69,19 +69,41 @@ function cardActions(
   return [];
 }
 
-/** The link stays in the text so readback can match the exact details URL on both providers. */
-function textLink(provider: FeedbackTarget["provider"], url: string, label: string): string {
-  return provider === "slack" ? `<${url}|${label}>` : `[${label}](${url})`;
+type MessageSegment = { text: string; href?: string };
+
+/**
+ * A plain message for each provider, with the link as clickable words. Feishu `post` carries the link as
+ * an `a` element, which does not depend on the provider recognizing link syntax in `text` content. Both
+ * forms keep the URL in the stored message, which is what unknown-send readback matches.
+ */
+function renderMessage(lines: MessageSegment[][], language: FeedbackLanguage) {
+  return {
+    slack: lines.map((line) => line.map(({ text, href }) => (href ? `<${href}|${text}>` : text)).join(" ")).join("\n"),
+    feishu: JSON.stringify({
+      [language === "zh" ? "zh_cn" : "en_us"]: {
+        content: lines.map((line) =>
+          line.flatMap(({ text, href }, index) => [
+            ...(index > 0 ? [{ tag: "text", text: " " }] : []),
+            href ? { tag: "a", text, href } : { tag: "text", text },
+          ]),
+        ),
+      },
+    }),
+  };
 }
 
 export function renderOfflineNotice(
-  target: Pick<FeedbackTarget, "provider" | "agentId">,
+  target: Pick<FeedbackTarget, "agentId">,
   publicUrl: string,
   language: FeedbackLanguage,
-): string {
+) {
   const { before, label, after } = offlineNoticeCopy(language);
-  const url = new URL(`/agents/${encodeURIComponent(target.agentId)}`, publicUrl).href;
-  return `${before} ${textLink(target.provider, url, label)}\n${after}`;
+  const href = new URL(`/agents/${encodeURIComponent(target.agentId)}`, publicUrl).href;
+  const [reason = "", recovery = ""] = before.split("\n");
+  return renderMessage(
+    [[{ text: reason }], [{ text: recovery }, { text: label, href }], ...after.split("\n").map((text) => [{ text }])],
+    language,
+  );
 }
 
 export function renderFeedbackText(
@@ -89,13 +111,16 @@ export function renderFeedbackText(
   publicUrl: string,
   action?: FeedbackAction,
   language: FeedbackLanguage = "en",
-): string {
+) {
   const content = feedbackCardContent(target, action, language);
-  const detailsUrl = new URL(`/im-feedback/${encodeURIComponent(target.id)}`, publicUrl).href;
-  const link = textLink(target.provider, detailsUrl, FEEDBACK_LABELS.details[language]);
-  return content.result
-    ? `${content.title} ${link}`
-    : [content.title, content.impact, `${content.availability} ${link}`].join("\n");
+  const href = new URL(`/im-feedback/${encodeURIComponent(target.id)}`, publicUrl).href;
+  const link = { text: FEEDBACK_LABELS.details[language], href };
+  return renderMessage(
+    content.result
+      ? [[{ text: content.title }, link]]
+      : [[{ text: content.title }], [{ text: content.impact }], [{ text: content.availability }, link]],
+    language,
+  );
 }
 
 export function renderFeedbackCard(

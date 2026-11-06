@@ -1769,13 +1769,20 @@ export class SandboxRunnerService {
       return false;
     }
     const deleted = await this.#cloud.deleteInstance(resourceName, resourceUid);
+    const confirmationStartedAt = this.#now();
     if (deleted.alreadyGone || (await this.#deletionConfirmed(resourceName, resourceUid))) return true;
+    if (this.#now().getTime() - confirmationStartedAt.getTime() >= this.#deleteVerifyTimeoutMs) {
+      throw new CloudRunAdminError(
+        "unavailable",
+        `Cloud Run Instance ${resourceName} removal was not verified in time`,
+      );
+    }
     // Sealing succeeded before DELETE. Persist only for this exact automatic attempt; a lost
     // acknowledgement is reconciled by the next UID/etag-fenced delete after the retry cooldown.
     const now = this.#now();
     await this.#database
       .update(sandboxes)
-      .set({ lastErrorCode: DELETE_PENDING, lastErrorAt: now, updatedAt: now })
+      .set({ lastErrorCode: DELETE_PENDING, lastErrorAt: confirmationStartedAt, updatedAt: now })
       .where(this.#automaticAttemptMatches(row));
     return false;
   }

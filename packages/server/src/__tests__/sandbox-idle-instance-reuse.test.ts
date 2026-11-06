@@ -731,6 +731,32 @@ describe("E7 automatic idle reclamation", () => {
     expect(sleep).not.toHaveBeenCalled();
   });
 
+  it.each([20_000, 60_000])(
+    "includes a slow initial confirmation read in the original deadline (%s ms)",
+    async (readMs) => {
+      const accountId = await account();
+      const stack = makeStack();
+      const ready = await readySandbox(stack, accountId, `room-slow-initial-read-${readMs}`);
+      keepDeletionPending(stack);
+      const get = stack.fake.getInstance.bind(stack.fake);
+      vi.spyOn(stack.fake, "getInstance").mockImplementation(async (name) => {
+        if (stack.fake.deleteCalls.length === 1) stack.advance(readMs);
+        return get(name);
+      });
+      stack.advance(IDLE_TIMEOUT_MS + 1_000);
+      const acceptedAt = stack.now();
+      const result = await stack.service.reclaimIdleSandboxes();
+      expect(result).toMatchObject({ released: 0, failed: readMs === 60_000 ? 1 : 0 });
+      const pending = await sandboxRow(ready.row.id);
+      expect(pending.currentResourceUid).toBe(ready.row.currentResourceUid);
+      if (readMs === 20_000) {
+        expect(pending.lastErrorAt).toEqual(acceptedAt);
+        expect(pending.lastErrorCode).toBe("cloud_delete_pending");
+      } else expect(pending.lastErrorCode).not.toBe("cloud_delete_pending");
+      expect(stack.fake.deleteCalls).toHaveLength(1);
+    },
+  );
+
   it.each(["read failure", "replacement UID"])("retains ownership evidence after pending %s", async (failure) => {
     const accountId = await account();
     const stack = makeStack();

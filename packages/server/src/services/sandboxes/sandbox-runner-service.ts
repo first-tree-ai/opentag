@@ -140,6 +140,8 @@ export interface SandboxRunnerServiceOptions {
 }
 
 const DELETE_VERIFY_DEFAULT_MS = 60_000;
+const DELETE_PENDING = "cloud_delete_pending";
+const DELETE_CONFIRM_INTERVAL_MS = 15_000;
 const IDLE_RECLAIM_DEFAULT_MS = 120_000;
 /** Bounded batch of idle rows one sweep pass may consider. */
 const IDLE_RECLAIM_BATCH = 25;
@@ -1509,15 +1511,15 @@ export class SandboxRunnerService {
    * until the sealed archive is proven (or proven unnecessary), and every failure is recorded
    * without erasing create-phase or workspace-phase evidence.
    */
-  async #releaseCurrentAllocation(row: typeof sandboxes.$inferSelect, automatic = false): Promise<void> {
+  async #releaseCurrentAllocation(row: typeof sandboxes.$inferSelect, automatic = false): Promise<boolean> {
     try {
       if (this.#workspace) {
-        await this.#releaseSavingWorkspace(row);
+        return await this.#releaseSavingWorkspace(row, automatic);
       } else {
         // Invalidate Runner execution immediately: a releasing environment must never accept or
         // resolve work while its Instance is being removed.
         this.#closeRunnerScope(row);
-        await this.#releaseAllocation(row);
+        return await this.#releaseAllocation(row, automatic);
       }
     } catch (error) {
       if (error instanceof WorkspaceSaveError) {
@@ -1553,11 +1555,11 @@ export class SandboxRunnerService {
    * outcome is resolved by the existing bounded reconciliation (a generation whose UID was never
    * tracked was never ready, so it owes no save).
    */
-  async #releaseSavingWorkspace(row: typeof sandboxes.$inferSelect): Promise<void> {
+  async #releaseSavingWorkspace(row: typeof sandboxes.$inferSelect, automatic: boolean): Promise<boolean> {
     await this.#sealWorkspaceIfOwed(row);
     // Only now does the Runner channel close; the existing verified cloud cleanup follows.
     this.#closeRunnerScope(row);
-    await this.#releaseAllocation(row);
+    return this.#releaseAllocation(row, automatic);
   }
 
   /**
@@ -1679,18 +1681,17 @@ export class SandboxRunnerService {
    * an error proves nothing was allocated, and anything still unknown keeps `releasing` plus the
    * full reference and reports incomplete — the reference is never erased on uncertainty.
    */
-  async #releaseAllocation(row: typeof sandboxes.$inferSelect): Promise<void> {
+  async #releaseAllocation(row: typeof sandboxes.$inferSelect, automatic = false): Promise<boolean> {
     const resourceName = row.currentResourceName;
     if (resourceName === null) {
-      await this.#clearReleased(row, null, null);
-      return;
+      return this.#clearReleased(row, null, null);
     }
     if (row.currentResourceUid === null) {
-      await this.#awaitUnknownAllocation(row, resourceName);
-      return;
+      return this.#awaitUnknownAllocation(row, resourceName, automatic);
     }
-    await this.#deleteVerified(resourceName, row.currentResourceUid);
-    await this.#clearReleased(row, resourceName, row.currentResourceUid);
+    if (automatic && !(await this.#deleteAutomatic(row, resourceName, row.currentResourceUid))) return false;
+    if (!automatic) await this.#deleteVerified(resourceName, row.currentResourceUid);
+    return this.#clearReleased(row, resourceName, row.currentResourceUid);
   }
 
   /**
@@ -1698,7 +1699,11 @@ export class SandboxRunnerService {
    * deleted; a completed operation proves the outcome; anything still unknown keeps `releasing`
    * plus the full reference and reports incomplete after the bounded window.
    */
-  async #awaitUnknownAllocation(row: typeof sandboxes.$inferSelect, resourceName: string): Promise<void> {
+  async #awaitUnknownAllocation(
+    row: typeof sandboxes.$inferSelect,
+    resourceName: string,
+    automatic: boolean,
+  ): Promise<boolean> {
     const deadline = this.#now().getTime() + this.#deleteVerifyTimeoutMs;
     for (;;) {
       const view = await this.#cloud.getInstance(resourceName);
@@ -1709,12 +1714,10 @@ export class SandboxRunnerService {
         // mandatory on the adopt/ready path, never on the delete path.
         this.#cloud.verifyOwnership(view, this.#identityFor(row, row.environmentGeneration));
         await this.#trackResource(row, resourceName, view.uid, row.currentOperationName);
-        await this.#deleteVerified(resourceName, view.uid);
-        await this.#clearReleased(row, resourceName, view.uid);
-        return;
+        return this.#releaseObservedAllocation(row, resourceName, view.uid, automatic);
       }
-      if (await this.#releaseFromDefinitiveEvidence(row, resourceName)) return;
-      if (this.#now().getTime() >= deadline) {
+      if (await this.#releaseFromDefinitiveEvidence(row, resourceName)) return true;
+      if (automatic || this.#now().getTime() >= deadline) {
         await this.#marker(row, "cloud_create_uncertain");
         throw new CloudRunAdminError(
           "unavailable",
@@ -1723,6 +1726,70 @@ export class SandboxRunnerService {
       }
       await this.#sleep(Math.min(2_000, Math.max(50, deadline - this.#now().getTime())));
     }
+  }
+
+  async #releaseObservedAllocation(
+    row: typeof sandboxes.$inferSelect,
+    resourceName: string,
+    resourceUid: string,
+    automatic: boolean,
+  ): Promise<boolean> {
+    if (!automatic) {
+      await this.#deleteVerified(resourceName, resourceUid);
+      return this.#clearReleased(row, resourceName, resourceUid);
+    }
+    const [tracked] = await this.#rowById(row.id);
+    if (
+      tracked?.lifecycle !== "releasing" ||
+      tracked.idleReclaimAt === null ||
+      tracked.environmentGeneration !== row.environmentGeneration ||
+      tracked.currentResourceName !== resourceName ||
+      tracked.currentResourceUid !== resourceUid
+    )
+      return false;
+    return this.#releaseAllocation(tracked, true);
+  }
+
+  async #deleteAutomatic(
+    row: typeof sandboxes.$inferSelect,
+    resourceName: string,
+    resourceUid: string,
+  ): Promise<boolean> {
+    if (row.lastErrorCode === DELETE_PENDING) {
+      if (await this.#deletionConfirmed(resourceName, resourceUid)) return true;
+      if (
+        row.lastErrorAt === null ||
+        this.#now().getTime() - row.lastErrorAt.getTime() >= this.#deleteVerifyTimeoutMs
+      ) {
+        throw new CloudRunAdminError(
+          "unavailable",
+          `Cloud Run Instance ${resourceName} removal was not verified in time`,
+        );
+      }
+      return false;
+    }
+    const deleted = await this.#cloud.deleteInstance(resourceName, resourceUid);
+    if (deleted.alreadyGone || (await this.#deletionConfirmed(resourceName, resourceUid))) return true;
+    // Sealing succeeded before DELETE. Persist only for this exact automatic attempt; a lost
+    // acknowledgement is reconciled by the next UID/etag-fenced delete after the retry cooldown.
+    const now = this.#now();
+    await this.#database
+      .update(sandboxes)
+      .set({ lastErrorCode: DELETE_PENDING, lastErrorAt: now, updatedAt: now })
+      .where(this.#automaticAttemptMatches(row));
+    return false;
+  }
+
+  async #deletionConfirmed(resourceName: string, resourceUid: string): Promise<boolean> {
+    const view = await this.#cloud.getInstance(resourceName);
+    if (!view) return true;
+    if (view.uid !== resourceUid) {
+      throw new CloudRunAdminError(
+        "ownership_mismatch",
+        `Cloud Run Instance ${resourceName} is now owned by a different UID than the tracked allocation`,
+      );
+    }
+    return false;
   }
 
   /** True only when an explicit operation error proves no Instance was allocated. */
@@ -1762,17 +1829,7 @@ export class SandboxRunnerService {
     if (deleted.alreadyGone) return;
     const deadline = this.#now().getTime() + this.#deleteVerifyTimeoutMs;
     for (;;) {
-      const view = await this.#cloud.getInstance(resourceName);
-      if (!view) return;
-      if (view.uid !== resourceUid) {
-        // Our UID is gone, but a same-name resource now belongs to someone else. Do not delete it
-        // and do not pretend the release is fully reconciled: keep the row releasing with
-        // evidence and let an operator resolve the replacement.
-        throw new CloudRunAdminError(
-          "ownership_mismatch",
-          `Cloud Run Instance ${resourceName} is now owned by a different UID than the tracked allocation`,
-        );
-      }
+      if (await this.#deletionConfirmed(resourceName, resourceUid)) return;
       if (this.#now().getTime() >= deadline) {
         throw new CloudRunAdminError(
           "unavailable",
@@ -1881,7 +1938,9 @@ export class SandboxRunnerService {
    * - unknown reads and fail-create phases never clear a reference.
    * No transaction is held across cloud or storage I/O.
    */
-  async reclaimIdleSandboxes(): Promise<{ claimed: number; released: number; recovered: number; failed: number }> {
+  async reclaimIdleSandboxes(
+    signal?: AbortSignal,
+  ): Promise<{ claimed: number; released: number; recovered: number; failed: number }> {
     // Automatic deletion is enabled exactly when the deployment persists workspaces. Without the
     // object store a ready instance may hold the only copy of its workspace, so the sweep never
     // destroys it; explicit Account stop remains the operator path there.
@@ -1897,28 +1956,42 @@ export class SandboxRunnerService {
 
     // The business idle budget stays on lastActivityAt; claimed rows also obey retry pacing.
     for (const candidate of await this.#idleReadyCandidates(idleCutoff)) {
+      if (signal?.aborted) break;
       const outcome = await this.#reclaimIdleCandidate(candidate.id);
       if (outcome.claimed) claimed += 1;
       if (outcome.released) released += 1;
       if (outcome.failed) failed += 1;
     }
 
+    const releasing = await this.#resumeAutomaticReleases(signal);
+
+    const recovered = await this.#recoverStalePreparingAllocations(startupCutoff, signal);
+    return {
+      claimed,
+      released: released + releasing.released,
+      recovered: recovered.recovered,
+      failed: failed + releasing.failed + recovered.failed,
+    };
+  }
+
+  async #resumeAutomaticReleases(signal?: AbortSignal): Promise<{ released: number; failed: number }> {
+    let released = 0;
+    let failed = 0;
     // Explicit stop rows carry no automatic marker and stay outside this sweep.
     for (const candidate of await this.#automaticReleasingCandidates()) {
+      if (signal?.aborted) break;
       const [current] = await this.#rowById(candidate.id);
       const reserved = current ? await this.#reserveAutomaticRetry(current, "releasing") : undefined;
       if (!reserved) continue;
       try {
-        await this.#releaseCurrentAllocation(reserved, true);
-        released += 1;
+        if (await this.#releaseCurrentAllocation(reserved, true)) released += 1;
       } catch {
         // The release funnel already recorded the durable failure state for the next sweep.
         failed += 1;
       }
     }
 
-    const recovered = await this.#recoverStalePreparingAllocations(startupCutoff);
-    return { claimed, released, recovered: recovered.recovered, failed: failed + recovered.failed };
+    return { released, failed };
   }
 
   /** Ready rows whose original activity budget has passed, claimed or not. */
@@ -1950,7 +2023,17 @@ export class SandboxRunnerService {
   }
 
   #automaticRetryDue() {
-    return lte(sandboxes.updatedAt, new Date(this.#now().getTime() - WORKSPACE_RECOVERY_RETRY_DELAY_MS));
+    const now = this.#now().getTime();
+    return or(
+      and(
+        eq(sandboxes.lastErrorCode, DELETE_PENDING),
+        lte(sandboxes.updatedAt, new Date(now - DELETE_CONFIRM_INTERVAL_MS)),
+      ),
+      and(
+        or(isNull(sandboxes.lastErrorCode), ne(sandboxes.lastErrorCode, DELETE_PENDING)),
+        lte(sandboxes.updatedAt, new Date(now - WORKSPACE_RECOVERY_RETRY_DELAY_MS)),
+      ),
+    );
   }
 
   #automaticAttemptMatches(row: typeof sandboxes.$inferSelect) {
@@ -1965,6 +2048,7 @@ export class SandboxRunnerService {
         ? isNull(sandboxes.currentResourceUid)
         : eq(sandboxes.currentResourceUid, row.currentResourceUid),
       row.idleReclaimAt === null ? isNull(sandboxes.idleReclaimAt) : eq(sandboxes.idleReclaimAt, row.idleReclaimAt),
+      row.lastErrorCode === null ? isNull(sandboxes.lastErrorCode) : eq(sandboxes.lastErrorCode, row.lastErrorCode),
       eq(sandboxes.updatedAt, row.updatedAt),
     );
   }
@@ -1992,7 +2076,10 @@ export class SandboxRunnerService {
    * connected-but-never-ready Runner is included: restore attempts that never complete are a
    * startup failure, not disposable idle work, and the borrower's own archive is never touched.
    */
-  async #recoverStalePreparingAllocations(startupCutoff: Date): Promise<{ recovered: number; failed: number }> {
+  async #recoverStalePreparingAllocations(
+    startupCutoff: Date,
+    signal?: AbortSignal,
+  ): Promise<{ recovered: number; failed: number }> {
     const candidates = await this.#database
       .select({ id: sandboxes.id })
       .from(sandboxes)
@@ -2010,14 +2097,14 @@ export class SandboxRunnerService {
     let recovered = 0;
     let failed = 0;
     for (const candidate of candidates) {
+      if (signal?.aborted) break;
       // A ready connection is promoted by the normal readiness path, never recycled here.
       if (this.#hub.describe(candidate.id).ready) {
         await this.#promoteReadyIfReported(candidate.id).catch(() => undefined);
         continue;
       }
       try {
-        await this.#releaseStalePreparing(candidate.id);
-        recovered += 1;
+        if (await this.#releaseStalePreparing(candidate.id)) recovered += 1;
       } catch {
         failed += 1;
       }
@@ -2031,7 +2118,7 @@ export class SandboxRunnerService {
    * keeps returning pending (never a terminal stopped) for inputs waiting on this Session, and a
    * failed delete is retried by the same sweep via the durable marker.
    */
-  async #releaseStalePreparing(sandboxId: string): Promise<void> {
+  async #releaseStalePreparing(sandboxId: string): Promise<boolean> {
     const [row] = await this.#rowById(sandboxId);
     if (
       row?.lifecycle !== "preparing" ||
@@ -2039,7 +2126,7 @@ export class SandboxRunnerService {
       row.currentResourceUid === null ||
       row.idleReclaimAt !== null
     ) {
-      return;
+      return false;
     }
     const resourceName = row.currentResourceName;
     const resourceUid = row.currentResourceUid;
@@ -2051,8 +2138,7 @@ export class SandboxRunnerService {
       throw new CloudRunAdminError("unavailable", "The stale allocation could not be read");
     }
     if (!view || view.uid !== resourceUid) {
-      await this.#clearReleased(row, resourceName, resourceUid, "preparing");
-      return;
+      return this.#clearReleased(row, resourceName, resourceUid, "preparing");
     }
     // Ownership only: a deployment image/config change must never block cleanup of an owned
     // legacy Instance.
@@ -2061,7 +2147,7 @@ export class SandboxRunnerService {
     // be promoted, never recycled as a failed startup; a row that moved on is left alone.
     if (this.#hub.describe(sandboxId).ready) {
       await this.#promoteReadyIfReported(sandboxId);
-      return;
+      return false;
     }
     const [current] = await this.#rowById(sandboxId);
     if (
@@ -2071,7 +2157,7 @@ export class SandboxRunnerService {
       current.currentResourceName !== resourceName ||
       current.currentResourceUid !== resourceUid
     ) {
-      return;
+      return false;
     }
     const now = this.#now();
     const [releasing] = await this.#database
@@ -2088,8 +2174,8 @@ export class SandboxRunnerService {
         ),
       )
       .returning();
-    if (!releasing) return;
-    await this.#releaseCurrentAllocation(releasing);
+    if (!releasing) return false;
+    return this.#releaseCurrentAllocation(releasing, true);
   }
 
   /** One bounded candidate: claim, prove the save, then release. Failures stay durably recorded. */
@@ -2127,8 +2213,8 @@ export class SandboxRunnerService {
         .where(this.#automaticAttemptMatches(row))
         .returning();
       if (!releasing) return { claimed, released: false, failed: false }; // stop or borrow won
-      await this.#releaseCurrentAllocation(releasing, true);
-      return { claimed, released: true, failed: false };
+      const released = await this.#releaseCurrentAllocation(releasing, true);
+      return { claimed, released, failed: false };
     } catch (error) {
       if (error instanceof WorkspaceSaveError) {
         await this.#recordError(row, WORKSPACE_SAVE_FAILED, error, {

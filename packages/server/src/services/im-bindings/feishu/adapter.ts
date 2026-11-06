@@ -484,6 +484,8 @@ class ReliableFeishuChannel implements FeishuChannel {
       this.#resolveReady = resolve;
       this.#rejectReady = reject;
     });
+    // SDK callbacks can reject readiness after a failed or cancelled connect has already returned.
+    void this.#ready.catch(() => undefined);
     this.#outbound = createLarkChannel({
       appId: input.appId,
       appSecret: input.appSecret,
@@ -511,11 +513,7 @@ class ReliableFeishuChannel implements FeishuChannel {
       onReady: () => {
         if (!this.#closed) this.#resolveReady();
       },
-      onError: (error) => {
-        // The cause keeps the gateway's refusal code for connection-failure classification.
-        this.#rejectReady(new Error("FEISHU_CONNECTION_ERROR", { cause: error }));
-        this.#handlers.error?.(error);
-      },
+      onError: (error) => this.#onConnectionError(error),
       onReconnecting: () => this.#handlers.reconnecting?.(),
       onReconnected: () => this.#handlers.reconnected?.(),
     });
@@ -524,18 +522,20 @@ class ReliableFeishuChannel implements FeishuChannel {
   async connect(signal?: AbortSignal): Promise<void> {
     if (this.#closed) throw new Error("FEISHU_CHANNEL_CLOSED");
     if (signal?.aborted) throw signal.reason ?? new Error("FEISHU_CONNECT_ABORTED");
-    if (!this.#started) {
-      this.#started = true;
-      void this.#wsClient.start({ eventDispatcher: this.#dispatcher });
-    }
     const state = { cancelled: false };
-    const connectPromise = this.#connectAndWaitReady(state, signal);
-    if (!signal) {
-      await connectPromise;
-      return;
-    }
     let onAbort: (() => void) | undefined;
     try {
+      if (!this.#started) {
+        this.#started = true;
+        void this.#wsClient
+          .start({ eventDispatcher: this.#dispatcher })
+          .catch((error: unknown) => this.#onConnectionError(error));
+      }
+      const connectPromise = this.#connectAndWaitReady(state, signal);
+      if (!signal) {
+        await connectPromise;
+        return;
+      }
       await Promise.race([
         connectPromise,
         new Promise<never>((_, reject) => {
@@ -547,9 +547,18 @@ class ReliableFeishuChannel implements FeishuChannel {
           else signal.addEventListener("abort", onAbort, { once: true });
         }),
       ]);
+    } catch (error) {
+      await this.disconnect().catch(() => undefined);
+      throw error;
     } finally {
-      if (onAbort) signal.removeEventListener("abort", onAbort);
+      if (onAbort) signal?.removeEventListener("abort", onAbort);
     }
+  }
+
+  #onConnectionError(error: unknown): void {
+    // The cause keeps the gateway's refusal code for connection-failure classification.
+    this.#rejectReady(new Error("FEISHU_CONNECTION_ERROR", { cause: error }));
+    this.#handlers.error?.(error);
   }
 
   async #connectAndWaitReady(state: { cancelled: boolean }, signal?: AbortSignal): Promise<void> {
@@ -563,11 +572,7 @@ class ReliableFeishuChannel implements FeishuChannel {
       },
       () => undefined,
     );
-    await outboundPromise;
-    if (state.cancelled || this.#closed || signal?.aborted) {
-      await this.#failAbortedConnect(signal);
-    }
-    await this.#ready;
+    await Promise.all([outboundPromise, this.#ready]);
     if (state.cancelled || this.#closed || signal?.aborted) {
       await this.#failAbortedConnect(signal);
     }
@@ -582,15 +587,13 @@ class ReliableFeishuChannel implements FeishuChannel {
 
   #quarantineAbortedConnect(state: { cancelled: boolean }): void {
     state.cancelled = true;
-    this.#closed = true;
-    this.botIdentity = undefined;
-    this.#wsClient.close({ force: true });
-    void this.#outbound.disconnect().catch(() => undefined);
+    void this.disconnect().catch(() => undefined);
   }
 
   async disconnect(): Promise<void> {
     this.#closed = true;
     this.botIdentity = undefined;
+    this.#rejectReady(new Error("FEISHU_CHANNEL_CLOSED"));
     this.#wsClient.close({ force: true });
     await this.#outbound.disconnect();
   }

@@ -453,10 +453,14 @@ describe("portable installer", () => {
     const manifest = manifestFor(VERSION, h.payloadBytes, "https://download.test/x/payload.tar.gz");
     const delays: number[] = [];
     const urls: string[] = [];
-    const steps: Array<() => Response> = [
-      () => {
-        throw new TypeError("fetch failed");
+    const brokenManifestBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode('{"schemaVersion":1'));
+        controller.error(new TypeError("terminated"));
       },
+    });
+    const steps: Array<() => Response> = [
+      () => new Response(brokenManifestBody, { status: 200 }),
       () => new Response("gateway timeout", { status: 502 }),
       () => new Response(JSON.stringify(manifest), { status: 200 }),
       () => new Response("rate limited", { status: 429 }),

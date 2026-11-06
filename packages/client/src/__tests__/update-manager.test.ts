@@ -729,6 +729,7 @@ describe("UpdateManager", () => {
     vi.useFakeTimers();
     try {
       const h = harness({ installRetryIntervalMs: 10, installRetryMaxBackoffMs: 25 });
+      h.setRecoverable(true);
       h.failNextInstall("Release manifest fetch failed: fetch failed", { transient: true });
       h.failNextInstall("Release manifest fetch failed: HTTP 503", { transient: true });
 
@@ -754,9 +755,11 @@ describe("UpdateManager", () => {
       await vi.advanceTimersByTimeAsync(19);
       expect(h.installs).toEqual([]);
 
-      // Second retry fires at 20ms and succeeds.
+      // Second retry fires at 20ms and succeeds without ever pausing admission during the downloads.
       await vi.advanceTimersByTimeAsync(1);
       expect(h.installs).toEqual(["0.0.3-staging.1.1"]);
+      expect(h.quiescedDuringInstall).toEqual([false, false, false]);
+      expect(h.resumes).toBe(0);
       expect(h.handoffs).toBe(1);
       expect(h.state()).toMatchObject({ state: "installed", target: "0.0.3-staging.1.1" });
       h.manager.stop();
@@ -769,17 +772,60 @@ describe("UpdateManager", () => {
     vi.useFakeTimers();
     try {
       const h = harness({ installRetryIntervalMs: 50, installRetryMaxBackoffMs: 100 });
+      h.setRecoverable(true);
       h.failNextInstall("Release manifest fetch failed: fetch failed", { transient: true });
 
       h.manager.observe(target("0.0.3-staging.1.1"));
       await vi.advanceTimersByTimeAsync(0);
       expect(h.state()).toMatchObject({ state: "idle", attempts: {} });
 
+      // A restarted daemon reading the persisted state sees no unfinished attempt and can install the same target.
+      const restarted = harness({ stored: h.state() });
+      restarted.setRecoverable(true);
+      restarted.manager.observe(target("0.0.3-staging.1.1"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(restarted.installs).toEqual(["0.0.3-staging.1.1"]);
+      expect(restarted.handoffs).toBe(1);
+      restarted.manager.stop();
+
       // Observing a newer target cancels the old retry timer and installs immediately.
       h.manager.observe(target("0.0.3-staging.1.2"));
       await vi.advanceTimersByTimeAsync(0);
       expect(h.installs).toEqual(["0.0.3-staging.1.2"]);
       expect(h.handoffs).toBe(1);
+      h.manager.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("blocks after a single quiesced attempt when sessionRecovery is unavailable so admission is not paused repeatedly", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness({ installRetryIntervalMs: 10, installRetryMaxBackoffMs: 25 });
+      h.failNextInstall("Release manifest fetch failed: fetch failed", { transient: true });
+
+      h.manager.observe(target("0.0.3-staging.1.1"));
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(h.installs).toEqual([]);
+      expect(h.quiescedDuringInstall).toEqual([true]);
+      expect(h.resumes).toBe(1);
+      expect(h.isQuiesced()).toBe(false);
+      expect(h.state()).toMatchObject({
+        state: "blocked",
+        target: "0.0.3-staging.1.1",
+        lastAttempt: {
+          target: "0.0.3-staging.1.1",
+          result: "failed",
+          failureReason: "Release manifest fetch failed: fetch failed",
+        },
+      });
+
+      // Advancing past the retry window does not trigger another quiesce/install cycle.
+      await vi.advanceTimersByTimeAsync(100);
+      expect(h.quiescedDuringInstall).toEqual([true]);
+      expect(h.resumes).toBe(1);
       h.manager.stop();
     } finally {
       vi.useRealTimers();

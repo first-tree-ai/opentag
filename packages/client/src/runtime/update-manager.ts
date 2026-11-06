@@ -482,7 +482,13 @@ export class UpdateManager {
       }
       // Without a wait there is nothing to drain: Sessions keep running and new work keeps arriving
       // through the install, and a failed install costs them nothing.
-      const outcome = await this.#executeAttempt(target, state, started, previousAttempt);
+      const outcome = await this.#executeAttempt(
+        target,
+        state,
+        started,
+        previousAttempt,
+        resumeAdmission !== undefined,
+      );
       if (outcome !== "installed") return outcome;
       resumeAdmission ??= this.#options.quiesce?.() ?? (() => undefined);
       keepQuiesced = true;
@@ -543,24 +549,18 @@ export class UpdateManager {
     state: UpdaterStateSnapshot,
     started: UpdaterAttempt,
     previousAttempt: UpdaterAttempt | undefined,
+    quiesced: boolean,
   ): Promise<"installed" | "finished" | "superseded"> {
     try {
       await this.#options.executeUpdate(target);
     } catch (error) {
       const failureReason = error instanceof Error ? error.message : String(error);
-      if (isTransientUpdateError(error)) {
-        const withdrawn = await this.#withdrawAttempt(target, state, previousAttempt);
-        if (!withdrawn) return "finished";
-        const cancelled = this.#cancellation(target);
-        if (cancelled) return cancelled;
-        this.#installFailures = Math.min(this.#installFailures + 1, 31);
-        const backoffMs = this.#nextInstallRetryDelay();
-        this.#scheduleInstallRetry(backoffMs);
-        this.#logger.warn(
-          { target, backoffMs, failureReason },
-          "Automatic upgrade download failed transiently; attempt withdrawn and retry scheduled",
-        );
-        return "finished";
+      // Only withdraw and schedule background retries when the attempt ran without pausing
+      // admission (`runtime.sessionRecovery` active). When the fallback path had to quiesce and
+      // drain protected work first, the installer has already run its bounded in-attempt download
+      // retries; repeating full attempts would repeatedly pause admission for the same target.
+      if (isTransientUpdateError(error) && !quiesced && this.#canInterruptWork()) {
+        return this.#retryTransientAttempt(target, state, previousAttempt, failureReason);
       }
       this.#installFailures = 0;
       this.#clearInstallRetry();
@@ -591,6 +591,26 @@ export class UpdateManager {
       );
     }
     return "installed";
+  }
+
+  async #retryTransientAttempt(
+    target: string,
+    state: UpdaterStateSnapshot,
+    previousAttempt: UpdaterAttempt | undefined,
+    failureReason: string,
+  ): Promise<"finished" | "superseded"> {
+    const withdrawn = await this.#withdrawAttempt(target, state, previousAttempt);
+    if (!withdrawn) return "finished";
+    const cancelled = this.#cancellation(target);
+    if (cancelled) return cancelled;
+    this.#installFailures = Math.min(this.#installFailures + 1, 31);
+    const backoffMs = this.#nextInstallRetryDelay();
+    this.#scheduleInstallRetry(backoffMs);
+    this.#logger.warn(
+      { target, backoffMs, failureReason },
+      "Automatic upgrade download failed transiently; attempt withdrawn and retry scheduled",
+    );
+    return "finished";
   }
 
   async #requestHandoff(target: string): Promise<void> {

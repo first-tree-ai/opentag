@@ -421,9 +421,18 @@ async function fetchManifest(
         transient: isTransientHttpStatus(response.status),
       });
     }
+    let raw: string;
+    try {
+      raw = await response.text();
+    } catch (error) {
+      throw new PortableInstallError(
+        `Portable release metadata could not be downloaded: ${error instanceof Error ? error.message : String(error)}`,
+        { transient: true, cause: error },
+      );
+    }
     let body: unknown;
     try {
-      body = await response.json();
+      body = JSON.parse(raw);
     } catch {
       throw new PortableInstallError("Portable release metadata is not valid JSON");
     }

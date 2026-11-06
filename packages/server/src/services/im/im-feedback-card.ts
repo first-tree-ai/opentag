@@ -70,23 +70,18 @@ function cardActions(
 }
 
 /** The link stays in the text so readback can match the exact details URL on both providers. */
-function detailsLink(provider: FeedbackTarget["provider"], url: string, language: FeedbackLanguage): string {
-  const label = FEEDBACK_LABELS.details[language];
+function textLink(provider: FeedbackTarget["provider"], url: string, label: string): string {
   return provider === "slack" ? `<${url}|${label}>` : `[${label}](${url})`;
 }
 
 export function renderOfflineNotice(
-  target: Pick<FeedbackTarget, "agentId">,
+  target: Pick<FeedbackTarget, "provider" | "agentId">,
   publicUrl: string,
   language: FeedbackLanguage,
-) {
+): string {
   const { before, label, after } = offlineNoticeCopy(language);
-  const href = new URL(`/agents/${encodeURIComponent(target.agentId)}`, publicUrl).href;
-  const [reason = "", recovery = ""] = before.split("\n");
-  return renderMessage(
-    [[{ text: reason }], [{ text: recovery }, { text: label, href }], ...after.split("\n").map((text) => [{ text }])],
-    language,
-  );
+  const url = new URL(`/agents/${encodeURIComponent(target.agentId)}`, publicUrl).href;
+  return `${before} ${textLink(target.provider, url, label)}\n${after}`;
 }
 
 export function renderFeedbackText(
@@ -97,7 +92,7 @@ export function renderFeedbackText(
 ): string {
   const content = feedbackCardContent(target, action, language);
   const detailsUrl = new URL(`/im-feedback/${encodeURIComponent(target.id)}`, publicUrl).href;
-  const link = detailsLink(target.provider, detailsUrl, language);
+  const link = textLink(target.provider, detailsUrl, FEEDBACK_LABELS.details[language]);
   return content.result
     ? `${content.title} ${link}`
     : [content.title, content.impact, `${content.availability} ${link}`].join("\n");

@@ -281,7 +281,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
               api.chat.postMessage({
                 channel: target.channelId,
                 thread_ts: target.threadKey ?? target.inputExternalId,
-                text: text.slack,
+                text,
                 unfurl_links: false,
                 unfurl_media: false,
               }),
@@ -292,7 +292,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
           const { api } = await this.#feishu(target, signal);
           const r = await api.im.v1.message.reply({
             path: { message_id: target.inputExternalId },
-            data: { msg_type: "post", content: text.feishu },
+            data: { msg_type: "text", content: JSON.stringify({ text }) },
           });
           if (r.code !== 0) throw new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false);
         },

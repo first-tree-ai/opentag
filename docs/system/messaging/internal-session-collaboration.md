@@ -65,6 +65,14 @@ work: an upgrade is switching over, the Client is stopping, or the bounded FIFO 
 code. `session_busy` and `agent_busy` map to their own codes, though the Local inbox does not return them today. Messages
 recorded before this split keep `capacity`.
 
+Create/send admission refusals for source authority, target availability, collaboration scope, message ID conflicts,
+or an unavailable model keep their existing `rejected` response and code without an ERROR `Server diagnostic`.
+An unconfirmable Cloud model catalog remains `unreachable` with `model_unavailable` and does not emit that diagnostic.
+An unexpected exception still returns `unreachable` with `runtime_unavailable` and emits the fixed
+`SESSION_COLLABORATION_RUNTIME_UNAVAILABLE` diagnostic without exception details or message content. HTTP responses
+remain 200 for these command outcomes. Runtime assembly, Cloud dispatch, and outcome-persistence failures retain
+their separate internal-error logs.
+
 The Server does not hold or replay a refused message (decision by yuezengwu, 2026-11-05,
 [#1327](https://github.com/first-tree-ai/opentag/issues/1327)). The Client keeps the upgrade switch window as small as it
 can instead. A sender retries with the same `--message-id`, and the inbox evaluates that replay again rather than answering

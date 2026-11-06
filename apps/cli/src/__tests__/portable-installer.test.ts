@@ -446,4 +446,122 @@ describe("portable installer", () => {
     await chmod(join(h.binDir, BIN_NAME), 0o755);
     expect(await portableInstallIsCurrent(h.root, h.binDir, BIN_NAME, "0.0.4", PLATFORM)).toBe(false);
   });
+
+  it("retries transient manifest and payload download failures with bounded backoff before succeeding", async () => {
+    const fixture = await createPayloadFixture(VERSION);
+    const h = await installHarness(fixture);
+    const manifest = manifestFor(VERSION, h.payloadBytes, "https://download.test/x/payload.tar.gz");
+    const delays: number[] = [];
+    const urls: string[] = [];
+    const steps: Array<() => Response> = [
+      () => {
+        throw new TypeError("fetch failed");
+      },
+      () => new Response("gateway timeout", { status: 502 }),
+      () => new Response(JSON.stringify(manifest), { status: 200 }),
+      () => new Response("rate limited", { status: 429 }),
+      () => {
+        throw new TypeError("fetch failed");
+      },
+      () => new Response(new Uint8Array(h.payloadBytes), { status: 200 }),
+    ];
+
+    const fetchFn = (async (url: string | URL | Request) => {
+      urls.push(String(url));
+      const next = steps.shift();
+      if (!next) throw new Error("unexpected fetch call");
+      return next();
+    }) as typeof fetch;
+
+    const result = await installPortableTarget({
+      channel: CHANNEL,
+      targetVersion: VERSION,
+      root: h.root,
+      binDir: h.binDir,
+      binName: BIN_NAME,
+      packageName: PACKAGE_NAME,
+      downloadBaseUrl: "https://download.test/releases",
+      platform: PLATFORM,
+      fetchFn,
+      sleep: async (ms) => {
+        delays.push(ms);
+      },
+      extractTarball: async (_tarball, destination) => {
+        await cp(fixture, destination, { recursive: true });
+      },
+      runSmokeCheck: async () => undefined,
+    });
+
+    expect(result).toMatchObject({ alreadyCurrent: false });
+    expect(urls).toEqual([
+      "https://download.test/releases/staging/0.0.3-staging.1.1/manifest.json",
+      "https://download.test/releases/staging/0.0.3-staging.1.1/manifest.json",
+      "https://download.test/releases/staging/0.0.3-staging.1.1/manifest.json",
+      "https://download.test/x/payload.tar.gz",
+      "https://download.test/x/payload.tar.gz",
+      "https://download.test/x/payload.tar.gz",
+    ]);
+    expect(delays).toEqual([100, 250, 100, 250]);
+  });
+
+  it("marks exhausted transient download failures with transient=true and skips retries on deterministic errors", async () => {
+    const fixture = await createPayloadFixture(VERSION);
+    const h = await installHarness(fixture);
+    const transientDelays: number[] = [];
+    let transientCalls = 0;
+
+    await expect(
+      installPortableTarget({
+        channel: CHANNEL,
+        targetVersion: VERSION,
+        root: h.root,
+        binDir: h.binDir,
+        binName: BIN_NAME,
+        packageName: PACKAGE_NAME,
+        downloadBaseUrl: "https://download.test/releases",
+        platform: PLATFORM,
+        fetchFn: (async () => {
+          transientCalls += 1;
+          throw new TypeError("fetch failed");
+        }) as typeof fetch,
+        sleep: async (ms) => {
+          transientDelays.push(ms);
+        },
+      }),
+    ).rejects.toMatchObject({
+      name: "PortableInstallError",
+      transient: true,
+      message: expect.stringContaining("fetch failed"),
+    });
+    expect(transientCalls).toBe(3);
+    expect(transientDelays).toEqual([100, 250]);
+
+    let notFoundCalls = 0;
+    const deterministicDelays: number[] = [];
+    await expect(
+      installPortableTarget({
+        channel: CHANNEL,
+        targetVersion: VERSION,
+        root: h.root,
+        binDir: h.binDir,
+        binName: BIN_NAME,
+        packageName: PACKAGE_NAME,
+        downloadBaseUrl: "https://download.test/releases",
+        platform: PLATFORM,
+        fetchFn: (async () => {
+          notFoundCalls += 1;
+          return new Response("missing", { status: 404 });
+        }) as typeof fetch,
+        sleep: async (ms) => {
+          deterministicDelays.push(ms);
+        },
+      }),
+    ).rejects.toMatchObject({
+      name: "PortableInstallError",
+      transient: false,
+      message: expect.stringContaining("HTTP 404"),
+    });
+    expect(notFoundCalls).toBe(1);
+    expect(deterministicDelays).toEqual([]);
+  });
 });

@@ -17,9 +17,21 @@ import type { ChannelName } from "@opentag/shared";
 export const DEFAULT_DOWNLOAD_BASE_URL = "https://dl.opentag.build/releases";
 const PORTABLE_APP_ENTRY = "app/cli/index.mjs";
 const MANIFEST_SCHEMA_VERSION = 1;
+const DEFAULT_DOWNLOAD_RETRY_DELAYS_MS: readonly number[] = [100, 250];
+
+export interface PortableInstallErrorOptions {
+  transient?: boolean;
+  cause?: unknown;
+}
 
 export class PortableInstallError extends Error {
   override readonly name = "PortableInstallError";
+  readonly transient: boolean;
+
+  constructor(message: string, options?: PortableInstallErrorOptions) {
+    super(message, options?.cause !== undefined ? { cause: options.cause } : undefined);
+    this.transient = options?.transient ?? false;
+  }
 }
 
 export interface PortableManifestAsset {
@@ -51,6 +63,10 @@ export interface PortableInstallOptions {
   /** Defaults to the detected `<os>-<arch>` portable platform. */
   platform?: string;
   fetchFn?: typeof fetch;
+  /** Backoff delays between transient download retries; defaults to bounded short retries. */
+  downloadRetryDelaysMs?: readonly number[];
+  /** Injectable delay hook for download retries (tests). */
+  sleep?: (milliseconds: number) => Promise<void>;
   /** Extraction hook; defaults to `tar -xzf`, the same tool the shell installer requires. */
   extractTarball?: (tarball: string, destination: string) => Promise<void>;
   /** Pre-commit payload smoke check; defaults to running the payload's embedded runtime. */
@@ -249,8 +265,40 @@ async function runWithStagingCleanup(
   return undefined;
 }
 
-async function downloadVerifiedPayload(fetchFn: typeof fetch, asset: PortableManifestAsset): Promise<Buffer> {
-  const payload = await download(fetchFn, asset.url);
+const defaultSleep = (milliseconds: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, milliseconds);
+  });
+
+interface DownloadRetryOptions {
+  retryDelaysMs: readonly number[];
+  sleep: (milliseconds: number) => Promise<void>;
+}
+
+function isTransientHttpStatus(status: number): boolean {
+  return status === 408 || status === 429 || (status >= 500 && status < 600);
+}
+
+async function withDownloadRetry<T>(retry: DownloadRetryOptions, operation: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await operation();
+    } catch (error) {
+      const delay = retry.retryDelaysMs[attempt];
+      if (delay === undefined || !(error instanceof PortableInstallError) || !error.transient) {
+        throw error;
+      }
+      await retry.sleep(delay);
+    }
+  }
+}
+
+async function downloadVerifiedPayload(
+  fetchFn: typeof fetch,
+  asset: PortableManifestAsset,
+  retry: DownloadRetryOptions,
+): Promise<Buffer> {
+  const payload = await download(fetchFn, asset.url, retry);
   if (payload.byteLength !== asset.size) {
     throw new PortableInstallError(
       `Portable payload size mismatch: expected ${asset.size}, received ${payload.byteLength}`,
@@ -269,11 +317,12 @@ async function stagePortableVersion(options: {
   asset: PortableManifestAsset;
   platform: string;
   fetchFn: typeof fetch;
+  retry: DownloadRetryOptions;
   extract(tarball: string, destination: string): Promise<void>;
   smoke(payloadDir: string, appEntry: string): Promise<void>;
 }): Promise<void> {
   const { layout } = options;
-  const payload = await downloadVerifiedPayload(options.fetchFn, options.asset);
+  const payload = await downloadVerifiedPayload(options.fetchFn, options.asset, options.retry);
   await writeFile(layout.tarball, payload);
   await rm(layout.tempVersionDir, { recursive: true, force: true });
   await mkdir(layout.tempVersionDir, { recursive: true });
@@ -320,6 +369,10 @@ export async function installPortableTarget(options: PortableInstallOptions): Pr
   const base = (options.downloadBaseUrl ?? DEFAULT_DOWNLOAD_BASE_URL).replace(/\/+$/, "");
   const platform = options.platform ?? detectPortablePlatform();
   const fetchFn = options.fetchFn ?? fetch;
+  const retry: DownloadRetryOptions = {
+    retryDelaysMs: options.downloadRetryDelaysMs ?? DEFAULT_DOWNLOAD_RETRY_DELAYS_MS,
+    sleep: options.sleep ?? defaultSleep,
+  };
   const extract = options.extractTarball ?? defaultExtractTarball;
   const smoke = options.runSmokeCheck ?? defaultRunSmokeCheck;
   const canonicalVersionDir = join(options.root, "versions", options.targetVersion);
@@ -328,13 +381,17 @@ export async function installPortableTarget(options: PortableInstallOptions): Pr
     return { alreadyCurrent: true, versionDir: canonicalVersionDir };
   }
 
-  const manifest = await fetchManifest(fetchFn, `${base}/${options.channel}/${options.targetVersion}/manifest.json`);
+  const manifest = await fetchManifest(
+    fetchFn,
+    `${base}/${options.channel}/${options.targetVersion}/manifest.json`,
+    retry,
+  );
   assertManifest(manifest, options, platform);
   const asset = selectPortableAsset(manifest, platform);
   const layout = await prepareStagingLayout(options);
 
   const cleanupFailure = await runWithStagingCleanup(layout, async () => {
-    await stagePortableVersion({ layout, manifest, asset, platform, fetchFn, extract, smoke });
+    await stagePortableVersion({ layout, manifest, asset, platform, fetchFn, retry, extract, smoke });
     await activatePortableVersion(options, layout);
   });
   return {
@@ -344,40 +401,61 @@ export async function installPortableTarget(options: PortableInstallOptions): Pr
   };
 }
 
-async function fetchManifest(fetchFn: typeof fetch, url: string): Promise<PortableManifest> {
-  let response: Response;
-  try {
-    response = await fetchFn(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(30_000) });
-  } catch (error) {
-    throw new PortableInstallError(
-      `Portable release metadata could not be downloaded: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-  if (!response.ok) {
-    throw new PortableInstallError(`Portable release metadata could not be downloaded (HTTP ${response.status})`);
-  }
-  let body: unknown;
-  try {
-    body = await response.json();
-  } catch {
-    throw new PortableInstallError("Portable release metadata is not valid JSON");
-  }
-  return parseManifest(body);
+async function fetchManifest(
+  fetchFn: typeof fetch,
+  url: string,
+  retry: DownloadRetryOptions,
+): Promise<PortableManifest> {
+  return withDownloadRetry(retry, async () => {
+    let response: Response;
+    try {
+      response = await fetchFn(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(30_000) });
+    } catch (error) {
+      throw new PortableInstallError(
+        `Portable release metadata could not be downloaded: ${error instanceof Error ? error.message : String(error)}`,
+        { transient: true, cause: error },
+      );
+    }
+    if (!response.ok) {
+      throw new PortableInstallError(`Portable release metadata could not be downloaded (HTTP ${response.status})`, {
+        transient: isTransientHttpStatus(response.status),
+      });
+    }
+    let body: unknown;
+    try {
+      body = await response.json();
+    } catch {
+      throw new PortableInstallError("Portable release metadata is not valid JSON");
+    }
+    return parseManifest(body);
+  });
 }
 
-async function download(fetchFn: typeof fetch, url: string): Promise<Buffer> {
-  let response: Response;
-  try {
-    response = await fetchFn(url, { signal: AbortSignal.timeout(300_000) });
-  } catch (error) {
-    throw new PortableInstallError(
-      `Portable payload could not be downloaded: ${error instanceof Error ? error.message : String(error)}`,
-    );
-  }
-  if (!response.ok) {
-    throw new PortableInstallError(`Portable payload could not be downloaded (HTTP ${response.status})`);
-  }
-  return Buffer.from(await response.arrayBuffer());
+async function download(fetchFn: typeof fetch, url: string, retry: DownloadRetryOptions): Promise<Buffer> {
+  return withDownloadRetry(retry, async () => {
+    let response: Response;
+    try {
+      response = await fetchFn(url, { signal: AbortSignal.timeout(300_000) });
+    } catch (error) {
+      throw new PortableInstallError(
+        `Portable payload could not be downloaded: ${error instanceof Error ? error.message : String(error)}`,
+        { transient: true, cause: error },
+      );
+    }
+    if (!response.ok) {
+      throw new PortableInstallError(`Portable payload could not be downloaded (HTTP ${response.status})`, {
+        transient: isTransientHttpStatus(response.status),
+      });
+    }
+    try {
+      return Buffer.from(await response.arrayBuffer());
+    } catch (error) {
+      throw new PortableInstallError(
+        `Portable payload could not be downloaded: ${error instanceof Error ? error.message : String(error)}`,
+        { transient: true, cause: error },
+      );
+    }
+  });
 }
 
 function parseManifest(body: unknown): PortableManifest {

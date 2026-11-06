@@ -20,7 +20,7 @@ interface Harness {
   quiescedDuringInstall: boolean[];
   flushSleep(): void;
   settle(): Promise<void>;
-  failNextInstall(reason: string): void;
+  failNextInstall(reason: string, options?: { transient?: boolean }): void;
 }
 
 function harness(
@@ -31,6 +31,8 @@ function harness(
     discoverTarget?: () => Promise<RuntimeChannelTarget | undefined>;
     discoveryIntervalMs?: number;
     discoveryMaxBackoffMs?: number;
+    installRetryIntervalMs?: number;
+    installRetryMaxBackoffMs?: number;
     beforeLoad?: () => Promise<void>;
     beforeSave?: (state: UpdaterStateSnapshot) => Promise<void>;
   } = {},
@@ -45,7 +47,7 @@ function harness(
   let handoffs = 0;
   let quiesced = false;
   let resumes = 0;
-  let nextFailure: string | undefined;
+  const pendingFailures: Array<{ reason: string; transient: boolean }> = [];
   const manager = new UpdateManager({
     channel: "staging",
     currentVersion: overrides.currentVersion ?? "0.0.2-staging.1.1",
@@ -62,10 +64,9 @@ function harness(
     },
     executeUpdate: async (target) => {
       quiescedDuringInstall.push(quiesced);
-      if (nextFailure) {
-        const reason = nextFailure;
-        nextFailure = undefined;
-        throw new Error(reason);
+      const failure = pendingFailures.shift();
+      if (failure) {
+        throw Object.assign(new Error(failure.reason), { transient: failure.transient });
       }
       installs.push(target);
     },
@@ -85,6 +86,8 @@ function harness(
     ...(overrides.discoverTarget ? { discoverTarget: overrides.discoverTarget } : {}),
     ...(overrides.discoveryIntervalMs ? { discoveryIntervalMs: overrides.discoveryIntervalMs } : {}),
     ...(overrides.discoveryMaxBackoffMs ? { discoveryMaxBackoffMs: overrides.discoveryMaxBackoffMs } : {}),
+    ...(overrides.installRetryIntervalMs ? { installRetryIntervalMs: overrides.installRetryIntervalMs } : {}),
+    ...(overrides.installRetryMaxBackoffMs ? { installRetryMaxBackoffMs: overrides.installRetryMaxBackoffMs } : {}),
     now: () => 1_700_000_000_000,
     sleep: async () => {
       await new Promise<void>((resolve) => sleepers.push(resolve));
@@ -118,8 +121,8 @@ function harness(
         for (const resolve of sleepers.splice(0)) resolve();
       }
     },
-    failNextInstall: (reason) => {
-      nextFailure = reason;
+    failNextInstall: (reason, options) => {
+      pendingFailures.push({ reason, transient: options?.transient ?? false });
     },
   };
 }
@@ -720,5 +723,66 @@ describe("UpdateManager", () => {
     h.flushSleep();
     await h.settle();
     expect(h.installs).toEqual([]);
+  });
+
+  it("withdraws transient download failures and retries with bounded exponential backoff instead of blocking", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness({ installRetryIntervalMs: 10, installRetryMaxBackoffMs: 25 });
+      h.failNextInstall("Release manifest fetch failed: fetch failed", { transient: true });
+      h.failNextInstall("Release manifest fetch failed: HTTP 503", { transient: true });
+
+      h.manager.observe(target("0.0.3-staging.1.1"));
+      await vi.advanceTimersByTimeAsync(0);
+
+      // The transient download failure withdraws the attempt rather than blocking the target.
+      expect(h.installs).toEqual([]);
+      expect(h.handoffs).toBe(0);
+      expect(h.state()).toMatchObject({ state: "idle", target: "0.0.3-staging.1.1", attempts: {} });
+      expect(h.state()?.lastAttempt).toBeUndefined();
+
+      // Re-observing the same target while the retry timer is pending does not bypass the backoff.
+      h.manager.observe(target("0.0.3-staging.1.1"));
+      await vi.advanceTimersByTimeAsync(9);
+      expect(h.installs).toEqual([]);
+
+      // First retry fires at 10ms and hits a second transient failure; backoff doubles to 20ms.
+      await vi.advanceTimersByTimeAsync(1);
+      expect(h.installs).toEqual([]);
+      expect(h.state()).toMatchObject({ state: "idle", target: "0.0.3-staging.1.1", attempts: {} });
+
+      await vi.advanceTimersByTimeAsync(19);
+      expect(h.installs).toEqual([]);
+
+      // Second retry fires at 20ms and succeeds.
+      await vi.advanceTimersByTimeAsync(1);
+      expect(h.installs).toEqual(["0.0.3-staging.1.1"]);
+      expect(h.handoffs).toBe(1);
+      expect(h.state()).toMatchObject({ state: "installed", target: "0.0.3-staging.1.1" });
+      h.manager.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("allows a restarted daemon or a newer target to proceed after a withdrawn transient download failure", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness({ installRetryIntervalMs: 50, installRetryMaxBackoffMs: 100 });
+      h.failNextInstall("Release manifest fetch failed: fetch failed", { transient: true });
+
+      h.manager.observe(target("0.0.3-staging.1.1"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.state()).toMatchObject({ state: "idle", attempts: {} });
+
+      // Observing a newer target cancels the old retry timer and installs immediately.
+      h.manager.observe(target("0.0.3-staging.1.2"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(h.installs).toEqual(["0.0.3-staging.1.2"]);
+      expect(h.handoffs).toBe(1);
+      h.manager.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

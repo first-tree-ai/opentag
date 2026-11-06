@@ -100,9 +100,9 @@ export function nodeImageReference(pins = RUNNER_PINS) {
 export function runnerResourceLimits() {
   return Object.freeze({
     cpus: "1",
-    memory: "1g",
-    memorySwap: "1g",
+    memory: "2g",
+    memorySwap: "2g",
     nanoCpus: 1_000_000_000,
-    memoryBytes: 1_073_741_824,
+    memoryBytes: 2_147_483_648,
   });
 }

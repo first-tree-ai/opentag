@@ -8,7 +8,7 @@ description: "Cloud as an Account-owned logical Computer: availability switches,
 Cloud is an Account-owned logical Computer. Its fixed online status does not claim that a
 physical Instance or a model is ready. Agents retain the existing Agent and Session models;
 each Agent Session owns one Sandbox and at most one current Instance. Cloud uses Pi, one vCPU
-and 1 GiB. Creating an Agent or opening its settings does not allocate an Instance. Context Tree
+and 2 GiB. Creating an Agent or opening its settings does not allocate an Instance. Context Tree
 is optional; existing authorized repositories are supported. Local onboarding remains available.
 
 ## Availability and status

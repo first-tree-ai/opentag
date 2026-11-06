@@ -199,6 +199,15 @@ Server tells the Session that created it (`created_by_session_id`):
   settling allocation stays in the Sandbox reclaim barrier, so idle reclamation or borrow cannot delete the journal;
   see [Cloud context](../cloud/cloud-context.md).
 
+- Background work: Local Claude Code runs one process per Run, and the process exits when the Run ends, so background
+  shells, background subagents, Monitors and in-process timers (`ScheduleWakeup`, `CronCreate`) stop then. They do not
+  survive to the next message, and nothing wakes the Session later. Before that exit, the Run tells the Session once
+  which work will stop (`[openTag notice] This Run is about to end.`), and gets one more model turn to wait for it, redo
+  it in the foreground, or tell whoever is waiting. If work is still live when that turn ends, the message still
+  `succeeded` and is not run again, and the daemon reports outcome `unknown` with reason `background_work_stopped`
+  through the same report, so the creator gets a notice. A visible Session's Turn gets the same notice in the Run, and
+  no creator notice.
+
 The notice is an ordinary SessionMessage from the child to its creator. It uses the existing authorization, lock order,
 activity projection, and delivery, including the visible-Session callback rules. A visible creator's callback Run
 decides what to tell the user; openTag does not forward anything to IM. The text starts with

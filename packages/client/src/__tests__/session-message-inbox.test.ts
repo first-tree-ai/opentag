@@ -501,6 +501,78 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
   });
 
+  describe("a completed Run that abandoned background work", () => {
+    function abandoningInbox(persistence: MemoryRuntimeDurabilityStore, onRunOutcome: () => void) {
+      return new SessionMessageInbox({
+        admission: new AdmissionController(),
+        credentialEnvironment: credentialEnvironment(),
+        imCredentialGrantVersion: () => 2,
+        onRunOutcome,
+        persistence,
+        sessionCollaborationVersion: () => 4,
+        reconciler: inboxReconciler(),
+        runtimeManager: {
+          ensureRuntime: vi.fn(
+            async () =>
+              ({
+                waitForIdle: vi.fn(async () => undefined),
+                prompt: vi.fn(async () => ({
+                  status: "completed",
+                  output: [],
+                  abandonedBackgroundWork: ["Run the suite (local_bash)"],
+                })),
+              }) as never,
+          ),
+          sessionKind: vi.fn(() => "internal" as const),
+        },
+      });
+    }
+
+    it("succeeds, is not run again, and tells the creator", async () => {
+      const onRunOutcome = vi.fn();
+      const inbox = abandoningInbox(new MemoryRuntimeDurabilityStore(), onRunOutcome);
+      const request = delivery();
+
+      await expect(inbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
+      await inbox.settled();
+      expect(inbox.getState(request.messageId)).toMatchObject({
+        status: "succeeded",
+        outcomeReport: "published",
+        lastError: { code: "background_work_stopped" },
+      });
+      expect(onRunOutcome).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          messageId: request.messageId,
+          outcome: "unknown",
+          reason: "background_work_stopped",
+        }),
+      );
+      await expect(inbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
+      inbox.stop();
+    });
+
+    it("hands the report over again after a crash before it was queued", async () => {
+      const persistence = new MemoryRuntimeDurabilityStore();
+      const failing = abandoningInbox(persistence, () => {
+        throw new Error("reporter unavailable");
+      });
+      const request = delivery();
+      await failing.accept(request);
+      await failing.settled();
+      expect(failing.getState(request.messageId)).toMatchObject({ status: "succeeded", outcomeReport: "pending" });
+      failing.stop();
+
+      const onRunOutcome = vi.fn();
+      const restarted = abandoningInbox(persistence, onRunOutcome);
+      await restarted.ready();
+      expect(onRunOutcome).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ outcome: "unknown", reason: "background_work_stopped" }),
+      );
+      expect(restarted.getState(request.messageId)).toMatchObject({ status: "succeeded", outcomeReport: "published" });
+      restarted.stop();
+    });
+  });
+
   it("reports a timed-out Run without a retry", async () => {
     let fireTimeout: () => void = () => undefined;
     const timeoutScheduler: RuntimeRetryScheduler = {

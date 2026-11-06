@@ -126,12 +126,17 @@ export interface SessionMessageRunOutcomeEvent {
   targetSessionId: string;
   agentId: string;
   placementGeneration: number;
-  outcome: "timed_out" | "failed";
+  outcome: "timed_out" | "failed" | "unknown";
   reason: string;
 }
 
 /** The stable code a Run outcome report carries for a timed-out Session message. */
 export const SESSION_MESSAGE_TURN_TIMEOUT_CODE = "turn_timeout";
+/**
+ * The Run completed, but background work it left behind stopped with it, so what the sender is
+ * waiting for may never come. The message itself succeeded and is not run again.
+ */
+export const SESSION_MESSAGE_BACKGROUND_WORK_STOPPED_CODE = "background_work_stopped";
 
 export class SessionMessageInbox {
   readonly #admission: AdmissionController;
@@ -761,8 +766,7 @@ export class SessionMessageInbox {
       await settleRunTime();
       if (result.status !== "completed") throw runFailure(result);
       if (current && !this.#abort.signal.aborted) {
-        await this.#transition(current, "succeeded");
-        this.#remember(key, { hash: next.hash, status: "succeeded" });
+        await this.#settleCompleted(current, next.hash, result.abandonedBackgroundWork);
       }
     } catch (error) {
       // Only the Run budget timer counts as a timeout; daemon stop and revocation keep their
@@ -781,6 +785,23 @@ export class SessionMessageInbox {
         reservation.release();
       });
     }
+  }
+
+  async #settleCompleted(
+    record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
+    hash: string,
+    abandonedBackgroundWork: readonly string[] | undefined,
+  ): Promise<void> {
+    const abandoned = (abandonedBackgroundWork?.length ?? 0) > 0;
+    const terminal = await this.#transition(
+      record,
+      "succeeded",
+      abandoned
+        ? { lastError: backgroundWorkStoppedFailure(record.payload.requestId), ...this.#pendingOutcomeReport() }
+        : {},
+    );
+    this.#remember(record.key, { hash, status: "succeeded" });
+    if (abandoned) await this.#publishRunOutcome(terminal, "unknown", SESSION_MESSAGE_BACKGROUND_WORK_STOPPED_CODE);
   }
 
   #requirePreparedOutbox(
@@ -903,12 +924,9 @@ export class SessionMessageInbox {
     const key = stored.key;
     let record = { ...stored, payload: request.data } as DurableWorkRecord<SessionMessageDeliveryRequestV3>;
     this.#records.set(key, record);
-    if (record.status === "succeeded") {
-      this.#remember(key, { hash, status: "succeeded" });
-      return undefined;
-    }
-    if (record.status === "dead-letter" || record.status === "failed") {
-      this.#remember(key, { hash, status: record.status, reason: "provider_unavailable" });
+    const terminal = terminalMemory(record.status, hash);
+    if (terminal) {
+      this.#remember(key, terminal);
       // The terminal fact committed but its report never reached the reporter (for example a
       // crash in between): re-derive it. Records without the marker predate it and are not
       // backfilled; the Run is never rerun either way.
@@ -1061,7 +1079,7 @@ export class SessionMessageInbox {
    */
   async #publishRunOutcome(
     record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
-    outcome: "timed_out" | "failed",
+    outcome: SessionMessageRunOutcomeEvent["outcome"],
     code: string,
   ): Promise<void> {
     if (!this.#onRunOutcome) return;
@@ -1133,12 +1151,18 @@ export class SessionMessageInbox {
   }
 }
 
+function terminalMemory(status: DurableWorkRecord["status"], hash: string): RememberedMessage | undefined {
+  if (status === "succeeded") return { hash, status };
+  return status === "dead-letter" || status === "failed" ? { hash, status, reason: "provider_unavailable" } : undefined;
+}
+
 /** The report a committed terminal record implies, matching what `#handleFailure` reported. */
 function terminalRunOutcome(record: DurableWorkRecord<SessionMessageDeliveryRequestV3>): {
-  outcome: "timed_out" | "failed";
+  outcome: SessionMessageRunOutcomeEvent["outcome"];
   code: string;
 } {
   const code = record.lastError?.code ?? "retry_exhausted";
+  if (record.status === "succeeded") return { outcome: "unknown", code };
   return { outcome: code === SESSION_MESSAGE_TURN_TIMEOUT_CODE ? "timed_out" : "failed", code };
 }
 
@@ -1189,6 +1213,17 @@ function withContinuation(input: AgentInput, interruption: DurableWorkRecord["in
   if (!interruption || !reason) return input;
   return {
     items: [{ type: "text", text: buildContinuationNotice({ reason, at: interruption.at }) }, ...input.items],
+  };
+}
+
+function backgroundWorkStoppedFailure(requestId: string): DurableFailure {
+  return {
+    code: SESSION_MESSAGE_BACKGROUND_WORK_STOPPED_CODE,
+    category: "unavailable",
+    retryability: "never",
+    phase: "provider",
+    requestId,
+    message: "Background work this Run left behind stopped when the Run ended",
   };
 }
 

@@ -85,6 +85,164 @@ describe("ClaudeCodeProcess", () => {
     await process.close();
   });
 
+  it("waits past a result Claude Code generated itself on resume for the prompt's own result", async () => {
+    const child = fakeChild();
+    const process = fakeProcess(child);
+    const seen: [unknown, boolean | undefined][] = [];
+    const run = process.execute(
+      { type: "user", uuid: "prompt" },
+      (message, terminal) => seen.push([message.result, terminal]),
+      new AbortController().signal,
+    );
+    // Claude Code 2.1.319 on `--resume` after a background task was orphaned.
+    child.stdout.write(`${JSON.stringify(selfGeneratedResult)}\n`);
+    await process.send({ type: "control_response" });
+    child.stdout.write('{"type":"result","result":"answer","user_message_uuids":["prompt"]}\n');
+    expect(seen).toEqual([
+      ["", false],
+      ["answer", true],
+    ]);
+    child.emit("exit", 143, null);
+    await expect(run).resolves.toEqual({ stderr: "" });
+  });
+
+  it("ends the Run on a result that names user input even when it has an origin", async () => {
+    const child = fakeChild();
+    const process = fakeProcess(child);
+    const seen: (boolean | undefined)[] = [];
+    const run = process.execute(
+      { type: "user", uuid: "prompt" },
+      (_message, terminal) => seen.push(terminal),
+      new AbortController().signal,
+    );
+    child.stdout.write(`${JSON.stringify({ ...selfGeneratedResult, user_message_uuids: [] })}\n`);
+    child.stdout.write(`${JSON.stringify({ ...selfGeneratedResult, user_message_uuids: ["prompt"] })}\n`);
+    expect(seen).toEqual([false, true]);
+    child.emit("exit", 143, null);
+    await run;
+  });
+
+  it("ends the Run on a failed result that Claude Code generated itself", async () => {
+    const child = fakeChild();
+    const process = fakeProcess(child);
+    const seen: (boolean | undefined)[] = [];
+    const run = process.execute(
+      { type: "user", uuid: "prompt" },
+      (_message, terminal) => seen.push(terminal),
+      new AbortController().signal,
+    );
+    child.stdout.write(`${JSON.stringify({ ...selfGeneratedResult, is_error: true })}\n`);
+    expect(seen).toEqual([true]);
+    child.emit("exit", 1, null);
+    await run;
+  });
+
+  it("tells the Session once about background work that stops with the Run, then reports what was left", async () => {
+    const child = fakeChild();
+    const writes: Record<string, never>[] = [];
+    child.stdin.on("data", (line) => writes.push(JSON.parse(line.toString())));
+    const process = fakeProcess(child);
+    const seen: (boolean | undefined)[] = [];
+    const run = process.execute(
+      { type: "user", uuid: "prompt" },
+      (_message, terminal) => seen.push(terminal),
+      new AbortController().signal,
+    );
+    child.stdout.write(`${JSON.stringify(backgroundTasks({ task_id: "a", description: "Run the suite" }))}\n`);
+    child.stdout.write('{"type":"result","result":"started"}\n');
+    await vi.waitFor(() => expect(writes).toHaveLength(2));
+    const notice = writes[1] as unknown as { uuid: string; message: { content: [{ text: string }] } };
+    expect(notice.message.content[0].text).toContain("[openTag notice] This Run is about to end.");
+    expect(notice.message.content[0].text).toContain("- Run the suite (local_bash)");
+    child.stdout.write(
+      `${JSON.stringify({ type: "command_lifecycle", command_uuid: notice.uuid, state: "started" })}\n`,
+    );
+    child.stdout.write('{"type":"result","result":"told them"}\n');
+    // Stopping the process empties the task list; what was left is the list at the terminal result.
+    child.stdout.write(`${JSON.stringify(backgroundTasks())}\n`);
+    expect(seen.filter(Boolean)).toHaveLength(1);
+    expect(writes).toHaveLength(2);
+    child.emit("exit", 143, null);
+    await expect(run).resolves.toEqual({
+      stderr: "",
+      abandonedBackgroundWork: ["Run the suite (local_bash)"],
+    });
+  });
+
+  it("reports nothing when the Session finished its background work after the notice", async () => {
+    const child = fakeChild();
+    const writes: { uuid?: string }[] = [];
+    child.stdin.on("data", (line) => writes.push(JSON.parse(line.toString())));
+    const process = fakeProcess(child);
+    const run = process.execute({ type: "user" }, () => undefined, new AbortController().signal);
+    child.stdout.write(`${JSON.stringify(backgroundTasks({ task_id: "a" }))}\n`);
+    child.stdout.write('{"type":"result"}\n');
+    await vi.waitFor(() => expect(writes).toHaveLength(2));
+    child.stdout.write(`${JSON.stringify(backgroundTasks())}\n`);
+    child.stdout.write(
+      `${JSON.stringify({ type: "command_lifecycle", command_uuid: writes[1]?.uuid, state: "completed" })}\n`,
+    );
+    child.stdout.write('{"type":"result"}\n');
+    child.emit("exit", 143, null);
+    await expect(run).resolves.toEqual({ stderr: "" });
+  });
+
+  it("counts a timer set in the process as background work until it is stopped", async () => {
+    const toolUse = (name: string, input: Record<string, unknown>) => ({
+      type: "assistant",
+      message: {
+        content: [{ type: "text" }, { type: "tool_use", name: "Bash" }, { type: "tool_use", name, input }, "invalid"],
+      },
+    });
+    const child = fakeChild();
+    const writes: string[] = [];
+    child.stdin.on("data", (line) => writes.push(line.toString()));
+    const process = fakeProcess(child);
+    const run = process.execute({ type: "user" }, () => undefined, new AbortController().signal);
+    child.stdout.write(`${JSON.stringify(toolUse("CronCreate", {}))}\n`);
+    child.stdout.write(`${JSON.stringify(toolUse("ScheduleWakeup", { delaySeconds: 60 }))}\n`);
+    child.stdout.write(`${JSON.stringify(toolUse("ScheduleWakeup", { stop: true }))}\n`);
+    child.stdout.write('{"type":"assistant","message":{}}\n');
+    child.stdout.write('{"type":"result"}\n');
+    await vi.waitFor(() => expect(writes).toHaveLength(2));
+    expect(writes[1]).toContain("- CronCreate timer");
+    expect(writes[1]).not.toContain("ScheduleWakeup");
+    child.stdout.write(
+      `${JSON.stringify({ type: "command_lifecycle", command_uuid: JSON.parse(writes[1] as string).uuid, state: "started" })}\n`,
+    );
+    child.stdout.write('{"type":"result"}\n');
+    child.emit("exit", 143, null);
+    await expect(run).resolves.toEqual({ stderr: "", abandonedBackgroundWork: ["CronCreate timer"] });
+  });
+
+  it("writes no notice into an aborted Run", async () => {
+    const child = fakeChild();
+    const writes: string[] = [];
+    child.stdin.on("data", (line) => writes.push(line.toString()));
+    const process = fakeProcess(child);
+    const controller = new AbortController();
+    const run = process.execute({ type: "user" }, () => undefined, controller.signal);
+    child.stdout.write(`${JSON.stringify(backgroundTasks({ task_id: "a" }))}\n`);
+    controller.abort();
+    child.stdout.write('{"type":"result"}\n');
+    child.emit("exit", 143, null);
+    await expect(run).resolves.toEqual({ stderr: "", abandonedBackgroundWork: ["local_bash"] });
+    expect(writes).toHaveLength(1);
+  });
+
+  it("fails the Run when the background notice cannot be written", async () => {
+    const child = fakeChild();
+    const process = fakeProcess(child);
+    const run = process.execute({ type: "user" }, () => undefined, new AbortController().signal);
+    child.stdout.write(`${JSON.stringify(backgroundTasks({ task_id: "a" }))}\n`);
+    child.stdin.write = ((_line: string, callback: (error: Error) => void) => {
+      callback(new Error("closed"));
+      return false;
+    }) as never;
+    child.stdout.write('{"type":"result"}\n');
+    await expect(run).rejects.toMatchObject({ code: "write" });
+  });
+
   it("queues steer input behind the prompt while permission control initializes", async () => {
     const child = fakeChild();
     const writes: string[] = [];
@@ -428,6 +586,23 @@ async function fixtureProcess(scenario: string, maxLineBytes?: number): Promise<
     env: { PATH: process.env.PATH, CLAUDE_CODE_FIXTURE_SCENARIO: scenario },
     maxLineBytes,
   });
+}
+
+const selfGeneratedResult = {
+  type: "result",
+  subtype: "success",
+  is_error: false,
+  num_turns: 0,
+  result: "",
+  origin: { kind: "task-notification", producer: "session-task" },
+};
+
+function backgroundTasks(...tasks: Record<string, unknown>[]) {
+  return {
+    type: "system",
+    subtype: "background_tasks_changed",
+    tasks: tasks.map((task) => ({ task_type: "local_bash", ...task })),
+  };
 }
 
 function fakeProcess(child: ChildProcessWithoutNullStreams): ClaudeCodeProcess {

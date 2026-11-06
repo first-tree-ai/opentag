@@ -143,7 +143,13 @@ new message. Session instructions currently appear in both the managed system pr
 per-delivery context. Session collaboration uses `buildSessionMessageInput` and has its own envelope.
 
 Local Claude Code starts a process for each Run with the native Session ID and `--resume` after
-initialization. Local Pi also starts a process per Run, restoring the exact Pi Session. Codex keeps
+initialization. The Run ends at the `result` of its own input, not at the first `result` on stdout. On `--resume`, Claude
+Code reports a task that the previous process left behind by queueing a notification and emitting a `result` for it with
+`origin` set, `num_turns: 0` and empty text, ahead of the Run's input. Taking that one as the terminal stopped the process
+before the model saw the input, and the Run reported `completed` with no work done. So the Run's input carries a `uuid`, and a successful `result` with an
+`origin` and no `user_message_uuids` never ends the Run. "No response requested." in a
+transcript is what Claude Code writes on the next `--resume` for a user message left unanswered, with model `<synthetic>`.
+It is not a model reply. An error `result` still ends the Run, whatever its origin. Local Pi also starts a process per Run, restoring the exact Pi Session. Codex keeps
 an App Server per prepared Session and starts native Turns on its thread; execution-service
 attachment may reload that same thread. `excludeTurns: true` suppresses history returned in the
 resume RPC response; it does not remove the model's conversation history. Local configuration

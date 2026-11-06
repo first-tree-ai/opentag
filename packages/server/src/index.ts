@@ -141,12 +141,7 @@ import { SandboxIdleReclaimer } from "./services/sandboxes/idle-reclaimer.js";
 import { SandboxService } from "./services/sandboxes/index.js";
 import type { SandboxAllocationReconciliation } from "./services/sandboxes/sandbox-runner-service.js";
 import { ScheduleScheduler, ScheduleService } from "./services/schedules/index.js";
-import {
-  type RunOutcomeNotifier,
-  SessionCliProofService,
-  SessionCollaborationService,
-  SessionService,
-} from "./services/sessions/index.js";
+import { SessionCliProofService, SessionCollaborationService, SessionService } from "./services/sessions/index.js";
 import { AccountSetupService } from "./services/setup/index.js";
 import { S3SkillObjectStore, SkillObjectGc, SkillPresetService, SkillService } from "./services/skills/index.js";
 import { RemoteSkillService } from "./services/skills/source/remote-skill-service.js";
@@ -969,7 +964,7 @@ export async function startServer(): Promise<void> {
     );
     const slackWorkingStore = new SlackWorkingStore(database);
     // Bound after the collaboration service exists; the service itself depends on this owner.
-    let runOutcomeNotifier: RunOutcomeNotifier | undefined;
+    let runOutcomeNotifier: SessionCollaborationService | undefined;
     // Late-bound like the notifier: recovery schedules its reconcile through this same owner.
     let recoveryDomain: RuntimeDomainOwner | undefined;
     const sessionRecovery = new SessionRecoveryService({
@@ -986,7 +981,7 @@ export async function startServer(): Promise<void> {
       onSessionRecover: (frame, context) => sessionRecovery.recover(frame, context),
       onTurnActivity: (frame, context) => acknowledgeFeedbackActivity(database, frame, context),
       onSessionMessageOutcome: async (frame, context) =>
-        (await runOutcomeNotifier?.notifyRunOutcome({
+        (await runOutcomeNotifier?.notifyRunOutcomeInBackground({
           childSessionId: frame.targetSessionId,
           messageId: frame.messageId,
           outcome: frame.outcome,
@@ -1306,6 +1301,7 @@ export async function startServer(): Promise<void> {
       shutdown.abort();
       stopping ??= startClosingServerResources([
         ["schedule scheduler", () => scheduleScheduler.stop()],
+        ["Session outcome notices", () => sessionCollaborationService.close()],
         ["channel target poller", () => channelTargetPoller.stop()],
         ["sandbox idle reclaimer", () => sandboxIdleReclaimer?.stop()],
         ["IM delivery worker", () => imDeliveryWorker.stop()],
@@ -1468,10 +1464,12 @@ export async function startServer(): Promise<void> {
         // A Computer that just became usable makes its offline-parked retries due again, so an
         // offline backoff can never delay work behind a live runtime.
         onRegistered: async ({ computerId }) => {
-          void sessionCollaborationService
-            .redeliverStops(computerId)
-            .catch(() => reportDiagnostic("SESSION_STOP_REDELIVERY_FAILED"));
-          await imDeliveryWorker?.notifyComputerReady(computerId);
+          await Promise.all([
+            sessionCollaborationService
+              .redeliverStops(computerId)
+              .catch(() => reportDiagnostic("SESSION_STOP_REDELIVERY_FAILED")),
+            imDeliveryWorker?.notifyComputerReady(computerId),
+          ]);
         },
         channelTarget: () => channelTargetPoller.get(),
       },

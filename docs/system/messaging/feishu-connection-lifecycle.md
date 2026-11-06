@@ -10,6 +10,38 @@ registration SDK returns App credentials, the Server saves them before checking 
 requirements. An enterprise administrator may approve later: a page refresh, closed browser,
 or Server restart must not discard that saved authorization.
 
+## Setup QR link
+
+The launcher URL the registration SDK returns is over a thousand characters, and a QR symbol that
+encodes it is too dense for many phone cameras. When `OPENTAG_PUBLIC_URL` is public HTTPS, the
+attempt's `qrUrl` is instead a short link, `<public URL>/q/<token>`, which answers with a 302 to the
+launcher. Everything that reads `qrUrl` gets it: the QR code, the open-link button, and the CLI.
+
+- **Not a new DTO field.** The attempt DTO is strict, so an installed CLI would reject an unknown
+  field. Replacing the value keeps every existing client working.
+- **No storage.** The token is the attempt ID followed by a truncated HMAC of it, under a subkey
+  derived from the application key. Any Server instance can verify it and no column or table is
+  added. It is a MAC rather than the bare attempt ID because attempt IDs appear in authenticated API
+  paths and logs.
+- **Lives with the attempt.** A link redirects only while its attempt is `awaiting_user`, unexpired,
+  and has a live registration owner: the same conditions under which the attempt itself shows a QR
+  code. It keeps working across repeat scans, because link previews and a second scan must not use it
+  up. Authorization, cancellation, expiry and owner loss all end it.
+- **Anonymous and bare.** A phone has no openTag session, so `GET /q/:token` takes no authentication.
+  It returns the redirect or one fixed page (410 when the link no longer works, 503 on a temporary
+  read failure) that says the same thing for a forged, unknown, expired or finished token. A forged
+  token is refused before any database read. Responses are `no-store` and send no referrer.
+- **Kept out of logs.** `sanitizeRequestUrl` redacts the token from request logs and trace attributes.
+  A reverse proxy or platform access log in front of the Server can still record the path; what that
+  exposes is limited to a setup code that lasts as long as the attempt.
+- **Falls back when a phone cannot reach it.** A public URL that is not HTTPS, or whose host is
+  loopback, a private or reserved address, a single-label name, or a private-network suffix such as
+  `.local`, keeps the full launcher URL in `qrUrl`.
+
+The avatars and `addons` in the launcher URL stay as they are. Feishu's picker needs all six avatar
+addresses, and `addons` already holds the 66 scopes, events and callbacks gzipped by the SDK, so
+neither can shrink without losing function, and the short link removes the need.
+
 ## Bot avatars
 
 Registration offers six cat presets in Feishu's native picker: developer, engineer, architect,

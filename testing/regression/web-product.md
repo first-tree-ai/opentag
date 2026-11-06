@@ -64,6 +64,7 @@ request. Keep one row per behaviour, not one per screenshot or width.
 | AS-18 | Messaging recovery | A binding that needs new permissions or failed | Recovery title, the reason, and the recovery action; disconnect keeps its confirmation | Edge | unit: `onboarding-v2/agent-setup-page.test.tsx` |
 | AS-19 | Completion | All steps ready | Completion screen offers View agent; the header still offers Back to Agents | Core | unit: `onboarding-v2/agent-setup-page.test.tsx`, `__tests__/agent-setup-boundary.test.tsx` |
 | AS-20 | Draft survives a visit away | Fill name and runtime, go to All Agents, return to New Agent | Draft is restored; a pending creation stays pending and disabled | Edge | unit: `__tests__/agent-setup-boundary.test.tsx` (the pending creation is unit-only; a manual run can check the restored draft) |
+| AS-21 | Lark QR scans and expires | On a public HTTPS deployment, connect Lark and scan the QR code with the Lark or Feishu app; then scan a code from an attempt that was cancelled or expired | The symbol encodes `<public URL>/q/<token>` and is visibly sparse; the scan reaches the app-creation page and setup completes; Open link works from a desktop browser; the old code shows the plain "no longer works" page. On a localhost deployment the symbol encodes the full launcher URL | Core | unit: `__tests__/feishu-qr-link.test.ts`; manual: phone scan |
 
 ## Agent home and schedules
 

@@ -24,6 +24,17 @@ native `Warning` identifier in its reaction catalogue. Only this application's d
 Frozen batches retain per-input reactions but publish one failure card at the execution root. Unexecuted steered
 children requeued by custody retain their existing execution authority.
 
+Feishu feedback reads the message's complete paginated reaction list once for both designated emojis
+([provider contract](https://open.feishu.cn/document/server-docs/im-v1/message-reaction/list)). It filters by App
+operator identity and emoji before writing, retains an existing wanted reaction, and removes every distinct owned
+unwanted reaction. Invalid, looping, or excessive pagination fails before either writer starts. The two emoji
+writers run concurrently, with at most one request per emoji in flight; both settle before a provider failure is
+returned. The existing eight-second operation deadline cancels their shared per-operation transport signal, and
+each later page or mutation checks cancellation before starting. Each operation still resolves active binding
+material and checks its credential generation, and creates a request-scoped Client. The pinned SDK's default
+tenant-token cache is shared across Clients by App ID and refreshes 180 seconds before expiry; constructing a
+Client does not itself force another token exchange.
+
 A Local Client's [automatic retry](../server-client-boundary.md#automatic-retry-of-accepted-work) of an interrupted
 Turn (crash, restart or upgrade, Run timeout, model 429) is part of the same accepted Turn: no report is written
 while the retry is pending or running, so the working reaction stays on the input and no failure marker or error card

@@ -43,6 +43,16 @@ height; authors use 14px medium and timestamps use 12px regular text. Message he
 and code retain their content formatting. Operational notices remain at 14px. The Activity
 section heading remains accessible without adding a visible label above the conversation.
 List task titles and supporting values use 14px regular text, with 14px medium column headings.
+On the Task detail, a content container of at least 56rem splits below the full-width back link and title
+into a shrinkable conversation column and an 18rem sticky side column of stacked facts, cancel control and
+internal Sessions; narrower containers stay in one column. This replaces the earlier full-width composition so
+the status stays in view beside a long conversation; the reasons and the keyboard order are in the
+[Tasks page](../../product/tasks.md). In the side column the facts drop their top rule so they align with the
+first message. Sections below the title use the same 16px medium heading, never larger than the
+`h1`, and read as a heading over rows between rules, rather than as a white card.
+Internal Session titles use 14px regular text, at most two lines in the side column and on narrow containers,
+and one line on a full-width row. A request's body has a flat grey fill sized to its message,
+with no border or shadow on the rounded corners. People and Agents share one 32px round letter avatar.
 
 Usage keeps the period selector beside the title and lets the concise description use the
 available width, wrapping naturally on smaller screens. Daily UTC token totals use bars from

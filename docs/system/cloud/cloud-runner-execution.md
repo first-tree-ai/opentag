@@ -595,10 +595,14 @@ and failed automatic releases wait ten minutes from `updated_at` before another 
 successful DELETE followed by a still-present UID instead records `cloud_delete_pending` in the
 existing `last_error_code`, with the confirmation window's start in `last_error_at`. The binding
 stays `releasing`: DELETE acceptance alone never clears ownership or counts as a release.
+The overview treats this marker as a normal phase: it adds no attention count or public error,
+so workspace controls keep their existing pending-release behavior.
 Subsequent due sweeps perform one GET, without another DELETE or an in-pass polling sleep, at
-most once per 15 seconds per row. A 404 completes release; a different UID or a failed read is
-an incomplete release. A still-present UID after the original 60-second confirmation window also
-becomes incomplete and returns to the ten-minute failure cooldown. The start of this window
+most once per 15 seconds per row. Since reservations occur after a sweep starts, the default
+15-second timer can skip its next tick and confirm about every 30 seconds. A 404 completes
+release; a different UID or a failed read is an incomplete release. A still-present UID at a due
+read after the original 60-second confirmation window also becomes incomplete and returns to
+the ten-minute failure cooldown. The start of this window
 survives restarts and is never extended by a confirmation read. Explicit Account stop retains
 its bounded synchronous verification. No schema change or additional worker is needed.
 

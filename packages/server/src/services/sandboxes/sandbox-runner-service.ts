@@ -59,10 +59,13 @@ import type { WorkspaceObjectScope, WorkspaceObjectStore } from "./workspace-obj
  *   (`cloud_delete_incomplete`) and the weak `cloud_create_uncertain` update are recorded only
  *   when no create-phase marker exists, so a stop error can never erase the evidence a later
  *   stop needs to release the row safely (a failed GET followed by a 404 must recover).
+ * - After a proven automatic seal and accepted DELETE, `cloud_delete_pending` replaces the
+ *   save marker. `lastErrorAt` anchors its confirmation deadline; due sweeps read once without
+ *   resubmitting DELETE. This normal phase is hidden from public failure diagnostics.
  * - Every mutation of the row is CAS-guarded on (id, generation, name), so a stale in-flight
  *   operation can never mutate a newer environment. A tracked resource reference is never erased
- *   while removal is uncertain: delete completes only when the read-back is 404 or the name is
- *   owned by a different UID.
+ *   while removal is uncertain. Normal release requires a 404; a same-name replacement UID
+ *   remains an ownership conflict. Orphan cleanup may recognize its replaced UID as gone.
  * - `ready` requires an authenticated CURRENT Runner at the exact expected version plus verified
  *   Cloud policy for the CURRENT generation — never a signedRunner frame alone. An early Runner
  *   report is deferred, not rejected, until the create caller records the verified UID. The
@@ -140,7 +143,7 @@ export interface SandboxRunnerServiceOptions {
 }
 
 const DELETE_VERIFY_DEFAULT_MS = 60_000;
-const DELETE_PENDING = "cloud_delete_pending";
+export const CLOUD_DELETE_PENDING = "cloud_delete_pending";
 const DELETE_CONFIRM_INTERVAL_MS = 15_000;
 const IDLE_RECLAIM_DEFAULT_MS = 120_000;
 /** Bounded batch of idle rows one sweep pass may consider. */
@@ -173,7 +176,8 @@ const CREATE_PHASE_MARKER_LIST: string[] = [
  * E5 durable release-phase markers. `workspace_save_required` is stamped atomically by the
  * ready -> releasing transition so a Server restart can never mistake a used environment for an
  * unused one; `workspace_save_failed` records a seal/save failure that kept the resource binding.
- * Neither may be erased by a weaker delete-phase or uncertain-phase write.
+ * Failure or uncertain-phase writes never erase these markers. After a proven automatic seal,
+ * an accepted DELETE may replace its save marker with `cloud_delete_pending`.
  */
 const WORKSPACE_SAVE_REQUIRED = "workspace_save_required";
 const WORKSPACE_SAVE_FAILED = "workspace_save_failed";
@@ -1755,7 +1759,7 @@ export class SandboxRunnerService {
     resourceName: string,
     resourceUid: string,
   ): Promise<boolean> {
-    if (row.lastErrorCode === DELETE_PENDING) {
+    if (row.lastErrorCode === CLOUD_DELETE_PENDING) {
       if (await this.#deletionConfirmed(resourceName, resourceUid)) return true;
       if (
         row.lastErrorAt === null ||
@@ -1782,7 +1786,7 @@ export class SandboxRunnerService {
     const now = this.#now();
     await this.#database
       .update(sandboxes)
-      .set({ lastErrorCode: DELETE_PENDING, lastErrorAt: confirmationStartedAt, updatedAt: now })
+      .set({ lastErrorCode: CLOUD_DELETE_PENDING, lastErrorAt: confirmationStartedAt, updatedAt: now })
       .where(this.#automaticAttemptMatches(row));
     return false;
   }
@@ -2033,11 +2037,11 @@ export class SandboxRunnerService {
     const now = this.#now().getTime();
     return or(
       and(
-        eq(sandboxes.lastErrorCode, DELETE_PENDING),
+        eq(sandboxes.lastErrorCode, CLOUD_DELETE_PENDING),
         lte(sandboxes.updatedAt, new Date(now - DELETE_CONFIRM_INTERVAL_MS)),
       ),
       and(
-        or(isNull(sandboxes.lastErrorCode), ne(sandboxes.lastErrorCode, DELETE_PENDING)),
+        or(isNull(sandboxes.lastErrorCode), ne(sandboxes.lastErrorCode, CLOUD_DELETE_PENDING)),
         lte(sandboxes.updatedAt, new Date(now - WORKSPACE_RECOVERY_RETRY_DELAY_MS)),
       ),
     );

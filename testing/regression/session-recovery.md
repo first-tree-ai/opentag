@@ -16,6 +16,19 @@ the same Session after the daemon is back, its input begins with
 - One Agent on that Computer with an IM binding, and permission to stop, kill and restart its daemon.
 - For internal Sessions: a request that makes the visible Session run `opentag session create` for a long task.
 
+## Feishu system reaction projection
+
+With an authorized Feishu test binding, verify a running task has the App's `OnIt`, terminal success removes it,
+and a terminal failure replaces it with `CrossMark`. Repeated projection retains the wanted reaction without
+creating another. Reactions from users and other Apps, including the same emojis, remain untouched. Include a
+message with more than fifty reactions so the App's reaction is found on a later page.
+
+Use the controlled HTTP suite `im-feedback-feishu-http.test.ts` for request counts, simultaneous emoji writes,
+incomplete or looping pagination, lost write acknowledgements and cancellation. It must show that a failed writer
+is joined with its sibling before returning, and that a late read after the deadline starts no mutation. The
+480 ms RTT model measures the Server component, not native provider latency; record actual provider timing
+separately when an authorized test deployment is available.
+
 ## Daemon crash (power loss)
 
 1. Start a long Run in a DM or thread, then kill the daemon process group (`kill -9` of the daemon and its children).

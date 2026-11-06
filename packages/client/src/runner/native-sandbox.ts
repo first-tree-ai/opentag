@@ -201,11 +201,11 @@ export function buildSandboxDeleteArgv(input: { name: string; sandboxBinary?: st
 /**
  * The in-Sandbox metadata read: one bounded Node `-e` that parses the image identity and the
  * locked Pi package manifest, verifies the fixed Pi shim and the package's declared CLI entry
- * are accessible, and prints the raw fields as one JSON line. It never loads or executes the
- * Pi CLI; the trusted parent validates shape and identity consistency (see `probe`). All paths
+ * are accessible, and assigns the raw fields for the combined readiness result. It never loads or
+ * executes the Pi CLI; the trusted parent validates shape and identity consistency (see `probe`). All paths
  * are the fixed image layout, never workspace-supplied, and nothing is cached across probes.
  */
-export function buildSandboxMetadataScript(paths: { identityPath: string; piHome: string; shimPath: string }): string {
+export function buildSandboxMetadataRead(paths: { identityPath: string; piHome: string; shimPath: string }): string {
   const identityPath = JSON.stringify(paths.identityPath);
   const modulesRoot = JSON.stringify(`${paths.piHome}/node_modules`);
   const shimPath = JSON.stringify(paths.shimPath);
@@ -214,7 +214,9 @@ const fail=(m)=>{process.stderr.write('runner-metadata:'+m);process.exit(1)};
 const readJson=(p,what)=>{
 let st;try{st=fs.statSync(p)}catch{fail(what+'-missing')}
 if(!st.isFile()||st.size>65536)fail(what+'-invalid');
-try{return JSON.parse(fs.readFileSync(p,'utf8'))}catch{fail(what+'-corrupt')}};
+let value;try{value=JSON.parse(fs.readFileSync(p,'utf8'))}catch{fail(what+'-corrupt')}
+if(typeof value!=='object'||value===null||Array.isArray(value))fail(what+'-invalid');
+return value};
 const identity=readJson(${identityPath},'identity');
 const piPackage=identity.piPackage;
 if(typeof piPackage!=='string'||!/^(?:@[a-z0-9][a-z0-9._-]*\\/)?[a-z0-9][a-z0-9._-]*$/.test(piPackage)||piPackage.split('/').some((s)=>/^\\.+$/.test(s)))fail('identity-pi-package');
@@ -225,11 +227,11 @@ try{fs.accessSync(${shimPath},fs.constants.X_OK)}catch{fail('pi-shim-inaccessibl
 const bin=pkg.bin&&(typeof pkg.bin==='string'?pkg.bin:pkg.bin.pi);
 if(typeof bin!=='string'||!bin||path.isAbsolute(bin)||bin.split('/').includes('..'))fail('pi-bin-invalid');
 try{fs.accessSync(path.join(dir,bin),fs.constants.R_OK)}catch{fail('pi-cli-inaccessible')}
-process.stdout.write(JSON.stringify({runnerVersion:identity.version,identityPiPackage:identity.piPackage,identityPiVersion:identity.piVersion,piName:pkg.name,piVersion:pkg.version}));`;
+const metadata={runnerVersion:identity.version,identityPiPackage:identity.piPackage,identityPiVersion:identity.piVersion,piName:pkg.name,piVersion:pkg.version};`;
 }
 
-/** The probe's single metadata read, bound to the fixed image layout constants. */
-const SANDBOX_METADATA_SCRIPT = buildSandboxMetadataScript({
+/** The combined probe's metadata read, bound to the fixed image layout constants. */
+const SANDBOX_METADATA_READ = buildSandboxMetadataRead({
   identityPath: SANDBOX_RUNNER_IDENTITY,
   piHome: SANDBOX_PI_HOME,
   shimPath: SANDBOX_PI,
@@ -246,7 +248,14 @@ const SANDBOX_METADATA_NAME = /^[0-9A-Za-z@/._+-]{1,128}$/;
  * corrupt, or inconsistent metadata fails the probe clearly; a metadata read is never treated
  * as proof that the Pi CLI or a provider executed.
  */
-function parseSandboxMetadata(result: SandboxExecResult): { runnerVersion: string; piVersion: string } {
+function assertSandboxProbeMetadataAvailable(result: SandboxExecResult): void {
+  if ([10, 11, 12].includes(result.code)) {
+    if (result.stdout) return;
+    throw new NativeSandboxError("probe_failed", "Native sandbox failed filesystem or credential isolation checks");
+  }
+  if (result.code !== 0 && !result.stderr.startsWith("runner-metadata:")) {
+    throw new NativeSandboxError("probe_failed", "The sandbox rootfs does not provide a working node runtime");
+  }
   if (result.code !== 0) {
     const detail = result.stderr.trim().split("\n", 1)[0]?.slice(0, 120);
     throw new NativeSandboxError(
@@ -254,6 +263,10 @@ function parseSandboxMetadata(result: SandboxExecResult): { runnerVersion: strin
       `The sandbox image identity or Pi package metadata is missing or corrupt${detail ? `: ${detail}` : ""}`,
     );
   }
+}
+
+function parseSandboxProbe(result: SandboxExecResult): { probe: SandboxProbeResult; isolated: boolean } {
+  assertSandboxProbeMetadataAvailable(result);
   let value: unknown;
   try {
     value = JSON.parse(result.stdout);
@@ -264,6 +277,10 @@ function parseSandboxMetadata(result: SandboxExecResult): { runnerVersion: strin
     throw new NativeSandboxError("probe_failed", "The sandbox provides no valid Runner or Pi metadata");
   }
   const metadata = value as Record<string, unknown>;
+  const nodeVersion = metadata.nodeVersion;
+  if (typeof nodeVersion !== "string" || !/^v\d+\.\d+\.\d+$/.test(nodeVersion)) {
+    throw new NativeSandboxError("probe_failed", "The sandbox rootfs does not provide a working node runtime");
+  }
   const runnerVersion = metadata.runnerVersion;
   if (typeof runnerVersion !== "string" || !SANDBOX_METADATA_VERSION.test(runnerVersion)) {
     throw new NativeSandboxError("probe_failed", "The sandbox provides no valid Runner version");
@@ -284,7 +301,7 @@ function parseSandboxMetadata(result: SandboxExecResult): { runnerVersion: strin
   if (piName !== identityPiPackage || piVersion !== identityPiVersion) {
     throw new NativeSandboxError("probe_failed", "The sandbox Pi package metadata does not match the image identity");
   }
-  return { runnerVersion, piVersion };
+  return { probe: { nodeVersion, runnerVersion, piVersion }, isolated: metadata.isolated === true };
 }
 
 /** Assert that a value can never smuggle option/argv structure into the sandbox CLI. */
@@ -460,35 +477,30 @@ export class NativeSandbox {
       this.#onPerformanceLog,
       "runner.native_sandbox.probe",
       async (addMetrics) => {
-        const node = await this.exec(SANDBOX_NODE, ["--version"], { timeoutMs: 30_000 });
-        if (node.code !== 0 || !/^v\d+\.\d+\.\d+$/.test(node.stdout.trim())) {
-          throw new NativeSandboxError("probe_failed", "The sandbox rootfs does not provide a working node runtime");
-        }
-        const metadata = parseSandboxMetadata(
-          await this.exec(SANDBOX_NODE, ["-e", SANDBOX_METADATA_SCRIPT], { timeoutMs: 30_000 }),
-        );
-        addMetrics({ runnerVersion: metadata.runnerVersion });
         const canaryRoot = await mkdtemp(join(tmpdir(), "opentag-parent-canary-"));
         const canary = join(canaryRoot, "parent-only");
         try {
           await writeFile(canary, "parent", { mode: 0o600 });
-          const code = `const fs=require('node:fs'); const p=${JSON.stringify(canary)};
+          const code = `${SANDBOX_METADATA_READ}
+        const p=${JSON.stringify(canary)};
         const rootfsCanary=${JSON.stringify(this.#rootfsCanary)};
-        if(fs.existsSync(rootfsCanary))process.exit(12);
+        const isolate=()=>{
+        if(fs.existsSync(rootfsCanary))return 12;
         fs.writeFileSync(rootfsCanary,'sandbox-layer');
-        if(fs.existsSync(p)||fs.existsSync('/opt/sandbox-root'))process.exit(10);
+        if(fs.existsSync(p)||fs.existsSync('/opt/sandbox-root'))return 10;
         for(const file of ['/proc/self/environ','/proc/1/environ']) {
           const value=fs.readFileSync(file,'utf8');
-          if(value.includes('OPENTAG_RUNNER_BOOTSTRAP_TOKEN')||value.includes('OPENTAG_RUNNER_CONTROL_TOKEN')||value.includes('OPENTAG_RUNNER_BACKEND_URL'))process.exit(11);
+          if(value.includes('OPENTAG_RUNNER_BOOTSTRAP_TOKEN')||value.includes('OPENTAG_RUNNER_CONTROL_TOKEN')||value.includes('OPENTAG_RUNNER_BACKEND_URL'))return 11;
         }
         fs.mkdirSync(require('node:path').dirname(p),{recursive:true});fs.writeFileSync(p,'sandbox');
-        process.stdout.write('isolated');`;
-          const isolation = await this.exec(SANDBOX_NODE, ["-e", code], { timeoutMs: 30_000 });
-          if (
-            isolation.code !== 0 ||
-            isolation.stdout !== "isolated" ||
-            (await readFile(canary, "utf8")) !== "parent"
-          ) {
+        return 0};
+        let isolationCode;try{isolationCode=isolate()}catch{isolationCode=10}
+        process.stdout.write(JSON.stringify({...metadata,nodeVersion:process.version,isolated:isolationCode===0}));
+        process.exitCode=isolationCode;`;
+          const execution = await this.exec(SANDBOX_NODE, ["-e", code], { timeoutMs: 30_000 });
+          const { probe, isolated } = parseSandboxProbe(execution);
+          addMetrics({ runnerVersion: probe.runnerVersion });
+          if (execution.code !== 0 || !isolated || (await readFile(canary, "utf8")) !== "parent") {
             throw new NativeSandboxError(
               "probe_failed",
               "Native sandbox failed filesystem or credential isolation checks",
@@ -503,14 +515,10 @@ export class NativeSandbox {
           if (lowerLayerCanary) {
             throw new NativeSandboxError("probe_failed", "Native sandbox modified the immutable root filesystem");
           }
+          return probe;
         } finally {
           await rm(canaryRoot, { recursive: true, force: true });
         }
-        return {
-          nodeVersion: node.stdout.trim(),
-          piVersion: metadata.piVersion,
-          runnerVersion: metadata.runnerVersion,
-        };
       },
       { sandboxName: this.#name },
     );

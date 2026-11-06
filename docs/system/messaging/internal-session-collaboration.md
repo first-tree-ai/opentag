@@ -65,6 +65,14 @@ A Cloud target has no held delivery, so a temporary refusal returns `unreachable
 `client_busy` when the Runner cannot queue more work, for example. A Local Client older than `runtime.sessionRecovery`
 answers the same way. Messages recorded before the code was split keep `capacity`.
 
+Create/send admission refusals for source authority, target availability, collaboration scope, message ID conflicts,
+or an unavailable model keep their existing `rejected` response and code without an ERROR `Server diagnostic`.
+An unconfirmable Cloud model catalog remains `unreachable` with `model_unavailable` and does not emit that diagnostic.
+An unexpected exception still returns `unreachable` with `runtime_unavailable` and emits the fixed
+`SESSION_COLLABORATION_RUNTIME_UNAVAILABLE` diagnostic without exception details or message content. HTTP responses
+remain 200 for these command outcomes. Runtime assembly, Cloud dispatch, and outcome-persistence failures retain
+their separate internal-error logs.
+
 `session list` returns direct children by default, ordered by recent message activity. Pages default to 20 items and
 are capped at 100; `--cursor` continues a page, `--recursive` includes descendants, `--since` filters recent activity,
 and `--json` returns `{ items, nextCursor }`. There is no unbounded `--all` mode. The page returns active children
@@ -146,8 +154,8 @@ Client is upgrading, restarting or full.
 - **Who retries.** Once the Client accepts a message, the Client owns its retries and reports a failure to the Server,
   which tells the sender. Before that, the Server keeps the message; it does not retry without limit.
 - **Held state.** A Local `session send` or `session create` tries the Client once and waits at most 5 seconds, so a Client
-  that does not answer cannot run into the CLI's request timeout. Past that, the attempt continues in the background and a
-  failure it finds later reaches the sender as a notice. On a failure a redelivery can overcome
+  that does not answer cannot run into the CLI's request timeout. Past that, the attempt continues in the background under the target's authority only, because the sender may now
+  disconnect, and a final failure it finds reaches the sender as a notice. A redelivery waits until that attempt ends. On a failure a redelivery can overcome
   (`client_busy`, `session_busy`, `agent_busy`, no connection, a Session that is not ready, a lost or timed-out request) the
   message row becomes `last_outcome = unknown`, `last_error_code = delivery_held`, and the sender gets `accepted`.
   A failed final admission (the sender's connection was replaced, the Agent suspended, or the binding disabled) is an
@@ -160,15 +168,17 @@ Client is upgrading, restarting or full.
   messages, which covers recovery without a reconnect, such as a failed upgrade reopening admission. A redelivery
   re-assembles the runtime, sends a ready reconcile, and proves the target's current authority. It does not check the
   sender's connection, which may have restarted.
-- **Order.** Each target's held messages go oldest first, one at a time, and stop at the first refusal. A new message
-  to a target with an older held message joins the queue without a frame.
+- **Order.** Each target's held messages go oldest first, one at a time, and stop at the first refusal. That refusal
+  blocks only its own target; others on the Computer keep going. A new message to a target with an older held message
+  joins the queue without a frame.
 - **Duplicates.** A redelivery bumps `attempt_count` and keeps the held code until a final answer is written, so a Server
   that stops midway delivers again. The Client deduplicates by message ID, and answers a replay of a refused message
   by evaluating it again. A Client older than that fix answered with a false `accepted`, so a refusal from a connected
   Client is held only once it has negotiated `runtime.sessionRecovery`, which shipped just before the fix.
 - **Expiry and notices.** A held message older than 24 hours (`SESSION_MESSAGE_HELD_TTL_MS`, the IM ambient delivery TTL)
-  ends as `unreachable / delivery_expired`. A sweep every 10 minutes applies this and finds held Computers after a
-  Server restart. It is a sequential scan of `session_messages`, because `last_error_code` has no index. A held message
+  ends as `unreachable / delivery_expired`. A sweep at Server startup and every hour applies this, so a notice can be up to an hour late, and finds
+  held Computers after a Server restart. It is a sequential scan of `session_messages`, because `last_error_code` has no
+  index; every other held-delivery query uses the existing target and time index. A held message
   that ends in failure produces one notice to its sender, from the target, starting with
   `[openTag notice] Session message was not delivered` (`SESSION_DELIVERY_FAILURE_NOTICE_HEADER`), under a deterministic ID.
   The notice is held like any message. A failed notice is only logged, so two Sessions never exchange notices. A sender

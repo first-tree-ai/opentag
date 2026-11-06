@@ -22,6 +22,7 @@ export class SandboxIdleReclaimer {
   readonly #onDiagnostic: (code: string) => void;
   #timer?: ReturnType<typeof setInterval>;
   #running?: Promise<unknown>;
+  #cancellation?: AbortController;
 
   constructor(options: SandboxIdleReclaimerOptions) {
     const intervalMs = options.intervalMs ?? DEFAULT_SWEEP_INTERVAL_MS;
@@ -43,19 +44,25 @@ export class SandboxIdleReclaimer {
   async stop(): Promise<void> {
     if (this.#timer) clearInterval(this.#timer);
     this.#timer = undefined;
+    this.#cancellation?.abort();
     // The sweep's observer below reports failures. Drain before the Server closes its database.
     await this.#running?.catch(() => undefined);
   }
 
   /** One serialized pass; exposed so startup/tests can run it deterministically. */
-  async runOnce(): Promise<{ claimed: number; released: number; recovered: number; failed: number }> {
-    return this.#service.reclaimIdleSandboxes();
+  async runOnce(
+    signal?: AbortSignal,
+  ): Promise<{ claimed: number; released: number; recovered: number; failed: number }> {
+    return this.#service.reclaimIdleSandboxes(signal);
   }
 
   sweep(): void {
     if (this.#running) return;
-    const operation = this.runOnce().finally(() => {
+    const cancellation = new AbortController();
+    this.#cancellation = cancellation;
+    const operation = this.runOnce(cancellation.signal).finally(() => {
       this.#running = undefined;
+      this.#cancellation = undefined;
     });
     this.#running = operation;
     if (this.#supervisor) {

@@ -1,10 +1,19 @@
 import { randomUUID } from "node:crypto";
-import type { SessionCliCreateRequest, SessionCliSendRequest } from "@opentag/shared";
+import {
+  HTTP_PATHS,
+  SESSION_CLI_PROOF_HEADER,
+  type SessionCliCreateRequest,
+  type SessionCliSendRequest,
+} from "@opentag/shared";
+import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
+import { registerRuntimeSessionRoutes } from "../api/runtime-sessions.js";
+import { createServerDiagnosticReporter } from "../observability/diagnostics.js";
 import { RuntimeDomainRequestError } from "../runtime/runtime-domain-owner.js";
 import type { SessionCliSourceContext } from "../services/sessions/session-cli-proof-service.js";
 import { SessionCollaborationService } from "../services/sessions/session-collaboration-service.js";
 import { runOutcomeNoticeMessageId } from "../services/sessions/session-run-outcome-notice.js";
+import { SessionServiceError } from "../services/sessions/session-service.js";
 
 describe("SessionCollaborationService", () => {
   describe("internal Session Run outcome notices", () => {
@@ -221,17 +230,83 @@ describe("SessionCollaborationService", () => {
     );
   });
 
-  it("maps source authority failures without exposing their details", async () => {
+  it.each([
+    ["SESSION_PLACEMENT_STALE", "source_unavailable"],
+    ["SESSION_SOURCE_UNAVAILABLE", "source_unavailable"],
+    ["SESSION_TARGET_UNAVAILABLE", "target_unavailable"],
+    ["SESSION_SCOPE_MISMATCH", "scope_mismatch"],
+    ["SESSION_MESSAGE_CONFLICT", "message_conflict"],
+  ])("maps %s without reporting an internal failure", async (errorCode, responseCode) => {
     const fixture = serviceFixture();
     fixture.sessions.authorizeAndRecordMessage.mockRejectedValue(
-      Object.assign(new Error("placement is stale"), { code: "SESSION_PLACEMENT_STALE" }),
+      new SessionServiceError(errorCode, "private refusal detail"),
     );
 
-    await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+    await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toEqual({
+      messageId: fixture.messageId,
       status: "rejected",
-      code: "source_unavailable",
+      code: responseCode,
     });
-    expect(fixture.onDiagnostic).toHaveBeenCalledWith("SESSION_COLLABORATION_SOURCE_UNAVAILABLE");
+    expect(fixture.onDiagnostic).not.toHaveBeenCalled();
+    expect(fixture.diagnosticLogger.error).not.toHaveBeenCalled();
+    expect(fixture.logger.error).not.toHaveBeenCalled();
+    expect(fixture.assembler.assembleForSession).not.toHaveBeenCalled();
+    expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
+    expect(fixture.sessions.recordMessageOutcome).not.toHaveBeenCalled();
+  });
+
+  it("keeps a scope refusal as HTTP 200 without a Server diagnostic", async () => {
+    const fixture = serviceFixture();
+    fixture.sessions.authorizeAndRecordMessage.mockRejectedValue(
+      new SessionServiceError("SESSION_SCOPE_MISMATCH", "private scope detail"),
+    );
+    const app = Fastify();
+    registerRuntimeSessionRoutes(app, {
+      collaboration: fixture.service,
+      proofs: { authenticate: async () => fixture.source },
+      sessions: { listInternalSessions: vi.fn() },
+    });
+    try {
+      const result = await app.inject({
+        method: "POST",
+        url: HTTP_PATHS.runtimeSessionMessages,
+        headers: { [SESSION_CLI_PROOF_HEADER]: "proof" },
+        payload: sendRequest(fixture),
+      });
+      expect(result.statusCode).toBe(200);
+      expect(result.headers["cache-control"]).toBe("no-store");
+      expect(result.json()).toEqual({ messageId: fixture.messageId, status: "rejected", code: "scope_mismatch" });
+      expect(fixture.diagnosticLogger.error).not.toHaveBeenCalled();
+    } finally {
+      await app.close();
+    }
+  });
+
+  describe.each(["create", "send"] as const)("unexpected %s failures", (method) => {
+    it.each([
+      new Error("private database failure"),
+      Object.assign(new Error("private dependency failure"), { code: "SESSION_UNEXPECTED_FAILURE" }),
+      "private non-Error failure",
+    ])("reports one safe Server diagnostic for %s", async (error) => {
+      const fixture = serviceFixture();
+      fixture.sessions.createInternalSessionWithMessage.mockRejectedValue(error);
+      fixture.sessions.authorizeAndRecordMessage.mockRejectedValue(error);
+      const result =
+        method === "create"
+          ? fixture.service.create(createRequest(fixture), fixture.source)
+          : fixture.service.send(sendRequest(fixture), fixture.source);
+
+      await expect(result).resolves.toEqual({
+        messageId: fixture.messageId,
+        status: "unreachable",
+        code: "runtime_unavailable",
+      });
+      expect(fixture.onDiagnostic).toHaveBeenCalledExactlyOnceWith("SESSION_COLLABORATION_RUNTIME_UNAVAILABLE");
+      expect(fixture.diagnosticLogger.error).toHaveBeenCalledExactlyOnceWith(
+        { code: "SESSION_COLLABORATION_RUNTIME_UNAVAILABLE", errorCode: "SESSION_COLLABORATION_RUNTIME_UNAVAILABLE" },
+        "Server diagnostic",
+      );
+    });
   });
 
   it("maps Router model override admission to the model_unavailable outcomes", async () => {
@@ -243,6 +318,9 @@ describe("SessionCollaborationService", () => {
       status: "rejected",
       code: "model_unavailable",
     });
+    expect(rejected.onDiagnostic).not.toHaveBeenCalled();
+    expect(rejected.diagnosticLogger.error).not.toHaveBeenCalled();
+    expect(rejected.logger.error).not.toHaveBeenCalled();
 
     const unreachable = serviceFixture();
     unreachable.sessions.createInternalSessionWithMessage.mockRejectedValue(
@@ -252,6 +330,8 @@ describe("SessionCollaborationService", () => {
       status: "unreachable",
       code: "model_unavailable",
     });
+    expect(unreachable.onDiagnostic).not.toHaveBeenCalled();
+    expect(unreachable.diagnosticLogger.error).not.toHaveBeenCalled();
   });
 });
 
@@ -345,7 +425,8 @@ function serviceFixture(
       status: "accepted",
     }),
   };
-  const onDiagnostic = vi.fn();
+  const diagnosticLogger = { error: vi.fn() };
+  const onDiagnostic = vi.fn(createServerDiagnosticReporter(() => diagnosticLogger as never));
   const logger = { error: vi.fn() };
   const registry = {
     capabilityVersion: vi.fn().mockReturnValue(2),
@@ -358,6 +439,7 @@ function serviceFixture(
   return {
     assembler,
     domain,
+    diagnosticLogger,
     messageId,
     onDiagnostic,
     logger,

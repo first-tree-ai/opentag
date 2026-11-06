@@ -63,9 +63,8 @@ them has been redrawn, recoloured, or restyled, and the repository licence does 
 - **Claude.** The unmodified app mark was sourced from [Claude's published icon](https://claude.ai/favicon.ico)
   on 2026-08-29, as recorded in the SVG header. It identifies the Claude integration only and does
   not imply endorsement or affiliation; the publisher's current terms govern its use.
-- **Pi.** The official Pi mark was added in [PR #683](https://github.com/first-tree-ai/opentag/pull/683),
-  commit `d6e7fd0f105befd616df30f7ef7df42524d4ea00`, from
-  [Pi's published logo](https://pi.dev/logo-auto.svg) on 2026-09-21, as recorded in the SVG header.
+- **Pi.** The official Pi mark comes from
+  [Pi's published logo](https://pi.dev/logo-auto.svg), retrieved on 2026-09-21 as recorded in the SVG header.
   It is used unmodified only to identify the Pi runtime; the publisher's current terms govern its
   use and this record does not imply endorsement or affiliation.
 - **Every mark.** Displayed at its native proportions without alteration, less prominently than

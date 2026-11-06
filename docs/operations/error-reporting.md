@@ -36,6 +36,7 @@ server. Unknown fields are rejected, so a client cannot attach anything the sche
 | `platform` | CLI | Operating system, architecture, and Node.js version, as `doctor` prints them |
 | `occurredAt` | both | ISO 8601 timestamp |
 | `reportId` | both | One identifier per report, tying the tracker event to the server log line |
+| `requestId`, `traceId` | optional | Client-supplied request and trace correlation identifiers; untrusted attribution, never authorization |
 | `userId` | both | The Account the client believed it was signed in as |
 | `computerId` | CLI | The Account Computer this openTag home is connected as — the uuid the Server and the Web App know — read from the machine credential, only when that credential names the server the report goes to |
 | `installationId` | CLI | This installation's own locally generated identity (`computer.json`), the value the daemon logs under the same name, only when that file names the server the report goes to; otherwise the machine credential's copy, under the same condition |

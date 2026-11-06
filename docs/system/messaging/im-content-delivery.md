@@ -27,7 +27,7 @@ The Client also renders bounded resource metadata from the existing wire field, 
 requests still expose their attachments without downloading them or changing their persisted payload/hash. openTag
 ordinals are labeled separately from provider-native resource IDs and direct the Agent to source-message readback.
 
-- Slack: `slack api files.info --json '{"file":"F..."}'` returns metadata. Download the returned private URL through the
+- Slack: `slack api files.info --data 'file=F...'` returns metadata. Download the returned private URL through the
   configured proxy using literal arguments and the existing scoped `curl` command. The CLI launcher loads credentials
   automatically; do not source the environment file. Re-query once if the execution-scoped
   download handle has expired. Public URLs use existing HTTP tools without adding Slack credentials.

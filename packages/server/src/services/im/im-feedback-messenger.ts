@@ -250,6 +250,8 @@ export class ImFeedbackMessenger implements FeedbackTransport {
       if (error instanceof FeedbackProviderError) throw error;
       if (error instanceof ExternalCallPolicyError && error.phase === "circuit")
         throw new FeedbackProviderError("IM_PROVIDER_CIRCUIT_OPEN", true, false, 30_000);
+      if (error instanceof ExternalCallPolicyError && error.phase === "admission")
+        throw new FeedbackProviderError(error.code, true);
       const code = slackErrorCode(error);
       const permanent = [
         "invalid_auth",

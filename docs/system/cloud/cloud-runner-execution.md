@@ -26,6 +26,18 @@ CLI release version. E3 adds no database migration or table.
 
 ## Lifecycle and control
 
+`SandboxRunnerService` remains the allocation and Account-operation facade. Its token authority
+validates and renews Runner scopes; the workspace sealer proves the exact saved archive before
+release; the idle-reclaim collaborator owns automatic claims and same-account reuse. Allocation
+operations retain their original transaction boundaries and provider calls remain outside transactions.
+The Cloud delivery and Session collaboration owners share exact-connection helpers while retaining
+their own custody and terminal protocols.
+
+The Runner uses one work-kind descriptor for delivery and Session-message FIFO admission,
+synchronous active-slot reservation, execution and interrupted-namespace cleanup. Delivery reports
+and Session settlements retain their separate durable formats. Deadline construction, steering and
+activity reporting remain specific to each kind of work.
+
 The existing lifecycle is `unallocated → preparing → ready → releasing → unallocated`.
 The Server reserves the allocation name before cloud I/O. Competing callers reconcile the same
 allocation. An uncertain create or delete retains the row's resource reference and an actionable

@@ -289,6 +289,60 @@ describe("a Session message steered into a Session message Run", () => {
   });
 });
 
+describe("the FIFO when acceptance times tie", () => {
+  it("returns a message the provider never began ahead of one accepted after it in the same millisecond", async () => {
+    const { attempts, runtime, steerOutcomes, steers } = harness();
+    const inbox = makeInbox(runtime, { now: () => 1_000 });
+    const { message } = conversation();
+    const [second, third] = [message("second"), message("third")];
+    steerOutcomes.set("second", "not_started");
+    steerOutcomes.set("third", new Error("run mismatch"));
+    await inbox.accept(message("first"));
+    const attempt = await started(attempts, 1);
+    await inbox.accept(second);
+    await vi.waitFor(() => expect(steers).toHaveLength(1));
+    await vi.waitFor(() => expect(inbox.getState(second.messageId)?.status).toBe("running"));
+    await inbox.accept(third);
+    await vi.waitFor(() => expect(inbox.queuedCount).toBe(1));
+    expect(inbox.getState(second.messageId)?.acceptedAt).toBe(inbox.getState(third.messageId)?.acceptedAt);
+    attempt.finish();
+    const next = await started(attempts, 2);
+    expect(next.texts.at(-1)).toBe("second");
+    steerOutcomes.delete("third");
+    await vi.waitFor(() => expect(inbox.getState(third.messageId)?.status).toBe("running"));
+    next.finish();
+    await inbox.settled();
+    expect(attempts).toHaveLength(2);
+    expect(inbox.getState(third.messageId)?.status).toBe("succeeded");
+  });
+
+  it("keeps the durable order after a restart, when a tied message comes back from a Run", async () => {
+    const { message } = conversation();
+    const [lead, second, third] = [message("lead"), message("second"), message("third")];
+    const persistence = new MemoryRuntimeDurabilityStore();
+    for (const stored of [record(lead, "running"), record(second, "accepted"), record(third, "accepted")]) {
+      await persistence.write(stored);
+    }
+    const { attempts, runtime, steerOutcomes } = harness();
+    steerOutcomes.set("second", "not_started");
+    steerOutcomes.set("third", new Error("run mismatch"));
+    const inbox = makeInbox(runtime, { persistence });
+    await inbox.ready();
+    const resumed = await started(attempts, 1);
+    expect(resumed.texts.at(-1)).toBe("lead");
+    await vi.waitFor(() => expect(inbox.getState(second.messageId)?.status).toBe("running"));
+    await vi.waitFor(() => expect(inbox.queuedCount).toBe(1));
+    resumed.finish();
+    const next = await started(attempts, 2);
+    expect(next.texts.at(-1)).toBe("second");
+    steerOutcomes.delete("third");
+    await vi.waitFor(() => expect(inbox.getState(third.messageId)?.status).toBe("running"));
+    next.finish();
+    await inbox.settled();
+    expect(inbox.getState(third.messageId)?.status).toBe("succeeded");
+  });
+});
+
 describe("a message accepted while the drain is running", () => {
   it("is not taken before its record is durable, so its steer is tracked", async () => {
     const { attempts, runtime, steers } = harness();

@@ -166,6 +166,8 @@ export class SessionMessageInbox {
   /** Sessions whose queued messages wait for the Server to prepare them (e.g. after a restart). */
   readonly #awaitingPreparation = new Set<string>();
   readonly #records = new Map<string, DurableWorkRecord<SessionMessageDeliveryRequestV3>>();
+  /** Each record's place in the FIFO: `acceptedAt` has millisecond ties, and the durable list keeps this order. */
+  readonly #acceptanceOrder = new Map<string, number>();
   readonly #remembered = new Map<string, RememberedMessage>();
   readonly #abort = new AbortController();
   readonly #retryTimers = new Map<string, { cancel(): void }>();
@@ -1019,7 +1021,7 @@ export class SessionMessageInbox {
     const hash = sessionMessageSemanticHash(request.data);
     const key = stored.key;
     let record = { ...stored, payload: request.data } as DurableWorkRecord<SessionMessageDeliveryRequestV3>;
-    this.#records.set(key, record);
+    this.#setRecord(record);
     if (record.status === "succeeded") {
       this.#remember(key, { hash, status: "succeeded" });
       return undefined;
@@ -1075,9 +1077,10 @@ export class SessionMessageInbox {
       return;
     }
     // A message coming back from a Run keeps its place ahead of those accepted after it.
-    const acceptedAt = (messageId: string) => this.#records.get(`${request.targetSessionId}:${messageId}`)?.acceptedAt;
-    const accepted = acceptedAt(request.messageId) ?? Number.POSITIVE_INFINITY;
-    const later = queue.findIndex((candidate) => (acceptedAt(candidate.request.messageId) ?? 0) > accepted);
+    const place = this.#acceptanceOrder.get(sessionMessageKey(request)) ?? Number.POSITIVE_INFINITY;
+    const later = queue.findIndex(
+      (candidate) => (this.#acceptanceOrder.get(sessionMessageKey(candidate.request)) ?? 0) > place,
+    );
     queue.splice(later < 0 ? queue.length : later, 0, { request, hash });
     this.#queues.set(request.targetSessionId, queue);
     this.#queuedTotal += 1;
@@ -1250,6 +1253,11 @@ export class SessionMessageInbox {
 
   async #persist(record: DurableWorkRecord<SessionMessageDeliveryRequestV3>): Promise<void> {
     await this.#persistence?.write(record);
+    this.#setRecord(record);
+  }
+
+  #setRecord(record: DurableWorkRecord<SessionMessageDeliveryRequestV3>): void {
+    if (!this.#acceptanceOrder.has(record.key)) this.#acceptanceOrder.set(record.key, this.#acceptanceOrder.size);
     this.#records.set(record.key, record);
   }
 

@@ -432,6 +432,36 @@ async function acceptedUnreportedDeliveries(input: {
 }
 
 describe("CloudDeliveryOwner", () => {
+  it("does not send or release an unreserved Cloud batch after final admission changes", async () => {
+    const { scope, agent, cloud } = await cloudScope();
+    const { hub, fence, owner, custody, grants } = makeOwner();
+    const sent: RunnerServerFrame[] = [];
+    const { connection } = attachReady(hub, fence, scope, sent, cloud.computerId);
+    const pending = await pendingDelivery({ sessionId: scope.sessionId });
+    const request = deliveryRequest({ ...pending, sessionId: scope.sessionId, agentId: agent.id });
+    vi.spyOn(custody, "beginDeliveryDispatch").mockResolvedValueOnce("batch_changed");
+    const release = vi.spyOn(custody, "releaseDeliveryDispatch");
+    try {
+      await expect(
+        owner.dispatchDelivery({
+          computerId: cloud.computerId,
+          installationId: connection.installationId,
+          inputHash: computeDirectInputHash(request),
+          request,
+        }),
+      ).rejects.toMatchObject({ code: "IM_DELIVERY_BATCH_CHANGED" });
+      expect(sent).toEqual([]);
+      expect(release).not.toHaveBeenCalled();
+      expect(await deliveryRow(pending.deliveryId)).toMatchObject({
+        state: "pending",
+        dispatchRequestId: null,
+        dispatchPayload: null,
+      });
+    } finally {
+      grants.close();
+    }
+  });
+
   it("dispatches a claimed Cloud delivery to the scoped Runner and persists dispatch custody", async () => {
     const { scope, agent, cloud } = await cloudScope();
     const { hub, fence, owner } = makeOwner();

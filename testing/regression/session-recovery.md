@@ -21,8 +21,8 @@ the same Session after the daemon is back, its input begins with
 With an IM test binding and a runtime that can be made to fail on request:
 
 1. Send a Chinese request that fails. Expected: one plain-text reply in the same conversation or thread with three
-   Chinese sentences (what happened, whether operations ran, what to do next) and a details link. It shows no error
-   code, and the failed reaction appears. Opening the link while signed in as the Agent owner shows the error code.
+   Chinese sentences (what happened, whether operations ran, what to do next) and a clickable 查看详情 link with no raw
+   URL or Markdown. It shows no error code, and the failed reaction appears. Opening the link while signed in as the Agent owner shows the error code.
 2. Send an English request that fails. Expected: the same message in English. Mentioning a Bot with a Chinese name
    does not change the language.
 3. Make the workspace save fail. Expected: a card with Retry save and Discard buttons in the language of the request,

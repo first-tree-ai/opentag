@@ -10,6 +10,19 @@ import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/error
 import { classifiedProviderProbeIssue } from "../../agent-runtime/probe-failure.js";
 import { providerFailureCode, providerProcessFailureCode } from "../../agent-runtime/provider-failure.js";
 import {
+  isNonNegativeNumber,
+  parseHttpMcpGateway,
+  protocolError,
+  toJsonValue as protocolJsonValue,
+  providerConfiguration,
+  record,
+  requireArray,
+  requireIndex as requireProtocolIndex,
+  requireProtocolString,
+  requireRecord,
+  requireUuid,
+} from "../../agent-runtime/provider-utils.js";
+import {
   AGENT_RUNTIME_CONTRACT_VERSION,
   type AgentAbortRequest,
   type AgentHostedTools,
@@ -182,7 +195,6 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   readonly #startedModelTurns = new Set<string>();
   readonly #completedModelTurns = new Set<string>();
   #process?: ClaudeCodeProcessClient;
-  #context?: AgentProviderRunContext;
   #eventTail: Promise<void> = Promise.resolve();
   #terminal?: ClaudeCodeTerminal;
   /** Results that steered input continued past; merged into the one terminal of this Run. */
@@ -218,7 +230,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     request: AgentPromptRequest,
     context: AgentProviderRunContext,
   ): Promise<AgentProviderRunResult> {
-    this.#context = context;
+    this.providerContext = context;
     // A steer admitted before executeRun started may already be waiting on this slot.
     this.#processReady ??= deferredProcess();
     this.#terminal = undefined;
@@ -296,7 +308,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       this.#processReady = undefined;
       this.#continuedTerminals.length = 0;
       this.#process = undefined;
-      this.#context = undefined;
+      this.providerContext = undefined;
       this.#currentMessageId = undefined;
       this.#textBlocks.clear();
       this.#tools.clear();
@@ -399,7 +411,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     const terminal = mayBeTerminal && message.type === "result";
     if (terminal) this.#claimTerminalAtIngress(message);
     const next = this.#eventTail.then(async () => {
-      if (!this.#context || this.#providerFailure) return;
+      if (!this.providerContext || this.#providerFailure) return;
       if (message.type === "control_request" || message.type === "control_cancel_request")
         await this.#handleControlMessage(message);
       else await this.#handleMessage(message, terminal);
@@ -411,10 +423,10 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   }
 
   #claimTerminalAtIngress(message: Readonly<Record<string, unknown>>): void {
-    if (!this.#context) return;
+    if (!this.providerContext) return;
     try {
       parseTerminal(message, this.#sessionId);
-      this.#context.claimTerminal();
+      this.providerContext.claimTerminal();
       this.#terminalClaimed = true;
     } catch (error) {
       logger.debug(
@@ -434,7 +446,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
         throw protocolError("Unsupported Claude Code control request");
       const input = requireRecord(request.input, "Claude Code permission input is invalid");
       this.#permissions.set(id, input);
-      await this.#requireContext().requestInteraction({
+      await this.requireProviderContext().requestInteraction({
         requestId: id,
         kind: "approval",
         title: `Approve ${requireString(request.tool_name, "Claude Code permission tool is invalid")}`,
@@ -444,7 +456,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     }
     const id = requireString(message.request_id, "Claude Code cancelled request has no id");
     this.#permissions.delete(id);
-    await this.#requireContext().resolveInteraction(id, "cancel");
+    await this.requireProviderContext().resolveInteraction(id, "cancel");
   }
 
   async #handleMessage(message: Readonly<Record<string, unknown>>, terminal: boolean): Promise<void> {
@@ -495,7 +507,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       return;
     }
     const merged = mergeTerminals(this.#continuedTerminals, parsed);
-    if (merged.usage) await this.#requireContext().emit({ type: "usage_updated", usage: merged.usage });
+    if (merged.usage) await this.requireProviderContext().emit({ type: "usage_updated", usage: merged.usage });
     this.#terminal = merged;
   }
 
@@ -524,14 +536,14 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     }
     if (type === "message_delta") {
       const usage = parseUsage(event.usage);
-      if (usage) await this.#requireContext().emit({ type: "usage_updated", usage });
+      if (usage) await this.requireProviderContext().emit({ type: "usage_updated", usage });
       return;
     }
     if (type === "message_stop") {
       const id = this.#requireCurrentMessageId();
       if (!this.#completedModelTurns.has(id)) {
         this.#completedModelTurns.add(id);
-        await this.#requireContext().emit({ type: "model_turn_completed", modelTurnId: id });
+        await this.requireProviderContext().emit({ type: "model_turn_completed", modelTurnId: id });
       }
       this.#currentMessageId = undefined;
       return;
@@ -557,7 +569,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
         if (!this.#tools.has(toolId)) {
           const name = requireString(block.name, "Claude Code tool use has no name");
           this.#tools.set(toolId, { name });
-          await this.#requireContext().emit({
+          await this.requireProviderContext().emit({
             type: "tool_started",
             toolCallId: toolId,
             name,
@@ -568,11 +580,11 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     }
     if (!alreadyStarted && !this.#completedModelTurns.has(id)) {
       this.#completedModelTurns.add(id);
-      await this.#requireContext().emit({ type: "model_turn_completed", modelTurnId: id });
+      await this.requireProviderContext().emit({ type: "model_turn_completed", modelTurnId: id });
     }
     if (typeof envelope.error === "string") {
       this.#assistantError = envelope.error;
-      await this.#requireContext().emit({
+      await this.requireProviderContext().emit({
         type: "provider_warning",
         code: "claude_code_assistant_error",
         message: envelope.error,
@@ -591,7 +603,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       const tool = this.#tools.get(toolCallId);
       if (!tool) continue;
       this.#tools.delete(toolCallId);
-      await this.#requireContext().emit({
+      await this.requireProviderContext().emit({
         type: "tool_completed",
         toolCallId,
         name: tool.name,
@@ -607,11 +619,11 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     if (block.type === "text") {
       const state: TextBlockState = { id: key, completed: false, started: true, text: "" };
       this.#textBlocks.set(key, state);
-      await this.#requireContext().emit({ type: "message_started", messageId: key });
+      await this.requireProviderContext().emit({ type: "message_started", messageId: key });
       const text = typeof block.text === "string" ? block.text : "";
       if (text) {
         state.text += text;
-        await this.#requireContext().emit({ type: "message_delta", messageId: key, delta: text });
+        await this.requireProviderContext().emit({ type: "message_delta", messageId: key, delta: text });
       }
       return;
     }
@@ -632,7 +644,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       };
       /* v8 ignore else -- Claude Code always attaches an input payload to tool_use blocks. */
       if (block.input !== undefined) event.input = toJsonValue(block.input);
-      await this.#requireContext().emit(event);
+      await this.requireProviderContext().emit(event);
       return;
     }
     await this.#emitProviderEvent({ type: "content_block_start", index, block: toJsonValue(block) });
@@ -646,14 +658,14 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       const state = this.#textBlocks.get(key);
       if (!state) throw protocolError("Claude Code text delta has no matching block");
       state.text += text;
-      await this.#requireContext().emit({ type: "message_delta", messageId: state.id, delta: text });
+      await this.requireProviderContext().emit({ type: "message_delta", messageId: state.id, delta: text });
       return;
     }
     if (delta.type === "input_json_delta") {
       const partialJson = requireString(delta.partial_json, "Claude Code tool delta has no JSON", true);
       const toolCallId = this.#toolBlocks.get(key);
       if (!toolCallId) throw protocolError("Claude Code tool delta has no matching tool");
-      await this.#requireContext().emit({
+      await this.requireProviderContext().emit({
         type: "tool_updated",
         toolCallId,
         update: { partialJson },
@@ -670,7 +682,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     const state = this.#textBlocks.get(key);
     if (!state || state.completed) return;
     state.completed = true;
-    await this.#requireContext().emit({ type: "message_completed", messageId: state.id, text: state.text });
+    await this.requireProviderContext().emit({ type: "message_completed", messageId: state.id, text: state.text });
   }
 
   async #emitCompleteText(key: string, text: string): Promise<void> {
@@ -681,20 +693,20 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     }
     if (!state.started) {
       state.started = true;
-      await this.#requireContext().emit({ type: "message_started", messageId: key });
+      await this.requireProviderContext().emit({ type: "message_started", messageId: key });
     }
     if (!state.text && text) {
       state.text = text;
-      await this.#requireContext().emit({ type: "message_delta", messageId: key, delta: text });
+      await this.requireProviderContext().emit({ type: "message_delta", messageId: key, delta: text });
     }
     state.completed = true;
-    await this.#requireContext().emit({ type: "message_completed", messageId: key, text });
+    await this.requireProviderContext().emit({ type: "message_completed", messageId: key, text });
   }
 
   async #startModelTurn(id: string): Promise<void> {
     if (this.#startedModelTurns.has(id)) return;
     this.#startedModelTurns.add(id);
-    await this.#requireContext().emit({ type: "model_turn_started", modelTurnId: id });
+    await this.requireProviderContext().emit({ type: "model_turn_started", modelTurnId: id });
   }
 
   async #completeOutstandingTools(terminal: ClaudeCodeTerminal): Promise<void> {
@@ -704,7 +716,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
         .filter((value): value is string => typeof value === "string"),
     );
     for (const [toolCallId, tool] of this.#tools) {
-      await this.#requireContext().emit({
+      await this.requireProviderContext().emit({
         type: "tool_completed",
         toolCallId,
         name: tool.name,
@@ -715,7 +727,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   }
 
   async #emitProviderEvent(payload: JsonValue | Readonly<Record<string, unknown>>): Promise<void> {
-    await this.#requireContext().emit({
+    await this.requireProviderContext().emit({
       type: "provider_event",
       providerId: CLAUDE_CODE_PROVIDER_ID,
       schemaVersion: 1,
@@ -726,12 +738,6 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
   #requireCurrentMessageId(): string {
     if (!this.#currentMessageId) throw protocolError("Claude Code content event has no active message");
     return this.#currentMessageId;
-  }
-
-  #requireContext(): AgentProviderRunContext {
-    /* v8 ignore next -- the serial envelope queue drops messages after the active Run context is cleared. */
-    if (!this.#context) throw protocolError("Claude Code event arrived without an active run");
-    return this.#context;
   }
 
   #failProvider(error: Error): void {
@@ -1082,11 +1088,8 @@ function validateFactoryRequest(request: CreateAgentRuntimeRequest): void {
   }
 }
 
-function validateConfiguration(configuration: AgentRunConfiguration | undefined): void {
-  if (!configuration) return;
-  assertConfigurationStrings(configuration);
-  parseProviderConfiguration(configuration.provider);
-}
+const { validate: validateConfiguration, merge: mergeConfiguration } =
+  providerConfiguration(parseProviderConfiguration);
 
 function parseProviderConfiguration(value: JsonValue | undefined): ClaudeCodeProviderConfiguration {
   if (value === undefined) return {};
@@ -1128,48 +1131,7 @@ function parseProviderConfiguration(value: JsonValue | undefined): ClaudeCodePro
  * otherwise be written into `mcp.json` for the CLI to interpret.
  */
 function parseMcpGatewayConfiguration(value: unknown): ClaudeCodeMcpGatewayConfiguration | undefined {
-  if (value === undefined) return undefined;
-  const object = record(value);
-  if (!object) {
-    throw new AgentRuntimeError("configuration_invalid", "Claude Code mcpGateway must be an object");
-  }
-  const url = object.url;
-  const token = object.token;
-  if (typeof url !== "string" || typeof token !== "string" || token.length === 0) {
-    throw new AgentRuntimeError("configuration_invalid", "Claude Code mcpGateway requires a url and a token");
-  }
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw new AgentRuntimeError("configuration_invalid", "Claude Code mcpGateway url must be absolute");
-  }
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    throw new AgentRuntimeError("configuration_invalid", "Claude Code mcpGateway url must be http or https");
-  }
-  return { url, token };
-}
-
-function mergeConfiguration(
-  base: AgentRunConfiguration | undefined,
-  override: AgentRunConfiguration | undefined,
-): AgentRunConfiguration | undefined {
-  if (!base) {
-    validateConfiguration(override);
-    return override;
-  }
-  if (!override) return base;
-  const merged: AgentRunConfiguration = {
-    ...base,
-    ...override,
-    // Structurally JSON, but an interface has no index signature, so TypeScript needs the assertion.
-    provider: {
-      ...parseProviderConfiguration(base.provider),
-      ...parseProviderConfiguration(override.provider),
-    } as JsonValue,
-  };
-  validateConfiguration(merged);
-  return merged;
+  return parseHttpMcpGateway(value, "Claude Code");
 }
 
 function claudeCodeInput(request: AgentPromptRequest): Readonly<Record<string, unknown>> {
@@ -1352,57 +1314,13 @@ function blockKey(messageId: string, index: number): string {
 }
 
 function requireIndex(value: unknown): number {
-  if (!Number.isSafeInteger(value) || (value as number) < 0) {
-    throw protocolError("Claude Code content block has an invalid index");
-  }
-  return value as number;
-}
-
-function requireUuid(value: unknown, field: string): string {
-  const result = requireString(value, `${field} must be a UUID`);
-  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(result)) {
-    throw protocolError(`${field} must be a UUID`);
-  }
-  return result;
+  return requireProtocolIndex(value, "Claude Code content block has an invalid index");
 }
 
 function toJsonValue(value: unknown): JsonValue {
-  assertJsonValue(value, "Claude Code event payload");
-  return value as JsonValue;
-}
-
-function protocolError(message: string): AgentProviderError {
-  return new AgentProviderError("provider_protocol_error", message);
-}
-
-function record(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === "object" && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
-function requireRecord(value: unknown, message: string): Record<string, unknown> {
-  const result = record(value);
-  if (!result) throw protocolError(message);
-  return result;
-}
-
-function requireArray(value: unknown, message: string): readonly unknown[] {
-  if (!Array.isArray(value)) throw protocolError(message);
-  return value;
+  return protocolJsonValue(value, "Claude Code event payload");
 }
 
 function requireString(value: unknown, message: string, allowEmpty = false): string {
-  if (
-    typeof value !== "string" ||
-    (!allowEmpty && value.length === 0) ||
-    Buffer.byteLength(value, "utf8") > 8 * 1024 * 1024
-  ) {
-    throw protocolError(message);
-  }
-  return value;
-}
-
-function isNonNegativeNumber(value: unknown): value is number {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+  return requireProtocolString(value, message, allowEmpty, 8 * 1024 * 1024);
 }

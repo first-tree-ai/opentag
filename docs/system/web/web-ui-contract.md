@@ -286,9 +286,12 @@ Normal runtime receipt does not occupy a separate row. Exceptional or unconfirme
 relative-time warning that opens details; they do not claim task failure or completion. Exact timestamps
 and timezones remain available in time titles and details. Relative labels update locally once per minute
 without fetching private details. On a minute tick at or after a loaded enabled occurrence's due time,
-the list revalidates summaries once per schedule and observed occurrence. An unchanged past occurrence
-does not cause repeated reads; a failed refresh retains rows and exposes Retry. The list uses summary
-fields and fetches the private prompt only on open.
+the list revalidates summaries at most once per tick and at most three times for the same observed
+occurrence, because a due read can precede the Server's five-second scan and still report the previous
+time. Advancing to a new occurrence restores the budget; three unchanged responses stop automatic reads
+while the row keeps that observation, instead of freezing it until focus or remount. A failed refresh
+retains rows and exposes Retry without further automatic reads. The list uses summary fields and fetches
+the private prompt only on open.
 
 The list stays in one card with compact divided rows; pagination remains an explicit Load more action.
 The schedule name opens a focused detail dialog, including when reached through the existing schedule deep link.

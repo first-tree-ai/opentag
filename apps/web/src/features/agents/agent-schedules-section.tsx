@@ -216,16 +216,14 @@ function AgentSchedulesContent({ agentId, scheduleId }: { agentId: string; sched
 }
 
 /**
- * How many minute reads one due occurrence may consume before the page stops asking about it.
- *
- * A due response can legitimately keep the old nextTriggerAt until the Server's next scan, so the
- * first read after the occurrence is observed may come back unchanged. One follow-up would still
- * freeze the row whenever the scan lands later than that, so the bound spans a few minute ticks —
- * long enough to outlast a scan, short enough that an unchanged past occurrence is never polled.
+ * Revalidate a due occurrence at most once per minute tick and at most three times for the same observed
+ * occurrence. A due read can legitimately precede the Server's next five-second scan and still report the
+ * previous nextTriggerAt, so later ticks keep confirming instead of leaving the row frozen until focus or
+ * remount. Observing a new occurrence restores the budget; three unchanged responses stop automatic reads.
+ * A failed list keeps its own Retry and is never polled automatically.
  */
-const DUE_READ_ATTEMPTS = 3;
+const DUE_CONFIRMATION_LIMIT = 3;
 
-/** Revalidate each observed due occurrence within a bounded number of reads; never poll forever. */
 function useDueScheduleRefresh(
   rows: AgentScheduleListItem[],
   now: number,
@@ -234,27 +232,29 @@ function useDueScheduleRefresh(
   refetch: () => Promise<unknown>,
 ) {
   const mountedAt = useRef(now);
-  const reads = useRef(new Map<string, { attempts: number; tick: number }>());
+  const observedAt = useRef(now);
+  const attempts = useRef(new Map<string, { occurrence: string; reads: number }>());
   useEffect(() => {
-    // A failed list owns its own recovery through the banner's explicit retry, not through the tick.
-    if (now === mountedAt.current || fetching || failed) return;
-    const keyOf = (item: AgentScheduleListItem) => `${item.id}|${item.nextTriggerAt}`;
+    const visibleIds = new Set(rows.map((item) => item.id));
+    attempts.current.forEach((_, id) => {
+      if (!visibleIds.has(id)) attempts.current.delete(id);
+    });
+    if (now === mountedAt.current || now === observedAt.current) return;
+    observedAt.current = now;
+    if (failed || fetching) return;
     const due = rows.filter((item) => {
       if (!item.enabled || !item.nextTriggerAt || Date.parse(item.nextTriggerAt) > now) return false;
-      const read = reads.current.get(keyOf(item));
-      // One read per occurrence per tick, whatever that response turned out to be.
-      if (read?.tick === now) return false;
-      return (read?.attempts ?? 0) < DUE_READ_ATTEMPTS;
+      const prior = attempts.current.get(item.id);
+      return prior === undefined || prior.occurrence !== item.nextTriggerAt || prior.reads < DUE_CONFIRMATION_LIMIT;
     });
     for (const item of due) {
-      const key = keyOf(item);
-      reads.current.set(key, { attempts: (reads.current.get(key)?.attempts ?? 0) + 1, tick: now });
+      const occurrence = item.nextTriggerAt as string;
+      const prior = attempts.current.get(item.id);
+      attempts.current.set(item.id, {
+        occurrence,
+        reads: prior !== undefined && prior.occurrence === occurrence ? prior.reads + 1 : 1,
+      });
     }
-    // An occurrence that left the page stops counting, so only live occurrences stay in the map.
-    const visible = new Set(rows.filter((item) => item.nextTriggerAt).map(keyOf));
-    reads.current.forEach((_, key) => {
-      if (!visible.has(key)) reads.current.delete(key);
-    });
     if (due.length > 0) void refetch();
   }, [rows, now, fetching, failed, refetch]);
 }

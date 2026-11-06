@@ -3,16 +3,18 @@ import {
   type ImBindingUnbindRequiredDetail,
   ImBindingUnbindRequiredDetailSchema,
 } from "@opentag/shared";
+import { DomainServiceError } from "../domain-service-error.js";
 
-export class ImBindingServiceError extends Error {
+export class ImBindingServiceError extends DomainServiceError<string, ErrorCategory, number> {
   constructor(
-    readonly code: string,
-    readonly statusCode: number,
+    code: string,
+    statusCode: number,
     message: string,
-    readonly category: ErrorCategory = "deterministic",
+    category: ErrorCategory = "deterministic",
     options: { cause?: unknown } = {},
   ) {
-    super(message, options.cause === undefined ? undefined : { cause: options.cause });
+    super({ code, category, message, statusCode, cause: options.cause });
+    this.name = "ImBindingServiceError";
   }
 }
 

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { RUNTIME_VALIDATION_RUN_TTL_MS, type RuntimeCredentialProvider } from "@opentag/shared";
+import { RuntimeStoreCapacityError } from "./capacity-error.js";
 
 export interface RuntimeValidationRun {
   validationRunId: string;
@@ -17,7 +18,7 @@ export interface RuntimeValidationRunRegistryOptions {
   maxRuns?: number;
 }
 
-export class RuntimeValidationRunRegistryCapacityError extends Error {
+export class RuntimeValidationRunRegistryCapacityError extends RuntimeStoreCapacityError {
   constructor() {
     super("The runtime validation run registry is full");
     this.name = "RuntimeValidationRunRegistryCapacityError";

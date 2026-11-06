@@ -17,7 +17,12 @@ import { ApplicationCipher } from "../../services/crypto.js";
 import { ExternalCallPolicy } from "../../services/im/external-call-policy.js";
 import { ImFeedbackActionsService } from "../../services/im/im-feedback-actions.js";
 import { type FeedbackTransport, ImFeedbackMessenger } from "../../services/im/im-feedback-messenger.js";
-import { type FeedbackTarget, ImFeedbackStore, startImFeedback } from "../../services/im/im-feedback-store.js";
+import {
+  createImFeedbackTarget,
+  type FeedbackTarget,
+  ImFeedbackStore,
+  startImFeedback,
+} from "../../services/im/im-feedback-store.js";
 import { ImFeedbackWorker } from "../../services/im/im-feedback-worker.js";
 import { ImBindingService } from "../../services/im-bindings/im-binding-service.js";
 import { closeServerResources } from "../../shutdown.js";
@@ -91,6 +96,117 @@ async function failed() {
   };
 }
 describe("PostgreSQL feedback operations", () => {
+  it("excludes an active native input without blocking another input or reordering its attempts", async () => {
+    const h = await failed();
+    const [retry] = await client.database
+      .insert(imMessageDeliveries)
+      .values({
+        messageId: h.target.messageId,
+        sessionId: h.target.sessionId,
+        attention: "direct",
+        placementGeneration: 1,
+        attemptOrdinal: 1,
+        retryOfDeliveryId: h.target.deliveryId,
+        expiresAt: h.target.actionsExpireAt,
+      })
+      .returning();
+    if (!retry) throw new Error("Missing retry delivery");
+    await client.database.transaction((tx) => createImFeedbackTarget(tx, retry.id, clock));
+    const independent = await h.delivery();
+    await client.database.transaction((tx) => startImFeedback(tx, independent.frame.deliveryId, clock));
+    for (const [index, deliveryId] of [h.target.deliveryId, retry.id, independent.frame.deliveryId].entries()) {
+      await client.database
+        .update(imFeedbackTargets)
+        .set({ nextAttemptAt: new Date(clock.getTime() - 3_000 + index * 1_000) })
+        .where(eq(imFeedbackTargets.deliveryId, deliveryId));
+    }
+    const peer = createDatabaseClient(fixtureDb.databaseUrl, { max: 1 });
+    try {
+      const store = new ImFeedbackStore(client.database, () => clock);
+      const other = new ImFeedbackStore(peer.database, () => clock);
+      const first = await store.claim();
+      expect(first?.id).toBe(h.target.id);
+      if (!first) throw new Error("Missing first claim");
+      const next = await other.claim([first]);
+      expect(next?.deliveryId).toBe(independent.frame.deliveryId);
+      if (!next) throw new Error("Missing independent claim");
+      expect(await store.claim([first, next])).toBeUndefined();
+      await store.settle(first, { dormant: true });
+      expect((await other.claim([next]))?.deliveryId).toBe(retry.id);
+    } finally {
+      await peer.sql.end();
+    }
+  });
+
+  it("admits only one simultaneous claim and fences a late settlement after expiry", async () => {
+    await failed();
+    const peer = createDatabaseClient(fixtureDb.databaseUrl, { max: 1 });
+    try {
+      const stores = [
+        new ImFeedbackStore(client.database, () => clock),
+        new ImFeedbackStore(peer.database, () => clock),
+      ];
+      const claims = (await Promise.all(stores.map((store) => store.claim()))).filter((t) => t !== undefined);
+      expect(claims).toHaveLength(1);
+      const old = claims[0];
+      if (!old) throw new Error("Missing original claim");
+      expect(await stores[1]?.markSending(old)).toBe(true);
+      clock = new Date(clock.getTime() + 91_000);
+      const current = await stores[1]?.claim();
+      expect(current).toMatchObject({ id: old.id, cardState: "send_unknown" });
+      if (!current) throw new Error("Missing replacement claim");
+      expect(current.claimId).not.toBe(old.claimId);
+      await stores[0]?.settle(old, { reaction: "working", cardState: "sent", cardMessageId: "late-old-write" });
+      const [saved] = await client.database.select().from(imFeedbackTargets).where(eq(imFeedbackTargets.id, old.id));
+      expect(saved).toMatchObject({
+        claimId: current.claimId,
+        appliedReaction: "none",
+        cardState: "send_unknown",
+        cardMessageId: null,
+      });
+    } finally {
+      await peer.sql.end();
+    }
+  });
+
+  it("drains four admitted independent projections on stop without admitting the remaining input", async () => {
+    const h = await failed();
+    for (let i = 0; i < 4; i++) {
+      const entry = await h.delivery();
+      await client.database.transaction((tx) => startImFeedback(tx, entry.frame.deliveryId, clock));
+    }
+    const gate = deferred();
+    let admitted = 0;
+    const reaction = vi.fn(async () => {
+      admitted++;
+      await gate.promise;
+    });
+    const worker = new ImFeedbackWorker({
+      store: new ImFeedbackStore(client.database, () => clock),
+      transport: { reaction, post: async () => "card", update: async () => {}, find: async () => ({ ids: [] }) },
+      logger: { warn: vi.fn() },
+    });
+    const pass = worker.runOnce();
+    try {
+      await vi.waitFor(() => expect(admitted).toBe(4));
+      let finished = false;
+      const stop = worker.stop().then(() => {
+        finished = true;
+      });
+      await Promise.resolve();
+      expect(finished).toBe(false);
+      gate.resolve();
+      await Promise.all([pass, stop]);
+      expect(reaction).toHaveBeenCalledTimes(4);
+      const targets = await client.database.select().from(imFeedbackTargets);
+      expect(targets.filter((t) => t.appliedReaction !== "none")).toHaveLength(4);
+      expect(targets.every((t) => t.claimId === null)).toBe(true);
+    } finally {
+      gate.resolve();
+      await worker.stop();
+    }
+  });
+
   it("rejects concurrent legacy Retry confirmations without adding an attempt", async () => {
     const h = await failed();
     const results = await Promise.allSettled([
@@ -347,24 +463,26 @@ describe("existing installation cooldown", () => {
       performanceLogger: createPerformanceLogger(() => undefined),
     });
     const requests: string[] = [];
+    const secondAdmitted = deferred();
     const http = vi.spyOn(globalThis, "fetch").mockImplementation(async (url) => {
       requests.push(String(url));
-      return requests.length === 1
-        ? new Response(JSON.stringify({ ok: false, error: "ratelimited" }), {
-            status: 429,
-            headers: { "Retry-After": "60", "Content-Type": "application/json" },
-          })
-        : new Response(JSON.stringify({ ok: true, channel: h.target.channelId, ts: "synthetic-card" }), {
-            headers: { "Content-Type": "application/json" },
-          });
+      if (requests.length === 1) {
+        await secondAdmitted.promise;
+        return new Response(JSON.stringify({ ok: false, error: "ratelimited" }), {
+          status: 429,
+          headers: { "Retry-After": "60", "Content-Type": "application/json" },
+        });
+      }
+      secondAdmitted.resolve();
+      return new Response(JSON.stringify({ ok: true, channel: h.target.channelId, ts: "synthetic-card" }), {
+        headers: { "Content-Type": "application/json" },
+      });
     });
     try {
       await new ImFeedbackWorker({ store, transport, logger: { warn: vi.fn() }, now: () => clock }).runOnce();
-      expect(requests).toHaveLength(1);
-      expect(await client.database.select({ state: imFeedbackTargets.cardState }).from(imFeedbackTargets)).toEqual([
-        { state: "pending" },
-        { state: "pending" },
-      ]);
+      expect(requests).toHaveLength(2);
+      const targets = await client.database.select().from(imFeedbackTargets);
+      expect(targets.map((t) => t.cardState).sort()).toEqual(["pending", "sent"]);
       const restartedStore = new ImFeedbackStore(replica.database, () => clock);
       const restarted = messengerFor(h.target, restartedStore);
       await client.database.update(imFeedbackTargets).set({ nextAttemptAt: clock });
@@ -380,7 +498,7 @@ describe("existing installation cooldown", () => {
         () => restarted.update({ ...h.target, cardMessageId: "bound" }),
       ])
         await expect(call()).rejects.toMatchObject({ code: "IM_FEEDBACK_RATE_LIMITED", knownNotApplied: true });
-      expect(requests).toHaveLength(1);
+      expect(requests).toHaveLength(2);
       const [installation] = await client.database
         .select()
         .from(slackInstallations)
@@ -399,13 +517,13 @@ describe("existing installation cooldown", () => {
       if (!other) throw new Error("Missing second installation");
       const otherTarget = { ...h.target, installationId: other.id };
       expect(await messengerFor(otherTarget, restartedStore).post(otherTarget)).toBe("synthetic-card");
-      expect(requests).toHaveLength(2);
+      expect(requests).toHaveLength(3);
       await client.database
         .update(slackInstallations)
         .set({ workingStatusNotBeforeAt: new Date(0) })
         .where(eq(slackInstallations.id, installation.id));
       expect(await restarted.post(h.target)).toBe("synthetic-card");
-      expect(requests).toHaveLength(3);
+      expect(requests).toHaveLength(4);
     } finally {
       http.mockRestore();
       await replica.sql.end();

@@ -29,6 +29,20 @@ is joined with its sibling before returning, and that a late read after the dead
 480 ms RTT model measures the Server component, not native provider latency; record actual provider timing
 separately when an authorized test deployment is available.
 
+## Feedback queue concurrency and drain
+
+Use the controlled worker and PostgreSQL feedback suites to queue eight independent inputs with delayed transports.
+Verify at most four projections run concurrently and the eighth can start after one round of completions. Multiple
+attempts for one binding/channel/native input remain sequential within a worker, while other inputs keep progressing.
+Concurrent store claimants must never own the same live target claim. A stale claim cannot settle a replacement claim.
+
+Hold a projection across several timer ticks and explicit `runOnce` calls. Verify one `ImFeedbackWorker.runPass`
+start/end pair for the actual pass, including a failed pass. Fail or time out one target and verify independent targets
+still settle. A cooldown-storage failure stops new claims and drains calls already admitted. During controlled shutdown,
+verify all admitted projections settle before the worker stops and a claim returned after stop starts no provider call.
+Cancel an in-flight working task and verify its working reaction is removed without creating a failure card or replaying
+execution. These deterministic checks do not establish native provider latency or deployment acceptance.
+
 ## Daemon crash (power loss)
 
 1. Start a long Run in a DM or thread, then kill the daemon process group (`kill -9` of the daemon and its children).

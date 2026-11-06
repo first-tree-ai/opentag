@@ -184,7 +184,9 @@ export class ImFeedbackStore {
     readonly now: () => Date = () => new Date(),
   ) {}
 
-  async claim(): Promise<FeedbackTarget | undefined> {
+  async claim(
+    excluded: readonly Pick<FeedbackTarget, "bindingId" | "channelId" | "inputExternalId">[] = [],
+  ): Promise<FeedbackTarget | undefined> {
     return this.database.transaction(async (tx) => {
       const now = this.now();
       const [target] = await tx
@@ -194,6 +196,13 @@ export class ImFeedbackStore {
           and(
             lte(imFeedbackTargets.nextAttemptAt, now),
             or(isNull(imFeedbackTargets.claimExpiresAt), lte(imFeedbackTargets.claimExpiresAt, now)),
+            ...excluded.map((target) =>
+              or(
+                ne(imFeedbackTargets.bindingId, target.bindingId),
+                ne(imFeedbackTargets.channelId, target.channelId),
+                ne(imFeedbackTargets.inputExternalId, target.inputExternalId),
+              ),
+            ),
           ),
         )
         .orderBy(imFeedbackTargets.nextAttemptAt, imFeedbackTargets.id)

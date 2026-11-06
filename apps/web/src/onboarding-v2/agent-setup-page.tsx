@@ -64,6 +64,7 @@ import type { FlowState } from "./flow.js";
 import { providerCliWaitingCopy } from "./messaging-readiness-copy.js";
 import { SetupLogo } from "./setup-logo.js";
 import "./onboarding-v2.css";
+import { completionHandoff } from "./completion-handoff.js";
 import { preparationIsTransitional, preparationSummaryRows } from "./preparation-readiness.js";
 import { CheckLine } from "./readiness-list.js";
 import { type AgentSetupAdapter, createHttpSetupAdapter } from "./setup-adapter.js";
@@ -834,7 +835,9 @@ function AgentSetupPageContent({
           </div>
         </header>
       )}
-      <Main className={`otv2-frame mx-auto flex w-full flex-1 flex-col gap-6 ${embedded ? "" : "p-6"}`}>
+      <Main
+        className={`otv2-frame mx-auto flex w-full flex-1 flex-col gap-6 ${snapshot?.stage === "ready" ? "otv2-frame--complete" : ""} ${embedded ? "" : "p-6"}`}
+      >
         <SetupPhaseView
           slackApi={adapter.slackSetup}
           agentId={agentId}
@@ -845,6 +848,7 @@ function AgentSetupPageContent({
           onPreviewViewChange={onPreviewViewChange}
           previewInitialView={previewInitialView}
           report={report}
+          readMessagingBinding={adapter.readMessagingBinding}
         />
       </Main>
     </div>
@@ -861,6 +865,7 @@ function SetupPhaseView({
   onPreviewViewChange,
   previewInitialView,
   report,
+  readMessagingBinding,
 }: {
   readonly agentId: string;
   readonly computerAdapter?: AgentSetupPageProps["computerAdapter"];
@@ -871,6 +876,7 @@ function SetupPhaseView({
   readonly onPreviewViewChange?: (view: AgentSetupPreviewView) => void;
   readonly previewInitialView?: AgentSetupPreviewView;
   readonly report: ReadyReport;
+  readonly readMessagingBinding?: AgentSetupAdapter["readMessagingBinding"];
 }) {
   const { phase } = controller;
   if (phase.kind === "loading") {
@@ -915,6 +921,7 @@ function SetupPhaseView({
       onPreviewViewChange={onPreviewViewChange}
       previewInitialView={previewInitialView}
       report={report}
+      readMessagingBinding={readMessagingBinding}
       snapshot={phase.snapshot}
       slackApi={slackApi}
     />
@@ -962,6 +969,7 @@ function AgentSetupSnapshotView({
   onPreviewViewChange,
   previewInitialView,
   report,
+  readMessagingBinding,
   snapshot,
 }: {
   readonly slackApi?: SlackSetupApi;
@@ -973,6 +981,7 @@ function AgentSetupSnapshotView({
   readonly onPreviewViewChange?: (view: AgentSetupPreviewView) => void;
   readonly previewInitialView?: AgentSetupPreviewView;
   readonly report: ReadyReport;
+  readonly readMessagingBinding?: AgentSetupAdapter["readMessagingBinding"];
   readonly snapshot: AgentSetupSnapshot;
 }) {
   const { stage } = snapshot;
@@ -1059,9 +1068,9 @@ function AgentSetupSnapshotView({
       {stage === "ready" ? (
         <div className="otv2-messaging-settings" data-ui="agent-setup-ready">
           <DoneStep
-            presentation="settings"
             action={onOpenAgent ? { label: m.onboarding_v2_open_agent(), onClick: onOpenAgent } : undefined}
             completion={report}
+            handoff={completionHandoff(agentId, snapshot.messaging, readMessagingBinding, Boolean(report))}
             name={snapshot.agent.name}
             provider={snapshot.messaging.kind === "ready" ? snapshot.messaging.provider : undefined}
           />
@@ -1923,6 +1932,7 @@ function MessagingHandoff({
 }) {
   const [unbindAsked, setUnbindAsked] = useState(false);
   const unbindButtonRef = useRef<HTMLButtonElement>(null);
+  const needsAttention = messaging.progress?.phase === "needs_attention";
   const unbind = snapshot.actions.find(
     (action): action is Extract<AgentSetupAction, { kind: "unbind-messaging" }> =>
       action.kind === "unbind-messaging" &&
@@ -1937,8 +1947,8 @@ function MessagingHandoff({
           <strong>{providerTitle(messaging.provider)}</strong>
         </span>
         <p className={WAITING_LINE} role="status">
-          <span aria-hidden="true" className="otv2-pending-spinner" />
-          {m.onboarding_v2_messaging_confirming()}
+          {needsAttention ? null : <span aria-hidden="true" className="otv2-pending-spinner" />}
+          {needsAttention ? m.onboarding_v2_setup_messaging_needs_attention() : m.onboarding_v2_messaging_confirming()}
         </p>
         {messaging.progress ? (
           <p className={HINT}>{messagingHandoffCopy(messaging.progress, messaging.provider)}</p>

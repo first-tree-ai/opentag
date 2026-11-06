@@ -321,7 +321,9 @@ describe("agent setup lab page", () => {
 
     await chooseOption("Screen state", "Everything ready");
     await chooseOption("Connected messaging app", "Slack");
-    expect(await screen.findByText("Open the Bot’s chat in Slack, send “Hello” and confirm its reply.")).toBeTruthy();
+    const completion = document.querySelector('[data-ui="onboarding-v2-step-done"]');
+    expect(completion?.textContent).toContain("Slack");
+    expect(screen.queryByRole("textbox")).toBeNull();
     expect(screen.getByText("1 changed")).toBeTruthy();
   });
 });

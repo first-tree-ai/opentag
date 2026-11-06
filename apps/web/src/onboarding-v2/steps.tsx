@@ -1,6 +1,5 @@
 import type { CloudAvailability, ImProvider } from "@opentag/shared/browser";
-import { type FormEvent, useId, useState } from "react";
-import { spaceScriptBoundary } from "../i18n/format.js";
+import { type FormEvent, type ReactNode, useId, useState } from "react";
 import { messagingProviderLabel } from "../im/provider-label.js";
 import * as m from "../paraglide/messages.js";
 import { Button, Icon, KumoInputControl, StatusIndicator, Text } from "../ui/design-system.js";
@@ -28,7 +27,12 @@ const CARD =
 
 export function StepRail({ steps }: { steps: FlowState["steps"] }) {
   return (
-    <nav aria-label={m.onboarding_v2_setup_progress()} className="w-full" data-ui="onboarding-v2-rail">
+    <nav
+      aria-label={m.onboarding_v2_setup_progress()}
+      className="otv2-rail w-full"
+      data-complete={steps.length > 0 && steps.every((step) => step.status === "complete")}
+      data-ui="onboarding-v2-rail"
+    >
       <ol className="flex gap-2 m-0 p-0 list-none">
         {steps.map((step, index) => (
           <li
@@ -384,38 +388,69 @@ export function AgentStep({
   );
 }
 
-function doneDescription(name: string, provider?: ImProvider): string {
-  return provider === "slack"
-    ? m.onboarding_v2_done_description_slack({ provider: messagingProviderLabel(provider) })
-    : provider
-      ? spaceScriptBoundary(
-          m.onboarding_v2_done_description({ mention: name, provider: messagingProviderLabel(provider) }),
-        )
-      : m.onboarding_v2_done_description_any_app({ name });
-}
-
-function deliveryCheckDescription(provider: ImProvider | undefined, fallback: string): string {
-  if (provider === "slack") return m.im_slack_delivery_check({ provider: messagingProviderLabel("slack") });
-  if (provider === "feishu")
-    return m.onboarding_v2_connection_feishu_test({ provider: messagingProviderLabel("feishu") });
-  return fallback;
-}
-
 export function DoneStep({
   action,
   completion,
+  handoff,
   name,
   provider,
-  presentation = "default",
 }: {
   action?: { label: string; onClick: () => void };
   completion?: { onFinish: () => void; state: "failed" | "pending" | "ready" };
+  handoff?: (managementAction: ReactNode) => ReactNode;
   name: string;
   provider?: ImProvider;
-  presentation?: "default" | "settings";
 }) {
-  const description = doneDescription(name, provider);
-  const finishAction = completion ? (
+  const finishAction =
+    completion || action ? (
+      <CompletionAction completion={completion} action={action} secondary={Boolean(handoff)} />
+    ) : null;
+
+  return (
+    <section className="otv2-completion" data-ui="onboarding-v2-step-done">
+      <header className={HEADER}>
+        <Text as="h1" headingSize="page" variant="heading">
+          {m.onboarding_v2_done_title({ name })}
+        </Text>
+      </header>
+      {handoff ? (
+        handoff(finishAction)
+      ) : (
+        <div className="otv2-completion__body">
+          <div className="otv2-completion__identity">
+            <span className="otv2-completion__mark" aria-hidden="true">
+              {provider ? <ProviderIcon className="size-6" provider={provider} /> : <Icon name="check" />}
+            </span>
+            <strong className="otv2-completion__name">{provider ? messagingProviderLabel(provider) : name}</strong>
+            <StatusIndicator label={m.im_connected()} tone="success" />
+          </div>
+          {finishAction ? (
+            <fieldset className="otv2-completion__actions" aria-label={m.onboarding_v2_completion_actions()}>
+              {finishAction}
+            </fieldset>
+          ) : null}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function CompletionAction({
+  completion,
+  action,
+  secondary,
+}: {
+  completion?: { onFinish: () => void; state: "failed" | "pending" | "ready" };
+  action?: { label: string; onClick: () => void };
+  secondary: boolean;
+}) {
+  if (!completion)
+    return action ? (
+      <Button variant={secondary ? "ghost" : "primary"} onClick={action.onClick}>
+        {action.label}
+      </Button>
+    ) : null;
+  return (
     <Button disabled={completion.state === "pending"} onClick={completion.onFinish}>
       {completion.state === "ready"
         ? m.onboarding_v2_done_finish_reboard()
@@ -423,58 +458,5 @@ export function DoneStep({
           ? m.onboarding_v2_done_finishing()
           : m.onboarding_v2_done_retry_finish()}
     </Button>
-  ) : action ? (
-    <Button onClick={action.onClick}>{action.label}</Button>
-  ) : null;
-
-  if (presentation === "settings") {
-    return (
-      <section className="otv2-connection-done" data-ui="onboarding-v2-step-done">
-        <header className={`${HEADER} otv2-messaging-heading`}>
-          <Text as="h1" headingSize="section" variant="heading">
-            {m.onboarding_v2_done_title({ name })}
-          </Text>
-        </header>
-        <div className="otv2-connection-card">
-          <div className="otv2-connection-card__body">
-            <div className="otv2-connection-card__identity">
-              {provider ? (
-                <span className="otv2-connection-card__provider">
-                  <ProviderIcon className="size-6" provider={provider} />
-                  <strong>{messagingProviderLabel(provider)}</strong>
-                </span>
-              ) : (
-                <Icon name="check" aria-hidden="true" />
-              )}
-              <StatusIndicator label={m.im_connected()} tone="success" />
-            </div>
-            <p role="status" className={HINT}>
-              {m.onboarding_v2_connection_ready_checks()}
-            </p>
-            <p className={HINT}>{deliveryCheckDescription(provider, description)}</p>
-          </div>
-          {finishAction ? (
-            <div className="otv2-connection-card__footer otv2-connection-card__footer--finish">{finishAction}</div>
-          ) : null}
-        </div>
-      </section>
-    );
-  }
-  return (
-    <section className="flex flex-col items-center gap-6 text-center" data-ui="onboarding-v2-step-done">
-      <span
-        aria-hidden="true"
-        className="inline-flex size-10 items-center justify-center rounded-full bg-kumo-tint text-kumo-brand"
-      >
-        <Icon name="check" />
-      </span>
-      <header className={HEADER}>
-        <Text as="h1" size="lg" variant="heading">
-          {m.onboarding_v2_done_title({ name })}
-        </Text>
-        <p className="text-kumo-subtle m-0">{description}</p>
-      </header>
-      {finishAction}
-    </section>
   );
 }

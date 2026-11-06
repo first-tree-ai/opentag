@@ -110,6 +110,17 @@ form submission and disabled/busy behavior are preserved. Saved authorization ex
 application/permission details. Retry and permission update remain the primary
 recovery actions; destructive disconnection retains its confirmation.
 
+Completion leaves the configuration-card framing behind. Its 560px reading column
+keeps the completed progress labels quiet, without top rules or filled markers,
+then gives the 32px ready heading (26px on phones) and the Bot identity room to breathe. A 44px
+neutral provider-mark tile, the full 18px Bot name, a 13px provider label and the
+compact Connected status form one identity row above a light divider. Primary
+conversation entry and quiet View agent share a 44px action row; the short help
+disclosure follows without a separate footer surface. On phones the status moves
+under the identity and the actions stack at full width. Loading, missing identity
+and explicit re-board states keep this composition, their existing actions and
+their honest status. Earlier setup stages retain their 720px column and cards.
+
 Authorization guidance names the next action in the provider, including Slack's
 message composer and returned challenge code. Inline Slack forms use the same
 shared controls, including keyboard submission, busy guards and accessible input
@@ -121,8 +132,9 @@ automatic replay. Known provider errors retain their specific recovery message.
 
 Slack reports connected only when App identity is verified and the Server reports
 an active, ready handoff. Saved authorization and identity-only verification remain
-pending states. Ready screens explain that these are connection/readiness checks;
-actual delivery still requires sending a message and confirming the Bot's reply.
+pending states. Ready screens present the connection/readiness result without a
+delivery-test tutorial; actual delivery is a separate fact established by a real
+message exchange.
 No outbound-message test endpoint or reply acknowledgement is added by this UI.
 Slack configuration reads combine query-lifecycle and deadline cancellation and
 forward it to fetch, so expired reads and reads with no remaining observers abort.

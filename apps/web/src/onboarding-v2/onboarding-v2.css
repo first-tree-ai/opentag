@@ -107,6 +107,16 @@
   color: var(--bg);
 }
 
+/* Once the journey is complete, its history gives way to the conversation entry. */
+.otv2-rail[data-complete="true"] .otv2-rail__step {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.otv2-rail[data-complete="true"] .otv2-rail__marker {
+  background: transparent;
+}
+
 /* Measurements ----------------------------------------------------------- */
 
 /*
@@ -117,6 +127,158 @@
 /* The reading frame. */
 .otv2-frame {
   width: min(100%, 720px);
+}
+
+/* Completion is one open composition rather than another configuration card. */
+.otv2-frame.otv2-frame--complete {
+  width: min(100%, 560px);
+  gap: 2.5rem;
+  padding-block-start: 2.5rem;
+}
+
+.otv2-completion,
+.otv2-completion__body {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.otv2-completion {
+  gap: 2rem;
+  text-align: start;
+}
+
+.otv2-completion h1 {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.otv2-completion__identity {
+  display: grid;
+  grid-template-columns: 2.75rem minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.75rem;
+  padding-block-end: 1.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.otv2-completion__mark {
+  display: inline-flex;
+  width: 2.75rem;
+  height: 2.75rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.75rem;
+  background: var(--surface-recessed);
+}
+
+.otv2-completion__details {
+  display: grid;
+  min-width: 0;
+  gap: 0.25rem;
+}
+
+.otv2-completion__name {
+  min-width: 0;
+  font-size: 1.125rem;
+  font-weight: 500;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.otv2-completion__provider {
+  color: var(--muted);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+}
+
+.otv2-completion__notice {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.otv2-completion__actions {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.otv2-completion__actions .ui-button {
+  height: auto;
+  min-height: 44px;
+  padding: 0.625rem 1.25rem;
+  white-space: normal;
+}
+
+.otv2-completion__actions .ui-button--primary {
+  min-width: 15rem;
+}
+
+.otv2-completion__copy {
+  display: grid;
+  min-width: 0;
+  justify-items: start;
+  gap: 0.5rem;
+}
+
+.otv2-completion__help {
+  min-width: 0;
+}
+
+.otv2-completion .otv2-completion__help-trigger {
+  justify-content: flex-start;
+  gap: 0.5rem;
+  padding-inline: 0;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.otv2-completion__help-trigger[aria-expanded="true"] svg {
+  transform: rotate(180deg);
+}
+
+.otv2-completion__help-content {
+  display: grid;
+  justify-items: start;
+  gap: 0.75rem;
+  padding-block-start: 0.75rem;
+}
+
+@media (width <= 479px) {
+  .otv2-frame.otv2-frame--complete {
+    gap: 2rem;
+    padding-block-start: 1.5rem;
+  }
+
+  .otv2-completion__identity {
+    grid-template-columns: 2.75rem minmax(0, 1fr);
+    row-gap: 0.5rem;
+  }
+
+  .otv2-completion__identity > .ui-status {
+    grid-column: 2;
+  }
+
+  .otv2-completion__actions {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.5rem;
+  }
+
+  .otv2-completion__actions .ui-button,
+  .otv2-completion__actions .otv2-completion__copy {
+    width: 100%;
+    min-width: 0;
+  }
 }
 
 /* One stable Computer summary row locates the setup work without adding another panel boundary. */
@@ -750,10 +912,6 @@
   overflow-wrap: anywhere;
 }
 
-.otv2-messaging-settings .otv2-connection-card__footer--finish {
-  justify-content: flex-end;
-}
-
 .otv2-messaging-settings .otv2-connection-card__footer .otv2-connection-disconnect {
   background: transparent;
   border-color: transparent;
@@ -803,13 +961,6 @@
 .otv2-messaging-settings .otv2-connection-scan .ots-qr__image {
   width: 176px;
   height: 176px;
-}
-
-.otv2-messaging-settings .otv2-connection-done {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
-  text-align: start;
 }
 
 @media (width <= 479px) {

@@ -45,6 +45,12 @@ import {
   type FeishuSetupContextRead,
   readFeishuSetupContext,
 } from "./setup-context.js";
+import {
+  FEISHU_QR_LINK_PATH_PREFIX,
+  isPhoneReachableUrl,
+  mintFeishuQrLinkToken,
+  readFeishuQrLinkToken,
+} from "./setup-qr-link.js";
 
 type SetupRow = typeof imBindings.$inferSelect;
 
@@ -199,6 +205,7 @@ export class FeishuSetupService {
   readonly #timing: { -readonly [K in keyof typeof DEFAULT_TIMING]: number };
   readonly #now: () => Date;
   readonly #random: () => number;
+  readonly #qrLinkBaseUrl: string | undefined;
   #heartbeatTimer: ReturnType<typeof setInterval> | undefined;
   /** Keyset cursor retained across bounded passes so saturated slots cannot starve the tail. */
   #sweepCursor: string | undefined;
@@ -219,7 +226,10 @@ export class FeishuSetupService {
     timing?: FeishuSetupTiming;
     now?: () => Date;
     random?: () => number;
+    /** The deployment's public URL; setup QR codes use its short link when a phone can reach it. */
+    publicUrl?: string;
   }) {
+    this.#qrLinkBaseUrl = input.publicUrl && isPhoneReachableUrl(input.publicUrl) ? input.publicUrl : undefined;
     this.#database = input.database;
     this.#cipher = input.cipher;
     this.#instanceId = input.instanceId;
@@ -672,6 +682,26 @@ export class FeishuSetupService {
     if (!current?.attempt) throw new Error("FEISHU_SETUP_NOT_FOUND");
     await this.#imBindings.assertCanRead(callerUserId, current.row.agentId);
     return current.attempt;
+  }
+
+  /**
+   * The launcher URL behind a QR link, while its attempt is still waiting to be scanned. The caller is
+   * an anonymous phone: the token is the whole authority, this only reads, and a forged token never
+   * reaches the database. Repeat scans keep working, because link previews and an impatient second
+   * scan must not use the code up. Undefined means the link is known to be unusable; a context this
+   * instance cannot read rejects instead, because another instance may still be able to.
+   */
+  async resolveQrLink(token: string): Promise<string | undefined> {
+    const attemptId = readFeishuQrLinkToken(this.#cipher, token);
+    if (!attemptId) return undefined;
+    const row = await this.#load(attemptId);
+    if (row?.provider !== "feishu" || row.setupState !== "awaiting_user") return undefined;
+    const now = this.#now();
+    if ((row.setupExpiresAt && row.setupExpiresAt <= now) || this.#qrOwnerLost(row, now)) return undefined;
+    const read = this.#readContext(row);
+    // Key-ring skew between instances looks like this and passes, so it must not read as a dead link.
+    if (read.status === "undecryptable") throw unreadableContextError();
+    return read.status === "decoded" && read.context.kind === "qr" ? read.context.qrUrl : undefined;
   }
 
   /** Settings observes the open attempt independently of the currently active connection. */
@@ -1755,6 +1785,16 @@ export class FeishuSetupService {
     }
   }
 
+  /**
+   * What a QR code should encode. The public `qrUrl` itself carries the short link rather than a new
+   * field, because the attempt DTO is strict and CLIs already installed would reject an unknown one.
+   */
+  #scanUrl(attemptId: string, launcherUrl: string): string {
+    if (!this.#qrLinkBaseUrl) return launcherUrl;
+    const token = mintFeishuQrLinkToken(this.#cipher, attemptId);
+    return new URL(`${FEISHU_QR_LINK_PATH_PREFIX}${token}`, this.#qrLinkBaseUrl).href;
+  }
+
   #projectAwaitingUser(
     attempt: FeishuSetupAttempt,
     row: SetupRow,
@@ -1767,7 +1807,7 @@ export class FeishuSetupService {
     if (this.#qrOwnerLost(row, now)) {
       return this.#terminal(attempt, "failed", "FEISHU_SETUP_OWNER_RESTARTED", now);
     }
-    return { ...attempt, qrUrl: context?.kind === "qr" ? context.qrUrl : null };
+    return { ...attempt, qrUrl: context?.kind === "qr" ? this.#scanUrl(attempt.id, context.qrUrl) : null };
   }
 
   #projectPendingCandidate(

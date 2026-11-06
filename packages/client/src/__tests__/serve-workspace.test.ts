@@ -269,4 +269,84 @@ describe("Runner workspace occupation", () => {
     expect(f.sandbox.launch).not.toHaveBeenCalled();
     expect(f.controller.ready).toBe(false);
   });
+  it("holds the checkpoint and admission until the fresh sandbox passes its probe", async () => {
+    const f = fixture();
+    await f.controller.prepare();
+    f.events.length = 0;
+    const entered = deferred();
+    const ready = deferred();
+    f.sandbox.probe.mockImplementationOnce(async () => {
+      entered.resolve();
+      await ready.promise;
+      f.events.push("probe");
+      return f.state.probe;
+    });
+    let completed = false;
+    const checkpoint = f.controller.checkpoint().then(() => {
+      completed = true;
+    });
+    await entered.promise;
+    expect(f.events).toEqual(["destroy", "save", "launch"]);
+    expect(f.controller.ready).toBe(false);
+    expect(completed).toBe(false);
+    ready.resolve();
+    await checkpoint;
+    expect(f.events).toEqual(["destroy", "save", "launch", "probe"]);
+    expect(f.controller.ready).toBe(true);
+  });
+
+  it("never reopens admission after a failed checkpoint probe", async () => {
+    const f = fixture();
+    await f.controller.prepare();
+    f.sandbox.probe.mockRejectedValueOnce(new Error("isolation failed"));
+    await expect(f.controller.checkpoint()).rejects.toThrow("isolation failed");
+    expect(f.workspace.save).toHaveBeenCalledOnce();
+    expect(f.state.fatal).toBe(true);
+    expect(f.controller.ready).toBe(false);
+    expect(await f.controller.prepare()).toBe(false);
+  });
+
+  it("does not launch when stopping begins during a checkpoint save", async () => {
+    const f = fixture();
+    await f.controller.prepare();
+    f.events.length = 0;
+    const entered = deferred();
+    const saved = deferred();
+    f.workspace.save.mockImplementationOnce(async () => {
+      entered.resolve();
+      await saved.promise;
+      f.events.push("save");
+    });
+    const checkpoint = f.controller.checkpoint();
+    await entered.promise;
+    f.state.stopping = true;
+    saved.resolve();
+    await checkpoint;
+    expect(f.events).toEqual(["destroy", "save"]);
+    expect(f.state.present).toBe(false);
+    expect(f.controller.ready).toBe(false);
+  });
+
+  it("serializes a checkpoint with sealing without starting another sandbox", async () => {
+    const f = fixture();
+    await f.controller.prepare();
+    f.events.length = 0;
+    const entered = deferred();
+    const saved = deferred();
+    f.workspace.save.mockImplementationOnce(async () => {
+      entered.resolve();
+      await saved.promise;
+      f.events.push("save");
+    });
+    const checkpoint = f.controller.checkpoint();
+    await entered.promise;
+    const sealing = f.controller.seal();
+    expect(await f.controller.prepare()).toBe(false);
+    saved.resolve();
+    await Promise.all([checkpoint, sealing]);
+    expect(f.events).toEqual(["destroy", "reports-acked", "save", "seal"]);
+    expect(f.state.present).toBe(false);
+    expect(f.workspace.sealed).toBe(true);
+    expect(f.controller.ready).toBe(false);
+  });
 });

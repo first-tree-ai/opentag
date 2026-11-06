@@ -122,8 +122,9 @@ buttons cannot be expressed as text. Once a message exists its format never chan
 
 Known-message updates and unknown-send reconciliation use the stored format and the same native identity; text lookup
 matches the installed Bot and exact details URL, which is why the link target stays inside the text on both providers.
-Every Server that can see a `text_v1` row already understands both formats. During a rollout overlap an older worker
-may render a `text_v1` failure with its older wording; it cannot lose the message or send it twice. Save/discard and
+During a rollout overlap, an older worker that knows `text_v1` renders it with its older wording, and one from before
+the column existed ignores it and sends a card. Neither loses the message or sends it twice; a later edit or readback of
+such a message by a newer worker can fail and stays diagnosable. Save/discard and
 historical admitted operation results remain accessible.
 
 ## Projection, unknown outcomes, and retention

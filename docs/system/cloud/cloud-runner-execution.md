@@ -206,6 +206,14 @@ That old receipt can also retire after the child moves to a replacement Session:
 scope and exact retired-parent evidence authorize only its old journal acknowledgement, not a
 mutation of the recovered child.
 
+Cloud direct and steer admission consume the same pre-send custody outcomes as Local dispatch.
+A selected batch member becoming unavailable defers with `IM_DELIVERY_BATCH_CHANGED`; a matching
+steer target's recorded completed report defers with `IM_DELIVERY_STEER_TARGET_ENDED`. The Cloud
+owner sends neither `delivery:run` nor `delivery:steer` for these outcomes and creates no pending
+request or release. The worker retains pending input, bounded backoff, retry warnings and counters
+without an error diagnostic. Identity and generation conflicts, frozen dispatches, transport errors
+and unknown outcomes keep their existing custody and recovery paths.
+
 The native worker exposes a bounded private Unix socket during its active Prompt. A per-execution
 token travels only through trusted Runner memory and Worker stdin. The Runner invokes a single
 bounded native relay; the Worker checks the Session, Agent, placement and expected Turn before

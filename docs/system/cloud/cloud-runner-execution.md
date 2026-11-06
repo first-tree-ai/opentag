@@ -47,7 +47,8 @@ permission before admitting work/results.
 
 Cloud provider readiness alone does not make a Sandbox ready. The authenticated Runner must
 prove native execution, tool versions, image Runner version, and filesystem/credential isolation.
-Every launch and every post-cleanup reset re-runs that probe in full: real native Node execution,
+Every launch and every post-cleanup reset re-runs that probe in full, using one bounded native
+Node process for the Node version, metadata and isolation checks: real native Node execution,
 a bounded read of the image identity plus the locked Pi package metadata from the immutable
 rootfs (shape-checked and required to match the identity's Pi package/version, with the fixed Pi
 shim and its declared CLI entry verified accessible), and fresh filesystem/credential/

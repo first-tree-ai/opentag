@@ -5,6 +5,7 @@ import type { ImBindingService } from "../im-bindings/im-binding-service.js";
 import { SLACK_WEB_CLIENT_OPTIONS } from "../im-bindings/slack/default-api-client.js";
 import { type ExternalCallPolicy, ExternalCallPolicyError } from "./external-call-policy.js";
 import { renderFeedbackCard, renderFeedbackText } from "./im-feedback-card.js";
+import type { FeedbackLanguage } from "./im-feedback-copy.js";
 import type { FeedbackAction, FeedbackTarget, ImFeedbackStore, SlackFeedbackScope } from "./im-feedback-store.js";
 
 export class FeedbackProviderError extends Error {
@@ -36,7 +37,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     readonly bindings: ImBindingService,
     readonly policy: ExternalCallPolicy,
     readonly publicUrl: string,
-    readonly cooldown: Pick<ImFeedbackStore, "slackCooldownRemaining" | "deferSlackInstallation">,
+    readonly store: Pick<ImFeedbackStore, "slackCooldownRemaining" | "deferSlackInstallation" | "messageLanguage">,
   ) {}
 
   async #run<T>(
@@ -69,7 +70,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
   async #slackCall<T>(target: SlackFeedbackScope, task: () => Promise<T>): Promise<T> {
     let remainingMs: number | undefined;
     try {
-      remainingMs = await this.cooldown.slackCooldownRemaining(target);
+      remainingMs = await this.store.slackCooldownRemaining(target);
     } catch {
       throw new FeedbackCooldownStorageError();
     }
@@ -82,7 +83,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
       if (!limited) throw error;
       let current: boolean;
       try {
-        current = await this.cooldown.deferSlackInstallation(target, limited.retryAfterMs ?? 30_000);
+        current = await this.store.deferSlackInstallation(target, limited.retryAfterMs ?? 30_000);
       } catch {
         throw new FeedbackCooldownStorageError(limited.retryAfterMs);
       }
@@ -210,14 +211,26 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     for (const result of results) if (result.status === "rejected") throw result.reason;
   }
 
+  async #language(target: FeedbackTarget): Promise<FeedbackLanguage> {
+    try {
+      return await this.store.messageLanguage(target.messageId);
+    } catch {
+      // Nothing has been submitted yet, so this stays a retryable pending send, not an unknown one.
+      throw new FeedbackProviderError("IM_FEEDBACK_LANGUAGE_UNAVAILABLE", true);
+    }
+  }
+
   async post(target: FeedbackTarget, action?: FeedbackAction): Promise<string> {
     try {
+      const language = await this.#language(target);
       return await this.#run(
         `${target.provider}.feedback.post`,
         async (signal) => {
           const text =
-            target.messageFormat === "text_v1" ? renderFeedbackText(target, this.publicUrl, action) : undefined;
-          const card = renderFeedbackCard(target, this.publicUrl, action);
+            target.messageFormat === "text_v1"
+              ? renderFeedbackText(target, this.publicUrl, action, language)
+              : undefined;
+          const card = renderFeedbackCard(target, this.publicUrl, action, language);
           if (target.provider === "slack") {
             const { api } = await this.#slack(target, signal);
             const r = await this.#slackCall(target, () =>
@@ -268,12 +281,13 @@ export class ImFeedbackMessenger implements FeedbackTransport {
   async update(target: FeedbackTarget, action?: FeedbackAction): Promise<void> {
     const cardMessageId = target.cardMessageId;
     if (!cardMessageId) return;
+    const language = await this.#language(target);
     await this.#run(
       `${target.provider}.feedback.update`,
       async (signal) => {
         const text =
-          target.messageFormat === "text_v1" ? renderFeedbackText(target, this.publicUrl, action) : undefined;
-        const card = renderFeedbackCard(target, this.publicUrl, action);
+          target.messageFormat === "text_v1" ? renderFeedbackText(target, this.publicUrl, action, language) : undefined;
+        const card = renderFeedbackCard(target, this.publicUrl, action, language);
         if (target.provider === "slack") {
           const { api } = await this.#slack(target, signal);
           const r = await this.#slackCall(target, () =>

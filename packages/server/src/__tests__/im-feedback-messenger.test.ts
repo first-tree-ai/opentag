@@ -113,6 +113,7 @@ function harness() {
   const cooldown = {
     slackCooldownRemaining: vi.fn(async () => 0 as number | undefined),
     deferSlackInstallation: vi.fn(async () => true),
+    messageLanguage: vi.fn(async () => "en" as "en" | "zh"),
   };
   return {
     messenger: new ImFeedbackMessenger(bindings, policy, "https://app.example.test", cooldown),
@@ -147,6 +148,35 @@ beforeEach(() => {
   mocks.feishu.im.v1.messageReaction.delete.mockResolvedValue({ code: 0 });
 });
 describe("native feedback transport", () => {
+  it("does not submit a send whose language cannot be read, and keeps it retryable", async () => {
+    const { messenger, cooldown } = harness();
+    cooldown.messageLanguage.mockRejectedValueOnce(new Error("storage"));
+    await expect(messenger.post(target("feishu"))).rejects.toMatchObject({
+      code: "IM_FEEDBACK_LANGUAGE_UNAVAILABLE",
+      knownNotApplied: true,
+    });
+    expect(mocks.feishu.im.v1.message.reply).not.toHaveBeenCalled();
+  });
+  it("sends Feishu text in the language of the input without an error code", async () => {
+    const { messenger, cooldown } = harness();
+    cooldown.messageLanguage.mockResolvedValueOnce("zh");
+    const t: FeedbackTarget = {
+      ...target("feishu"),
+      messageFormat: "text_v1",
+      state: "failed",
+      errorCode: "provider_quota_exceeded",
+      effects: "may_have_occurred",
+    };
+    mocks.feishu.im.v1.message.reply.mockResolvedValue({
+      code: 0,
+      data: { message_id: "text-message", chat_id: t.channelId },
+    });
+    await messenger.post(t);
+    const sent = JSON.parse(mocks.feishu.im.v1.message.reply.mock.calls[0]?.[0].data.content).text as string;
+    expect(sent).toBe(
+      `模型额度用完了，任务没有完成。\n可能已经执行了部分操作，重发前请先检查结果。\n请 Agent 所有者处理后再发一次。 [查看详情](https://app.example.test/im-feedback/${t.id})`,
+    );
+  });
   it.each(["slack", "feishu"] as const)(
     "sends, edits and finds %s text without an interactive card",
     async (provider) => {

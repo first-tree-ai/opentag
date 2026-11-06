@@ -1,6 +1,6 @@
 ---
 title: "IM task feedback and safe recovery"
-description: "Durable working reactions, terminal feedback messages, Account confirmations, and conservative recovery of unknown provider outcomes."
+description: "Durable working reactions, plain-text failure messages, Account confirmations, and conservative recovery of unknown provider outcomes."
 ---
 
 # IM task feedback and safe recovery
@@ -47,24 +47,42 @@ appears. Failure feedback appears only once the Turn is terminal — when the on
 was not recoverable — and then follows the rules above for that final report. A retry that completes removes the
 working reaction like any successful Turn.
 
-## Error cards
+## Failure messages
 
-A card stays in the original conversation or thread. It contains a sanitized cause and error code, task-effects
-warning, current recovery guidance, and details link. Raw model output, exception messages, credentials, file paths,
-and stack traces are excluded. Only authoritative `not_started` evidence permits the claim that no task operations
-ran. All other outcomes warn that external operations may already have occurred; missing outbound capture proves
-nothing about those operations.
+Ordinary failures are plain text in the original conversation or thread. Workspace failures are the only cards,
+because they need Retry save and Discard buttons. A message has three sentences: what happened, whether operations
+ran, and what to do next, followed by the authenticated details link. Error codes and technical details stay on the
+details page: an IM failure is read by people who cannot act on a code, and a plain message keeps a failure from
+taking more of the conversation than the work did.
+
+The roughly twenty-four failure reasons map onto five next steps, so the reader is told what to do rather than why
+the runtime stopped:
+
+| Next step | Reasons |
+| --- | --- |
+| Send again later | Rate limit, model service unavailable, connection failure |
+| Ask the Agent owner | Authentication, access denied, quota, credentials unavailable |
+| Split the task | Context limit, execution limit, time limit, result too large |
+| Send again, then ask the owner | Process exit, start failure, environment disconnected, client stopped, and every other reason |
+| Check the result first | Task outcome unknown |
+
+Raw model output, exception messages, credentials, file paths, and stack traces are excluded. Only authoritative
+`not_started` evidence permits the claim that no task operations ran. All other outcomes warn that operations may
+already have run; missing outbound capture proves nothing about those operations.
+
+Copy follows the language of the input that started the task: Chinese when the sender's text contains Chinese,
+otherwise English. It is derived from that exact stored input revision on every render, so it needs no setting, adds
+no storage, and behaves the same on Slack and Feishu. Mentions are ignored, so a Chinese Bot name does not switch an
+English request. A mixed-language message can pick the less expected language; the only consequence is the wording.
 
 A workspace failure pauses that Session rather than the entire Agent. New input remains queued for the Session.
 Saving or discarding files does not undo messages, pull requests, or other external operations. The existing Runner
 owns automatic save retries; this feedback layer adds no automatic save or task retry loop.
 
-### Plain failure messages
+### Task Retry
 
-New failure targets can use plain messages with a cause, effects warning and authenticated details
-link. The rollout flag defaults to off and each target retains its original format; see Message
-format compatibility below. New Task Retry admissions are disabled, including old card callbacks.
-A new message follows ordinary admission and is steered into the running Turn; every Local
+New Task Retry admissions are disabled, including old card callbacks. To try again, a person sends
+a new message, which follows ordinary admission and is steered into the running Turn; every Local
 runtime (Codex, Pi, Claude Code) accepts steered input, and a runtime that cannot stays queued. Existing admitted retries and workspace save/discard keep their original recovery
 and confirmation semantics.
 
@@ -96,14 +114,17 @@ never forces interruption or replays a Turn.
 
 ## Message format compatibility
 
-Each `im_feedback_targets.message_format` is frozen at creation. The default `interactive_v1`
-keeps existing targets and old writers on their card format. With
-`OPENTAG_IM_FEEDBACK_TEXT_ENABLED=true`, new writers explicitly choose `text_v1`: sanitized cause,
-error code, effects warning, recovery guidance and the stable authenticated details link in plain
-text. The flag defaults to false and is enabled only after all workers understand both formats.
-No existing target is converted or resent. Known-message updates and unknown-send reconciliation
-use the stored format and the same native identity; text lookup matches the installed Bot and
-exact details URL. Save/discard and historical admitted operation results remain accessible.
+Each `im_feedback_targets.message_format` is fixed at creation and existing targets are never converted or
+resent. New targets choose `text_v1`; `OPENTAG_IM_FEEDBACK_TEXT_ENABLED=false` rolls new targets back to
+`interactive_v1`. Targets are created at ingress, before the kind of failure is known, so one transition changes the
+stored value: a target that reaches `workspace_blocked` with nothing sent yet becomes `interactive_v1`, because its
+buttons cannot be expressed as text. Once a message exists its format never changes.
+
+Known-message updates and unknown-send reconciliation use the stored format and the same native identity; text lookup
+matches the installed Bot and exact details URL, which is why the link target stays inside the text on both providers.
+Every Server that can see a `text_v1` row already understands both formats. During a rollout overlap an older worker
+may render a `text_v1` failure with its older wording; it cannot lose the message or send it twice. Save/discard and
+historical admitted operation results remain accessible.
 
 ## Projection, unknown outcomes, and retention
 

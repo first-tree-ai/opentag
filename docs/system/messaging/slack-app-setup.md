@@ -109,7 +109,7 @@ until the next reconnection, and missing or failed images fall back to initials 
 
 ## Working feedback and native status cleanup
 
-Normal visible task feedback uses Server-owned `eyes` and `warning` reactions and terminal error cards, as defined
+Normal visible task feedback uses Server-owned `eyes` and `warning` reactions and terminal failure messages, as defined
 in [IM feedback and safe recovery](im-feedback.md). Custody acceptance requests working; heartbeats, model retries
 and approval waits make no intermediate visible changes. The Agent sends the final reply through the provider CLI.
 Observer copies and internal Sessions do not publish a second projection.

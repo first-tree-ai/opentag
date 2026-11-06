@@ -127,7 +127,7 @@ export class ImResourceService {
     }
 
     const body = await readAvatarBody(response.body, upstreamHost, agentId);
-    this.#avatars.set(cacheKey, { body, mediaType });
+    if (body.byteLength > 0) this.#avatars.set(cacheKey, { body, mediaType });
 
     return {
       stream: Readable.from(body),

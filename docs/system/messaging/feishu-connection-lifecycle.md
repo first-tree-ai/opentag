@@ -63,10 +63,11 @@ changes remain cached until then. openTag displays initials when the image is ab
 
 The authenticated Agent avatar endpoint rechecks Account ownership, Agent status, and the current
 non-disabled binding on every request. Each resource-service instance keeps a 30-minute LRU cache
-of fully validated image bytes, limited to 128 entries and 16 MiB of image data. Cache identities
+of fully validated image bytes, limited to 128 entries and 16 MiB of cached image data. Each response
+owns a separate copy of at most 5 MiB while it is being sent. Cache identities
 include the Account, Agent, binding ID, credential generation, and exact provider URL; changing any
 of them requires a new fetch. Entries expire from insertion time and are reclaimed lazily on reads
-and inserts. Concurrent cold reads remain independent; errors and partial or oversized bodies never
+and inserts. Concurrent cold reads remain independent; errors and empty, partial, or oversized bodies never
 enter the cache. Every miss retains the HTTPS destination checks, connection-time public-address
 filter, redirect rejection, allowed image types, and 5 MiB response limit. Browser responses retain
 their private cache policy. The cache is lost on restart and is not shared across service instances.

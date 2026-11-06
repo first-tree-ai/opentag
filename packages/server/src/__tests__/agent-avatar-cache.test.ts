@@ -142,6 +142,18 @@ describe("authorized avatar reuse", () => {
     expect(fetch).toHaveBeenCalledTimes(4);
   });
 
+  it("does not cache a complete empty image and lets the next request recover", async () => {
+    const { service, fetch } = fixture();
+    fetch.mockResolvedValueOnce(imageResponse(""));
+    const empty = await service.openAvatar("owner", "agent");
+    expect(empty.mediaType).toBe("image/png");
+    expect(empty.sizeBytes).toBe(0);
+    expect(await bytes(empty)).toHaveLength(0);
+    expect(await bytes(await service.openAvatar("owner", "agent"))).toEqual(Buffer.from("image"));
+    expect(await bytes(await service.openAvatar("owner", "agent"))).toEqual(Buffer.from("image"));
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
   it("cancels an oversized body and never retains its partial bytes", async () => {
     const { service, fetch } = fixture();
     const cancel = vi.fn();

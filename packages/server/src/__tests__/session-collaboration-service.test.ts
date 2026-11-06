@@ -280,7 +280,7 @@ describe("SessionCollaborationService", () => {
       );
     });
 
-    it("drains an already-sent delivery's receipt and preserves acceptance during shutdown", async () => {
+    it("drains a receipt that resolves while only the collaboration service is closing", async () => {
       const fixture = serviceFixture();
       const receipt = deferred<void>();
       const result = await fixture.domain.requestSessionMessageDelivery();

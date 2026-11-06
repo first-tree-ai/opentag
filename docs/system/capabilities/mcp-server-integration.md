@@ -654,6 +654,10 @@ reaches metadata and registration requests; deadline/cancellation stops candidat
 prevents late SQL preparation from starting registration or publishing a flow. SQL statements retain
 the infrastructure timeouts. A timed-out registration is not automatically replayed.
 Refresh uses the credential's recorded issuer rather than running this selection again.
+Authorization server metadata is cached in memory per `(Account, issuer)` for five minutes and
+coalesced across concurrent lookups during callbacks and refreshes, while each `start` revalidates
+against the live document and refreshes that cache entry, and any token endpoint failure evicts the
+entry so the next attempt re-fetches discovery metadata.
 
 Users never choose an issuer — it is not a user-facing concept. The detail view shows which one is
 currently selected.
@@ -920,7 +924,8 @@ A row that has no refresh token at all simply lapses to `expired` at its deadlin
 to spend and retrying forever would achieve nothing.
 
 The scan joins `agents` and excludes deleted ones, so a soft-deleted Agent's credential is not
-renewed. The worker keeps one current pass Promise. Stop closes scan/probe/refresh admission and
+renewed. Pending probes and due refreshes within a pass run with bounded concurrency (`4` by
+default, matching the per-Account outbound concurrency budget). The worker keeps one current pass Promise. Stop closes scan/probe/refresh admission and
 waits for that actual pass; an already-issued token exchange still finishes and persists under
 its existing generation/claim fences. Stop checks between rows avoid draining the rest of the
 100-row batch. SQL disposal follows that drain. Repeated stop calls join the same work; manual

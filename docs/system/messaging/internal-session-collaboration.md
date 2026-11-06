@@ -183,9 +183,10 @@ Server tells the Session that created it (`created_by_session_id`):
   At most 16 Local outcome notices prepare or deliver concurrently; duplicates already in flight and excess reports
   answer `retry` without starting another attempt. Each delivery retains normal authority fences and target inbox
   ordering. Shutdown stops admission, signals transport cancellation and prevents late sends, then drains outstanding
-  preparation, receipt waits, and outcome writes before the database closes. An already-sent delivery can still be
-  accepted; its receipt wait retains the normal transport timeout. After a Server or daemon restart, the reporter replays
-  its durable report under the current connection with the same deterministic notice ID. The Server's in-memory
+  preparation and outcome writes before the database closes. Runtime route shutdown closes the Domain owner and
+  rejects pending delivery waits; an unconfirmed delivery stays `unknown` rather than proving that the target never
+  accepted it. After a Server or daemon restart, the reporter replays its durable report under the current connection
+  with the same deterministic notice ID through the target's message deduplication. The Server's in-memory
   tasks are an optimization, not a durable delivery queue; the existing one-day reporter limit still applies.
 - Cloud: the Runner's `session:message:settled` frame carries the failure `reason` (for example `turn_timeout`) on a
   collaboration-v3 channel. Every non-completed outcome (`failed`, `cancelled`, `unknown`) produces a notice. The

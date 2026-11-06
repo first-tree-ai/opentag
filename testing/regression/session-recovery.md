@@ -128,8 +128,9 @@ separately when an authorized test deployment is available.
 5. Repeat with an offline creator, a database failure, a lost database commit response, concurrent duplicate reports,
    and a Server restart during delivery. The report stays retryable and the same notice ID is reconciled before any
    retry; a recorded acceptance is never dispatched again. On shutdown, preparation and outcome writes drain, active
-   transport cancellation is signalled, and no later reconcile or delivery is sent. Already-sent delivery receipts
-   drain with their normal timeout. Cloud-origin settlement acknowledgements
+   transport cancellation is signalled, and no later reconcile or delivery is sent. Runtime route shutdown rejects
+   pending receipt waits; an unconfirmed delivery stays `unknown`, and restart replay reconciles the same notice ID
+   through the target's deduplication. Cloud-origin settlement acknowledgements
    retain their existing bounded, final-notification wait.
 
 ## Steered Session messages

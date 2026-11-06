@@ -465,6 +465,21 @@ describe("ClaudeCodeAgentRuntime steer", () => {
     }
   });
 
+  it("adds no output item for an empty earlier result, whatever produced it, and keeps a final empty one", async () => {
+    const steerable = new SteerableClaudeCodeProcess();
+    const runtime = await steerableFactory(steerable).create(createRequest(() => undefined));
+    try {
+      const run = runtime.prompt({ runId: "empty-run", input: input("work") });
+      await vi.waitFor(() => expect(steerable.executing).toBe(true));
+      steerable.emit(result("", 1, 0, 1), false);
+      steerable.emit(result("", 1, 0, 1), true);
+      steerable.finish();
+      await expect(run).resolves.toMatchObject({ status: "completed", output: [{ type: "text", text: "" }] });
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it("reports the latest cumulative cost while summing per-turn usage and turns across steered results", async () => {
     const steerable = new SteerableClaudeCodeProcess();
     const spawned: (readonly string[])[] = [];

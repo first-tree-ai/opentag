@@ -6,8 +6,9 @@ import { signalWatchedProcess, spawnWatchedProcess } from "../process-owner.js";
 export const CLAUDE_CODE_MAX_LINE_BYTES = 8 * 1024 * 1024;
 export const CLAUDE_CODE_MAX_STDERR_BYTES = 64 * 1024;
 
-/** Timer tools that live inside the Claude Code process and appear in no task list. */
-const IN_PROCESS_TIMER_TOOLS = new Set(["ScheduleWakeup", "CronCreate"]);
+/** Tools that change timers living inside the Claude Code process, which appear in no task list. */
+const IN_PROCESS_TIMER_TOOLS = new Set(["ScheduleWakeup", "CronCreate", "CronDelete"]);
+const WAKEUP_TIMER = "ScheduleWakeup timer";
 
 export class ClaudeCodeProcessError extends Error {
   constructor(
@@ -106,8 +107,7 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
   readonly #startedSteers = new Set<string>();
   /** Claude Code's latest report of the background tasks it is running, by task id. */
   #backgroundTasks = new Map<string, string>();
-  /** Tools that set a timer in this process. */
-  readonly #inProcessTimers = new Set<string>();
+  readonly #inProcessTimers = new InProcessTimers();
   #backgroundNoticeSent = false;
   /** Sampled at the terminal result: stopping the process empties the lists above. */
   #abandonedAtTerminal: readonly string[] = [];
@@ -315,6 +315,11 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
    * waiting. Claude Code also reports a result for input it generated itself, such as the notice it
    * queues on `--resume` about a background task the previous process left behind. That result comes
    * first, with no model turn, while the Run's input is still queued behind it.
+   *
+   * The background notice is deliberately not in `#pendingSteers`: it asks for a wrap-up, so the next
+   * result ends the Run whether or not Claude Code reported the notice's `command_lifecycle`. Input is
+   * first in, first out, so nothing else can produce that result: a steer written before the notice held
+   * it back, and one written after it stays pending until its own result.
    */
   #endsRun(result: Record<string, unknown>): boolean {
     if (this.#pendingSteers.size > 0) return false;
@@ -334,17 +339,11 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
       this.#backgroundTasks = new Map(parsed.tasks.filter(isRecord).map(backgroundTaskEntry));
       return;
     }
-    if (parsed.type !== "assistant" || !isRecord(parsed.message) || !Array.isArray(parsed.message.content)) return;
-    for (const block of parsed.message.content) {
-      if (!isRecord(block) || block.type !== "tool_use" || !IN_PROCESS_TIMER_TOOLS.has(String(block.name))) continue;
-      const name = `${String(block.name)} timer`;
-      if (isRecord(block.input) && block.input.stop === true) this.#inProcessTimers.delete(name);
-      else this.#inProcessTimers.add(name);
-    }
+    this.#inProcessTimers.observe(parsed);
   }
 
   #backgroundWork(): string[] {
-    return [...this.#backgroundTasks.values(), ...this.#inProcessTimers];
+    return [...this.#backgroundTasks.values(), ...this.#inProcessTimers.labels()];
   }
 
   /**
@@ -362,7 +361,6 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
       message: { role: "user", content: [{ type: "text", text: buildBackgroundWorkNotice(work) }] },
       parent_tool_use_id: null,
     };
-    this.#pendingSteers.add(uuid);
     this.#child.stdin.write(`${JSON.stringify(notice)}\n`, (error) => {
       if (error) this.#fail(new ClaudeCodeProcessError("write", "Claude Code input could not be written"));
     });
@@ -446,6 +444,56 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
     this.#listener = undefined;
     this.#resolveExecution = undefined;
     this.#rejectExecution = undefined;
+  }
+}
+
+/**
+ * The timers confirmed live in this process. A tool call counts only once its `tool_result` succeeded:
+ * an invalid cron expression creates nothing, and `CronDelete` and `ScheduleWakeup` with `stop` remove
+ * what they name. A cron job with `durable: true` is written to disk, so it does not stop with the process.
+ */
+class InProcessTimers {
+  /** Timer tool calls waiting for their `tool_result`, by tool call id. */
+  readonly #calls = new Map<string, Record<string, unknown>>();
+  /** Live timers by job id, with one entry for the Session's single pending wakeup. */
+  readonly #live = new Map<string, string>();
+
+  observe(frame: Record<string, unknown>): void {
+    if (!isRecord(frame.message) || !Array.isArray(frame.message.content)) return;
+    for (const block of frame.message.content.filter(isRecord)) {
+      if (frame.type === "assistant" && block.type === "tool_use") this.#recordCall(block);
+      if (frame.type === "user" && block.type === "tool_result") this.#settleCall(block, frame.tool_use_result);
+    }
+  }
+
+  labels(): string[] {
+    return [...this.#live.values()];
+  }
+
+  #recordCall(block: Record<string, unknown>): void {
+    if (IN_PROCESS_TIMER_TOOLS.has(String(block.name))) this.#calls.set(String(block.id), block);
+  }
+
+  #settleCall(block: Record<string, unknown>, toolUseResult: unknown): void {
+    const id = String(block.tool_use_id);
+    const call = this.#calls.get(id);
+    this.#calls.delete(id);
+    if (!call || block.is_error === true) return;
+    const input = isRecord(call.input) ? call.input : {};
+    if (call.name === "ScheduleWakeup") {
+      if (input.stop === true) this.#live.delete(WAKEUP_TIMER);
+      else this.#live.set(WAKEUP_TIMER, WAKEUP_TIMER);
+    } else if (call.name === "CronDelete") {
+      this.#live.delete(String(input.id));
+    } else {
+      this.#addCronJob(id, isRecord(toolUseResult) ? toolUseResult : {});
+    }
+  }
+
+  #addCronJob(toolCallId: string, result: Record<string, unknown>): void {
+    if (result.durable === true) return;
+    const jobId = typeof result.id === "string" ? result.id : toolCallId;
+    this.#live.set(jobId, `CronCreate job ${jobId}`);
   }
 }
 

@@ -200,10 +200,12 @@ Server tells the Session that created it (`created_by_session_id`):
   see [Cloud context](../cloud/cloud-context.md).
 
 - Background work: Local Claude Code runs one process per Run, and the process exits when the Run ends, so background
-  shells, background subagents, Monitors and in-process timers (`ScheduleWakeup`, `CronCreate`) stop then. They do not
-  survive to the next message, and nothing wakes the Session later. Before that exit, the Run tells the Session once
+  shells, background subagents, Monitors and in-process timers stop then. They do not survive to the next message, and
+  nothing wakes the Session later. A timer counts once its `ScheduleWakeup` or `CronCreate` call succeeded, until
+  `ScheduleWakeup` with `stop` or `CronDelete` removes it. A `durable` cron job is on disk and does not count. Before that exit, the Run tells the Session once
   which work will stop (`[openTag notice] This Run is about to end.`), and gets one more model turn to wait for it, redo
-  it in the foreground, or tell whoever is waiting. If work is still live when that turn ends, the message still
+  it in the foreground, or tell whoever is waiting. The result after that notice ends the Run, with or without a
+  `command_lifecycle` for it. If work is still live when that turn ends, the message still
   `succeeded` and is not run again, and the daemon reports outcome `unknown` with reason `background_work_stopped`
   through the same report, so the creator gets a notice. A visible Session's Turn gets the same notice in the Run, and
   no creator notice.

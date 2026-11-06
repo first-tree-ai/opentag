@@ -901,16 +901,6 @@ export async function createClientRuntime(
   await Promise.all([reportOwner.ready(), sessionMessageOutcomes.ready(), sessionMessageInbox.ready()]);
   const restartRetryAvailable = () => connection.capabilityVersion(RUNTIME_CAPABILITY.sessionRecovery) === 1;
   let interruptedWork: InterruptedWorkRecovery | undefined;
-  const mvpReportRecovery = new MvpTurnReportRecovery({
-    bindingStore,
-    logger: moduleLogger("report-recovery"),
-    reconciler,
-    reportOwner,
-    /* v8 ignore next -- late-bound adapter; InterruptedWorkRecovery is covered by interruption-retry tests. */
-    retryGate: { isPendingRetry: (sessionId, turnId) => interruptedWork?.isPendingRetry(sessionId, turnId) === true },
-    /* v8 ignore next -- forwards to TurnRetryStore.remove, covered by interruption-retry tests. */
-    onRecorded: (sessionId, turnId) => turnRetries.remove(sessionId, turnId),
-  });
   const preflight = createClientRuntimePreflight({
     providers,
     workspace,
@@ -934,6 +924,17 @@ export async function createClientRuntime(
     start: (owner, startOptions) => runner.start(owner, startOptions),
     /* v8 ignore next -- late binding is required because custody and runner own each other. */
     steer: (request) => runner.steer(request),
+  });
+  const mvpReportRecovery = new MvpTurnReportRecovery({
+    bindingStore,
+    custody,
+    logger: moduleLogger("report-recovery"),
+    reconciler,
+    reportOwner,
+    /* v8 ignore next -- late-bound adapter; InterruptedWorkRecovery is covered by interruption-retry tests. */
+    retryGate: { isPendingRetry: (sessionId, turnId) => interruptedWork?.isPendingRetry(sessionId, turnId) === true },
+    /* v8 ignore next -- forwards to TurnRetryStore.remove, covered by interruption-retry tests. */
+    onRecorded: (sessionId, turnId) => turnRetries.remove(sessionId, turnId),
   });
   runner = new AgentTurnRunner({
     bindingStore,

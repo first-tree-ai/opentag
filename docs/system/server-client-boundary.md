@@ -73,6 +73,27 @@ the Server shows the person an [error card](messaging/im-feedback.md). A Session
 message ends `failed` and an internal Session's creator gets a
 [Run outcome notice](messaging/internal-session-collaboration.md#run-outcome-notices).
 
+### Delivery of completed Turn reports
+
+The Client writes the immutable completed report into the Session binding before
+submitting it to the Turn Report owner. The owner's delivery record is separate:
+its failed writes retain volatile retry bookkeeping, without advancing the durable
+record or sending before persistence succeeds. Initial and retry-transition write
+failures use the same capped attempts, age limit and backoff as report delivery.
+Exhausting that budget retains the Session's report for a later recovery reconcile.
+
+A legal reconcile can advertise an exact retained report while the same live Turn
+is reporting, including after delivery enters dead-letter. It cannot take over a
+running Turn, another Turn or delivery, or a live reporting activity at a different
+placement generation. Replay joins an existing in-flight report or its retry timer;
+it reopens exhausted delivery only after the retained-report manifest is sent.
+Confirmation records the result through the live custody owner when present, then
+releases that Turn's admission and reporting activity. Disk-only recovery clears
+its recovery fence instead. Cancellation of an unsent manifest starts no replay.
+These paths resend the original report and never run the completed model task again.
+The Server still checks current ownership, connection instance, placement and
+terminal settlement before accepting a report.
+
 ### Automatic retry of accepted work
 
 Automatic retry of accepted work belongs to the Local Client daemon; the Server

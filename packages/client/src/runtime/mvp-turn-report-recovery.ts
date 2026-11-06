@@ -5,12 +5,14 @@ import {
   type TurnReportRequest,
 } from "@opentag/shared";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
-import type { SessionBindingStore } from "./session-binding-store.js";
+import type { LocalSessionBinding, SessionBindingStore } from "./session-binding-store.js";
 import type { SessionReconciler } from "./session-reconciler.js";
+import type { TurnCustodyOwner } from "./turn-custody-owner.js";
 import type { TurnReportOwner } from "./turn-report-owner.js";
 
 export interface MvpTurnReportRecoveryOptions {
   bindingStore: Pick<SessionBindingStore, "read" | "recordResult" | "updateUnresolved">;
+  custody?: Pick<TurnCustodyOwner, "getTurn" | "recordResult">;
   logger?: ClientLogger;
   maxActiveReplays?: number;
   maxPreparedBatches?: number;
@@ -48,6 +50,7 @@ interface ReplayQueue {
 // Turn storage replaces this reconcile manifest and replay queue after MVP.
 export class MvpTurnReportRecovery {
   readonly #bindingStore: MvpTurnReportRecoveryOptions["bindingStore"];
+  readonly #custody: MvpTurnReportRecoveryOptions["custody"];
   readonly #logger: ClientLogger;
   readonly #maxActiveReplays: number;
   readonly #maxPreparedBatches: number;
@@ -61,6 +64,7 @@ export class MvpTurnReportRecovery {
 
   constructor(options: MvpTurnReportRecoveryOptions) {
     this.#bindingStore = options.bindingStore;
+    this.#custody = options.custody;
     this.#logger = options.logger ?? createLogger("report-recovery");
     this.#maxActiveReplays = options.maxActiveReplays ?? 10;
     this.#maxPreparedBatches = options.maxPreparedBatches ?? 256;
@@ -80,9 +84,9 @@ export class MvpTurnReportRecovery {
     if (result.status === "rejected") return Promise.resolve(result);
     return this.#reconciler.withAgentLock(request.agentId, async () => {
       let binding = await this.#bindingStore.read(request.agentId, request.sessionId);
-      if (!binding) return result;
+      if (!matchesSession(binding, request)) return result;
       const unresolved = binding.unresolvedTurn;
-      if (unresolved && !this.#claim(request.sessionId, unresolved)) {
+      if (unresolved && !this.#claim(request, unresolved, binding.placementGeneration)) {
         return result;
       }
       if (unresolved && unresolved.phase !== "reporting") {
@@ -129,14 +133,28 @@ export class MvpTurnReportRecovery {
   }
 
   /**
-   * Claim the recovery of an unresolved Turn. A Turn whose automatic retry is pending is not
-   * claimed: the Client owns it, and no failure is reported before the retry runs.
+   * A ready report can join its exact live reporting activity without taking over execution.
+   * An interrupted Turn awaiting its automatic retry is not reported as failed.
    */
-  #claim(sessionId: string, unresolved: { deliveryId: string; phase: string; turnId: string }): boolean {
-    if (!this.#reconciler.claimRecovery(sessionId, { deliveryId: unresolved.deliveryId, turnId: unresolved.turnId })) {
+  #claim(
+    request: SessionReconcileRequest,
+    unresolved: { deliveryId: string; phase: string; turnId: string; report?: TurnReportRequest },
+    generation: number,
+  ): boolean {
+    const reportReady =
+      unresolved.phase === "reporting" && !!unresolved.report && generation === request.placementGeneration;
+    if (
+      !this.#reconciler.claimRecovery(
+        request.sessionId,
+        { deliveryId: unresolved.deliveryId, turnId: unresolved.turnId },
+        { reportReady },
+      )
+    ) {
       return false;
     }
-    return unresolved.phase === "reporting" || this.#retryGate?.isPendingRetry(sessionId, unresolved.turnId) !== true;
+    return (
+      unresolved.phase === "reporting" || this.#retryGate?.isPendingRetry(request.sessionId, unresolved.turnId) !== true
+    );
   }
 
   afterReconciled(request: SessionReconcileRequest, result: SessionReconcileResult): void {
@@ -181,6 +199,27 @@ export class MvpTurnReportRecovery {
     if (!batch) return;
     if (batch.pendingSends === 1) this.#prepared.delete(request.requestId);
     else batch.pendingSends -= 1;
+  }
+
+  async #confirm(report: TurnReportRequest): Promise<void> {
+    const live = this.#custody?.getTurn(report.turnId);
+    if (live) {
+      if (
+        live.request.agentId !== report.agentId ||
+        live.request.sessionId !== report.sessionId ||
+        live.request.deliveryId !== report.deliveryId ||
+        live.request.placementGeneration !== report.placementGeneration
+      ) {
+        throw new Error("The retained Report does not match its live custody owner");
+      }
+      await this.#custody?.recordResult(report.turnId, report.resultHash);
+    } else {
+      await this.#reconciler.withAgentLock(report.agentId, async () => {
+        await this.#bindingStore.recordResult(report.agentId, report.sessionId, report.turnId, report.resultHash);
+        this.#reconciler.clearRecovery(report.sessionId, report.turnId);
+      });
+    }
+    await this.#recorded(report.sessionId, report.turnId);
   }
 
   async #recorded(sessionId: string, turnId: string): Promise<void> {
@@ -228,16 +267,7 @@ export class MvpTurnReportRecovery {
           reportTerminal = () => resolve("terminal");
         });
         const submitted = this.#reportOwner
-          .submit(
-            report,
-            () =>
-              this.#reconciler.withAgentLock(queue.agentId, async () => {
-                await this.#bindingStore.recordResult(queue.agentId, sessionId, report.turnId, report.resultHash);
-                this.#reconciler.clearRecovery(sessionId, report.turnId);
-                await this.#recorded(sessionId, report.turnId);
-              }),
-            { onTerminal: () => reportTerminal?.() },
-          )
+          .submit(report, () => this.#confirm(report), { resume: true, onTerminal: () => reportTerminal?.() })
           .then(() => "recorded" as const);
         if ((await Promise.race([submitted, terminal])) === "terminal") {
           this.#logger.warn(
@@ -256,6 +286,13 @@ export class MvpTurnReportRecovery {
       return false;
     }
   }
+}
+
+function matchesSession(
+  binding: LocalSessionBinding | undefined,
+  request: SessionReconcileRequest,
+): binding is LocalSessionBinding {
+  return binding?.agentId === request.agentId && binding.sessionId === request.sessionId;
 }
 
 function retainedReports(binding: Awaited<ReturnType<SessionBindingStore["read"]>>): RetainedReport[] {

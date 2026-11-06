@@ -514,11 +514,7 @@ class ReliableFeishuChannel implements FeishuChannel {
       onReady: () => {
         if (!this.#closed) this.#resolveReady();
       },
-      onError: (error) => {
-        // The cause keeps the gateway's refusal code for connection-failure classification.
-        this.#rejectReady(new Error("FEISHU_CONNECTION_ERROR", { cause: error }));
-        this.#handlers.error?.(error);
-      },
+      onError: (error) => this.#onConnectionError(error),
       onReconnecting: () => this.#handlers.reconnecting?.(),
       onReconnected: () => this.#handlers.reconnected?.(),
     });
@@ -529,7 +525,13 @@ class ReliableFeishuChannel implements FeishuChannel {
     if (signal?.aborted) throw signal.reason ?? new Error("FEISHU_CONNECT_ABORTED");
     if (!this.#started) {
       this.#started = true;
-      void this.#wsClient.start({ eventDispatcher: this.#dispatcher });
+      try {
+        void Promise.resolve(this.#wsClient.start({ eventDispatcher: this.#dispatcher })).catch((error: unknown) =>
+          this.#onConnectionError(error),
+        );
+      } catch (error) {
+        this.#onConnectionError(error);
+      }
     }
     const state = { cancelled: false };
     const connectPromise = this.#connectAndWaitReady(state, signal);
@@ -555,6 +557,12 @@ class ReliableFeishuChannel implements FeishuChannel {
     }
   }
 
+  #onConnectionError(error: unknown): void {
+    // The cause keeps the gateway's refusal code for connection-failure classification.
+    this.#rejectReady(new Error("FEISHU_CONNECTION_ERROR", { cause: error }));
+    this.#handlers.error?.(error);
+  }
+
   async #connectAndWaitReady(state: { cancelled: boolean }, signal?: AbortSignal): Promise<void> {
     const outboundPromise = this.#outbound.connect();
     void outboundPromise.then(
@@ -577,7 +585,9 @@ class ReliableFeishuChannel implements FeishuChannel {
       }
       this.botIdentity = this.#outbound.botIdentity;
     } catch (error) {
+      this.#closed = true;
       this.botIdentity = undefined;
+      this.#rejectReady(new Error("FEISHU_CHANNEL_CLOSED"));
       this.#wsClient.close({ force: true });
       await this.#outbound.disconnect().catch(() => undefined);
       throw error;
@@ -594,6 +604,7 @@ class ReliableFeishuChannel implements FeishuChannel {
     state.cancelled = true;
     this.#closed = true;
     this.botIdentity = undefined;
+    this.#rejectReady(new Error("FEISHU_CHANNEL_CLOSED"));
     this.#wsClient.close({ force: true });
     void this.#outbound.disconnect().catch(() => undefined);
   }
@@ -601,6 +612,7 @@ class ReliableFeishuChannel implements FeishuChannel {
   async disconnect(): Promise<void> {
     this.#closed = true;
     this.botIdentity = undefined;
+    this.#rejectReady(new Error("FEISHU_CHANNEL_CLOSED"));
     this.#wsClient.close({ force: true });
     await this.#outbound.disconnect();
   }

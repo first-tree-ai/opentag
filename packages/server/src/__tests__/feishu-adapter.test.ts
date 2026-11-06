@@ -529,7 +529,7 @@ describe("Feishu adapter", () => {
     class FakeWsClient {
       static instances: FakeWsClient[] = [];
       static startCalls = 0;
-      static onStart?: (client: FakeWsClient) => void;
+      static onStart?: (client: FakeWsClient) => void | Promise<void>;
       readonly close = vi.fn();
       readonly options: {
         onReady?: () => void;
@@ -544,7 +544,7 @@ describe("Feishu adapter", () => {
       async start(): Promise<void> {
         FakeWsClient.startCalls += 1;
         if (FakeWsClient.onStart) {
-          FakeWsClient.onStart(this);
+          await FakeWsClient.onStart(this);
           return;
         }
         this.options.onReady?.();
@@ -674,6 +674,46 @@ describe("Feishu adapter", () => {
       // Late WSClient onError after outbound.connect() already failed must not emit unhandledRejection
       outboundFailWsClient?.options.onError?.(wsGatewayError);
       await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandledRejections).toEqual([]);
+
+      // WSClient.start() rejecting directly without calling onError routes through connection failure and does not emit unhandledRejection
+      const sdkStartFailure = new Error("SDK_START_FAILED");
+      outbound.disconnect.mockClear();
+      FakeWsClient.onStart = () => Promise.reject(sdkStartFailure);
+      const startRejectAdapter = new module.FeishuAdapter({
+        appId: "cli_start_reject",
+        appSecret: "secret",
+        teamId: null,
+      });
+      const startErrorHandler = vi.fn();
+      startRejectAdapter.channel.on({ error: startErrorHandler });
+      const startRejectValidate = startRejectAdapter.validateBinding();
+      await expect(startRejectValidate).rejects.toSatisfy((caught: unknown) => {
+        expect(caught).toBeInstanceOf(Error);
+        expect((caught as Error).message).toBe("FEISHU_CONNECTION_ERROR");
+        expect((caught as Error).cause).toBe(sdkStartFailure);
+        return true;
+      });
+      const startRejectWsClient = FakeWsClient.instances.at(-1);
+      expect(startErrorHandler).toHaveBeenCalledExactlyOnceWith(sdkStartFailure);
+      expect(startRejectWsClient?.close).toHaveBeenCalledWith({ force: true });
+      expect(outbound.disconnect).toHaveBeenCalledTimes(1);
+      expect(startRejectAdapter.channel.botIdentity).toBeUndefined();
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandledRejections).toEqual([]);
+
+      // disconnect() while validateBinding() is waiting on #ready settles with FEISHU_CHANNEL_CLOSED
+      FakeWsClient.onStart = () => undefined;
+      const disconnectWhilePendingAdapter = new module.FeishuAdapter({
+        appId: "cli_disconnect_pending",
+        appSecret: "secret",
+        teamId: null,
+      });
+      const pendingDisconnectValidate = disconnectWhilePendingAdapter.validateBinding();
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      await disconnectWhilePendingAdapter.channel.disconnect();
+      await expect(pendingDisconnectValidate).rejects.toThrow("FEISHU_CHANNEL_CLOSED");
+      expect(disconnectWhilePendingAdapter.channel.botIdentity).toBeUndefined();
       expect(unhandledRejections).toEqual([]);
     } finally {
       process.off("unhandledRejection", onUnhandledRejection);

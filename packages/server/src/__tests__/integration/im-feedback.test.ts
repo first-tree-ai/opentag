@@ -1,14 +1,17 @@
 import { createHmac, randomUUID } from "node:crypto";
 import { computeTurnResultHash, SLACK_REQUIRED_BOT_SCOPES, type TurnReportRequest } from "@opentag/shared";
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../../app.js";
 import { createDatabaseClient } from "../../db/client.js";
 import {
+  computers,
   imFeedbackActions,
   imFeedbackTargets,
   imMessageDeliveries,
+  imMessages,
   sandboxes,
+  sessions,
   slackInstallations,
 } from "../../db/schema/index.js";
 import { createPerformanceLogger } from "../../observability/performance-logger.js";
@@ -17,7 +20,12 @@ import { ApplicationCipher } from "../../services/crypto.js";
 import { ExternalCallPolicy } from "../../services/im/external-call-policy.js";
 import { ImFeedbackActionsService } from "../../services/im/im-feedback-actions.js";
 import { type FeedbackTransport, ImFeedbackMessenger } from "../../services/im/im-feedback-messenger.js";
-import { type FeedbackTarget, ImFeedbackStore, startImFeedback } from "../../services/im/im-feedback-store.js";
+import {
+  createImFeedbackTarget,
+  type FeedbackTarget,
+  ImFeedbackStore,
+  startImFeedback,
+} from "../../services/im/im-feedback-store.js";
 import { ImFeedbackWorker } from "../../services/im/im-feedback-worker.js";
 import { ImBindingService } from "../../services/im-bindings/im-binding-service.js";
 import { closeServerResources } from "../../shutdown.js";
@@ -277,6 +285,7 @@ describe("PostgreSQL feedback operations", () => {
         await gate;
         return "native-card";
       }),
+      postOfflineNotice: vi.fn(async () => {}),
       find: vi.fn(async () => ({ ids: [] })),
       update: vi.fn(async () => {}),
     };
@@ -334,6 +343,52 @@ async function failAnother(h: Awaited<ReturnType<typeof failed>>) {
     await new PostgresRuntimeCustodyStore(client.database, { now: () => clock }).recordTurn(report, h.context),
   ).toBe("recorded");
 }
+
+describe("IM offline notice", () => {
+  it("makes a second target of the Session wait for the first reservation, then decline", async () => {
+    const h = await failed();
+    const second = await h.delivery();
+    const third = await h.delivery();
+    const ids = [second.frame.deliveryId, third.frame.deliveryId];
+    await client.database
+      .update(imMessageDeliveries)
+      .set({ state: "pending", acceptedAt: null, inputHash: null, turnId: null, reportOwnerInstanceId: null })
+      .where(inArray(imMessageDeliveries.id, ids));
+    await client.database.update(imMessages).set({ receivedAt: new Date(clock.getTime() - 300_000) });
+    await client.database.transaction(async (tx) => {
+      for (const id of ids) await createImFeedbackTarget(tx, id, clock);
+    });
+    await client.database
+      .update(computers)
+      .set({ currentInstanceId: null, lastSeenAt: new Date(clock.getTime() - 300_000) });
+    const targets = await client.database
+      .select()
+      .from(imFeedbackTargets)
+      .where(inArray(imFeedbackTargets.deliveryId, ids));
+    expect(targets.map((target) => target.state)).toEqual(["queued", "queued"]);
+    const [first, other] = targets;
+    if (!first || !other) throw new Error("Missing targets");
+    const store = new ImFeedbackStore(client.database, () => clock);
+    const release = deferred<void>();
+    const locked = deferred<void>();
+    const holder = client.database.transaction(async (tx) => {
+      await tx.select({ id: sessions.id }).from(sessions).where(eq(sessions.id, first.sessionId)).for("update");
+      locked.resolve();
+      await release.promise;
+      await tx.update(imFeedbackTargets).set({ sendStartedAt: clock }).where(eq(imFeedbackTargets.id, first.id));
+    });
+    await locked.promise;
+    let settled = false;
+    const racing = store.reserveOfflineNotice(other).finally(() => {
+      settled = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(settled).toBe(false);
+    release.resolve();
+    await holder;
+    expect(await racing).toBeUndefined();
+  });
+});
 
 describe("existing installation cooldown", () => {
   it("shares a real SDK 429 across due targets, worker restarts and methods, while isolating another installation", async () => {

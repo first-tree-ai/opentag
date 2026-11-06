@@ -16,6 +16,23 @@ the same Session after the daemon is back, its input begins with
 - One Agent on that Computer with an IM binding, and permission to stop, kill and restart its daemon.
 - For internal Sessions: a request that makes the visible Session run `opentag session create` for a long task.
 
+## Offline notice
+
+With an IM test binding on a Local Computer and permission to stop its daemon:
+
+1. Stop the daemon and send a direct request in Chinese. Expected: no reply before sixty seconds, then one reply within
+   about seventy-five seconds with the agreed four sentences and a Restore connection link. No Computer name or person
+   is named.
+2. Send two more requests in the same Session. Expected: no further notice. Send one in another Session of the Agent.
+   Expected: that Session gets its own single notice.
+3. Open the link signed in as the Agent owner. Expected: the Agent page shows the Computer as offline, and its link
+   opens the recovery page with the restore command. Open it signed out. Expected: sign-in. Open it as an Account with
+   other Agents. Expected: not found. Open it as an Account with no Agents. Expected: first-Agent setup.
+4. Restart the daemon. Expected: the parked messages run and no "back online" message appears. Stop it again and send
+   a request. Expected: one new notice for this new offline period.
+5. Restart the daemon within sixty seconds of a new request. Expected: no notice.
+6. Send a request to an Agent on Cloud while its Runner is unavailable. Expected: no offline notice.
+
 ## Failure messages
 
 With an IM test binding and a runtime that can be made to fail on request:

@@ -4,7 +4,7 @@ import { createFeishuHttpInstance, feishuDomainForWorkspaceBrand } from "../im-b
 import type { ImBindingService } from "../im-bindings/im-binding-service.js";
 import { SLACK_WEB_CLIENT_OPTIONS } from "../im-bindings/slack/default-api-client.js";
 import { type ExternalCallPolicy, ExternalCallPolicyError } from "./external-call-policy.js";
-import { renderFeedbackCard, renderFeedbackText } from "./im-feedback-card.js";
+import { renderFeedbackCard, renderFeedbackText, renderOfflineNotice } from "./im-feedback-card.js";
 import type { FeedbackLanguage } from "./im-feedback-copy.js";
 import type { FeedbackAction, FeedbackTarget, ImFeedbackStore, SlackFeedbackScope } from "./im-feedback-store.js";
 
@@ -28,6 +28,7 @@ export class FeedbackCooldownStorageError extends FeedbackProviderError {
 export interface FeedbackTransport {
   reaction(target: FeedbackTarget, desired: FeedbackTarget["desiredReaction"]): Promise<void>;
   post(target: FeedbackTarget, action?: FeedbackAction): Promise<string>;
+  postOfflineNotice(target: FeedbackTarget): Promise<void>;
   update(target: FeedbackTarget, action?: FeedbackAction): Promise<void>;
   find(target: FeedbackTarget, cursor?: string): Promise<{ ids: string[]; cursor?: string }>;
 }
@@ -260,21 +261,45 @@ export class ImFeedbackMessenger implements FeedbackTransport {
         { maxAttempts: 1, timeoutMs: 8_000 },
       );
     } catch (error) {
-      if (error instanceof FeedbackProviderError) throw error;
-      if (error instanceof ExternalCallPolicyError && error.phase === "circuit")
-        throw new FeedbackProviderError("IM_PROVIDER_CIRCUIT_OPEN", true, false, 30_000);
-      const code = slackErrorCode(error);
-      const permanent = [
-        "invalid_auth",
-        "token_revoked",
-        "missing_scope",
-        "channel_not_found",
-        "not_in_channel",
-        "invalid_blocks",
-        "invalid_arguments",
-      ].includes(code ?? "");
-      if (permanent) throw new FeedbackProviderError("IM_FEEDBACK_SEND_REJECTED", true, true);
-      throw new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false);
+      throw sendError(error);
+    }
+  }
+
+  /**
+   * Sends a reply outside the card identity: `providerRequestId` belongs to the failure message, and
+   * Feishu would swallow that later message as a duplicate of this one.
+   */
+  async postOfflineNotice(target: FeedbackTarget): Promise<void> {
+    try {
+      const text = renderOfflineNotice(target, this.publicUrl, await this.#language(target));
+      await this.#run(
+        `${target.provider}.feedback.offline_notice`,
+        async (signal) => {
+          if (target.provider === "slack") {
+            const { api } = await this.#slack(target, signal);
+            const r = await this.#slackCall(target, () =>
+              api.chat.postMessage({
+                channel: target.channelId,
+                thread_ts: target.threadKey ?? target.inputExternalId,
+                text,
+                unfurl_links: false,
+                unfurl_media: false,
+              }),
+            );
+            if (!r.ok) throw new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false);
+            return;
+          }
+          const { api } = await this.#feishu(target, signal);
+          const r = await api.im.v1.message.reply({
+            path: { message_id: target.inputExternalId },
+            data: { msg_type: "text", content: JSON.stringify({ text }) },
+          });
+          if (r.code !== 0) throw new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false);
+        },
+        { maxAttempts: 1, timeoutMs: 8_000 },
+      );
+    } catch (error) {
+      throw sendError(error);
     }
   }
 
@@ -374,6 +399,24 @@ export class ImFeedbackMessenger implements FeedbackTransport {
       .flatMap((m) => (m.message_id ? [m.message_id] : []));
     return { ids, ...(r.data.has_more && r.data.page_token ? { cursor: r.data.page_token } : {}) };
   }
+}
+
+function sendError(error: unknown): FeedbackProviderError {
+  if (error instanceof FeedbackProviderError) return error;
+  if (error instanceof ExternalCallPolicyError && error.phase === "circuit")
+    return new FeedbackProviderError("IM_PROVIDER_CIRCUIT_OPEN", true, false, 30_000);
+  const code = slackErrorCode(error);
+  const permanent = [
+    "invalid_auth",
+    "token_revoked",
+    "missing_scope",
+    "channel_not_found",
+    "not_in_channel",
+    "invalid_blocks",
+    "invalid_arguments",
+  ].includes(code ?? "");
+  if (permanent) return new FeedbackProviderError("IM_FEEDBACK_SEND_REJECTED", true, true);
+  return new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false);
 }
 
 function feedbackRateLimit(error: unknown): FeedbackProviderError | undefined {

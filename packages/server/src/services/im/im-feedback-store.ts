@@ -1,19 +1,22 @@
 import { randomUUID } from "node:crypto";
 import type { TurnReportRequest } from "@opentag/shared";
-import { and, eq, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, lte, ne, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   agents,
+  computers,
   imBindings,
   imFeedbackActions,
   imFeedbackTargets,
   imMessageDeliveries,
   imMessages,
   sandboxes,
+  sessionPlacements,
   sessions,
   slackInstallations,
   users,
 } from "../../db/schema/index.js";
+import { COMPUTER_PRESENCE_TIMEOUT_MS } from "../computers/cloud-computer.js";
 import { type FeedbackLanguage, feedbackLanguage } from "./im-feedback-copy.js";
 import { feedbackMessageFormat } from "./im-feedback-format.js";
 
@@ -33,6 +36,10 @@ export interface FeedbackSettlement {
 }
 export const FEEDBACK_ACTION_TTL_MS = 24 * 60 * 60_000;
 const DORMANT = new Date("9999-12-31T00:00:00Z");
+/** Short disconnects, upgrades and restarts recover silently below this. */
+export const OFFLINE_NOTICE_DELAY_MS = 60_000;
+/** Input expires after seven days, so no target older than this can hold a notice for a pending message. */
+const OFFLINE_NOTICE_LOOKBACK_MS = 8 * 24 * 60 * 60_000;
 
 export async function createImFeedbackTarget(tx: DatabaseTransaction, deliveryId: string, now: Date): Promise<void> {
   const [row] = await tx
@@ -421,6 +428,96 @@ export class ImFeedbackStore {
       .where(eq(imMessages.id, messageId))
       .limit(1);
     return message ? feedbackLanguage(message.content) : "en";
+  }
+
+  /**
+   * Reserves the one offline notice of this Session and offline period. `computers.last_seen_at` is
+   * frozen while a Computer is offline and rewritten on reconnect, so a send started at or after it
+   * belongs to the current period. The reservation commits before provider I/O, so a crash loses a
+   * notice rather than repeating it. The Session row lock serializes the targets of a Session.
+   */
+  async reserveOfflineNotice(target: FeedbackTarget): Promise<Date | undefined> {
+    if (target.state !== "queued" || target.cardState !== "none") return;
+    const now = this.now();
+    const [row] = await this.database
+      .select({
+        kind: computers.kind,
+        instanceId: computers.currentInstanceId,
+        lastSeenAt: computers.lastSeenAt,
+        disconnectedAt: computers.disconnectedAt,
+        deletedAt: computers.deletedAt,
+        agentStatus: agents.status,
+        receivedAt: imMessages.receivedAt,
+        deliveryState: imMessageDeliveries.state,
+        deliveryGeneration: imMessageDeliveries.placementGeneration,
+        placementGeneration: sessionPlacements.generation,
+      })
+      .from(imMessageDeliveries)
+      .innerJoin(imMessages, eq(imMessages.id, imMessageDeliveries.messageId))
+      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, imMessageDeliveries.sessionId))
+      .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
+      .innerJoin(agents, eq(agents.id, target.agentId))
+      .where(eq(imMessageDeliveries.id, target.deliveryId))
+      .limit(1);
+    if (
+      !row ||
+      row.kind !== "local" ||
+      row.deletedAt ||
+      row.agentStatus !== "active" ||
+      row.deliveryState !== "pending" ||
+      row.deliveryGeneration !== row.placementGeneration
+    )
+      return;
+    const lastSeenMs = row.lastSeenAt?.getTime() ?? 0;
+    const offline =
+      row.disconnectedAt !== null ||
+      row.instanceId === null ||
+      lastSeenMs < now.getTime() - COMPUTER_PRESENCE_TIMEOUT_MS;
+    if (!offline || now.getTime() - Math.max(row.receivedAt.getTime(), lastSeenMs) < OFFLINE_NOTICE_DELAY_MS) return;
+    const periodStart = new Date(lastSeenMs);
+    return this.database.transaction(async (tx) => {
+      await tx.select({ id: sessions.id }).from(sessions).where(eq(sessions.id, target.sessionId)).for("update");
+      const [sent] = await tx
+        .select({ id: imFeedbackTargets.id })
+        .from(imFeedbackTargets)
+        .where(
+          and(
+            eq(imFeedbackTargets.accountId, target.accountId),
+            eq(imFeedbackTargets.agentId, target.agentId),
+            gte(imFeedbackTargets.createdAt, new Date(now.getTime() - OFFLINE_NOTICE_LOOKBACK_MS)),
+            eq(imFeedbackTargets.sessionId, target.sessionId),
+            gte(imFeedbackTargets.sendStartedAt, periodStart),
+          ),
+        )
+        .limit(1);
+      if (sent) return;
+      const [reserved] = await tx
+        .update(imFeedbackTargets)
+        .set({ sendStartedAt: now })
+        .where(
+          and(
+            eq(imFeedbackTargets.id, target.id),
+            eq(imFeedbackTargets.state, "queued"),
+            eq(imFeedbackTargets.cardState, "none"),
+          ),
+        )
+        .returning({ id: imFeedbackTargets.id });
+      return reserved ? now : undefined;
+    });
+  }
+
+  /** A send the provider definitely did not apply may be attempted again on a later pass. */
+  async releaseOfflineNotice(target: FeedbackTarget, reservedAt: Date): Promise<void> {
+    await this.database
+      .update(imFeedbackTargets)
+      .set({ sendStartedAt: null })
+      .where(
+        and(
+          eq(imFeedbackTargets.id, target.id),
+          eq(imFeedbackTargets.sendStartedAt, reservedAt),
+          eq(imFeedbackTargets.cardState, "none"),
+        ),
+      );
   }
 
   async latestAction(feedbackId: string): Promise<FeedbackAction | undefined> {

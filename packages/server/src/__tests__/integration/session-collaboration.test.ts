@@ -6,10 +6,11 @@ import type {
   SessionReconcileRequest,
   SessionReconcileResult,
 } from "@opentag/shared";
+import { SESSION_RUN_OUTCOME_NOTICE_HEADER } from "@opentag/shared";
 import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { migrateDatabase } from "../../db/migrate.js";
@@ -22,10 +23,18 @@ import {
   sessions,
   users,
 } from "../../db/schema/index.js";
+import { stopEndedInternalSessions } from "../../runtime/agent-session-stopper.js";
 import { type RuntimeDispatchAdmission, RuntimeDomainRequestError } from "../../runtime/runtime-domain-owner.js";
 import { AgentService } from "../../services/agents/index.js";
 import { disableImBindingInTransaction } from "../../services/im-bindings/index.js";
-import { SessionCliProofService, SessionCollaborationService, SessionService } from "../../services/sessions/index.js";
+import {
+  type InternalSessionStopTarget,
+  SessionCliProofService,
+  SessionCollaborationService,
+  type SessionCollaborationServiceOptions,
+  SessionService,
+} from "../../services/sessions/index.js";
+import { sessionStoppedNoticeMessageId } from "../../services/sessions/session-run-outcome-notice.js";
 import { startPostgresTestContainer } from "./postgres-test-container.js";
 
 const migrationsFolder = fileURLToPath(new URL("../../../drizzle", import.meta.url));
@@ -320,6 +329,272 @@ describe("Session collaboration authority", () => {
     } finally {
       await fixture.sql.end();
     }
+  });
+
+  describe("stopping an internal Session", () => {
+    /** The root stops; `child` was created by the root and `grandchild` by the child. */
+    async function stopFixture(fixture: Awaited<ReturnType<typeof createFixture>>) {
+      const stopEnded = vi.fn(
+        async (targets: InternalSessionStopTarget[]) =>
+          new Map(targets.map(({ sessionId }) => [sessionId, "stopped" as const])),
+      );
+      const collaboration = await createCollaborationFixture(fixture, { stopEnded });
+      const child = collaboration.targetSessionId;
+      const [placement] = await fixture.database
+        .select()
+        .from(sessionPlacements)
+        .where(eq(sessionPlacements.sessionId, child));
+      if (!placement) throw new Error("Child placement fixture was not created");
+      const grandchild = await fixture.sessions.createInternalSessionWithMessage({
+        creatorSessionId: child,
+        creatorInstallationId: fixture.installationId,
+        creatorConnectionInstanceId: fixture.connectionInstanceId,
+        creatorComputerId: fixture.computerId,
+        creatorPlacementGeneration: placement.generation,
+        messageId: randomUUID(),
+        initialMessage: "nested task",
+      });
+      return { ...collaboration, child, grandchild: grandchild.session.id, stopEnded, childPlacement: placement };
+    }
+
+    it("ends the Session for good without touching its descendants, and repeats harmlessly", async () => {
+      const fixture = await createFixture();
+      try {
+        const { service, source, child, grandchild, stopEnded } = await stopFixture(fixture);
+        await expect(service.stop({ targetSessionId: child }, source)).resolves.toEqual({
+          status: "stopped",
+          sessionId: child,
+          execution: "stopped",
+          alreadyStopped: false,
+          activeDescendantCount: 1,
+        });
+        expect(stopEnded).toHaveBeenCalledWith([
+          expect.objectContaining({ sessionId: child, computerKind: "local", creatorSessionId: source.sessionId }),
+        ]);
+        const [ended] = await fixture.database.select().from(sessions).where(eq(sessions.id, child));
+        expect(ended?.endedAt).toBeInstanceOf(Date);
+        const active = await fixture.sessions.listInternalSessions(source.sessionId, { recursive: true, limit: 10 });
+        expect(active.items.map((item) => item.sessionId)).toEqual([grandchild]);
+        expect(active.items[0]).not.toHaveProperty("stoppedAt");
+        const all = await fixture.sessions.listInternalSessions(source.sessionId, {
+          recursive: true,
+          limit: 10,
+          includeStopped: true,
+        });
+        expect(all.items.map((item) => item.sessionId).sort()).toEqual([child, grandchild].sort());
+        expect(all.items.find((item) => item.sessionId === child)?.stoppedAt).toBe(ended?.endedAt?.toISOString());
+        expect(all.items.find((item) => item.sessionId === grandchild)).not.toHaveProperty("stoppedAt");
+        const notices = await fixture.database
+          .select()
+          .from(sessionMessages)
+          .where(eq(sessionMessages.id, sessionStoppedNoticeMessageId(child)));
+        expect(notices).toEqual([]);
+
+        await expect(
+          service.send({ messageId: randomUUID(), targetSessionId: child, message: "come back" }, source),
+        ).resolves.toMatchObject({ status: "rejected", code: "target_unavailable" });
+        await expect(service.stop({ targetSessionId: child }, source)).resolves.toMatchObject({
+          status: "stopped",
+          alreadyStopped: true,
+        });
+        expect(stopEnded).toHaveBeenCalledTimes(2);
+        const [unchanged] = await fixture.database.select().from(sessions).where(eq(sessions.id, child));
+        expect(unchanged?.endedAt).toEqual(ended?.endedAt);
+      } finally {
+        await fixture.sql.end();
+      }
+    });
+
+    it("takes away the stopped Session's own authority", async () => {
+      const fixture = await createFixture();
+      try {
+        const { service, source, child, childPlacement } = await stopFixture(fixture);
+        await service.stop({ targetSessionId: child }, source);
+        await expect(
+          service.send(
+            { messageId: randomUUID(), targetSessionId: source.sessionId, message: "still here" },
+            { ...source, sessionId: child, sessionKind: "internal", placementGeneration: childPlacement.generation },
+          ),
+        ).resolves.toMatchObject({ status: "rejected", code: "source_unavailable" });
+      } finally {
+        await fixture.sql.end();
+      }
+    });
+
+    it("tells the creator when an ancestor above it stopped its child", async () => {
+      const fixture = await createFixture();
+      try {
+        const { service, source, child, grandchild, frames } = await stopFixture(fixture);
+        const before = frames.length;
+        await expect(service.stop({ targetSessionId: grandchild }, source)).resolves.toMatchObject({
+          status: "stopped",
+          activeDescendantCount: 0,
+        });
+        const [notice] = await fixture.database
+          .select()
+          .from(sessionMessages)
+          .where(eq(sessionMessages.id, sessionStoppedNoticeMessageId(grandchild)));
+        expect(notice).toMatchObject({ sourceSessionId: source.sessionId, targetSessionId: child });
+        expect(notice?.content).toContain(SESSION_RUN_OUTCOME_NOTICE_HEADER);
+        expect(notice?.content).toContain("cannot receive messages");
+        expect(frames.slice(before)).toContain("message");
+        // A repeated stop converges on the same notice.
+        await service.stop({ targetSessionId: grandchild }, source);
+        const notices = await fixture.database
+          .select()
+          .from(sessionMessages)
+          .where(eq(sessionMessages.targetSessionId, child));
+        expect(notices.filter(({ id }) => id === notice?.id)).toHaveLength(1);
+      } finally {
+        await fixture.sql.end();
+      }
+    });
+
+    it("refuses anyone outside the creation chain above the target", async () => {
+      const fixture = await createFixture();
+      try {
+        const { service, source, child, grandchild, childPlacement, stopEnded } = await stopFixture(fixture);
+        const asChild = {
+          ...source,
+          sessionId: child,
+          sessionKind: "internal" as const,
+          placementGeneration: childPlacement.generation,
+        };
+        for (const [targetSessionId, actor] of [
+          [child, asChild], // itself
+          [source.sessionId, asChild], // its parent
+          [source.sessionId, source], // a visible Session
+          [randomUUID(), source], // nothing at all
+        ] as const) {
+          await expect(service.stop({ targetSessionId }, actor)).resolves.toEqual({
+            status: "rejected",
+            sessionId: targetSessionId,
+            code: "not_ancestor",
+          });
+        }
+        const sibling = await fixture.sessions.createInternalSessionWithMessage({
+          creatorSessionId: source.sessionId,
+          creatorInstallationId: fixture.installationId,
+          creatorConnectionInstanceId: fixture.connectionInstanceId,
+          creatorComputerId: fixture.computerId,
+          creatorPlacementGeneration: source.placementGeneration,
+          messageId: randomUUID(),
+          initialMessage: "sibling task",
+        });
+        await expect(service.stop({ targetSessionId: sibling.session.id }, asChild)).resolves.toMatchObject({
+          status: "rejected",
+          code: "not_ancestor",
+        });
+        expect(stopEnded).not.toHaveBeenCalled();
+        const live = await fixture.database.select().from(sessions).where(eq(sessions.id, grandchild));
+        expect(live[0]?.endedAt).toBeNull();
+      } finally {
+        await fixture.sql.end();
+      }
+    });
+
+    it("sends the stop reconcile under the ended-Session authority and reports how far it reached", async () => {
+      const fixture = await createFixture();
+      try {
+        const { service, source, child, grandchild, stopEnded } = await stopFixture(fixture);
+        await service.stop({ targetSessionId: grandchild }, source);
+        const target = stopEnded.mock.calls[0]?.[0][0];
+        if (!target) throw new Error("Stop target was not captured");
+        const statuses: SessionReconcileResult["status"][] = ["stopped", "busy"];
+        const requests: SessionReconcileRequest[] = [];
+        const revokeProof = vi.fn(async () => undefined);
+        const dependencies = {
+          currentInstanceId: () => fixture.connectionInstanceId as string | undefined,
+          revokeProof,
+          requestReconcile: async (
+            _computerId: string,
+            _instanceId: string,
+            request: SessionReconcileRequest,
+            _onDispatched?: () => void,
+            admission?: RuntimeDispatchAdmission<SessionReconcileResult>,
+          ) =>
+            withAdmission(admission, async (dispatched) => {
+              requests.push(request);
+              dispatched();
+              return {
+                type: "session:reconcile:result" as const,
+                requestId: request.requestId,
+                sessionId: request.sessionId,
+                placementGeneration: request.placementGeneration,
+                status: statuses.shift() ?? "stopped",
+              };
+            }),
+        };
+        await expect(stopEndedInternalSessions(fixture.database, [target], dependencies)).resolves.toEqual(
+          new Map([[grandchild, "stopped"]]),
+        );
+        expect(requests[0]).toMatchObject({
+          desired: "stopped",
+          sessionKind: "internal",
+          creatorSessionId: child,
+          sessionId: grandchild,
+        });
+        expect(revokeProof).toHaveBeenCalledWith(grandchild);
+        await expect(stopEndedInternalSessions(fixture.database, [target], dependencies)).resolves.toEqual(
+          new Map([[grandchild, "not_interrupted"]]),
+        );
+        expect(revokeProof).toHaveBeenCalledOnce();
+        await expect(
+          stopEndedInternalSessions(fixture.database, [target], {
+            ...dependencies,
+            currentInstanceId: () => undefined,
+          }),
+        ).resolves.toEqual(new Map([[grandchild, "pending"]]));
+        // A live Session never passes the ended-Session authority.
+        requests.length = 0;
+        await expect(
+          stopEndedInternalSessions(fixture.database, [{ ...target, sessionId: child }], dependencies),
+        ).resolves.toEqual(new Map([[child, "pending"]]));
+        expect(requests).toEqual([]);
+        // Cloud goes through the Runner owner, and only a sent cancellation counts as requested.
+        const cancelSessionMessages = vi.fn(async () => [{ messageId: randomUUID(), status: "requested" as const }]);
+        const cloudTarget = { ...target, computerKind: "cloud" as const };
+        await expect(
+          stopEndedInternalSessions(fixture.database, [cloudTarget], {
+            ...dependencies,
+            cloudSession: { cancelSessionMessages },
+          }),
+        ).resolves.toEqual(new Map([[grandchild, "requested"]]));
+        expect(cancelSessionMessages).toHaveBeenCalledWith(grandchild);
+        cancelSessionMessages.mockResolvedValueOnce([
+          { messageId: randomUUID(), status: "no_connection" as "requested" },
+        ]);
+        await expect(
+          stopEndedInternalSessions(fixture.database, [cloudTarget], {
+            ...dependencies,
+            cloudSession: { cancelSessionMessages },
+          }),
+        ).resolves.toEqual(new Map([[grandchild, "pending"]]));
+      } finally {
+        await fixture.sql.end();
+      }
+    });
+
+    it("repeats recent stops when the Computer registers, and only those", async () => {
+      const fixture = await createFixture();
+      try {
+        const { service, source, child, grandchild, stopEnded } = await stopFixture(fixture);
+        await service.stop({ targetSessionId: grandchild }, source);
+        await service.stop({ targetSessionId: child }, source);
+        stopEnded.mockClear();
+        await fixture.database
+          .update(sessions)
+          .set({ endedAt: new Date(Date.now() - 25 * 60 * 60 * 1000) })
+          .where(eq(sessions.id, child));
+        await service.redeliverStops(fixture.computerId);
+        expect(stopEnded.mock.calls[0]?.[0].map(({ sessionId }) => sessionId)).toEqual([grandchild]);
+        stopEnded.mockClear();
+        await service.redeliverStops(randomUUID());
+        expect(stopEnded).not.toHaveBeenCalled();
+      } finally {
+        await fixture.sql.end();
+      }
+    });
   });
 
   it("rejects stale, ended, and cross-scope requests before recording a business message", async () => {
@@ -896,6 +1171,7 @@ interface CollaborationRuntimeOptions {
   beforeReconcileResult?: () => Promise<void>;
   onDeliveryRequested?: () => void;
   onReconcileDispatched?: () => void;
+  stopEnded?: SessionCollaborationServiceOptions["stopEnded"];
 }
 
 async function createCollaborationFixture(
@@ -974,6 +1250,7 @@ async function createCollaborationFixture(
         supportsCapability: () => true,
       },
       sessions: fixture.sessions,
+      ...(options.stopEnded ? { stopEnded: options.stopEnded } : {}),
     }),
     source: {
       proofId: crypto.randomUUID(),

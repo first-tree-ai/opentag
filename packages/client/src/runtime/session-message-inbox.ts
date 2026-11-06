@@ -476,13 +476,7 @@ export class SessionMessageInbox {
         this.#awaitingPreparation.add(sessionId);
         return;
       }
-      let reservation = this.#admission.reserve(sessionId, next.request.agentId, { acceptedWork: true });
-      while (!reservation.accepted && this.#queues.get(sessionId)?.[0] === next) {
-        // A busy Session usually has a running Turn: the message joins it instead of waiting for it to end.
-        if (await this.#steerIntoRunningTurn(sessionId, next)) break;
-        await this.#waitForReleaseOrSteerRetry();
-        reservation = this.#admission.reserve(sessionId, next.request.agentId, { acceptedWork: true });
-      }
+      const reservation = await this.#reserveOrSteer(sessionId, next);
       // A Session stop withdrew the message while it waited for admission.
       if (this.#queues.get(sessionId)?.[0] !== next) {
         if (reservation.accepted) reservation.reservation.release();
@@ -494,6 +488,18 @@ export class SessionMessageInbox {
       reservation.reservation.markActive();
       await this.#runMessage(sessionId, next, reservation.reservation);
     }
+  }
+
+  /** Waits for admission until the message runs, joins a running Turn, or a Session stop withdraws it. */
+  async #reserveOrSteer(sessionId: string, next: QueuedMessage) {
+    let reservation = this.#admission.reserve(sessionId, next.request.agentId, { acceptedWork: true });
+    while (!reservation.accepted && this.#queues.get(sessionId)?.[0] === next) {
+      // A busy Session usually has a running Turn: the message joins it instead of waiting for it to end.
+      if (await this.#steerIntoRunningTurn(sessionId, next)) break;
+      await this.#waitForReleaseOrSteerRetry();
+      reservation = this.#admission.reserve(sessionId, next.request.agentId, { acceptedWork: true });
+    }
+    return reservation;
   }
 
   async #waitForReleaseOrSteerRetry(): Promise<void> {
@@ -840,13 +846,9 @@ export class SessionMessageInbox {
       // existing recovery semantics.
       const timedOut = timeout.signal.aborted && !this.#abort.signal.aborted && executionSignal?.aborted !== true;
       await settleRunTime();
-      // A daemon stop wins: the restarted daemon asks the Server, which refuses the ended Session.
-      if (current && stop.signal.aborted && !this.#abort.signal.aborted) {
-        this.#emitFailure(durableFailureFromUnknown(next.request.requestId, phase, error, "runtime_failed"));
-        await this.#recordStopped(current, phase);
-      } else if (current) await this.#handleFailure(current, next.hash, phase, error, timedOut);
+      if (current) await this.#settleFailedRun(current, next.hash, phase, error, { stop, timedOut });
     } finally {
-      if (this.#runStops.get(sessionId)?.controller === stop) this.#runStops.delete(sessionId);
+      this.#runStops.delete(sessionId);
       timer?.cancel();
       await this.#cleanupTurnPlan(turnPlanInput);
       if (credentialPrepared) {
@@ -857,6 +859,22 @@ export class SessionMessageInbox {
         reservation.release();
       });
     }
+  }
+
+  async #settleFailedRun(
+    record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
+    hash: string,
+    phase: string,
+    error: unknown,
+    run: { stop: AbortController; timedOut: boolean },
+  ): Promise<void> {
+    // A daemon stop wins: the restarted daemon asks the Server, which refuses the ended Session.
+    if (!run.stop.signal.aborted || this.#abort.signal.aborted) {
+      await this.#handleFailure(record, hash, phase, error, run.timedOut);
+      return;
+    }
+    this.#emitFailure(durableFailureFromUnknown(record.payload.requestId, phase, error, "runtime_failed"));
+    await this.#recordStopped(record, phase);
   }
 
   #requirePreparedOutbox(

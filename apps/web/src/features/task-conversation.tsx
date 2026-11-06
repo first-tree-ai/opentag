@@ -25,17 +25,15 @@ import { buildTaskTimeline, type CapturedTaskReply, type TaskReport, type TaskTi
 export function TaskActivity({
   task,
   turns,
-  internalSessions,
-  internalSessionsFooter,
+  emptyStateHidden = false,
   replies,
   pagination,
   repliesStatus,
 }: {
   task: TaskSummary;
   turns: TaskTurn[];
-  internalSessions?: TaskInternalSessionItem[];
-  /** Paging and error notices for the internal Sessions, shown under their list. */
-  internalSessionsFooter?: ReactNode;
+  /** Leaves out the empty conversation's explanation, for a Task that has other work to show. */
+  emptyStateHidden?: boolean;
   replies?: CapturedTaskReply[];
   pagination: ReactNode;
   repliesStatus?: ReactNode;
@@ -48,7 +46,6 @@ export function TaskActivity({
   const entries = buildTaskTimeline(turns, task.source.provider, replies ?? []).filter((entry) =>
     taskEntryVisible(entry, task.source.provider, capturedFeedSupplied),
   );
-  const hasInternalSessions = (internalSessions?.length ?? 0) > 0;
   const sectionRef = useRef<HTMLElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const autoScrolledTaskIdRef = useRef<string | null>(null);
@@ -119,11 +116,6 @@ export function TaskActivity({
       <Text as="h2" id="task-activity-title" variant="heading" DANGEROUS_className="sr-only">
         {m.tasks_activity()}
       </Text>
-      {hasInternalSessions && internalSessions ? (
-        <TaskInternalSessionsList footer={internalSessionsFooter} sessions={internalSessions} />
-      ) : (
-        internalSessionsFooter
-      )}
       <TaskActivityTimeline key={task.id} entryIds={entries.map((entry) => entry.id)}>
         {pagination}
         {entries.length > 0 ? (
@@ -134,7 +126,7 @@ export function TaskActivity({
               </div>
             ))}
           </div>
-        ) : !hasInternalSessions ? (
+        ) : !emptyStateHidden ? (
           <div className="grid gap-2">
             <Text as="h3" variant="heading">
               {m.tasks_no_activity()}
@@ -172,14 +164,22 @@ export function TaskActivity({
  * when it last did something. The id says nothing to most readers, so it waits in the title's tooltip
  * for whoever is diagnosing the run.
  */
-function TaskInternalSessionsList({ sessions, footer }: { sessions: TaskInternalSessionItem[]; footer?: ReactNode }) {
+export function TaskInternalSessionsList({
+  sessions,
+  footer,
+}: {
+  sessions: TaskInternalSessionItem[];
+  /** Paging and error notices. They stay when no Session could be read. */
+  footer?: ReactNode;
+}) {
+  if (sessions.length === 0) return <>{footer}</>;
   return (
     <section
       aria-labelledby="task-internal-sessions-title"
       className="grid grid-cols-1 gap-3"
       data-ui="task-internal-sessions"
     >
-      <Text as="h3" headingSize="body" id="task-internal-sessions-title" variant="heading">
+      <Text as="h2" headingSize="body" id="task-internal-sessions-title" variant="heading">
         {m.tasks_internal_sessions_heading()}
       </Text>
       <ul className="grid grid-cols-1 divide-y divide-kumo-line border-y border-kumo-line">
@@ -189,7 +189,7 @@ function TaskInternalSessionsList({ sessions, footer }: { sessions: TaskInternal
           return (
             <li
               key={session.id}
-              className="flex items-center justify-between gap-3 py-3 text-sm"
+              className="flex items-center justify-between gap-3 py-3 text-sm @min-[56rem]/content:flex-col @min-[56rem]/content:items-start @min-[56rem]/content:gap-1.5"
               data-ui="task-internal-session-row"
             >
               <TaskInternalSessionTitle id={session.id} preview={preview} />
@@ -212,9 +212,12 @@ function TaskInternalSessionsList({ sessions, footer }: { sessions: TaskInternal
   );
 }
 
-/** Two lines where a narrow row would leave a single line only a few words, one line otherwise. */
+/**
+ * Two lines where a row's width would leave a single line only a few words: on narrow containers
+ * and in the two-column layout's side column. One line on a full-width row.
+ */
 const internalSessionTitleClassName =
-  "min-w-0 flex-1 line-clamp-2 wrap-anywhere text-kumo-default @min-[40rem]/content:line-clamp-1";
+  "min-w-0 flex-1 line-clamp-2 wrap-anywhere text-kumo-default @min-[40rem]/content:line-clamp-1 @min-[56rem]/content:line-clamp-2 @min-[56rem]/content:flex-none @min-[56rem]/content:self-stretch";
 
 /**
  * Hover and keyboard focus open the tooltip with the full title and the id. A tooltip is not exposed

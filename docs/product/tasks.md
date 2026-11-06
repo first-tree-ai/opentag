@@ -198,9 +198,9 @@ containers, with the full stored title available in the link's title attribute a
 
 The detail title remains the page's `h1` and uses 16px medium text with a 24px line height and natural
 wrapping. It displays the complete stored title without an additional clamp. Task facts retain their
-order in two, three or five columns according to the content container width. On an Agent's own Task
-page the facts leave out the Agent, because the page around them already names it, and use two, three
-or four columns. The Agent fact appears where Tasks from several Agents mix, and on an Agent's page
+order: in one column on the two-column layout, otherwise in two or three columns according to the content
+container width. On an Agent's own Task page the facts leave out the Agent, because the page around them
+already names it, and the one-column layout can use four columns. The Agent fact appears where Tasks from several Agents mix, and on an Agent's page
 that shows another Agent's Task (a stale or mistyped link), where it is the only fact naming the Agent. Where the Agent fact
 is shown, the start time spans both columns in the narrow layout so the complete date and time can wrap
 without squeezing the other facts.
@@ -220,13 +220,28 @@ could not be processed reads in the failure colour, because the reader may need 
 direct or ambient delivery, and plain-text kind labels repeated facts the page already shows once or did
 not help diagnose the run, so they were noise on every line. Operational notices stay at 14px. Message headings, emphasis and monospace code retain their
 content formatting. Wide code, native message payloads and message tables scroll locally, with named,
-keyboard-focusable regions. The detail page uses the same content width as the other Agent pages: the
-title, the horizontal row of Task facts and the conversation all span the full content frame, so the
-page reads as one surface for diagnosing the run, with its status on one line above the record, instead
-of a narrow chat column beside empty space. Within that full-width conversation, a request's grey fill
-follows the width of its message: a long message still spreads across the frame, and Agent replies have
-no fill. Why: a one-line request in a frame-wide panel read as a large empty box, while narrowing the
-conversation itself would bring back the empty space beside it. Message
+keyboard-focusable regions.
+
+The detail page uses the same content frame as the other Agent pages, with the back link and title across
+it. Once the content container reaches 56rem, the conversation takes a shrinkable main column and an 18rem
+side column holds the Task facts stacked vertically, the cancel control and the internal Sessions. The side
+column stays in view while the conversation scrolls, and scrolls on its own, with a keyboard stop, only when
+it is taller than the window. Below 56rem the page is one column, with the overview above the conversation.
+Why: this replaces the earlier rule that the facts and conversation all span the full frame. Facts and
+internal Sessions above a long conversation scrolled out of sight, and the load-time scroll to the latest
+message starts past them, so the status was hidden while reading the record. Lines across the whole frame
+were also long to read. The side column keeps the outcome in view beside the record, and the conversation
+column still fills the remaining width rather than becoming a narrow chat column beside empty space. The
+56rem breakpoint rather than a larger one keeps two columns in a 1280px window, a common laptop width, where
+the conversation column still has about 590px.
+
+The overview comes before the conversation in the document at every width, so keyboard and screen reader
+order is the back link, the title, the overview, then the conversation. On a wide page Tab therefore reaches
+the right column first. This is deliberate: one order at every width reads the outcome before the record,
+and placing the conversation first would put the facts after a long conversation on a narrow page.
+
+A request's grey fill follows the width of its message: a long message still spreads across its column, and
+Agent replies have no fill. Why: a one-line request in a column-wide panel read as a large empty box. Message
 order, paging and scroll anchoring are unchanged.
 
 ## Cancelling a queued Task
@@ -289,14 +304,15 @@ counts as absent. It also carries `lastActivityAt`: the latest of its
 creation, its end, and the newest collaboration message it sent or received. Both fields are
 optional in the shared schema, so a reader still accepts an older Server's rows.
 
-The Web Task detail lists the internal Sessions above the conversation, under an **Internal
+The Web Task detail lists the internal Sessions in its overview, beside or above the conversation, under an **Internal
 Sessions** heading, from the `/detail/internal-sessions` section under the canonical Task id. It
 shows the first page and loads the next one on **Load more internal Sessions**. Each row shows the
 Session's title, or its model or id when it has none. It reads **Active** until the Session ends and
-**Ended** afterwards, and shows the relative time of its latest activity; both stay fixed at the
-right. A long title never widens the page: it stays on one line on wide containers and takes at most
-two lines on narrow ones, because one line beside the status left only a few words of what the row
-exists to say. The id is not shown on a titled row: hovering or focusing the title opens a tooltip
+**Ended** afterwards, and shows the relative time of its latest activity. A long title never widens the
+page. In the side column it takes at most two lines, with the status and time on the next line. In one column
+the status and time stay fixed at the right: the title stays on one line from a 40rem container and takes at
+most two lines below that, because one line beside the status left only a few words of what the row exists
+to say. The id is not shown on a titled row: hovering or focusing the title opens a tooltip
 with the full title and id, and screen readers get the id with the title. Why: the id only helps
 someone diagnosing a run, and beside every title it took the room the title needs. Touch screens have
 neither hover nor keyboard focus, so the id is not available there; that is accepted because the

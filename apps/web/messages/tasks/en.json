@@ -94,6 +94,7 @@
   "tasks_no_tasks_yet_heading": "No Tasks yet",
   "tasks_not_found": "Task not found",
   "tasks_not_found_detail": "This Task does not exist or is outside your Account.",
+  "tasks_overview": "Task overview",
   "tasks_replies_loading": "Loading sent replies…",
   "tasks_replies_unavailable": "Sent replies could not be loaded.",
   "tasks_reply_content_truncated": "This reply was truncated.",

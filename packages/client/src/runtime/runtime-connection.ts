@@ -31,7 +31,7 @@ import {
   ServerRuntimeFrameSchema,
   type ServerWelcomeFrame,
 } from "@opentag/shared";
-import WebSocket, { type ClientOptions } from "ws";
+import WebSocket, { type ClientOptions, type RawData } from "ws";
 import { OpenTagApiError } from "../api.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import type { ComputerIdentity } from "./computer-identity.js";
@@ -392,63 +392,9 @@ export class RuntimeConnection {
     if (this.#hasRun) throw new RuntimeConnectionError("RuntimeConnection can only be run once", true, "protocol");
     this.#hasRun = true;
     this.#running = true;
-    let attempt = 0;
     let terminalError: Error | undefined;
     try {
-      while (!this.#stopped) {
-        try {
-          this.#setState("connecting");
-          this.#logger.debug({ attempt: attempt + 1, state: "connecting" }, "Runtime connection attempt started");
-          await this.#connectOnce(() => {
-            attempt = 0;
-          });
-        } catch (error) {
-          if (this.#stopped || isAbortError(error)) break;
-          if (error instanceof RuntimeConnectionError && error.fatal) {
-            this.#logger.error(
-              protocolRejectionFields(attempt, this.#state, error.message, error.category),
-              "Runtime connection was rejected",
-            );
-            throw error;
-          }
-          if (error instanceof OpenTagApiError && !["transient", "rate_limit"].includes(error.category)) {
-            this.#logger.error(
-              { attempt: attempt + 1, category: error.category, state: this.#state },
-              "Runtime authentication failed",
-            );
-            throw new RuntimeConnectionError(
-              `${error.message}; run opentag connect again`,
-              true,
-              "authentication_rejection",
-            );
-          }
-          if (error instanceof Error && error.message.includes("not logged in")) {
-            this.#logger.error(
-              { attempt: attempt + 1, category: "credential", state: this.#state },
-              "Runtime authentication failed",
-            );
-            throw new RuntimeConnectionError(
-              `${error.message}; run opentag connect first`,
-              true,
-              "authentication_rejection",
-            );
-          }
-          attempt += 1;
-          const maximum = Math.min(30_000, 1_000 * 2 ** Math.min(attempt - 1, 5));
-          const jitter = Math.min(1, Math.max(0, this.#options.jitter?.() ?? Math.random()));
-          const delay = Math.floor(maximum * jitter);
-          this.#logger.warn(
-            { attempt, category: connectionErrorCategory(error), delayMs: delay, state: this.#state },
-            "Runtime connection lost; retry scheduled",
-          );
-          try {
-            await this.#waitForRetry(delay);
-          } catch (retryError) {
-            if (this.#stopped || isAbortError(retryError)) break;
-            throw retryError;
-          }
-        }
-      }
+      await this.#runConnectLoop();
     } catch (error) {
       terminalError = error instanceof Error ? error : new Error("The runtime connection failed");
       throw terminalError;
@@ -459,6 +405,79 @@ export class RuntimeConnection {
         terminalError ?? new RuntimeSendError("unavailable", "The runtime connection is stopped"),
       );
       this.#rejectAllSends(new RuntimeSendError("unavailable", "The runtime connection is stopped"));
+    }
+  }
+
+  async #runConnectLoop(): Promise<void> {
+    let attempt = 0;
+    while (!this.#stopped) {
+      try {
+        this.#setState("connecting");
+        this.#logger.debug({ attempt: attempt + 1, state: "connecting" }, "Runtime connection attempt started");
+        await this.#connectOnce(() => {
+          attempt = 0;
+        });
+      } catch (error) {
+        if (this.#stopped || isAbortError(error)) break;
+        const fatalError = this.#classifyFatalRunError(error, attempt);
+        if (fatalError) throw fatalError;
+        attempt += 1;
+        const delay = this.#computeRetryDelay(attempt);
+        this.#logger.warn(
+          { attempt, category: connectionErrorCategory(error), delayMs: delay, state: this.#state },
+          "Runtime connection lost; retry scheduled",
+        );
+        if (!(await this.#waitForRetryOrStop(delay))) break;
+      }
+    }
+  }
+
+  #classifyFatalRunError(error: unknown, attempt: number): RuntimeConnectionError | undefined {
+    if (error instanceof RuntimeConnectionError && error.fatal) {
+      this.#logger.error(
+        protocolRejectionFields(attempt, this.#state, error.message, error.category),
+        "Runtime connection was rejected",
+      );
+      return error;
+    }
+    if (error instanceof OpenTagApiError && !["transient", "rate_limit"].includes(error.category)) {
+      this.#logger.error(
+        { attempt: attempt + 1, category: error.category, state: this.#state },
+        "Runtime authentication failed",
+      );
+      return new RuntimeConnectionError(
+        `${error.message}; run opentag connect again`,
+        true,
+        "authentication_rejection",
+      );
+    }
+    if (error instanceof Error && error.message.includes("not logged in")) {
+      this.#logger.error(
+        { attempt: attempt + 1, category: "credential", state: this.#state },
+        "Runtime authentication failed",
+      );
+      return new RuntimeConnectionError(
+        `${error.message}; run opentag connect first`,
+        true,
+        "authentication_rejection",
+      );
+    }
+    return undefined;
+  }
+
+  #computeRetryDelay(attempt: number): number {
+    const maximum = Math.min(30_000, 1_000 * 2 ** Math.min(attempt - 1, 5));
+    const jitter = Math.min(1, Math.max(0, this.#options.jitter?.() ?? Math.random()));
+    return Math.floor(maximum * jitter);
+  }
+
+  async #waitForRetryOrStop(delay: number): Promise<boolean> {
+    try {
+      await this.#waitForRetry(delay);
+      return !this.#stopped;
+    } catch (retryError) {
+      if (this.#stopped || isAbortError(retryError)) return false;
+      throw retryError;
     }
   }
 
@@ -635,228 +654,228 @@ export class RuntimeConnection {
         ).catch((error: unknown) => finish(asError(error)));
       });
 
-      socket.on("message", (data, isBinary) => {
-        if (settled || this.#active !== socket) return;
-        if (isBinary) {
-          failProtocol("The server sent a binary runtime frame", "Binary frames are not supported");
-          return;
-        }
-        const buffer = rawDataBuffer(data);
-        if (buffer.byteLength > RUNTIME_MAX_FRAME_BYTES) {
-          failProtocol("The server sent an oversized runtime frame", "Runtime frame is too large");
-          return;
-        }
-        const decoded = safeJson(buffer.toString("utf8"));
-        const envelope = RuntimeFrameEnvelopeSchema.safeParse(decoded);
-        if (!envelope.success) {
+      const handleBusinessFrameCandidate = (
+        decoded: unknown,
+        envelope: ReturnType<typeof RuntimeFrameEnvelopeSchema.parse>,
+      ) => {
+        if (this.#state !== "registered" || SERVER_CONTROL_FRAME_TYPES.has(envelope.type)) {
           failProtocol("The server sent an invalid runtime frame", "Invalid server frame");
           return;
         }
-        if (envelope.data.type === "server:welcome" && envelope.data.protocolVersion !== protocolVersion) {
+        if (hasStaleBusinessFrameFence(protocolVersion, envelope.connectionId, this.#connectionId)) {
+          failProtocol("The server sent a stale runtime connection fence", "Stale connection fence");
+          return;
+        }
+        const businessFrame = this.#tryParseBusinessFrame(decoded, protocolVersion);
+        if (!businessFrame) {
+          this.#logger.warn({ type: envelope.type }, "Incompatible runtime business frame rejected");
+          return;
+        }
+        armSilence();
+        this.#dispatchBusinessFrame(businessFrame);
+      };
+
+      const handleAuthResult = (
+        frame: Extract<ReturnType<typeof ServerRuntimeFrameSchema.parse>, { type: "auth:result" }>,
+      ) => {
+        if (frame.requestId !== authRequestId) {
+          failProtocol("The server returned an unmatched auth result", "Auth request mismatch");
+          return;
+        }
+        if (!frame.ok) {
+          socket.close(4403, "Authentication rejected");
+          finish(
+            new RuntimeConnectionError(
+              `Runtime authentication failed: ${frame.errorCode}`,
+              true,
+              "authentication_rejection",
+            ),
+          );
+          return;
+        }
+        this.#setState("welcoming");
+      };
+
+      const handleWelcomeFrame = (frame: ServerWelcomeFrame) => {
+        if (frame.protocolVersion !== protocolVersion) {
+          failProtocol("The runtime protocol version is unsupported", "Protocol version unsupported");
+          return;
+        }
+        if (frame.protocolVersion === RUNTIME_PROTOCOL_V2) {
+          expectedNegotiatedCapabilities = negotiateRuntimeCapabilities(
+            this.#supportedCapabilities,
+            frame.supportedCapabilities,
+          );
+        }
+        welcome = frame;
+        this.#setState("registering");
+        registerRequestId = randomUUID();
+        const registration = {
+          type: "computer:register",
+          requestId: registerRequestId,
+          installationId: this.#options.computer.computerId,
+          instanceId,
+          displayName: this.#options.displayName,
+          platform: this.#options.platform,
+          arch: this.#options.arch,
+          clientVersion: this.#options.clientVersion,
+          capabilities: this.#currentCapabilities(),
+          ...(welcome.providerReadiness
+            ? { providerReadiness: this.#currentProviderReadiness(welcome.providerReadiness.providers) }
+            : {}),
+          imCliReadiness: this.#currentImCliReadiness(),
+        } as const;
+        void this.#sendDirect(
+          socket,
+          protocolVersion === RUNTIME_PROTOCOL_V2
+            ? {
+                ...registration,
+                protocolVersion: RUNTIME_PROTOCOL_V2,
+                supportedCapabilities: this.#supportedCapabilities,
+                requiredServerCapabilities: RUNTIME_REQUIRED_SERVER_CAPABILITIES,
+              }
+            : registration,
+        ).catch((error: unknown) => finish(asError(error)));
+      };
+
+      const applyRegistrationProtocolResult = (
+        frame: Extract<ReturnType<typeof ServerRuntimeFrameSchema.parse>, { type: "computer:register:result" }>,
+      ): boolean => {
+        if (protocolVersion === RUNTIME_PROTOCOL_V2) {
+          if (!isValidV2RegistrationFrame(frame, expectedNegotiatedCapabilities)) {
+            failProtocol("The Server returned an invalid capability negotiation", "Capability mismatch");
+            return false;
+          }
+          this.#connectionId = frame.connectionId;
+          this.#negotiatedCapabilities = { ...frame.negotiatedCapabilities };
+          return true;
+        }
+        if ("protocolVersion" in frame) {
+          failProtocol("The Server returned an invalid legacy registration", "Registration version mismatch");
+          return false;
+        }
+        return true;
+      };
+
+      const handleRegisterResult = (
+        frame: Extract<ReturnType<typeof ServerRuntimeFrameSchema.parse>, { type: "computer:register:result" }>,
+      ) => {
+        if (frame.requestId !== registerRequestId) {
+          failProtocol("The server returned an unmatched registration result", "Registration request mismatch");
+          return;
+        }
+        if (!frame.ok || !welcome) {
+          socket.close(4403, "Computer registration rejected");
+          const category = runtimeConnectionErrorCategory(frame.errorCode, true, false);
+          finish(
+            new RuntimeConnectionError(
+              `Computer registration failed: ${frame.errorCode}`,
+              category !== "transient_connection",
+              category,
+            ),
+          );
+          return;
+        }
+        if (!applyRegistrationProtocolResult(frame)) return;
+        established = true;
+        if (handshakeTimer) this.#scheduler.clearTimeout(handshakeTimer);
+        this.#setState("registered");
+        this.#resolveRegisteredWaiters();
+        this.#readinessProviders = welcome.providerReadiness?.providers ?? [];
+        onRegistered();
+        this.#logger.info({ state: "registered" }, "Runtime connection registered");
+        armSilence();
+        scheduleHeartbeat();
+      };
+
+      const handleHeartbeatResult = (
+        frame: Extract<ReturnType<typeof ServerRuntimeFrameSchema.parse>, { type: "heartbeat:result" }>,
+      ) => {
+        const fixedCadence = this.supportsCapability(RUNTIME_CAPABILITY.selfCheckHeartbeat);
+        const status = evaluateHeartbeatPendingStatus(
+          fixedCadence,
+          fixedHeartbeats,
+          frame.requestId,
+          pendingHeartbeatRequestId,
+        );
+        if (!status.matchesPending) {
+          failProtocol("The server returned an unmatched heartbeat result", "Heartbeat request mismatch");
+          return;
+        }
+        if (hasStaleHeartbeatFence(protocolVersion, frame, this.#connectionId)) {
+          failProtocol("The Server returned a stale heartbeat fence", "Heartbeat fence mismatch");
+          return;
+        }
+        if (status.acknowledged) return;
+        if (!frame.ok) {
+          socket.close(4403, "Heartbeat rejected");
+          finish(createHeartbeatRejectionError(frame.errorCode));
+          return;
+        }
+        pendingHeartbeatRequestId = undefined;
+        completeHeartbeatSuccess(
+          fixedCadence,
+          fixedHeartbeats,
+          frame.requestId,
+          this.#scheduler,
+          heartbeatResultTimer,
+          scheduleHeartbeat,
+        );
+        notifyTarget(protocolVersion, this.#negotiatedCapabilities, frame, this.#options.onChannelTarget, this.#logger);
+      };
+
+      const handleErrorFrame = (
+        frame: Extract<ReturnType<typeof ServerRuntimeFrameSchema.parse>, { type: "error" }>,
+      ) => {
+        const category = runtimeConnectionErrorCategory(
+          frame.code,
+          frame.code !== "INTERNAL_ERROR" && frame.code !== "SERVICE_UNAVAILABLE",
+        );
+        const fatal = category !== "transient_connection";
+        socket.close(fatal ? 4403 : 1011, frame.message.slice(0, 120));
+        finish(new RuntimeConnectionError(frame.message, fatal, category));
+      };
+
+      const controlFrameHandlers: ControlFrameHandlers = {
+        onAuthResult: handleAuthResult,
+        onWelcome: handleWelcomeFrame,
+        onRegisterResult: handleRegisterResult,
+        onHeartbeatResult: handleHeartbeatResult,
+      };
+
+      const handleControlFrame = (frame: ReturnType<typeof ServerRuntimeFrameSchema.parse>) => {
+        if (frame.type === "error") {
+          handleErrorFrame(frame);
+          return;
+        }
+        if (EXPECTED_CONTROL_FRAME_STATE[frame.type] !== this.#state) {
+          failProtocol("The server runtime frame arrived out of order", "Frame out of order");
+          return;
+        }
+        dispatchInOrderControlFrame(frame, controlFrameHandlers);
+      };
+
+      socket.on("message", (data, isBinary) => {
+        if (settled || this.#active !== socket) return;
+        const incoming = decodeIncomingFrameEnvelope(data, isBinary);
+        if (!incoming.ok) {
+          failProtocol(incoming.message, incoming.reason);
+          return;
+        }
+        if (incoming.envelope.type === "server:welcome" && incoming.envelope.protocolVersion !== protocolVersion) {
           socket.close(4400, "Protocol version unsupported");
           finish(new RuntimeConnectionError("The runtime protocol version is unsupported", true, "protocol"));
           return;
         }
 
-        const parsed = ServerRuntimeFrameSchema.safeParse(decoded);
+        const parsed = ServerRuntimeFrameSchema.safeParse(incoming.decoded);
         if (!parsed.success) {
-          if (
-            this.#state === "registered" &&
-            !SERVER_CONTROL_FRAME_TYPES.has(envelope.data.type) &&
-            (this.#options.parseBusinessFrame ?? parseServerBusinessFrame)
-          ) {
-            let businessFrame: RuntimeBusinessFrame | undefined;
-            try {
-              if (protocolVersion === RUNTIME_PROTOCOL_V2 && envelope.data.connectionId !== this.#connectionId) {
-                failProtocol("The server sent a stale runtime connection fence", "Stale connection fence");
-                return;
-              }
-              businessFrame = (this.#options.parseBusinessFrame ?? parseServerBusinessFrame)(
-                protocolVersion === RUNTIME_PROTOCOL_V2 ? withoutConnectionId(decoded) : decoded,
-              );
-            } catch {
-              businessFrame = undefined;
-            }
-            if (businessFrame) {
-              armSilence();
-              this.#dispatchBusinessFrame(businessFrame);
-            } else {
-              this.#logger.warn({ type: envelope.data.type }, "Incompatible runtime business frame rejected");
-            }
-            return;
-          }
-          failProtocol("The server sent an invalid runtime frame", "Invalid server frame");
+          handleBusinessFrameCandidate(incoming.decoded, incoming.envelope);
           return;
         }
 
-        const frame = parsed.data;
         armSilence();
-        if (this.#state === "authenticating" && frame.type === "auth:result") {
-          if (frame.requestId !== authRequestId) {
-            failProtocol("The server returned an unmatched auth result", "Auth request mismatch");
-            return;
-          }
-          if (!frame.ok) {
-            socket.close(4403, "Authentication rejected");
-            finish(
-              new RuntimeConnectionError(
-                `Runtime authentication failed: ${frame.errorCode}`,
-                true,
-                "authentication_rejection",
-              ),
-            );
-            return;
-          }
-          this.#setState("welcoming");
-          return;
-        }
-        if (this.#state === "welcoming" && frame.type === "server:welcome") {
-          if (frame.protocolVersion !== protocolVersion) {
-            failProtocol("The runtime protocol version is unsupported", "Protocol version unsupported");
-            return;
-          }
-          if (frame.protocolVersion === RUNTIME_PROTOCOL_V2) {
-            expectedNegotiatedCapabilities = negotiateRuntimeCapabilities(
-              this.#supportedCapabilities,
-              frame.supportedCapabilities,
-            );
-          }
-          welcome = frame;
-          this.#setState("registering");
-          registerRequestId = randomUUID();
-          const registration = {
-            type: "computer:register",
-            requestId: registerRequestId,
-            installationId: this.#options.computer.computerId,
-            instanceId,
-            displayName: this.#options.displayName,
-            platform: this.#options.platform,
-            arch: this.#options.arch,
-            clientVersion: this.#options.clientVersion,
-            capabilities: this.#currentCapabilities(),
-            ...(welcome.providerReadiness
-              ? { providerReadiness: this.#currentProviderReadiness(welcome.providerReadiness.providers) }
-              : {}),
-            imCliReadiness: this.#currentImCliReadiness(),
-          } as const;
-          void this.#sendDirect(
-            socket,
-            protocolVersion === RUNTIME_PROTOCOL_V2
-              ? {
-                  ...registration,
-                  protocolVersion: RUNTIME_PROTOCOL_V2,
-                  supportedCapabilities: this.#supportedCapabilities,
-                  requiredServerCapabilities: RUNTIME_REQUIRED_SERVER_CAPABILITIES,
-                }
-              : registration,
-          ).catch((error: unknown) => finish(asError(error)));
-          return;
-        }
-        if (this.#state === "registering" && frame.type === "computer:register:result") {
-          if (frame.requestId !== registerRequestId) {
-            failProtocol("The server returned an unmatched registration result", "Registration request mismatch");
-            return;
-          }
-          if (!frame.ok || !welcome) {
-            socket.close(4403, "Computer registration rejected");
-            const category = runtimeConnectionErrorCategory(frame.errorCode, true, false);
-            finish(
-              new RuntimeConnectionError(
-                `Computer registration failed: ${frame.errorCode}`,
-                category !== "transient_connection",
-                category,
-              ),
-            );
-            return;
-          }
-          if (protocolVersion === RUNTIME_PROTOCOL_V2) {
-            if (
-              !("protocolVersion" in frame) ||
-              frame.protocolVersion !== RUNTIME_PROTOCOL_V2 ||
-              !frame.connectionId ||
-              !frame.negotiatedCapabilities ||
-              !expectedNegotiatedCapabilities ||
-              !runtimeNegotiatedCapabilitiesEqual(frame.negotiatedCapabilities, expectedNegotiatedCapabilities)
-            ) {
-              failProtocol("The Server returned an invalid capability negotiation", "Capability mismatch");
-              return;
-            }
-            this.#connectionId = frame.connectionId;
-            this.#negotiatedCapabilities = { ...frame.negotiatedCapabilities };
-          } else if ("protocolVersion" in frame) {
-            failProtocol("The Server returned an invalid legacy registration", "Registration version mismatch");
-            return;
-          }
-          established = true;
-          if (handshakeTimer) this.#scheduler.clearTimeout(handshakeTimer);
-          this.#setState("registered");
-          this.#resolveRegisteredWaiters();
-          this.#readinessProviders = welcome?.providerReadiness?.providers ?? [];
-          onRegistered();
-          this.#logger.info({ state: "registered" }, "Runtime connection registered");
-          armSilence();
-          scheduleHeartbeat();
-          return;
-        }
-        if (this.#state === "registered" && frame.type === "heartbeat:result") {
-          const fixedCadence = this.supportsCapability(RUNTIME_CAPABILITY.selfCheckHeartbeat);
-          const acknowledged = fixedCadence && fixedHeartbeats.wasAcknowledged(frame.requestId);
-          if (
-            fixedCadence
-              ? !fixedHeartbeats.isPending(frame.requestId) && !acknowledged
-              : frame.requestId !== pendingHeartbeatRequestId
-          ) {
-            failProtocol("The server returned an unmatched heartbeat result", "Heartbeat request mismatch");
-            return;
-          }
-          if (
-            (protocolVersion === RUNTIME_PROTOCOL_V2 &&
-              (!("protocolVersion" in frame) ||
-                frame.protocolVersion !== RUNTIME_PROTOCOL_V2 ||
-                frame.connectionId !== this.#connectionId)) ||
-            (protocolVersion === RUNTIME_PROTOCOL_V1 && "protocolVersion" in frame)
-          ) {
-            failProtocol("The Server returned a stale heartbeat fence", "Heartbeat fence mismatch");
-            return;
-          }
-          if (acknowledged) return;
-          if (!frame.ok) {
-            socket.close(4403, "Heartbeat rejected");
-            const category = runtimeConnectionErrorCategory(frame.errorCode, true, false);
-            finish(
-              new RuntimeConnectionError(
-                `Runtime heartbeat failed: ${frame.errorCode}`,
-                category !== "transient_connection",
-                category,
-              ),
-            );
-            return;
-          }
-          if (fixedCadence) {
-            fixedHeartbeats.acknowledge(frame.requestId);
-          } else pendingHeartbeatRequestId = undefined;
-          if (heartbeatResultTimer) this.#scheduler.clearTimeout(heartbeatResultTimer);
-          notifyTarget(
-            protocolVersion,
-            this.#negotiatedCapabilities,
-            frame,
-            this.#options.onChannelTarget,
-            this.#logger,
-          );
-          if (!fixedCadence) scheduleHeartbeat();
-          return;
-        }
-        if (frame.type === "error") {
-          const category = runtimeConnectionErrorCategory(
-            frame.code,
-            frame.code !== "INTERNAL_ERROR" && frame.code !== "SERVICE_UNAVAILABLE",
-          );
-          const fatal = category !== "transient_connection";
-          socket.close(fatal ? 4403 : 1011, frame.message.slice(0, 120));
-          finish(new RuntimeConnectionError(frame.message, fatal, category));
-          return;
-        }
-        failProtocol("The server runtime frame arrived out of order", "Frame out of order");
+        handleControlFrame(parsed.data);
       });
 
       socket.on("close", (code) => {
@@ -1026,6 +1045,15 @@ export class RuntimeConnection {
     });
   }
 
+  #tryParseBusinessFrame(decoded: unknown, protocolVersion: RuntimeProtocolVersion): RuntimeBusinessFrame | undefined {
+    const parser = this.#options.parseBusinessFrame ?? parseServerBusinessFrame;
+    try {
+      return parser(protocolVersion === RUNTIME_PROTOCOL_V2 ? withoutConnectionId(decoded) : decoded);
+    } catch {
+      return undefined;
+    }
+  }
+
   #dispatchBusinessFrame(frame: RuntimeBusinessFrame): void {
     for (const listener of this.#businessListeners) {
       Promise.resolve()
@@ -1070,4 +1098,137 @@ export class RuntimeConnection {
     }
     await waitForRuntimeTimer(milliseconds, signal, this.#scheduler);
   }
+}
+
+type ServerRuntimeFrame = ReturnType<typeof ServerRuntimeFrameSchema.parse>;
+
+const EXPECTED_CONTROL_FRAME_STATE: Record<Exclude<ServerRuntimeFrame["type"], "error">, RuntimeConnectionState> = {
+  "auth:result": "authenticating",
+  "server:welcome": "welcoming",
+  "computer:register:result": "registering",
+  "heartbeat:result": "registered",
+};
+
+function hasStaleBusinessFrameFence(
+  protocolVersion: RuntimeProtocolVersion,
+  envelopeConnectionId: string | undefined,
+  activeConnectionId: string | undefined,
+): boolean {
+  return protocolVersion === RUNTIME_PROTOCOL_V2 && envelopeConnectionId !== activeConnectionId;
+}
+
+function evaluateHeartbeatPendingStatus(
+  fixedCadence: boolean,
+  fixedHeartbeats: HeartbeatAcknowledgements,
+  requestId: string,
+  pendingHeartbeatRequestId: string | undefined,
+): { acknowledged: boolean; matchesPending: boolean } {
+  const acknowledged = fixedCadence && fixedHeartbeats.wasAcknowledged(requestId);
+  const matchesPending = fixedCadence
+    ? fixedHeartbeats.isPending(requestId) || acknowledged
+    : requestId === pendingHeartbeatRequestId;
+  return { acknowledged, matchesPending };
+}
+
+function createHeartbeatRejectionError(errorCode: string | undefined): RuntimeConnectionError {
+  const category = runtimeConnectionErrorCategory(errorCode, true, false);
+  return new RuntimeConnectionError(
+    `Runtime heartbeat failed: ${errorCode}`,
+    category !== "transient_connection",
+    category,
+  );
+}
+
+function completeHeartbeatSuccess(
+  fixedCadence: boolean,
+  fixedHeartbeats: HeartbeatAcknowledgements,
+  requestId: string,
+  scheduler: RuntimeScheduler,
+  heartbeatResultTimer: ReturnType<typeof setTimeout> | undefined,
+  scheduleHeartbeat: () => void,
+): void {
+  if (fixedCadence) {
+    fixedHeartbeats.acknowledge(requestId);
+  }
+  if (heartbeatResultTimer) scheduler.clearTimeout(heartbeatResultTimer);
+  if (!fixedCadence) scheduleHeartbeat();
+}
+
+interface ControlFrameHandlers {
+  onAuthResult: (frame: Extract<ServerRuntimeFrame, { type: "auth:result" }>) => void;
+  onWelcome: (frame: ServerWelcomeFrame) => void;
+  onRegisterResult: (frame: Extract<ServerRuntimeFrame, { type: "computer:register:result" }>) => void;
+  onHeartbeatResult: (frame: Extract<ServerRuntimeFrame, { type: "heartbeat:result" }>) => void;
+}
+
+function dispatchInOrderControlFrame(
+  frame: Exclude<ServerRuntimeFrame, { type: "error" }>,
+  handlers: ControlFrameHandlers,
+): void {
+  switch (frame.type) {
+    case "auth:result":
+      handlers.onAuthResult(frame);
+      return;
+    case "server:welcome":
+      handlers.onWelcome(frame);
+      return;
+    case "computer:register:result":
+      handlers.onRegisterResult(frame);
+      return;
+    case "heartbeat:result":
+      handlers.onHeartbeatResult(frame);
+      return;
+  }
+}
+
+function decodeIncomingFrameEnvelope(
+  data: RawData,
+  isBinary: boolean,
+):
+  | { ok: false; message: string; reason: string }
+  | { ok: true; decoded: unknown; envelope: ReturnType<typeof RuntimeFrameEnvelopeSchema.parse> } {
+  if (isBinary) {
+    return { ok: false, message: "The server sent a binary runtime frame", reason: "Binary frames are not supported" };
+  }
+  const buffer = rawDataBuffer(data);
+  if (buffer.byteLength > RUNTIME_MAX_FRAME_BYTES) {
+    return { ok: false, message: "The server sent an oversized runtime frame", reason: "Runtime frame is too large" };
+  }
+  const decoded = safeJson(buffer.toString("utf8"));
+  const envelope = RuntimeFrameEnvelopeSchema.safeParse(decoded);
+  if (!envelope.success) {
+    return { ok: false, message: "The server sent an invalid runtime frame", reason: "Invalid server frame" };
+  }
+  return { ok: true, decoded, envelope: envelope.data };
+}
+
+function isValidV2RegistrationFrame(
+  frame: Extract<ServerRuntimeFrame, { type: "computer:register:result" }>,
+  expectedNegotiatedCapabilities: RuntimeNegotiatedCapabilities | undefined,
+): frame is Extract<ServerRuntimeFrame, { type: "computer:register:result"; protocolVersion: 2 }> & {
+  connectionId: string;
+  negotiatedCapabilities: RuntimeNegotiatedCapabilities;
+} {
+  if (!("protocolVersion" in frame) || frame.protocolVersion !== RUNTIME_PROTOCOL_V2) {
+    return false;
+  }
+  if (!frame.connectionId || !frame.negotiatedCapabilities || !expectedNegotiatedCapabilities) {
+    return false;
+  }
+  return runtimeNegotiatedCapabilitiesEqual(frame.negotiatedCapabilities, expectedNegotiatedCapabilities);
+}
+
+function hasStaleHeartbeatFence(
+  protocolVersion: RuntimeProtocolVersion,
+  frame: Extract<ServerRuntimeFrame, { type: "heartbeat:result" }>,
+  connectionId: string | undefined,
+): boolean {
+  if (protocolVersion === RUNTIME_PROTOCOL_V2) {
+    return (
+      !("protocolVersion" in frame) ||
+      frame.protocolVersion !== RUNTIME_PROTOCOL_V2 ||
+      frame.connectionId !== connectionId
+    );
+  }
+  return "protocolVersion" in frame;
 }

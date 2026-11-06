@@ -184,6 +184,9 @@ Client is upgrading, restarting or full.
   `[openTag notice] Session message was not delivered` (`SESSION_DELIVERY_FAILURE_NOTICE_HEADER`), under a deterministic ID.
   The notice is held like any message. A failed notice is only logged, so two Sessions never exchange notices. A sender
   that ended or is not on a Local Computer gets no notice, and that is logged.
+- **Run outcome notices.** A Local report's background notice can be held like any message. The reporter keeps its report
+  and retries until the notice is accepted, so a report answers `notified` only after delivery. A background attempt
+  has no waiting sender, so it has no 5-second budget, and shutdown drains it.
 - **Scheduled messages.** A Local occurrence that provably never reached the Client is held the same way, as an exception
   to the one-shot hand-off. An `unknown` hand-off is not retried. Once the next occurrence is claimed, the schedule is
   edited or paused, or the message expires, the held occurrence ends as `unreachable` (`delivery_superseded` or
@@ -215,6 +218,20 @@ Server tells the Session that created it (`created_by_session_id`):
   terminal path (reason `session_message_steer_interrupted`), a completed Turn makes it succeed, and a message the
   provider never started returns to the FIFO with no report. Eligibility is unchanged, so a message steered into a
   visible Session's IM Turn produces no notice.
+  The report frame waits for notice authorization and persistence, then answers `retry` while the Server delivers
+  the notice in the background to either a Local or Cloud creator. This is a frame response, not an acknowledgement
+  of Server custody, Runtime receipt, or business completion: the Local reporter remains the durable retry owner.
+  Its next report receives `notified` only after the creator's acceptance is recorded, or `ignored` after a final
+  refusal. Final report acknowledgement therefore follows the reporter's existing backoff (initially 5 seconds,
+  capped at 5 minutes). Slow reconcile, delivery receipts, and Cloud cold starts do not hold the inbound frame open.
+  At most 16 Local outcome notices prepare or deliver concurrently; duplicates already in flight and excess reports
+  answer `retry` without starting another attempt. Each delivery retains normal authority fences and target inbox
+  ordering. Shutdown stops admission, signals transport cancellation and prevents late sends, then drains outstanding
+  preparation and outcome writes before the database closes. Runtime route shutdown closes the Domain owner and
+  rejects pending delivery waits; an unconfirmed delivery stays `unknown` rather than proving that the target never
+  accepted it. After a Server or daemon restart, the reporter replays its durable report under the current connection
+  with the same deterministic notice ID through the target's message deduplication. The Server's in-memory
+  tasks are an optimization, not a durable delivery queue; the existing one-day reporter limit still applies.
 - Cloud: the Runner's `session:message:settled` frame carries the failure `reason` (for example `turn_timeout`) on a
   collaboration-v3 channel. Every non-completed outcome (`failed`, `cancelled`, `unknown`) produces a notice. The
   Server makes up to three delivery attempts, 30 seconds apart. The notice's source authority is the settling

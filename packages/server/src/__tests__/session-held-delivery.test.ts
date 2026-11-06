@@ -23,6 +23,7 @@ import {
   SESSION_MESSAGE_HELD_TTL_MS,
 } from "../services/sessions/session-held-delivery.js";
 import { SessionHeldDeliveryWorker } from "../services/sessions/session-held-delivery-worker.js";
+import { runOutcomeNoticeMessageId } from "../services/sessions/session-run-outcome-notice.js";
 import { SessionService } from "../services/sessions/session-service.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
@@ -175,7 +176,19 @@ async function stack(options: { recovery?: boolean; now?: () => number; sendBudg
     const [found] = await db.database.select().from(sessionMessages).where(eq(sessionMessages.id, id));
     return found;
   };
-  return { collaboration, computerId, createChild, frames, row, send, senderSessionId, state, targetSessionId, worker };
+  return {
+    collaboration,
+    computerId,
+    createChild,
+    frames,
+    row,
+    send,
+    senderSessionId,
+    source,
+    state,
+    targetSessionId,
+    worker,
+  };
 }
 
 describe("Server-held Session message delivery", () => {
@@ -502,6 +515,35 @@ describe("Server-held Session message delivery", () => {
 
     expect(redeliverHeld).toHaveBeenCalledTimes(1);
     expect((await s.row(sent.messageId))?.lastErrorCode).toBe("delivery_held");
+  });
+
+  it("holds a background Run outcome notice and answers notified once it is delivered", async () => {
+    const s = await stack();
+    const reported = await s.send("the Run that fails");
+    const report = {
+      childSessionId: s.targetSessionId,
+      messageId: reported.messageId,
+      outcome: "failed" as const,
+      reason: "provider_error",
+      source: {
+        computerId: s.computerId,
+        connectionInstanceId: s.source.connectionInstanceId,
+        placementGeneration: 1,
+      },
+    };
+    const noticeId = runOutcomeNoticeMessageId(s.targetSessionId, reported.messageId);
+    s.state.answer = "client_busy";
+
+    await expect(s.collaboration.notifyRunOutcomeInBackground(report)).resolves.toBe("retry");
+    await vi.waitFor(async () => expect((await s.row(noticeId))?.lastErrorCode).toBe("delivery_held"));
+
+    s.state.answer = "accepted";
+    await vi.waitFor(async () => {
+      await s.worker.flush(s.computerId);
+      expect((await s.row(noticeId))?.lastOutcome).toBe("accepted");
+    });
+    await expect(s.collaboration.notifyRunOutcomeInBackground(report)).resolves.toBe("notified");
+    await s.collaboration.close();
   });
 
   it("still answers a permanent rejection on the first attempt", async () => {

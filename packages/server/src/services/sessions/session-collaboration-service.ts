@@ -147,8 +147,8 @@ export interface RunOutcomeNoticeInput {
 /**
  * `notified`: the creator accepted the notice (now or earlier). `ignored`: final, nothing to
  * notify (not an internal child, ended Session, unknown message, or a final rejection).
- * `retry`: the notice exists or could not be recorded yet, and its delivery was not accepted;
- * the reporter may resend the same report, which reuses the same notice row.
+ * `retry`: acceptance has not been confirmed to the reporter; it retains its durable report
+ * and resends it under the same identity, which reuses the same notice row.
  */
 export type RunOutcomeNoticeStatus = "notified" | "ignored" | "retry";
 
@@ -175,6 +175,9 @@ export interface ScheduleDispatch {
  */
 const SCHEDULED_LOCAL_BUDGET_MS = 60_000;
 const SCHEDULED_CLOUD_BUDGET_MS = 50_000;
+const MAX_BACKGROUND_OUTCOME_NOTICES = 16;
+
+type PreparedRunOutcomeNotice = { attempt: SessionMessageAttempt; creatorSessionId: string };
 
 /** Internal sentinel: the total budget (or Server stop) fired before the transport send was marked. */
 class ScheduledDispatchAbortError extends Error {
@@ -250,7 +253,8 @@ type LocalHandOff =
   | { kind: "accepted" }
   | { kind: "rejected"; code: string }
   | { kind: "temporary"; code: string }
-  | { kind: "refused"; code: string };
+  | { kind: "refused"; code: string }
+  | { kind: "aborted" };
 
 interface LocalHandOffInput {
   route: AuthorizedHeldMessageRoute;
@@ -322,6 +326,8 @@ export class SessionCollaborationService {
   readonly #sendBudgetMs: number;
   readonly #inFlightHandOffs = new Set<string>();
   #onHeld: HeldListener | undefined;
+  readonly #outcomeNotices = new Map<string, { controller: AbortController; done: Promise<void> }>();
+  #closing = false;
 
   constructor(options: SessionCollaborationServiceOptions) {
     this.#assembler = options.assembler;
@@ -827,8 +833,52 @@ export class SessionCollaborationService {
    * creator, so they move strictly up the creation tree and can never echo back to the child.
    */
   async notifyRunOutcome(input: RunOutcomeNoticeInput): Promise<RunOutcomeNoticeStatus> {
+    const prepared = await this.#prepareRunOutcomeNotice(input);
+    if (typeof prepared === "string") return prepared;
+    return this.#deliverRunOutcomeNotice(prepared, input);
+  }
+
+  /** Local reporters retain their durable report on `retry`; these tasks never take custody. */
+  async notifyRunOutcomeInBackground(input: RunOutcomeNoticeInput): Promise<RunOutcomeNoticeStatus> {
     const noticeId = runOutcomeNoticeMessageId(input.childSessionId, input.messageId);
-    let result: SessionCliCommandResponse;
+    if (this.#closing || this.#outcomeNotices.has(noticeId)) return "retry";
+    if (this.#outcomeNotices.size >= MAX_BACKGROUND_OUTCOME_NOTICES) return "retry";
+    const controller = new AbortController();
+    let finish: () => void = () => undefined;
+    const done = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    this.#outcomeNotices.set(noticeId, { controller, done });
+    const release = () => {
+      this.#outcomeNotices.delete(noticeId);
+      finish();
+    };
+    let delivering = false;
+    try {
+      const prepared = await this.#prepareRunOutcomeNotice(input);
+      if (typeof prepared === "string") return prepared;
+      if (controller.signal.aborted) return "retry";
+      delivering = true;
+      void this.#deliverRunOutcomeNotice(prepared, input, controller.signal).then(release, () => {
+        release();
+        this.#logInternalFailure("SESSION_RUN_OUTCOME_BACKGROUND_FAILED", { noticeId });
+      });
+      return "retry";
+    } finally {
+      if (!delivering) release();
+    }
+  }
+
+  async close(): Promise<void> {
+    this.#closing = true;
+    for (const { controller } of this.#outcomeNotices.values()) controller.abort();
+    await Promise.all([...this.#outcomeNotices.values()].map(({ done }) => done));
+  }
+
+  async #prepareRunOutcomeNotice(
+    input: RunOutcomeNoticeInput,
+  ): Promise<PreparedRunOutcomeNotice | RunOutcomeNoticeStatus> {
+    const noticeId = runOutcomeNoticeMessageId(input.childSessionId, input.messageId);
     try {
       const notice = await this.#sessions.resolveRunOutcomeNotice({
         childSessionId: input.childSessionId,
@@ -845,24 +895,60 @@ export class SessionCollaborationService {
         targetSessionId: notice.creatorSessionId,
         content: renderRunOutcomeNotice(input),
       });
-      result = await this.#deliver(attempt, notice.creatorSessionId);
+      if (attempt.attemptCount === null) {
+        return this.#runOutcomeNoticeStatus(
+          response(
+            noticeId,
+            attempt.message.lastOutcome,
+            notice.creatorSessionId,
+            attempt.message.lastErrorCode ?? undefined,
+          ),
+          input,
+        );
+      }
+      return { attempt, creatorSessionId: notice.creatorSessionId };
     } catch (error) {
-      result = this.#failure(noticeId, error);
+      return this.#runOutcomeNoticeStatus(this.#failure(noticeId, error), input);
     }
+  }
+
+  async #deliverRunOutcomeNotice(
+    prepared: PreparedRunOutcomeNotice,
+    input: RunOutcomeNoticeInput,
+    signal?: AbortSignal,
+  ): Promise<RunOutcomeNoticeStatus> {
+    try {
+      return this.#runOutcomeNoticeStatus(
+        await this.#deliver(prepared.attempt, prepared.creatorSessionId, signal),
+        input,
+      );
+    } catch (error) {
+      return this.#runOutcomeNoticeStatus(
+        this.#failure(runOutcomeNoticeMessageId(input.childSessionId, input.messageId), error),
+        input,
+      );
+    }
+  }
+
+  #runOutcomeNoticeStatus(result: SessionCliCommandResponse, input: RunOutcomeNoticeInput): RunOutcomeNoticeStatus {
     if (result.status === "accepted") return "notified";
     if (result.status === "rejected") {
       this.#logInternalFailure("SESSION_RUN_OUTCOME_NOTICE_REJECTED", {
         childSessionId: input.childSessionId,
         code: result.code,
         messageId: input.messageId,
-        noticeId,
+        noticeId: result.messageId,
       });
       return "ignored";
     }
     return "retry";
   }
 
-  async #deliver(attempt: SessionMessageAttempt, sessionId: string): Promise<SessionCliCommandResponse> {
+  async #deliver(
+    attempt: SessionMessageAttempt,
+    sessionId: string,
+    signal?: AbortSignal,
+  ): Promise<SessionCliCommandResponse> {
     if (attempt.attemptCount === null) {
       return response(
         attempt.message.id,
@@ -871,6 +957,7 @@ export class SessionCollaborationService {
         attempt.message.lastErrorCode ?? undefined,
       );
     }
+    if (signal?.aborted) return response(attempt.message.id, "unknown", sessionId, "runtime_unavailable");
     const local = attempt.route.targetComputerKind !== "cloud";
     if (
       local &&
@@ -884,6 +971,7 @@ export class SessionCollaborationService {
       return this.#hold(attempt.message.id, sessionId, attempt.attemptCount, attempt.route.targetComputerId);
     }
     const runtime = await this.#assembleTargetRuntime(attempt, sessionId);
+    if (signal?.aborted) return response(attempt.message.id, "unknown", sessionId, "runtime_unavailable");
     if (!runtime) {
       if (local && this.#canHold(attempt.route.targetComputerId, { code: "runtime_not_ready" })) {
         return this.#hold(attempt.message.id, sessionId, attempt.attemptCount, attempt.route.targetComputerId);
@@ -897,9 +985,9 @@ export class SessionCollaborationService {
     // Computer's connection registry; there is no Local reconcile step — the assembled snapshot
     // rides in the dispatch and the allocation/Runner fence is the delivery boundary.
     if (attempt.route.targetComputerKind === "cloud") {
-      return this.#deliverCloud(attempt, sessionId, runtime);
+      return this.#deliverCloud(attempt, sessionId, runtime, signal);
     }
-    return this.#deliverLocalWithinBudget(attempt, sessionId, runtime, attempt.attemptCount);
+    return this.#deliverLocalWithinBudget(attempt, sessionId, runtime, attempt.attemptCount, signal);
   }
 
   /**
@@ -912,13 +1000,16 @@ export class SessionCollaborationService {
     sessionId: string,
     runtime: EffectiveRuntimeSnapshot,
     attemptCount: number,
+    signal?: AbortSignal,
   ): Promise<SessionCliCommandResponse> {
     const custody: HandOffCustody = { heldByServer: false };
     const messageId = attempt.message.id;
     this.#inFlightHandOffs.add(messageId);
-    const work = this.#deliverLocal(attempt, sessionId, runtime, attemptCount, custody).finally(() => {
+    const work = this.#deliverLocal(attempt, sessionId, runtime, attemptCount, custody, signal).finally(() => {
       this.#inFlightHandOffs.delete(messageId);
     });
+    // A signal means background work with no waiting sender, whose owner must drain it before shutdown.
+    if (signal) return work;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const budget = new Promise<undefined>((resolve) => {
       timer = setTimeout(() => resolve(undefined), this.#sendBudgetMs);
@@ -973,6 +1064,7 @@ export class SessionCollaborationService {
     runtime: EffectiveRuntimeSnapshot,
     attemptCount: number,
     custody: HandOffCustody,
+    signal?: AbortSignal,
   ): Promise<SessionCliCommandResponse> {
     const handOff = await this.#handOffLocal(
       {
@@ -987,7 +1079,10 @@ export class SessionCollaborationService {
         custody.heldByServer
           ? this.#sessions.withHeldDispatchAdmission(attempt.route, operation)
           : this.#sessions.withCollaborationDispatchAdmission(attempt.route, operation),
+      signal,
     );
+    // Cancelled before the offer: no frame left, and the caller keeps its own custody and retries.
+    if (handOff.kind === "aborted") return response(attempt.message.id, "unknown", sessionId, "runtime_unavailable");
     if (handOff.kind === "accepted") {
       return this.#record(response(attempt.message.id, "accepted", sessionId), attemptCount);
     }
@@ -1010,11 +1105,14 @@ export class SessionCollaborationService {
     input: LocalHandOffInput,
     runtime: EffectiveRuntimeSnapshot,
     admission: DispatchAdmission,
+    signal?: AbortSignal,
   ): Promise<LocalHandOff> {
     const gate = this.#localHandOffGate(input.route);
     if ("code" in gate) return { kind: "temporary", code: gate.code };
-    const notReady = await this.#reconcileForHandOff(input, gate.instanceId, runtime, admission);
-    return notReady ?? this.#offerLocal(input, gate.instanceId, runtime, admission);
+    const notReady = await this.#reconcileForHandOff(input, gate.instanceId, runtime, admission, signal);
+    if (notReady) return notReady;
+    if (signal?.aborted) return { kind: "aborted" };
+    return this.#offerLocal(input, gate.instanceId, runtime, admission, signal);
   }
 
   #localHandOffGate(route: AuthorizedHeldMessageRoute): { instanceId: string } | { code: string } {
@@ -1040,6 +1138,7 @@ export class SessionCollaborationService {
     instanceId: string,
     runtime: EffectiveRuntimeSnapshot,
     admission: DispatchAdmission,
+    signal?: AbortSignal,
   ): Promise<LocalHandOff | undefined> {
     try {
       const reconciled = await this.#domain.requestReconcile(
@@ -1060,6 +1159,8 @@ export class SessionCollaborationService {
         },
         undefined,
         admission,
+        signal,
+        { joinSettlement: Boolean(signal) },
       );
       if (new Set(["ready", "running", "reporting"]).has(reconciled.status)) return undefined;
       return { kind: "temporary", code: "runtime_not_ready" };
@@ -1073,6 +1174,7 @@ export class SessionCollaborationService {
     instanceId: string,
     runtime: EffectiveRuntimeSnapshot,
     admission: DispatchAdmission,
+    signal?: AbortSignal,
   ): Promise<LocalHandOff> {
     const { route } = input;
     const delivery: SessionMessageDeliveryRequest = {
@@ -1094,6 +1196,7 @@ export class SessionCollaborationService {
           delivery,
           undefined,
           admission,
+          ...(signal ? ([signal] as const) : []),
         ),
       );
       if (mapped.outcome === "accepted") return { kind: "accepted" };
@@ -1101,8 +1204,10 @@ export class SessionCollaborationService {
       return { kind: "temporary", code: mapped.code ?? "runtime_not_ready" };
     } catch (error) {
       if (isAdmissionRefusal(error)) return { kind: "refused", code: "runtime_unavailable" };
-      const timeout = error instanceof RuntimeDomainRequestError && error.code === "timeout";
-      return { kind: "temporary", code: timeout ? "delivery_timeout" : "runtime_unavailable" };
+      return {
+        kind: "temporary",
+        code: deliveryOutcomeUnknown(error, signal) ? "delivery_timeout" : "runtime_unavailable",
+      };
     }
   }
 
@@ -1185,7 +1290,9 @@ export class SessionCollaborationService {
     }
     if (handOff.kind === "rejected") return this.#giveUpHeld(message, attemptCount, "rejected", handOff.code);
     // A refused admission is the target's authority, not the Client: it recovers, or the route or expiry settles it.
-    if (handOff.kind === "refused" || this.#canHold(route.targetComputerId, handOff)) return "held";
+    if (handOff.kind === "refused" || handOff.kind === "aborted" || this.#canHold(route.targetComputerId, handOff)) {
+      return "held";
+    }
     return this.#giveUpHeld(message, attemptCount, "unreachable", handOff.code);
   }
 
@@ -1333,6 +1440,7 @@ export class SessionCollaborationService {
     attempt: SessionMessageAttempt,
     sessionId: string,
     runtime: EffectiveRuntimeSnapshot,
+    signal?: AbortSignal,
   ): Promise<SessionCliCommandResponse> {
     const attemptCount = attempt.attemptCount;
     if (attemptCount === null) {
@@ -1357,6 +1465,7 @@ export class SessionCollaborationService {
           attemptCount,
         },
         (operation) => this.#sessions.withCollaborationDispatchAdmission(attempt.route, operation),
+        ...(signal ? ([signal] as const) : []),
       );
     } catch (error) {
       this.#logInternalFailure("SESSION_COLLABORATION_CLOUD_DISPATCH_FAILED", {
@@ -1403,6 +1512,10 @@ export class SessionCollaborationService {
     this.#onDiagnostic?.("SESSION_COLLABORATION_RUNTIME_UNAVAILABLE");
     return response(messageId, "unreachable", undefined, "runtime_unavailable");
   }
+}
+
+function deliveryOutcomeUnknown(error: unknown, signal?: AbortSignal): boolean {
+  return Boolean(signal?.aborted) || (error instanceof RuntimeDomainRequestError && error.code === "timeout");
 }
 
 /** The delivery result as an outcome and a stable code. */

@@ -1731,6 +1731,8 @@ describe("SessionCollaborationService response mapping", () => {
       expect.objectContaining({ creatorSessionId: "source", sessionKind: "internal" }),
       undefined,
       expect.any(Function),
+      undefined,
+      { joinSettlement: false },
     );
   });
 });

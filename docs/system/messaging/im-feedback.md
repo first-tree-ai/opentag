@@ -68,6 +68,39 @@ A new message follows ordinary admission and is steered into the running Turn; e
 runtime (Codex, Pi, Claude Code) accepts steered input, and a runtime that cannot stays queued. Existing admitted retries and workspace save/discard keep their original recovery
 and confirmation semantics.
 
+## Scheduled tasks
+
+A scheduled message goes to the Agent only and posts nothing in IM when it starts or succeeds
+([#1352](https://github.com/first-tree-ai/opentag/issues/1352)). It has no sender and no native input, so neither the
+sender notice nor a feedback target can carry its failure. The Server instead posts one plain message from the Session's
+Bot in the Session's own chat or thread, with the task name, scheduled time, stable code, and schedule details link. It
+stores no IM feedback state and adds no column.
+
+| What happened | Example codes | Conversation hears |
+| --- | --- | --- |
+| The Run failed, timed out, or was interrupted | `provider_unavailable`, `turn_timeout` | Every time, with a warning that some work may already have happened |
+| The Client rejected the message | `configuration_unsupported` | The first time per cause |
+| It never started | `runtime_unavailable`, `client_busy`, `late` | The first time per cause |
+| The hand-off's fate is unknown | `delivery_timeout`, `delivery_uncertain` | The first time per cause, worded as "may not have run" |
+| The schedule turned itself off | `target_invalid`, `invalid_schedule` | Once, saying it stays off until resumed |
+| Someone stopped or changed it | `turn_cancelled`, `schedule_disabled`, `agent_suspended` | Nothing |
+
+"The first time per cause" compares the occurrence with the schedule's previous summary, so a Computer that stays offline
+posts one message, not one per occurrence. A delivered occurrence or a different code starts over. A Run failure that
+keeps recurring posts every time, as it would for repeated human messages.
+
+Delivery is best effort:
+
+- A failed Run uses the Client's or Runner's existing outcome report. The Server answers `retry` while the send can safely
+  be repeated. Feishu drops a repeat of the same occurrence through its request `uuid`; a lost report acknowledgement can
+  duplicate the message on Slack. A Feishu thread is reached by replying to its latest known message; with none known, the
+  message is dropped rather than posted to the chat.
+- A missed occurrence has no reporter. The Server tries up to three times in-process, so a Server stop or a long IM outage
+  loses the message. The Agent schedule page still shows the miss from `last_dispatch`.
+- A Client that never returns never reports a message it accepted; its next occurrence reports the miss instead.
+
+The schedule page is unchanged: its last run shows delivery, so a Run that failed after delivery still reads as run.
+
 ## Account operations
 
 Card links open an authenticated Account page. Opening a URL and refreshing details are read-only. The page shows

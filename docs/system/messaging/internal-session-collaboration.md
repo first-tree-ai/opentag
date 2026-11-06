@@ -130,10 +130,11 @@ says so when the work may not fit and splits it into parts the user can request 
 For long-running delegated or multi-step work, the visible Session posts a short new IM message at each meaningful
 milestone — started, key finding, blocked and needs input, done — rather than editing one message, because IM clients do
 not notify on edits. Routine check-ins are not milestones, and short work stays silent until the final reply. The done
-milestone is the one self-contained final result, not a separate completion message, and a start notice already sent —
-such as a scheduled task's fixed start notification — satisfies started, so the convention never adds the completion
-notices scheduled-task metadata forbids. Internal Sessions never publish to IM; they report milestones to their creator
-through `opentag session send` only when useful, along with questions and the final result.
+milestone is the one self-contained final result, not a separate completion message. A scheduled task's message goes to
+the Agent only: its metadata forbids schedule lifecycle notices, and a run with nothing to report stays silent. openTag
+reports a failed or missed occurrence itself; see [Scheduled tasks](im-feedback.md#scheduled-tasks). Internal Sessions
+never publish to IM; they report milestones to their creator through `opentag session send` only when useful, along with
+questions and the final result.
 
 When a SessionMessage returns to a visible channel or thread Session, that callback Run retains the visible Session's IM
 authority. Credential grant v2 atomically supplies a temporary provider credential environment and a non-secret default

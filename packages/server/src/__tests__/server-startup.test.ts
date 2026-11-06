@@ -341,6 +341,7 @@ vi.mock("../services/setup/index.js", () => ({
   AccountSetupService: class {},
 }));
 vi.mock("../services/schedules/index.js", () => ({
+  ScheduledFailureNotifier: class {},
   ScheduleService: class {},
   ScheduleServiceError: class extends Error {},
   ScheduleScheduler: class {

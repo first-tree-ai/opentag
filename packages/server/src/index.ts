@@ -140,7 +140,7 @@ import {
 import { SandboxIdleReclaimer } from "./services/sandboxes/idle-reclaimer.js";
 import { SandboxService } from "./services/sandboxes/index.js";
 import type { SandboxAllocationReconciliation } from "./services/sandboxes/sandbox-runner-service.js";
-import { ScheduleScheduler, ScheduleService } from "./services/schedules/index.js";
+import { ScheduledFailureNotifier, ScheduleScheduler, ScheduleService } from "./services/schedules/index.js";
 import {
   type RunOutcomeNotifier,
   SessionCliProofService,
@@ -1227,8 +1227,15 @@ export async function startServer(): Promise<void> {
       cloud: cloudSessionOwner,
       logger: serviceLogger("session-collaboration"),
     });
-    runOutcomeNotifier = sessionCollaborationService;
-    cloudSessionOwner?.setRunOutcomeNotifier(sessionCollaborationService);
+    const scheduledFailures = new ScheduledFailureNotifier({
+      database,
+      logger: serviceLogger("scheduled-failures"),
+      messenger: imFeedbackMessenger,
+      publicUrl: config.publicUrl,
+      runOutcomes: sessionCollaborationService,
+    });
+    runOutcomeNotifier = scheduledFailures;
+    cloudSessionOwner?.setRunOutcomeNotifier(scheduledFailures);
     const imDeliveryLogger = serviceLogger("im-delivery");
     /*
      * The MCP management plane. Every outbound request goes through one fetcher that enforces the
@@ -1289,6 +1296,7 @@ export async function startServer(): Promise<void> {
       database,
       dispatch: sessionCollaborationService,
       logger: serviceLogger("schedule-scheduler"),
+      missNotices: scheduledFailures,
       publicUrl: config.publicUrl,
       sessions: sessionService,
     });

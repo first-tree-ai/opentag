@@ -315,6 +315,24 @@ function createFakeGcs() {
 type FakeGcs = ReturnType<typeof createFakeGcs>;
 
 describe("workspace metadata fencing and sealing", () => {
+  it("keeps a same-owner sealed fencing claim byte-identical without a PATCH", async () => {
+    const fake = createFakeGcs();
+    const content = Buffer.from("sealed unpublished work");
+    const planted = fake.plant(content, { owner: 1, saved: true, sealed: true });
+    const before = previousOf(planted);
+    const store = createStore(fake);
+    const claimed = await store.claim(SCOPE, { fence: true });
+    expect(claimed).toEqual(before);
+    expect(claimed.sealed).toBe(true);
+    expect(fake.stored()).toEqual(planted);
+    expect(Buffer.from(await streamToBytes(await store.read(SCOPE, claimed)))).toEqual(content);
+    await expect(store.write(SCOPE, claimed, archiveInput(Buffer.from("late work")))).rejects.toMatchObject({
+      code: "sealed",
+    });
+    expect(fake.callsNamed("PATCH")).toHaveLength(0);
+    expect(fake.callsNamed("POST")).toHaveLength(0);
+  });
+
   it.each(["rejected", "uncertain"])("never hands successor pins to an old %s fencing claim", async (outcome) => {
     const fake = createFakeGcs();
     const planted = fake.plant(Buffer.from("baseline"), { owner: 1, saved: true, sealed: false });

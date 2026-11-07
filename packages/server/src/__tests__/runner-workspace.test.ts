@@ -985,6 +985,37 @@ describe("workspace release and restore", () => {
     return { accountId, stack, started, saved, row: await sandboxRow(started.sandbox.sandboxId) };
   }
 
+  it("never lets a releasing generation take over the previous storage owner through a fenced claim", async () => {
+    const { accountId, stack, started, saved, row } = await readyWorkspaceWithoutRunner();
+    await stack.service.stopForAccount(accountId, row.id, {
+      discardUnsavedChanges: true,
+      environmentGeneration: row.environmentGeneration,
+    });
+    await stack.service.startForAccount(accountId, row.id);
+    const current = await sandboxRow(row.id);
+    expect(current.environmentGeneration).toBe(2);
+    expect(stack.store.stored(row.storageUri)).toEqual(saved);
+    expect(saved.ownerGeneration).toBe(1);
+    await unit.database.update(sandboxes).set({ lifecycle: "releasing" }).where(eq(sandboxes.id, row.id));
+    const token = await stack.tokens.issue({
+      sandboxId: started.sandbox.sandboxId,
+      sessionId: current.sessionId,
+      environmentGeneration: current.environmentGeneration,
+      resourceName: current.currentResourceName as string,
+    });
+    const runner = await authenticatedWorkspaceRunner(stack, token);
+    const before = stack.store.stored(row.storageUri);
+    const beforeBytes = Buffer.from(stack.store.storedBytes(row.storageUri) as Buffer);
+    const writes = stack.store.writes.length;
+    expect((await claimRequest(stack, token, true)).status).toBe(409);
+    expect(stack.store.stored(row.storageUri)).toEqual(before);
+    expect(stack.store.storedBytes(row.storageUri)).toEqual(beforeBytes);
+    expect(stack.store.writes).toHaveLength(writes);
+    expect((await sandboxRow(row.id)).lifecycle).toBe("releasing");
+    runner.socket.close();
+    await runner.closed;
+  });
+
   it("releases an unavailable Runner only after explicit generation-bound discard and retains its archive", async () => {
     const { accountId, stack, started, saved, row } = await readyWorkspaceWithoutRunner();
     const id = started.sandbox.sandboxId;

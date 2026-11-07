@@ -15,7 +15,7 @@ provider CLIs.
   Session messages, attention, and the human-visible send path.
 - **[IM Channel and Thread Sessions](thread-sessions.md)** — lazy Thread
   Sessions, direct continuity, observer copies, and thread history.
-- **[IM task feedback and safe recovery](im-feedback.md)** — system-owned reactions, failure messages,
+- **[IM task feedback and safe recovery](im-feedback.md)** — system-owned reactions, offline notices, failure messages,
   Account confirmations, explicit retry attempts, and unknown-send reconciliation.
 - **[IM delivery claim queries](im-delivery-claim.md)** — indexed delivery
   selection, eligibility hints, transactional custody checks, and the offline

@@ -11,7 +11,7 @@ import type {
   SessionKind,
   SessionPlacement,
 } from "@opentag/shared";
-import { and, eq, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, isNotNull, isNull, or, type SQL, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   agentSchedules,
@@ -26,6 +26,7 @@ import {
 } from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import type { CloudModelCatalog } from "../sandboxes/cloud-model-catalog.js";
+import { markEndedDescendantsInactive } from "./session-closure.js";
 import { isRunOutcomeNotice } from "./session-run-outcome-notice.js";
 
 type SessionRow = typeof sessions.$inferSelect;
@@ -104,6 +105,32 @@ export interface CreateInternalSessionWithMessageInput {
   messageId: string;
   initialMessage: string;
   overrides?: InternalSessionRuntimeOverrides;
+}
+
+export interface StopInternalSessionInput {
+  sourceSessionId: string;
+  sourceInstallationId: string;
+  sourceConnectionInstanceId: string;
+  sourceComputerId: string;
+  sourcePlacementGeneration: number;
+  targetSessionId: string;
+}
+
+/** Where an ended internal Session's execution side lives, to tell it to stop. */
+export interface InternalSessionStopTarget {
+  agentId: string;
+  computerId: string;
+  computerKind: "local" | "cloud";
+  creatorSessionId: string;
+  installationId: string;
+  placementGeneration: number;
+  sessionId: string;
+}
+
+export interface StoppedInternalSession {
+  target: InternalSessionStopTarget;
+  alreadyStopped: boolean;
+  activeDescendantCount: number;
 }
 
 export interface AuthorizeAndRecordSessionMessageInput {
@@ -566,6 +593,103 @@ export class SessionService {
         attemptCount: attempt.attemptCount,
       };
     });
+  }
+
+  /**
+   * Ends an internal Session for good, on behalf of an ancestor in its creation chain. The commit is what
+   * stops it: from here its proof no longer authenticates and no message reaches it; telling its execution
+   * side is the caller's job, after commit. A Session that already ended answers the same way, so a stop
+   * whose execution side was not reached can be repeated. Descendants keep running.
+   */
+  async stopInternalSession(input: StopInternalSessionInput): Promise<StoppedInternalSession> {
+    return this.#database.transaction(async (transaction) => {
+      const agent = await this.#lockSourceAgent(transaction, input.sourceSessionId);
+      const authority = await this.#lockCollaborationAuthority(transaction, agent, input.targetSessionId);
+      this.#activeSource(authority, {
+        sessionId: input.sourceSessionId,
+        installationId: input.sourceInstallationId,
+        connectionInstanceId: input.sourceConnectionInstanceId,
+        computerId: input.sourceComputerId,
+        placementGeneration: input.sourcePlacementGeneration,
+      });
+      const [link] = await transaction
+        .select({ depth: sessionDescendants.depth })
+        .from(sessionDescendants)
+        .where(
+          and(
+            eq(sessionDescendants.ancestorSessionId, input.sourceSessionId),
+            eq(sessionDescendants.descendantSessionId, input.targetSessionId),
+          ),
+        )
+        .limit(1);
+      if (!link) {
+        throw new SessionServiceError("SESSION_STOP_NOT_ANCESTOR", "Only an ancestor can stop an internal Session");
+      }
+      const alreadyStopped = !authority.sessions.some((session) => session.id === input.targetSessionId);
+      if (!alreadyStopped) {
+        await transaction
+          .update(sessions)
+          .set({ endedAt: this.#now(), revision: sql`${sessions.revision} + 1` })
+          .where(and(eq(sessions.id, input.targetSessionId), isNull(sessions.endedAt)));
+        await markEndedDescendantsInactive(transaction, { sessionIds: [input.targetSessionId] });
+      }
+      const [target] = await this.#internalStopTargets(transaction, eq(sessions.id, input.targetSessionId));
+      if (!target) throw new SessionServiceError("SESSION_TARGET_UNAVAILABLE", "The target Session is not available");
+      const [descendants] = await transaction
+        .select({ count: sql<number>`count(*)::int` })
+        .from(sessionDescendants)
+        .innerJoin(sessions, eq(sessions.id, sessionDescendants.descendantSessionId))
+        .where(
+          and(
+            eq(sessionDescendants.ancestorSessionId, input.targetSessionId),
+            eq(sessionDescendants.descendantActive, true),
+            isNull(sessions.endedAt),
+          ),
+        );
+      return { target, alreadyStopped, activeDescendantCount: descendants?.count ?? 0 };
+    });
+  }
+
+  /**
+   * Internal Sessions that ended recently on this Computer. A stop cannot reach a disconnected Computer and
+   * nothing durable records that, so its reconnect is told again; repeating a stop is harmless. Bounded by
+   * the Computer's placements, and read only when it registers.
+   */
+  async recentlyEndedInternalSessions(
+    computerId: string,
+    since: Date,
+    limit: number,
+  ): Promise<InternalSessionStopTarget[]> {
+    return this.#internalStopTargets(
+      this.#database,
+      and(eq(sessionPlacements.computerId, computerId), gte(sessions.endedAt, since)),
+      limit,
+    );
+  }
+
+  async #internalStopTargets(
+    executor: DatabaseClient | DatabaseTransaction,
+    predicate: SQL | undefined,
+    limit = 1,
+  ): Promise<InternalSessionStopTarget[]> {
+    const rows = await executor
+      .select({
+        agentId: imBindings.agentId,
+        computerId: sessionPlacements.computerId,
+        computerKind: computers.kind,
+        creatorSessionId: sessions.createdBySessionId,
+        installationId: computers.currentInstallationId,
+        placementGeneration: sessionPlacements.generation,
+        sessionId: sessions.id,
+      })
+      .from(sessions)
+      .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+      .innerJoin(sessionPlacements, eq(sessionPlacements.sessionId, sessions.id))
+      .innerJoin(computers, eq(computers.id, sessionPlacements.computerId))
+      .where(and(eq(sessions.kind, "internal"), predicate))
+      .orderBy(desc(sessions.endedAt))
+      .limit(limit);
+    return rows.flatMap((row) => (row.creatorSessionId ? [{ ...row, creatorSessionId: row.creatorSessionId }] : []));
   }
 
   /**
@@ -1093,7 +1217,10 @@ export class SessionService {
       lastMessageId: string;
       lastDeliveryOutcome: SessionCliListItem["lastDeliveryOutcome"];
       taskPreview: string;
+      stoppedAt: Date | string | null;
     };
+    // Stopped Sessions are history the active indexes do not carry on purpose: asking for them sorts this
+    // ancestor's closure rows, read through the primary key, which stays bounded by its own descendants.
     const rows = await this.#database.execute<ListRow>(sql`
       select
         link.descendant_session_id as "sessionId",
@@ -1102,14 +1229,16 @@ export class SessionService {
         link.last_message_created_at as "lastMessageAt",
         link.last_message_id as "lastMessageId",
         link.last_delivery_outcome as "lastDeliveryOutcome",
-        link.task_preview as "taskPreview"
+        link.task_preview as "taskPreview",
+        child.ended_at as "stoppedAt"
       from session_descendants link
       inner join sessions child on child.id = link.descendant_session_id
       where link.ancestor_session_id = ${sourceSessionId}::uuid
-        and link.descendant_active
-        -- An older binary ends a Session without maintaining the closure flag. The derived predicate
-        -- keeps that row out of the page and bounds the extra work to the drift, not to the history.
-        and child.ended_at is null
+        ${
+          // An older binary ends a Session without maintaining the closure flag. The derived predicate
+          // keeps that row out of the page and bounds the extra work to the drift, not to the history.
+          query.includeStopped ? sql`` : sql`and link.descendant_active and child.ended_at is null`
+        }
         ${query.recursive ? sql`` : sql`and link.depth = 1`}
         ${since ? sql`and link.last_message_created_at >= ${since.toISOString()}::timestamptz` : sql``}
         ${
@@ -1130,6 +1259,7 @@ export class SessionService {
         lastMessageAt: new Date(row.lastMessageAt).toISOString(),
         lastDeliveryOutcome: row.lastDeliveryOutcome,
         taskPreview: truncateUtf8(row.taskPreview, 256),
+        ...(query.includeStopped && row.stoppedAt ? { stoppedAt: new Date(row.stoppedAt).toISOString() } : {}),
       })),
       ...(rows.length > query.limit && last
         ? { nextCursor: encodeListCursor(new Date(last.lastMessageAt), last.lastMessageId, last.sessionId) }

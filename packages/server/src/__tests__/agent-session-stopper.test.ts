@@ -1,21 +1,143 @@
 import { randomUUID } from "node:crypto";
 import type { SessionReconcileResult } from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { withAgentSessionStopAuthority } from "../runtime/agent-session-stop-authority.js";
+import {
+  withAgentSessionStopAuthority,
+  withEndedSessionStopAuthority,
+} from "../runtime/agent-session-stop-authority.js";
 import type { AgentSessionStopDependencies } from "../runtime/agent-session-stopper.js";
-import { stopAgentSessions } from "../runtime/agent-session-stopper.js";
+import { stopAgentSessions, stopEndedInternalSessions } from "../runtime/agent-session-stopper.js";
 
 import { RuntimeDomainRequestError } from "../runtime/runtime-domain-owner.js";
 import { deferred } from "./support/deferred.js";
 
-vi.mock("../runtime/agent-session-stop-authority.js", () => ({ withAgentSessionStopAuthority: vi.fn() }));
+vi.mock("../runtime/agent-session-stop-authority.js", () => ({
+  withAgentSessionStopAuthority: vi.fn(),
+  withEndedSessionStopAuthority: vi.fn(),
+}));
 afterEach(() => vi.restoreAllMocks());
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(withAgentSessionStopAuthority).mockImplementation(async (_database, _target, enqueue) =>
     enqueue({} as never),
   );
+  vi.mocked(withEndedSessionStopAuthority).mockImplementation(async (_database, _target, enqueue) =>
+    enqueue({} as never),
+  );
 });
+describe("stopEndedInternalSessions", () => {
+  const target = (computerKind: "local" | "cloud" = "local") => ({
+    agentId: randomUUID(),
+    computerId: randomUUID(),
+    computerKind,
+    creatorSessionId: randomUUID(),
+    installationId: randomUUID(),
+    placementGeneration: 3,
+    sessionId: randomUUID(),
+  });
+  function dependencies(status: SessionReconcileResult["status"] = "stopped") {
+    const requestReconcile = vi.fn(async (_computer, _instance, request, _dispatched, admission) => {
+      const result = {
+        type: "session:reconcile:result",
+        requestId: request.requestId,
+        sessionId: request.sessionId,
+        placementGeneration: request.placementGeneration,
+        status,
+      };
+      const admitted = await admission((send: () => void) => {
+        send();
+        return Promise.resolve(result);
+      });
+      if (!admitted.admitted) throw new Error("not admitted");
+      return admitted.result;
+    });
+    return {
+      currentInstanceId: vi.fn((_computerId: string): string | undefined => "instance"),
+      requestReconcile: requestReconcile as never,
+      reconcileMock: requestReconcile,
+      revokeProof: vi.fn(async (_sessionId: string) => undefined),
+      onDiagnostic: vi.fn(),
+    };
+  }
+
+  it("confirms a Local stop, names the internal kind on the frame, and retires the proof", async () => {
+    const stop = target();
+    const deps = dependencies();
+    await expect(stopEndedInternalSessions({} as never, [stop], deps)).resolves.toEqual(
+      new Map([[stop.sessionId, "stopped"]]),
+    );
+    expect(deps.reconcileMock.mock.calls[0]?.[2]).toMatchObject({
+      desired: "stopped",
+      sessionKind: "internal",
+      creatorSessionId: stop.creatorSessionId,
+      sessionId: stop.sessionId,
+    });
+    expect(deps.revokeProof).toHaveBeenCalledWith(stop.sessionId);
+    expect(withEndedSessionStopAuthority).toHaveBeenCalledOnce();
+    expect(withAgentSessionStopAuthority).not.toHaveBeenCalled();
+  });
+
+  it("keeps the answer when retiring the proof fails", async () => {
+    const stop = target();
+    const deps = dependencies();
+    deps.revokeProof.mockRejectedValue(new Error("write failed"));
+    await expect(stopEndedInternalSessions({} as never, [stop], deps)).resolves.toEqual(
+      new Map([[stop.sessionId, "stopped"]]),
+    );
+    expect(deps.onDiagnostic).toHaveBeenCalledWith("SESSION_STOP_PROOF_REVOKE_FAILED");
+  });
+
+  it.each([
+    ["busy", "not_interrupted"],
+    ["rejected", "pending"],
+  ] as const)("reports a Client answering %s as %s, keeping the proof", async (status, execution) => {
+    const stop = target();
+    const deps = dependencies(status);
+    await expect(stopEndedInternalSessions({} as never, [stop], deps)).resolves.toEqual(
+      new Map([[stop.sessionId, execution]]),
+    );
+    expect(deps.revokeProof).not.toHaveBeenCalled();
+  });
+
+  it("reports an offline Computer or a refused authority as pending", async () => {
+    const stop = target();
+    const deps = dependencies();
+    deps.currentInstanceId.mockReturnValueOnce(undefined);
+    await expect(stopEndedInternalSessions({} as never, [stop], deps)).resolves.toEqual(
+      new Map([[stop.sessionId, "pending"]]),
+    );
+    expect(deps.reconcileMock).not.toHaveBeenCalled();
+    vi.mocked(withEndedSessionStopAuthority).mockResolvedValueOnce(undefined);
+    await expect(stopEndedInternalSessions({} as never, [stop], deps)).resolves.toEqual(
+      new Map([[stop.sessionId, "pending"]]),
+    );
+  });
+
+  it("cancels Cloud Sessions through the Runner owner and never fails", async () => {
+    const stop = target("cloud");
+    const deps = dependencies();
+    const cancelSessionMessages = vi.fn(async () => [{ messageId: randomUUID(), status: "requested" as const }]);
+    const cloud = { ...deps, cloudSession: { cancelSessionMessages } as never };
+    await expect(stopEndedInternalSessions({} as never, [stop], cloud)).resolves.toEqual(
+      new Map([[stop.sessionId, "requested"]]),
+    );
+    expect(cancelSessionMessages).toHaveBeenCalledWith(stop.sessionId);
+    expect(deps.reconcileMock).not.toHaveBeenCalled();
+    cancelSessionMessages.mockResolvedValueOnce([{ messageId: randomUUID(), status: "no_connection" as "requested" }]);
+    await expect(stopEndedInternalSessions({} as never, [stop], cloud)).resolves.toEqual(
+      new Map([[stop.sessionId, "pending"]]),
+    );
+    cancelSessionMessages.mockRejectedValueOnce(new Error("owner failed"));
+    await expect(stopEndedInternalSessions({} as never, [stop], cloud)).resolves.toEqual(
+      new Map([[stop.sessionId, "pending"]]),
+    );
+    expect(deps.onDiagnostic).toHaveBeenCalledWith("CLOUD_SESSION_STOP_FAILED");
+    await expect(stopEndedInternalSessions({} as never, [stop], deps)).resolves.toEqual(
+      new Map([[stop.sessionId, "pending"]]),
+    );
+  });
+});
+
 describe("stopAgentSessions", () => {
   it("returns before touching the database when no stop targets exist", async () => {
     const database = { transaction: vi.fn() };

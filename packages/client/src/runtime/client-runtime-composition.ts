@@ -984,6 +984,7 @@ export async function createClientRuntime(
     retries: turnRetries,
   });
   reconciler.setResumer(interruptedWork);
+  reconciler.setInternalWorkStopper(sessionMessageInbox);
   await interruptedWork.start();
   const recovery = interruptedWork;
   const availabilityTester = new AgentRuntimeAvailabilityTester({

@@ -6,6 +6,8 @@ import {
   SessionCliListQuerySchema,
   SessionCliListResponseSchema,
   SessionCliSendRequestSchema,
+  SessionCliStopRequestSchema,
+  SessionCliStopResponseSchema,
 } from "@opentag/shared";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { SessionCliProofService } from "../services/sessions/session-cli-proof-service.js";
@@ -14,7 +16,7 @@ import type { SessionService } from "../services/sessions/session-service.js";
 import { parseRequest } from "./request-validation.js";
 
 export interface RuntimeSessionRoutesOptions {
-  collaboration: Pick<SessionCollaborationService, "create" | "send">;
+  collaboration: Pick<SessionCollaborationService, "create" | "send" | "stop">;
   proofs: Pick<SessionCliProofService, "authenticate">;
   sessions: Pick<SessionService, "listInternalSessions">;
 }
@@ -36,19 +38,21 @@ export function registerRuntimeSessionRoutes(app: FastifyInstance, options: Runt
     return reply.header("Cache-Control", "no-store").code(200).send(result);
   });
 
+  app.post(HTTP_PATHS.runtimeSessionStop, async (request, reply) => {
+    reply.header("Cache-Control", "no-store");
+    const source = await authenticate(request, options.proofs);
+    const input = parseRequest(SessionCliStopRequestSchema, request.body);
+    const result = SessionCliStopResponseSchema.parse(await options.collaboration.stop(input, source));
+    return reply.header("Cache-Control", "no-store").code(200).send(result);
+  });
+
   app.get(HTTP_PATHS.runtimeSessions, async (request, reply) => {
     reply.header("Cache-Control", "no-store");
     const source = await authenticate(request, options.proofs);
     const raw = (request.query ?? {}) as Record<string, unknown>;
     const query = parseRequest(SessionCliListQuerySchema, {
-      recursive:
-        raw.recursive === undefined
-          ? undefined
-          : raw.recursive === "true" || raw.recursive === true
-            ? true
-            : raw.recursive === "false" || raw.recursive === false
-              ? false
-              : raw.recursive,
+      recursive: queryFlag(raw.recursive),
+      includeStopped: queryFlag(raw.includeStopped),
       limit: raw.limit === undefined ? undefined : Number(raw.limit),
       cursor: raw.cursor,
       since: raw.since,
@@ -58,6 +62,13 @@ export function registerRuntimeSessionRoutes(app: FastifyInstance, options: Runt
     );
     return reply.header("Cache-Control", "no-store").code(200).send(result);
   });
+}
+
+/** A query string carries a flag as text; anything else stays as it came, for the schema to refuse. */
+function queryFlag(value: unknown): unknown {
+  if (value === "true") return true;
+  if (value === "false") return false;
+  return value;
 }
 
 async function authenticate(request: FastifyRequest, proofs: RuntimeSessionRoutesOptions["proofs"]) {

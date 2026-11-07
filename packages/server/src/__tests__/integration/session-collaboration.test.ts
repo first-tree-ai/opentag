@@ -745,8 +745,9 @@ describe("Session collaboration authority", () => {
         content: "cross scope",
       });
       expect(crossScope.route.targetSessionId).toBe(otherScope.session.id);
+      // This request names no Run input, so it has no initiator to prove.
+      expect(crossScope.message.initiatorSessionId).toBeNull();
       await expect(fixture.sessions.resolveMessageProvenance(crossScope.message)).resolves.toMatchObject({
-        initiatorSessionId: source.session.id,
         forwards: 0,
         crossConversation: true,
       });

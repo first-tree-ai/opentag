@@ -290,7 +290,8 @@ export class SessionMessageInbox {
     if (queue.length >= this.#maxQueuedPerSession || this.#queuedTotal >= this.#maxQueuedTotal) {
       return deliveryResult(request, "rejected", "client_busy");
     }
-    queue.push({ request, hash });
+    const entry: QueuedMessage = { request, hash };
+    queue.push(entry);
     this.#queues.set(request.targetSessionId, queue);
     this.#queuedTotal += 1;
     try {
@@ -304,15 +305,16 @@ export class SessionMessageInbox {
         updatedAt: this.#now(),
       });
     } catch {
-      queue.pop();
-      this.#queuedTotal -= 1;
+      this.#releaseFailedAcceptance(entry);
       this.#records.delete(key);
-      this.#remember(key, { hash, status: "rejected", reason: "provider_unavailable" });
+      // A stop during this write already refuses the message for good; a disk failure is the lesser news.
+      const reason = this.#isStopped(request) ? "session_not_ready" : "provider_unavailable";
+      this.#remember(key, { hash, status: "rejected", reason });
       this.#logger.warn(
         { code: "SESSION_MESSAGE_PERSISTENCE_FAILED", messageId: request.messageId },
         "Session message persistence failed",
       );
-      return deliveryResult(request, "rejected", "provider_unavailable");
+      return deliveryResult(request, "rejected", reason);
     }
     // A stop that began during this write has already withdrawn the queue entry.
     if (this.#isStopped(request)) {
@@ -433,6 +435,15 @@ export class SessionMessageInbox {
     const drain = this.#drains.get(sessionId);
     if (running && drain) await this.#closeRuntimeAfterGrace(sessionId, drain);
     await drain;
+  }
+
+  /** Only an entry still queued holds capacity: a stop or a drain may have taken it during the write. */
+  #releaseFailedAcceptance(entry: QueuedMessage): void {
+    const queue = this.#queues.get(entry.request.targetSessionId);
+    const index = queue?.indexOf(entry) ?? -1;
+    if (index < 0) return;
+    queue?.splice(index, 1);
+    this.#queuedTotal -= 1;
   }
 
   #abortStoppedRun(sessionId: string, placementGeneration: number): boolean {

@@ -2112,15 +2112,17 @@ describe("SessionMessageInbox", () => {
         readonly gates = new Map<string, { entered: () => void; opened: Promise<void>; open: () => void }>();
         hold(status: string) {
           let open: () => void = () => undefined;
-          const opened = new Promise<void>((resolve) => {
+          let fail: () => void = () => undefined;
+          const opened = new Promise<void>((resolve, reject) => {
             open = resolve;
+            fail = () => reject(new Error("ENOSPC"));
           });
           let entered: () => void = () => undefined;
           const reached = new Promise<void>((resolve) => {
             entered = resolve;
           });
           this.gates.set(status, { entered, opened, open });
-          return { reached, open };
+          return { reached, open, fail };
         }
         override async write<T>(record: DurableWorkRecord<T>): Promise<void> {
           const gate = this.gates.get(record.status);
@@ -2234,6 +2236,100 @@ describe("SessionMessageInbox", () => {
         expect(prompt).not.toHaveBeenCalled();
         const [record] = await store.list("session-message");
         expect(record).toMatchObject({ status: "failed", lastError: { code: SESSION_MESSAGE_STOPPED_CODE } });
+        inbox.stop();
+      });
+
+      function capacityInbox(store: GatedStore, admission = new AdmissionController()) {
+        const prompt = vi.fn(async () => ({ runId: "run", status: "completed", output: [] }));
+        const inbox = new SessionMessageInbox({
+          admission,
+          credentialEnvironment: credentialEnvironment(),
+          imCredentialGrantVersion: () => 2,
+          maxQueuedTotal: 1,
+          persistence: store,
+          sessionCollaborationVersion: () => 4,
+          reconciler: inboxReconciler(),
+          runtimeManager: {
+            ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+            sessionKind: vi.fn(() => "internal" as const),
+          },
+          steerRetryMs: 5,
+        });
+        return { inbox, prompt };
+      }
+
+      it("releases a withdrawn message's capacity once when its acceptance write then fails", async () => {
+        const store = new GatedStore();
+        const admission = new AdmissionController();
+        const { inbox, prompt } = capacityInbox(store, admission);
+        const request = delivery();
+        const write = store.hold("accepted");
+        const accepting = inbox.accept(request);
+        await write.reached;
+        expect(inbox.queuedCount).toBe(1);
+
+        await inbox.stopSessionWork(request.targetSessionId, request.placementGeneration);
+        expect(inbox.queuedCount).toBe(0);
+        write.fail();
+
+        await expect(accepting).resolves.toMatchObject({ status: "rejected", reason: "session_not_ready" });
+        expect(inbox.queuedCount).toBe(0);
+        // A replay is answered with the same refusal, not with the disk failure.
+        await expect(inbox.accept(request)).resolves.toMatchObject({ status: "rejected", reason: "session_not_ready" });
+
+        // The global limit still holds for other Sessions while admission keeps their messages queued.
+        const other = delivery();
+        const held = admission.reserve(other.targetSessionId, other.agentId);
+        if (!held.accepted) throw new Error("Expected the host reservation");
+        held.reservation.markActive();
+        await expect(inbox.accept(other)).resolves.toMatchObject({ status: "accepted" });
+        expect(inbox.queuedCount).toBe(1);
+        await expect(inbox.accept(delivery())).resolves.toMatchObject({ status: "rejected", reason: "client_busy" });
+        held.reservation.release();
+        await inbox.settled();
+        expect(inbox.queuedCount).toBe(0);
+        expect(prompt).toHaveBeenCalledOnce();
+        inbox.stop();
+      });
+
+      it("removes only its own entry when an acceptance write fails behind a later message", async () => {
+        const store = new GatedStore();
+        const admission = new AdmissionController();
+        const prompt = vi.fn(async () => ({ runId: "run", status: "completed", output: [] }));
+        const inbox = new SessionMessageInbox({
+          admission,
+          credentialEnvironment: credentialEnvironment(),
+          imCredentialGrantVersion: () => 2,
+          persistence: store,
+          sessionCollaborationVersion: () => 4,
+          reconciler: inboxReconciler(),
+          runtimeManager: {
+            ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+            sessionKind: vi.fn(() => "internal" as const),
+          },
+          steerRetryMs: 5,
+        });
+        const first = delivery();
+        const later = delivery({ targetSessionId: first.targetSessionId, agentId: first.agentId });
+        const held = admission.reserve(first.targetSessionId, first.agentId);
+        if (!held.accepted) throw new Error("Expected the host reservation");
+        held.reservation.markActive();
+        const write = store.hold("accepted");
+        const accepting = inbox.accept(first);
+        await write.reached;
+        await expect(inbox.accept(later)).resolves.toMatchObject({ status: "accepted" });
+        expect(inbox.queuedCount).toBe(2);
+
+        write.fail();
+        await expect(accepting).resolves.toMatchObject({ status: "rejected", reason: "provider_unavailable" });
+        expect(inbox.queuedCount).toBe(1);
+
+        held.reservation.release();
+        await inbox.settled();
+        expect(prompt).toHaveBeenCalledOnce();
+        expect(inbox.getState(later.messageId)?.status).toBe("succeeded");
+        expect(inbox.getState(first.messageId)?.status).not.toBe("succeeded");
+        expect(inbox.queuedCount).toBe(0);
         inbox.stop();
       });
 

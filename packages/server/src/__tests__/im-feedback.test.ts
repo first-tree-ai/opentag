@@ -4,6 +4,7 @@ import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agents,
+  computers,
   imBindings,
   imFeedbackActions,
   imFeedbackTargets,
@@ -49,6 +50,7 @@ async function fixture(provider: "slack" | "feishu" = "slack") {
   const transport = {
     reaction: vi.fn<FeedbackTransport["reaction"]>(async () => {}),
     post: vi.fn<FeedbackTransport["post"]>(async () => "card-1"),
+    postOfflineNotice: vi.fn<FeedbackTransport["postOfflineNotice"]>(async () => {}),
     update: vi.fn<FeedbackTransport["update"]>(async () => {}),
     find: vi.fn<FeedbackTransport["find"]>(async () => ({ ids: [] as string[] })),
   };
@@ -167,6 +169,175 @@ async function workspaceFixture() {
   }
   return { ...h, t, status, runner, service, submit };
 }
+
+describe("IM offline notice", () => {
+  const setComputer = async (
+    h: Awaited<ReturnType<typeof fixture>>,
+    values: Partial<typeof computers.$inferInsert>,
+  ) => {
+    const [placement] = await db.database
+      .select({ computerId: sessionPlacements.computerId })
+      .from(sessionPlacements)
+      .where(eq(sessionPlacements.sessionId, h.frame.sessionId));
+    await db.database
+      .update(computers)
+      .set(values)
+      .where(eq(computers.id, placement?.computerId ?? ""));
+  };
+  const offlineSince = (h: Awaited<ReturnType<typeof fixture>>, ms: number) =>
+    setComputer(h, { lastSeenAt: new Date(clock.getTime() - ms), currentInstanceId: null });
+  async function queued() {
+    const h = await fixture();
+    const park = async (deliveryId: string, receivedMsAgo: number) => {
+      await db.database
+        .update(imMessageDeliveries)
+        .set({ state: "pending", acceptedAt: null, inputHash: null, turnId: null, reportOwnerInstanceId: null })
+        .where(eq(imMessageDeliveries.id, deliveryId));
+      const [delivery] = await db.database
+        .select({ messageId: imMessageDeliveries.messageId })
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, deliveryId));
+      await db.database
+        .update(imMessages)
+        .set({ receivedAt: new Date(clock.getTime() - receivedMsAgo) })
+        .where(eq(imMessages.id, delivery?.messageId ?? ""));
+      await db.database
+        .update(imFeedbackTargets)
+        .set({ state: "queued", desiredReaction: "none" })
+        .where(eq(imFeedbackTargets.deliveryId, deliveryId));
+    };
+    await park(h.frame.deliveryId, 300_000);
+    return { ...h, park };
+  }
+
+  it("waits sixty seconds from the later of receipt and the Computer going silent", async () => {
+    const h = await queued();
+    await offlineSince(h, 59_000);
+    expect(await h.store.reserveOfflineNotice(await h.target())).toBeUndefined();
+    await offlineSince(h, 61_000);
+    expect(await h.store.reserveOfflineNotice(await h.target())).toEqual(clock);
+  });
+
+  it("starts the sixty seconds at receipt when a message arrives during an outage", async () => {
+    const h = await queued();
+    await offlineSince(h, 300_000);
+    await h.park(h.frame.deliveryId, 59_000);
+    expect(await h.store.reserveOfflineNotice(await h.target())).toBeUndefined();
+  });
+
+  it("sends once per Session and offline period, and again in a later period", async () => {
+    const h = await queued();
+    const second = await h.delivery();
+    await db.database.transaction((tx) => createImFeedbackTarget(tx, second.frame.deliveryId, clock));
+    await h.park(second.frame.deliveryId, 300_000);
+    await offlineSince(h, 120_000);
+    const [secondTarget] = await db.database
+      .select()
+      .from(imFeedbackTargets)
+      .where(eq(imFeedbackTargets.deliveryId, second.frame.deliveryId));
+    if (!secondTarget) throw new Error("Missing second target");
+    expect(await h.store.reserveOfflineNotice(await h.target())).toEqual(clock);
+    expect(await h.store.reserveOfflineNotice(secondTarget)).toBeUndefined();
+    expect(await h.store.reserveOfflineNotice(await h.target())).toBeUndefined();
+
+    clock = new Date(clock.getTime() + 600_000);
+    await offlineSince(h, 120_000);
+    expect(await h.store.reserveOfflineNotice(secondTarget)).toEqual(clock);
+  });
+
+  it("keeps one notice through an outage longer than the input lifetime", async () => {
+    const h = await queued();
+    await offlineSince(h, 120_000);
+    expect(await h.store.reserveOfflineNotice(await h.target())).toEqual(clock);
+    const later = await h.delivery();
+    await db.database.transaction((tx) => createImFeedbackTarget(tx, later.frame.deliveryId, clock));
+    await h.park(later.frame.deliveryId, 300_000);
+    await db.database
+      .update(imFeedbackTargets)
+      .set({ createdAt: new Date(clock.getTime() - 9 * 86_400_000) })
+      .where(eq(imFeedbackTargets.deliveryId, h.frame.deliveryId));
+    const [target] = await db.database
+      .select()
+      .from(imFeedbackTargets)
+      .where(eq(imFeedbackTargets.deliveryId, later.frame.deliveryId));
+    if (!target) throw new Error("Missing later target");
+    expect(await h.store.reserveOfflineNotice(target)).toBeUndefined();
+  });
+
+  it("starts a never-connected Computer's offline period when it was created, not at the epoch", async () => {
+    const h = await queued();
+    await setComputer(h, {
+      lastSeenAt: null,
+      currentInstanceId: null,
+      createdAt: new Date(clock.getTime() - 120_000),
+    });
+    const second = await h.delivery();
+    await db.database.transaction((tx) => createImFeedbackTarget(tx, second.frame.deliveryId, clock));
+    await h.park(second.frame.deliveryId, 300_000);
+    const [secondTarget] = await db.database
+      .select()
+      .from(imFeedbackTargets)
+      .where(eq(imFeedbackTargets.deliveryId, second.frame.deliveryId));
+    if (!secondTarget) throw new Error("Missing second target");
+
+    // A send from before this Computer existed belongs to no offline period of it.
+    await db.database
+      .update(imFeedbackTargets)
+      .set({ sendStartedAt: new Date(clock.getTime() - 86_400_000) })
+      .where(eq(imFeedbackTargets.deliveryId, h.frame.deliveryId));
+    expect(await h.store.reserveOfflineNotice(secondTarget)).toEqual(clock);
+
+    // Later input in the same outage still gets no second notice, whenever it was received.
+    await h.park(h.frame.deliveryId, 61_000);
+    expect(await h.store.reserveOfflineNotice(await h.target())).toBeUndefined();
+  });
+
+  it("stays silent for a connected Computer, a Cloud Computer and a suspended Agent", async () => {
+    const h = await queued();
+    await setComputer(h, { lastSeenAt: new Date(clock.getTime() - 10_000), currentInstanceId: randomUUID() });
+    expect(await h.store.reserveOfflineNotice(await h.target())).toBeUndefined();
+
+    await offlineSince(h, 300_000);
+    await setComputer(h, { kind: "cloud" });
+    expect(await h.store.reserveOfflineNotice(await h.target())).toBeUndefined();
+
+    await setComputer(h, { kind: "local" });
+    await db.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, h.frame.agentId));
+    expect(await h.store.reserveOfflineNotice(await h.target())).toBeUndefined();
+  });
+
+  it("treats a Computer that stopped heartbeating as offline at the presence timeout", async () => {
+    const h = await queued();
+    const live = randomUUID();
+    await setComputer(h, { lastSeenAt: new Date(clock.getTime() - 89_000), currentInstanceId: live });
+    expect(await h.store.reserveOfflineNotice(await h.target())).toBeUndefined();
+    await setComputer(h, { lastSeenAt: new Date(clock.getTime() - 91_000), currentInstanceId: live });
+    expect(await h.store.reserveOfflineNotice(await h.target())).toEqual(clock);
+  });
+
+  it("posts through the worker, retries only a send known not to have applied, and keeps the failure message", async () => {
+    const h = await queued();
+    await offlineSince(h, 300_000);
+    const due = () =>
+      db.database
+        .update(imFeedbackTargets)
+        .set({ nextAttemptAt: new Date(clock.getTime() - 1_000), claimId: null, claimExpiresAt: null })
+        .where(eq(imFeedbackTargets.deliveryId, h.frame.deliveryId));
+    h.transport.postOfflineNotice.mockRejectedValueOnce(new FeedbackProviderError("IM_FEEDBACK_RATE_LIMITED", true));
+    await due();
+    await h.worker.runOnce();
+    expect((await h.target()).sendStartedAt).toBeNull();
+    h.transport.postOfflineNotice.mockRejectedValueOnce(new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false));
+    await due();
+    await h.worker.runOnce();
+    expect((await h.target()).sendStartedAt).toEqual(clock);
+    await due();
+    await h.worker.runOnce();
+    expect(h.transport.postOfflineNotice).toHaveBeenCalledTimes(2);
+    expect((await h.target()).cardState).toBe("none");
+    expect(h.transport.post).not.toHaveBeenCalled();
+  });
+});
 
 describe("durable IM feedback", () => {
   it("creates plain text targets unless the rollback flag is set", async () => {

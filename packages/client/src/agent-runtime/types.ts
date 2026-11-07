@@ -163,8 +163,11 @@ export interface AgentRunResult {
   readonly binding?: AgentRuntimeBinding;
   readonly error?: AgentRunError;
   readonly providerDiagnostics?: JsonValue;
-  /** Background work the Provider process may still have had when the Run ended; if so, it stopped with it. */
-  readonly abandonedBackgroundWork?: readonly string[];
+  /**
+   * The Run's input was answered, and a later turn it started by itself to report background work failed.
+   * The Run is complete and must not run again; what the later turn should have read stays to be told.
+   */
+  readonly followUpFailure?: AgentRunError;
 }
 
 export interface AgentRuntimeWorkspace {
@@ -273,6 +276,16 @@ export interface AgentInteractionRequest {
   readonly details?: JsonValue;
 }
 
+export interface AgentBackgroundWorkItem {
+  readonly id: string;
+  readonly label: string;
+  readonly outputPath?: string;
+  /** Output shows as `noteBackgroundProgress` calls rather than in a file. */
+  readonly reportsProgress?: boolean;
+}
+
+export type AgentBackgroundWorkEndStatus = "completed" | "failed" | "stopped";
+
 export type AgentProviderRunEvent =
   // Model-turn events are optional: providers that cannot observe this boundary
   // emit message/tool lifecycles directly within the Run.
@@ -296,6 +309,16 @@ export type AgentProviderRunEvent =
       readonly output?: JsonValue;
     }
   | { readonly type: "usage_updated"; readonly usage: AgentUsage }
+  /** The whole list of work that keeps this Run open after a model turn ends. An item that leaves it without finishing is simply gone. */
+  | { readonly type: "background_work_changed"; readonly items: readonly AgentBackgroundWorkItem[] }
+  /** A fact observed while the Provider was alive, never an inference from its absence. */
+  | {
+      readonly type: "background_work_finished";
+      readonly id: string;
+      readonly status: AgentBackgroundWorkEndStatus;
+      readonly detail?: string;
+      readonly outputPath?: string;
+    }
   | { readonly type: "provider_warning"; readonly code: string; readonly message: string }
   | {
       readonly type: "provider_event";
@@ -329,12 +352,15 @@ export interface AgentProviderRunResult {
   readonly usage?: AgentUsage;
   readonly error?: AgentRunError;
   readonly diagnostics?: JsonValue;
-  readonly abandonedBackgroundWork?: readonly string[];
+  /** See `AgentRunResult.followUpFailure`. */
+  readonly followUpFailure?: AgentRunError;
 }
 
 export interface AgentProviderRunContext {
   readonly runId: AgentRunId;
   readonly signal: AbortSignal;
+  /** Live background work produced output, for work that reports it as events. */
+  noteBackgroundProgress(id: string): void;
   /** Marks that the authoritative Provider terminal arrived; public settlement still waits for executeRun. */
   claimTerminal(): void;
   emit(event: AgentProviderRunEvent): Promise<void>;

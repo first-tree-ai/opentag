@@ -208,20 +208,9 @@ kind of Session the target is. A scheduled message has no sender: its notice goe
   settling allocation stays in the Sandbox reclaim barrier, so idle reclamation or borrow cannot delete the journal;
   see [Cloud context](../cloud/cloud-context.md).
 
-- Background work: Local Claude Code runs one process per Run, and the process exits when the Run ends, so background
-  shells, background subagents, Monitors and in-process timers stop then. They do not survive to the next message, and
-  nothing wakes the Session later. A timer counts once its `ScheduleWakeup` or `CronCreate` call succeeded, until
-  `ScheduleWakeup` with `stop` or `CronDelete` removes it. A wakeup is also removed when a `command_lifecycle` with
-  `wakeup_source: loop_wakeup` names its `scheduled_for`. A cron firing names no job and can come from a durable job of an
-  earlier Run, so it removes nothing. The notice and report may therefore name a job that already ran, and both say the
-  work may still be live. A `durable` cron job is on disk and is not counted. The result of a fired timer's own turn
-  does not end the Run. Before the process exits, the Run tells the Session once which work may stop
-  (`[openTag notice] This Run is about to end.`), and gets one more model turn to wait for it, redo it in the foreground,
-  or tell whoever is waiting. The result after that notice ends the Run, with or without a `command_lifecycle` for it. If
-  work may still be live when that turn ends, the message still `succeeded` and is not run again, and the daemon reports
-  outcome `unknown` with reason `background_work_possibly_stopped` through the same report, so the message's sender gets a
-  notice, including when the target is a visible Session. An IM Turn gets the same notice in the Run and sends no report. A
-  message steered into that Run sends no report of its own.
+- Background work: a Run stays open while its background work is live, up to its limit, and a message that arrives during
+  the wait joins the Run. A Run that stops at its limit is reported as `timed_out` as usual, and the Session reads what
+  became of the work at the start of its next Run. See [Background work](../runtime/background-work.md).
 
 The notice is an ordinary SessionMessage from the target to the recipient. A sender that is also the creator gets one notice,
 since there is one recipient. It uses the existing authorization, lock order, activity projection, and delivery, including the

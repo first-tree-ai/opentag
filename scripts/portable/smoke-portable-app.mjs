@@ -56,6 +56,10 @@ export async function smokePortableApp({ channel, version }) {
       "pi-extensions/web-tools.mjs.map",
       "cli/pi-extensions/web-tools.mjs",
       "cli/pi-extensions/web-tools.mjs.map",
+      "pi-extensions/background-work.mjs",
+      "pi-extensions/background-work.mjs.map",
+      "cli/pi-extensions/background-work.mjs",
+      "cli/pi-extensions/background-work.mjs.map",
       "cli/index.mjs.map",
     ]) {
       if (!existsSync(join(template.appDir, ...relativePath.split("/")))) {

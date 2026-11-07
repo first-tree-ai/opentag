@@ -587,9 +587,8 @@ describe("ClaudeCodeAgentRuntime steer", () => {
     }
   });
 
-  it("adds no output for a result Claude Code generated itself, and reports abandoned background work", async () => {
+  it("adds no output for a result Claude Code generated itself", async () => {
     const steerable = new SteerableClaudeCodeProcess();
-    steerable.abandonedBackgroundWork = ["Run the suite (local_bash)"];
     const runtime = await steerableFactory(steerable).create(createRequest(() => undefined));
     try {
       const run = runtime.prompt({ runId: "resume-run", input: input("work") });
@@ -600,8 +599,91 @@ describe("ClaudeCodeAgentRuntime steer", () => {
       await expect(run).resolves.toMatchObject({
         status: "completed",
         output: [{ type: "text", text: "answer" }],
-        abandonedBackgroundWork: ["Run the suite (local_bash)"],
       });
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("completes a Run whose input was answered when a later turn failed", async () => {
+    const steerable = new SteerableClaudeCodeProcess();
+    steerable.followUpFailed = true;
+    const runtime = await steerableFactory(steerable).create(createRequest(() => undefined));
+    try {
+      const run = runtime.prompt({ runId: "follow-up", input: input("work") });
+      await vi.waitFor(() => expect(steerable.executing).toBe(true));
+      steerable.emit(result("answer", 1, 0.01, 5), false);
+      steerable.emit(
+        {
+          type: "result",
+          subtype: "error_during_execution",
+          is_error: true,
+          session_id: SESSION_ID,
+          errors: ["429"],
+          duration_ms: 1,
+          num_turns: 1,
+        },
+        true,
+      );
+      steerable.finish();
+      const settled = await run;
+      expect(settled).toMatchObject({ status: "completed", followUpFailure: { message: "429" } });
+      expect(settled.error).toBeUndefined();
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("passes a background work notice to the process, and has nowhere to send one between Runs", async () => {
+    const steerable = new SteerableClaudeCodeProcess();
+    const notice = vi.fn(async () => undefined);
+    Object.assign(steerable, { notice });
+    const runtime = await steerableFactory(steerable).create(createRequest(() => undefined));
+    const tell = runtime as unknown as { tellProviderAboutBackgroundWork(text: string): Promise<void> };
+    try {
+      await tell.tellProviderAboutBackgroundWork("between Runs");
+      const run = runtime.prompt({ runId: "notice", input: input("work") });
+      await vi.waitFor(() => expect(steerable.executing).toBe(true));
+      await tell.tellProviderAboutBackgroundWork("quiet");
+      expect(notice).toHaveBeenCalledExactlyOnceWith("quiet");
+      steerable.emit(result("answer", 1, 0.01, 5), true);
+      steerable.finish();
+      await run;
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("reports background work as provider-neutral events", async () => {
+    const steerable = new SteerableClaudeCodeProcess();
+    const events: AgentRuntimeEvent[] = [];
+    const runtime = await steerableFactory(steerable).create(createRequest((event) => void events.push(event)));
+    try {
+      const run = runtime.prompt({ runId: "bg-run", input: input("work") });
+      await vi.waitFor(() => expect(steerable.executing).toBe(true));
+      steerable.emit({ type: "opentag/background_work", items: [{ id: "a", label: "suite" }] }, false);
+      steerable.emit(
+        { type: "opentag/background_finished", id: "a", status: "completed", detail: "ok", outputPath: "/o" },
+        false,
+      );
+      steerable.emit({ type: "opentag/background_finished", id: "b", status: "failed" }, false);
+      steerable.emit({ type: "opentag/background_finished", id: "c", status: "killed" }, false);
+      steerable.emit(result("answer", 1, 0.01, 5), true);
+      steerable.finish();
+      await run;
+      expect(events.filter((event) => event.type.startsWith("background_work"))).toEqual([
+        { type: "background_work_changed", runId: "bg-run", items: [{ id: "a", label: "suite" }] },
+        {
+          type: "background_work_finished",
+          runId: "bg-run",
+          id: "a",
+          status: "completed",
+          detail: "ok",
+          outputPath: "/o",
+        },
+        { type: "background_work_finished", runId: "bg-run", id: "b", status: "failed" },
+        { type: "background_work_finished", runId: "bg-run", id: "c", status: "stopped" },
+      ]);
     } finally {
       await runtime.close();
     }
@@ -751,6 +833,7 @@ class SteerableClaudeCodeProcess implements ClaudeCodeProcessClient {
   refuse = false;
   abandonedBackgroundWork?: readonly string[];
   #onMessage?: (message: Readonly<Record<string, unknown>>, terminal?: boolean) => void;
+  followUpFailed = false;
   #finish?: () => void;
 
   execute(
@@ -764,7 +847,7 @@ class SteerableClaudeCodeProcess implements ClaudeCodeProcessClient {
       this.#finish = () =>
         resolve({
           stderr: "",
-          ...(this.abandonedBackgroundWork ? { abandonedBackgroundWork: this.abandonedBackgroundWork } : {}),
+          ...(this.followUpFailed ? { followUpFailed: true } : {}),
         });
     });
   }

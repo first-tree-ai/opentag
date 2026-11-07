@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   type DirectImMessageDeliveryRequest,
   RUNTIME_CAPABILITY,
+  RUNTIME_DEFAULT_MAX_DURATION_MS,
   type RuntimeImSteerRequest,
   type SessionRecoverRequest,
 } from "@opentag/shared";
@@ -13,7 +14,7 @@ import { BaseAgentRuntime } from "../agent-runtime/base-agent-runtime.js";
 import { AgentRuntimeError } from "../agent-runtime/errors.js";
 import type { AgentRunResult } from "../agent-runtime/types.js";
 import { AdmissionController } from "../runtime/admission-controller.js";
-import { AgentTurnRunner, buildRetryAgentInput } from "../runtime/agent-turn-runner.js";
+import { AgentTurnRunner, type AgentTurnRunnerOptions, buildRetryAgentInput } from "../runtime/agent-turn-runner.js";
 import { InterruptedWorkRecovery, type InterruptedWorkRecoveryOptions } from "../runtime/interrupted-work-recovery.js";
 import {
   buildContinuationNotice,
@@ -62,7 +63,7 @@ afterEach(async () => {
 
 describe("interruption classification and continuation", () => {
   it("retries only the recoverable classes", () => {
-    for (const reason of ["provider_rate_limited", "client_shutdown", "daemon_crash"]) {
+    for (const reason of ["provider_rate_limited", "client_shutdown", "daemon_crash", "provider_process_exited"]) {
       expect(recoverableFailure(reason)).toBe(reason);
     }
     for (const reason of [
@@ -384,6 +385,45 @@ describe("AgentTurnRunner automatic retry", () => {
     await vi.advanceTimersByTimeAsync(1);
     await h.runner.settled();
     expect(h.prompt).toHaveBeenCalledTimes(2);
+    expect(h.create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ outcome: "completed" }), 3);
+  });
+
+  it("puts what earlier Runs left in front of a Turn, and records a limit where the next Run will read it", async () => {
+    vi.useFakeTimers();
+    const prefix = vi.fn(async (input: { items: unknown[] }) => ({
+      items: [{ type: "text", text: "LEDGER NOTICE" }, ...input.items],
+    }));
+    const recordRunLimit = vi.fn(async () => undefined);
+    const h = runnerHarness({ backgroundWork: { forSession: () => ({ prefix, recordRunLimit }) as never } });
+    h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
+    h.prompt.mockImplementationOnce(abortedOnSignal);
+    h.runner.start(owner(h.request));
+    await vi.advanceTimersByTimeAsync(0);
+    const first = h.prompt.mock.calls[0] as unknown as [{ input: { items: { text: string }[] } }];
+    expect(first[0].input.items[0]?.text).toBe("LEDGER NOTICE");
+    await vi.advanceTimersByTimeAsync(h.request.runtime.budget?.maxDurationMs ?? RUNTIME_DEFAULT_MAX_DURATION_MS);
+    await h.runner.settled();
+    expect(recordRunLimit).toHaveBeenCalledExactlyOnceWith({ reason: "turn_timeout", at: expect.any(String) });
+  });
+
+  it("retries a Turn whose Provider process exited, telling the retry what happened", async () => {
+    vi.useFakeTimers();
+    const h = runnerHarness();
+    h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
+    h.prompt
+      .mockImplementationOnce(async () => ({
+        runId: "turn-1",
+        status: "failed",
+        output: [],
+        error: { code: "provider_process_exited", message: "Claude Code exited" },
+      }))
+      .mockImplementationOnce(async () => ({ runId: "turn-1", status: "completed", output: [] }));
+    h.runner.start(owner(h.request));
+    await vi.advanceTimersByTimeAsync(0);
+    await h.runner.settled();
+    expect(h.prompt).toHaveBeenCalledTimes(2);
+    const retried = h.prompt.mock.calls[1] as unknown as [{ input: { items: { text: string }[] } }];
+    expect(retried[0].input.items[0]?.text).toContain("the Provider process exited unexpectedly");
     expect(h.create).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ outcome: "completed" }), 3);
   });
 
@@ -1607,7 +1647,13 @@ function recoveryFixture(records = new Map<string, TurnRetryRecord>()) {
   return fixture;
 }
 
-function runnerHarness(options: { restartRetry?: boolean | (() => boolean); withoutRetries?: boolean } = {}) {
+function runnerHarness(
+  options: {
+    restartRetry?: boolean | (() => boolean);
+    withoutRetries?: boolean;
+    backgroundWork?: AgentTurnRunnerOptions["backgroundWork"];
+  } = {},
+) {
   const request = delivery();
   const records = new Map<string, TurnRetryRecord>();
   const retries = {
@@ -1653,6 +1699,7 @@ function runnerHarness(options: { restartRetry?: boolean | (() => boolean); with
     () => Promise<{ recentRecordedInputs: typeof receipts; unresolvedTurn: { turnId: string } | undefined } | undefined>
   >(async () => ({ recentRecordedInputs: receipts, unresolvedTurn: { turnId: "turn-1" } }));
   const runner = new AgentTurnRunner({
+    ...(options.backgroundWork ? { backgroundWork: options.backgroundWork } : {}),
     bindingStore: {
       updateUnresolved,
       getSteerReceipt: vi.fn(async () => undefined),

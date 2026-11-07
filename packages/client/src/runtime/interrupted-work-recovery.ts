@@ -272,10 +272,13 @@ export class InterruptedWorkRecovery implements InterruptedTurnResumer {
       reason: "daemon_crash" as const,
       at: new Date(this.#now()).toISOString(),
     };
-    // Counted before anything runs; a 429 was counted when it failed and its retry has not started. So
-    // was a retry that an earlier start counted and never began: a restart in that wait costs nothing.
-    // The reason goes to the resumed Turn's notice; what ends that Turn is recorded anew.
-    const counted = record.interruption?.reason === "provider_rate_limited" || record.retryNotStarted === true;
+    // Counted before anything runs; a 429 or a Provider exit was counted when it failed and its retry has
+    // not started. So was a retry that an earlier start counted and never began: a restart in that wait costs
+    // nothing. The reason goes to the resumed Turn's notice; what ends that Turn is recorded anew.
+    const counted =
+      record.interruption?.reason === "provider_rate_limited" ||
+      record.interruption?.reason === "provider_process_exited" ||
+      record.retryNotStarted === true;
     const { count, exhausted } = counted
       ? { count: record.retries, exhausted: record.retries > MAX_AUTOMATIC_RETRIES }
       : nextRetry({ count: record.retries, ranMs: record.retryRanMs ?? 0 });

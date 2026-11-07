@@ -8,7 +8,11 @@ import { BaseAgentRuntime } from "../../agent-runtime/base-agent-runtime.js";
 import { composeRuntimeEnvironment } from "../../agent-runtime/environment.js";
 import { AgentProviderError, AgentRuntimeError } from "../../agent-runtime/errors.js";
 import { classifiedProviderProbeIssue } from "../../agent-runtime/probe-failure.js";
-import { providerFailureCode, providerProcessFailureCode } from "../../agent-runtime/provider-failure.js";
+import {
+  answeredWithFollowUpFailure,
+  providerFailureCode,
+  providerProcessFailureCode,
+} from "../../agent-runtime/provider-failure.js";
 import {
   isNonNegativeNumber,
   parseHttpMcpGateway,
@@ -25,10 +29,12 @@ import {
 import {
   AGENT_RUNTIME_CONTRACT_VERSION,
   type AgentAbortRequest,
+  type AgentBackgroundWorkItem,
   type AgentHostedTools,
   type AgentInteractionResponse,
   type AgentPromptRequest,
   type AgentProviderRunContext,
+  type AgentProviderRunEvent,
   type AgentProviderRunResult,
   type AgentProviderSteerCustody,
   type AgentRunConfiguration,
@@ -63,6 +69,8 @@ import {
   startClaudeCodeHostedToolBridge,
 } from "./hosted-tool-bridge.js";
 import {
+  CLAUDE_CODE_BACKGROUND_FINISHED_FRAME,
+  CLAUDE_CODE_BACKGROUND_WORK_FRAME,
   ClaudeCodeProcess,
   type ClaudeCodeProcessClient,
   ClaudeCodeProcessError,
@@ -279,7 +287,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       }
       this.#process = process;
       this.#processReady?.resolve(process);
-      const { abandonedBackgroundWork } = await process.execute(
+      const { followUpFailed } = await process.execute(
         claudeCodeInput(request),
         (message, terminal) => this.#enqueue(message, terminal),
         context.signal,
@@ -287,10 +295,9 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       await this.#eventTail;
       if (this.#providerFailure) throw this.#providerFailure;
       if (!this.#terminal) throw protocolError("Claude Code exited without a result message");
-      return {
-        ...claudeCodeRunResult(this.#terminal, this.#assistantError),
-        ...(abandonedBackgroundWork ? { abandonedBackgroundWork } : {}),
-      };
+      const result = claudeCodeRunResult(this.#terminal, this.#assistantError);
+      if (!followUpFailed || result.status !== "failed") return result;
+      return answeredWithFollowUpFailure(result);
     } catch (error) {
       if (context.signal.aborted) throw error;
       logger.debug({ code: "provider_run_failed", error: String(error) }, "Claude Code provider run failed");
@@ -384,6 +391,10 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     } catch (error) {
       throw new AgentRuntimeError("run_mismatch", "Claude Code did not accept the steer input", { cause: error });
     }
+  }
+
+  protected override async tellProviderAboutBackgroundWork(text: string): Promise<void> {
+    await this.#process?.notice?.(text);
   }
 
   protected override async abortProvider(_request: AgentAbortRequest): Promise<void> {
@@ -539,6 +550,17 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     }
     if (type === "result") {
       await this.#handleResult(message, terminal);
+      return;
+    }
+    if (type === CLAUDE_CODE_BACKGROUND_WORK_FRAME) {
+      await this.requireProviderContext().emit({
+        type: "background_work_changed",
+        items: message.items as readonly AgentBackgroundWorkItem[],
+      });
+      return;
+    }
+    if (type === CLAUDE_CODE_BACKGROUND_FINISHED_FRAME) {
+      await this.requireProviderContext().emit(backgroundWorkFinished(message));
       return;
     }
     await this.#emitProviderEvent(message);
@@ -1371,4 +1393,16 @@ function toJsonValue(value: unknown): JsonValue {
 
 function requireString(value: unknown, message: string, allowEmpty = false): string {
   return requireProtocolString(value, message, allowEmpty, 8 * 1024 * 1024);
+}
+
+/** Claude Code's `killed` and `stopped` both mean something stopped the task; anything unrecognized is not a success. */
+function backgroundWorkFinished(frame: Readonly<Record<string, unknown>>): AgentProviderRunEvent {
+  const status = frame.status === "completed" ? "completed" : frame.status === "failed" ? "failed" : "stopped";
+  return {
+    type: "background_work_finished",
+    id: requireString(frame.id, "Claude Code background task has no id"),
+    status,
+    ...(typeof frame.detail === "string" ? { detail: frame.detail } : {}),
+    ...(typeof frame.outputPath === "string" ? { outputPath: frame.outputPath } : {}),
+  };
 }

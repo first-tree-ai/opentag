@@ -66,6 +66,7 @@ import {
   AgentTurnRunner,
 } from "./agent-turn-runner.js";
 import { AgentWorkspaceManager } from "./agent-workspace.js";
+import { BackgroundWorkLedgers } from "./background-work-ledger.js";
 import { ChannelActivityStore } from "./channel-idle-compaction.js";
 import { ClientRuntime, type ClientRuntimeOptions } from "./client-runtime.js";
 import { ContextTreeManager, resolveContextTreePackage } from "./context-tree.js";
@@ -833,7 +834,18 @@ export async function createClientRuntime(
   await providerCliTurnPlans.recover();
   const proofManager = new SessionCliProofManager(options.home);
   const skills = createSkillSyncManager(options, moduleLogger("skills"));
+  const backgroundWork = new BackgroundWorkLedgers(
+    options.home,
+    /* v8 ignore start -- only logs; the ledger's failure handling has its own tests. */
+    (error) =>
+      moduleLogger("background-work").warn(
+        { code: "BACKGROUND_WORK_LEDGER_FAILED", error: String(error) },
+        "Background work ledger could not be updated",
+      ),
+    /* v8 ignore stop */
+  );
   const runtimeManager = new SessionRuntimeManager({
+    backgroundWork,
     environment: sourceEnvironment,
     bindingStore,
     cliCommand: options.cliCommand ?? "opentag",
@@ -888,6 +900,7 @@ export async function createClientRuntime(
   let runner: AgentTurnRunner;
   const sessionMessageInbox = new SessionMessageInbox({
     admission,
+    backgroundWork,
     channelActivity,
     cliCommand: options.cliCommand ?? "opentag",
     /* v8 ignore start -- late-bound adapter; the AgentTurnRunner methods have their own tests. */
@@ -946,6 +959,7 @@ export async function createClientRuntime(
     onRecorded: (sessionId, turnId) => turnRetries.remove(sessionId, turnId),
   });
   runner = new AgentTurnRunner({
+    backgroundWork,
     bindingStore,
     channelActivity,
     connection,

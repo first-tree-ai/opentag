@@ -12,7 +12,7 @@ import {
   SESSION_RUN_OUTCOME_NOTICE_HEADER,
 } from "@opentag/shared";
 import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import postgres from "postgres";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin } from "../../admin/bootstrap.js";
@@ -474,7 +474,7 @@ describe("Session collaboration authority", () => {
       return { ...collaboration, child, grandchild: grandchild.session.id, stopEnded, childPlacement: placement };
     }
 
-    it("ends the Session for good without touching its descendants, and repeats harmlessly", async () => {
+    it("ends the Session and its descendants for good, with no notice for any of them, and repeats harmlessly", async () => {
       const fixture = await createFixture();
       try {
         const { service, source, child, grandchild, stopEnded } = await stopFixture(fixture);
@@ -483,40 +483,115 @@ describe("Session collaboration authority", () => {
           sessionId: child,
           execution: "stopped",
           alreadyStopped: false,
-          activeDescendantCount: 1,
+          stoppedDescendantCount: 1,
         });
-        expect(stopEnded).toHaveBeenCalledWith([
-          expect.objectContaining({ sessionId: child, computerKind: "local", creatorSessionId: source.sessionId }),
-        ]);
-        const [ended] = await fixture.database.select().from(sessions).where(eq(sessions.id, child));
-        expect(ended?.endedAt).toBeInstanceOf(Date);
+        const told = stopEnded.mock.calls[0]?.[0] ?? [];
+        expect(told.map(({ sessionId }) => sessionId).sort()).toEqual([child, grandchild].sort());
+        expect(told.find(({ sessionId }) => sessionId === grandchild)).toMatchObject({
+          computerKind: "local",
+          creatorSessionId: child,
+        });
+        const rows = await fixture.database
+          .select()
+          .from(sessions)
+          .where(inArray(sessions.id, [child, grandchild]));
+        expect(rows.map(({ endedAt }) => endedAt).every((at) => at instanceof Date)).toBe(true);
         const active = await fixture.sessions.listInternalSessions(source.sessionId, { recursive: true, limit: 10 });
-        expect(active.items.map((item) => item.sessionId)).toEqual([grandchild]);
-        expect(active.items[0]).not.toHaveProperty("stoppedAt");
+        expect(active.items).toEqual([]);
         const all = await fixture.sessions.listInternalSessions(source.sessionId, {
           recursive: true,
           limit: 10,
           includeStopped: true,
         });
         expect(all.items.map((item) => item.sessionId).sort()).toEqual([child, grandchild].sort());
-        expect(all.items.find((item) => item.sessionId === child)?.stoppedAt).toBe(ended?.endedAt?.toISOString());
-        expect(all.items.find((item) => item.sessionId === grandchild)).not.toHaveProperty("stoppedAt");
+        expect(all.items.every((item) => item.stoppedAt)).toBe(true);
+        // One notice at most for a tree, and here the caller is the creator: none at all.
         const notices = await fixture.database
           .select()
           .from(sessionMessages)
-          .where(eq(sessionMessages.id, sessionStoppedNoticeMessageId(child)));
+          .where(inArray(sessionMessages.id, [child, grandchild].map(sessionStoppedNoticeMessageId)));
         expect(notices).toEqual([]);
 
         await expect(
-          service.send({ messageId: randomUUID(), targetSessionId: child, message: "come back" }, source),
+          service.send({ messageId: randomUUID(), targetSessionId: grandchild, message: "come back" }, source),
         ).resolves.toMatchObject({ status: "rejected", code: "target_unavailable" });
         await expect(service.stop({ targetSessionId: child }, source)).resolves.toMatchObject({
           status: "stopped",
           alreadyStopped: true,
+          stoppedDescendantCount: 0,
         });
-        expect(stopEnded).toHaveBeenCalledTimes(2);
-        const [unchanged] = await fixture.database.select().from(sessions).where(eq(sessions.id, child));
-        expect(unchanged?.endedAt).toEqual(ended?.endedAt);
+        expect(stopEnded.mock.calls[1]?.[0]).toHaveLength(2);
+      } finally {
+        await fixture.sql.end();
+      }
+    });
+
+    it("does not stop a child because its parent's Run ended, even without completing", async () => {
+      const fixture = await createFixture();
+      try {
+        const { service, child, grandchild, stopEnded, childPlacement } = await stopFixture(fixture);
+        const [message] = await fixture.database
+          .select()
+          .from(sessionMessages)
+          .where(eq(sessionMessages.targetSessionId, child));
+        if (!message) throw new Error("Child message fixture was not created");
+        await service.notifyRunOutcome({
+          childSessionId: child,
+          messageId: message.id,
+          outcome: "timed_out",
+          reason: "turn_timeout",
+          source: {
+            computerId: fixture.computerId,
+            connectionInstanceId: fixture.connectionInstanceId,
+            placementGeneration: childPlacement.generation,
+          },
+        });
+        const rows = await fixture.database
+          .select()
+          .from(sessions)
+          .where(inArray(sessions.id, [child, grandchild]));
+        expect(rows.map(({ endedAt }) => endedAt)).toEqual([null, null]);
+        expect(stopEnded).not.toHaveBeenCalled();
+      } finally {
+        await fixture.sql.end();
+      }
+    });
+
+    it("tells only the target's creator, once, when an ancestor stops a tree below that creator", async () => {
+      const fixture = await createFixture();
+      try {
+        const { service, source, child, grandchild, childPlacement } = await stopFixture(fixture);
+        const greatGrandchild = await fixture.sessions.createInternalSessionWithMessage({
+          creatorSessionId: grandchild,
+          creatorInstallationId: fixture.installationId,
+          creatorConnectionInstanceId: fixture.connectionInstanceId,
+          creatorComputerId: fixture.computerId,
+          creatorPlacementGeneration: childPlacement.generation,
+          messageId: randomUUID(),
+          initialMessage: "deeper task",
+        });
+        await expect(service.stop({ targetSessionId: grandchild }, source)).resolves.toMatchObject({
+          status: "stopped",
+          stoppedDescendantCount: 1,
+        });
+        const header = SESSION_RUN_OUTCOME_NOTICE_HEADER;
+        const notices = (await fixture.database.select().from(sessionMessages)).filter(({ content }) =>
+          content.startsWith(header),
+        );
+        expect(notices).toHaveLength(1);
+        expect(notices[0]).toMatchObject({
+          id: sessionStoppedNoticeMessageId(grandchild),
+          sourceSessionId: source.sessionId,
+          targetSessionId: child,
+        });
+        expect(notices[0]?.content).toContain("The 1 descendant Session(s) below it were stopped with it.");
+        expect(greatGrandchild.session.id).not.toBe(child);
+        // Repeating cannot add a notice, or conflict with the first: its text does not depend on what is left.
+        await service.stop({ targetSessionId: grandchild }, source);
+        const again = (await fixture.database.select().from(sessionMessages)).filter(({ content }) =>
+          content.startsWith(header),
+        );
+        expect(again).toHaveLength(1);
       } finally {
         await fixture.sql.end();
       }
@@ -545,7 +620,7 @@ describe("Session collaboration authority", () => {
         const before = frames.length;
         await expect(service.stop({ targetSessionId: grandchild }, source)).resolves.toMatchObject({
           status: "stopped",
-          activeDescendantCount: 0,
+          stoppedDescendantCount: 0,
         });
         const [notice] = await fixture.database
           .select()

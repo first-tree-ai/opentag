@@ -52,7 +52,7 @@ export function registerSessionCommand(program: Command): void {
   session
     .command("stop")
     .description(
-      "Stop an internal Session this Session created, directly or through its children: for good, without its cooperation",
+      "Stop an internal Session this Session created, directly or through its children, and all Sessions below it: for good, without their cooperation",
     )
     .argument("<target-session-id>", "internal Session ID")
     .option("--json", "print JSON")

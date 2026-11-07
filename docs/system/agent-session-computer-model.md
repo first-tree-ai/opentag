@@ -45,7 +45,9 @@ pair, the latest message activity and `descendant_active`, which is defined as
 `descendant.ended_at is null`. The transaction that ends a Session writes both
 facts, so the pair never disagrees: an ended descendant is inactive in every row
 that names it as the descendant, including the rows of its own ancestors. The
-flag describes the descendant only — ending an ancestor does not change it.
+flag describes the descendant only — ending an ancestor does not change it. `session stop` ends the descendants as
+well, so their own rows go inactive because they ended, in the same transaction; see
+[Internal Session collaboration](messaging/internal-session-collaboration.md#stopping-an-internal-session).
 
 ## Execution and placement
 

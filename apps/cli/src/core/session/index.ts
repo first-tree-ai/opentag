@@ -208,8 +208,8 @@ export function formatSessionStopResult(result: SessionCliStopResponse): string 
     ...(result.execution === "not_interrupted"
       ? ["Its Client is too old to interrupt a Run: the running Run continues until it ends."]
       : []),
-    ...(result.activeDescendantCount
-      ? [`${result.activeDescendantCount} descendant Session(s) keep running; stop them separately.`]
+    ...(result.stoppedDescendantCount
+      ? [`${result.stoppedDescendantCount} descendant Session(s) were stopped with it.`]
       : []),
   ];
   return [fields, ...notes].join("\n");

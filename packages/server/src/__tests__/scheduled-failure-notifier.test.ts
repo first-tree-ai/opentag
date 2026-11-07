@@ -16,7 +16,12 @@ import {
 import { FeedbackProviderError } from "../services/im/im-feedback-messenger.js";
 import type { ScheduleClock } from "../services/schedules/index.js";
 import { ScheduledFailureNotifier, ScheduleScheduler } from "../services/schedules/index.js";
-import { scheduledMissKind } from "../services/schedules/scheduled-failure-notifier.js";
+import {
+  renderMiss,
+  renderRunFailure,
+  type ScheduledOccurrence,
+  scheduledMissKind,
+} from "../services/schedules/scheduled-failure-notifier.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 /*
@@ -176,11 +181,11 @@ describe("a scheduled Run that failed", () => {
     const [target, text, requestId] = h.post.mock.calls[0] as unknown as [Record<string, unknown>, string, string];
     expect(target).toMatchObject({ bindingId: value.bindingId, channelId: "oc_channel", threadKey: null });
     expect(requestId).not.toBe(messageId);
-    expect(text).toContain("failed before finishing");
-    expect(text).toContain("Some of its work may already have happened");
+    expect(text).toContain("The model service is temporarily unavailable, so the task didn't finish.");
+    expect(text).toContain("Some operations may already have run");
     expect(text).toContain("2026-09-28 09:00:00 +08:00 (Asia/Shanghai)");
-    expect(text).toContain("Code: provider_unavailable");
-    expect(text).toContain(`Details: ${PUBLIC_URL}/`);
+    expect(text).not.toContain("provider_unavailable");
+    expect(text).toMatch(/\[View details\]\(https:\/\/opentag\.example\.com\/agents\/[^)]+\?schedule=[^)]+\)$/u);
     // Schedule names are untrusted: no provider mention syntax survives.
     expect(text).not.toMatch(/<at|<\/at>/u);
   });
@@ -192,8 +197,8 @@ describe("a scheduled Run that failed", () => {
     await h.notifier.notifyRunOutcome(report(value, messageId, { outcome: "timed_out", reason: "turn_timeout" }));
     await h.notifier.notifyRunOutcome(report(value, messageId, { outcome: "unknown", reason: "turn_state_unknown" }));
     const texts = h.post.mock.calls.map((call) => (call as unknown as [unknown, string])[1]);
-    expect(texts[0]).toContain("reached its maximum Run duration");
-    expect(texts[1]).toContain("its result is unknown");
+    expect(texts[0]).toContain("This task hit its time limit");
+    expect(texts[1]).toContain("We can't confirm whether the task finished.");
 
     h.post.mockClear();
     await expect(
@@ -324,6 +329,51 @@ describe("a scheduled Run that failed", () => {
     } as never);
     await expect(h.notifier.notifyRunOutcome(report(value, messageId))).resolves.toBe("notified");
     expect(h.post.mock.calls[0]?.[0 as never]).toMatchObject({ replyToExternalId: "om_latest" });
+  });
+});
+
+describe("the failure message's wording", () => {
+  const occurrence = (overrides: Partial<ScheduledOccurrence> = {}): ScheduledOccurrence => ({
+    agentId: "agent",
+    name: "Hourly check",
+    prompt: "Check the build.",
+    scheduleId: "schedule",
+    scheduledFor: T0.toISOString(),
+    targetSessionId: "session",
+    timezone: "UTC",
+    ...overrides,
+  });
+
+  it("links the schedule in each provider's syntax and shows no raw URL or code", () => {
+    const url = `${PUBLIC_URL}/agents/agent?schedule=schedule`;
+    const slack = renderMiss(occurrence(), "missed", PUBLIC_URL, "slack");
+    const feishu = renderRunFailure(occurrence(), "failed", "provider_quota_exceeded", PUBLIC_URL, "feishu");
+    expect(slack.endsWith(`<${url}|View details>`)).toBe(true);
+    expect(feishu.endsWith(`[View details](${url})`)).toBe(true);
+    expect(feishu).not.toContain("provider_quota_exceeded");
+    expect(feishu.split("\n\n")).toHaveLength(3);
+  });
+
+  it("follows the language of the schedule's task", () => {
+    const zh = occurrence({ prompt: "检查构建" });
+    expect(renderRunFailure(zh, "failed", "provider_unavailable", PUBLIC_URL, "feishu")).toContain(
+      "模型服务暂时不可用，任务没有完成。",
+    );
+    expect(renderRunFailure(zh, "timed_out", "x", PUBLIC_URL, "feishu")).toContain("超过了时间上限");
+    expect(renderMiss(zh, "missed", PUBLIC_URL, "slack")).toContain("定时任务“Hourly check”");
+    expect(renderMiss(zh, "unconfirmed", PUBLIC_URL, "slack")).toContain("可能没有运行。");
+    expect(renderMiss(zh, "disabled", PUBLIC_URL, "feishu")).toContain("[查看详情](");
+  });
+
+  it("keeps link and mention syntax in a schedule name inert, leaving only the details link", () => {
+    const name = 'x [click](http://evil.example) <http://evil.example|click> <at user_id="all">y</at> <!channel>';
+    const feishu = renderMiss(occurrence({ name }), "missed", PUBLIC_URL, "feishu");
+    const slack = renderMiss(occurrence({ name }), "missed", PUBLIC_URL, "slack");
+    expect(feishu.match(/\]\(/gu)).toHaveLength(1);
+    expect(feishu).toContain("［click］(http://evil.example)");
+    expect(slack.match(/</gu)).toHaveLength(1);
+    expect(feishu).not.toContain("<at");
+    expect(slack).not.toContain("<!channel>");
   });
 });
 
@@ -514,8 +564,10 @@ describe("a scheduled occurrence that never ran", () => {
     await occurrence(scheduler, 0);
     expect(h.post).toHaveBeenCalledOnce();
     const text = (h.post.mock.calls[0] as unknown as [unknown, string])[1];
-    expect(text).toContain('Scheduled task "Hourly check" did not run. The Agent never received it');
-    expect(text).toContain("Code: configuration_unsupported");
+    expect(text).toContain('Scheduled task "Hourly check" (scheduled for ');
+    expect(text).toContain("didn't run.");
+    expect(text).toContain("The Agent never received it, so no operations were run");
+    expect(text).not.toContain("configuration_unsupported");
     await scheduler.stop();
   });
 
@@ -571,7 +623,7 @@ describe("a scheduled occurrence that never ran", () => {
 
     dispatch.mockRejectedValueOnce(new Error("boom"));
     await occurrence(scheduler, 1);
-    expect((h.post.mock.calls[1] as unknown as [unknown, string])[1]).toContain("Code: dispatch_failed");
+    expect((h.post.mock.calls[1] as unknown as [unknown, string])[1]).toContain("may not have run");
     await scheduler.stop();
   });
 
@@ -586,7 +638,7 @@ describe("a scheduled occurrence that never ran", () => {
     await new Promise((resolve) => setImmediate(resolve));
     await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce());
     expect(dispatch).not.toHaveBeenCalled();
-    expect((h.post.mock.calls[0] as unknown as [unknown, string])[1]).toContain("Code: late");
+    expect((h.post.mock.calls[0] as unknown as [unknown, string])[1]).toContain("didn't run.");
     await scheduler.stop();
   });
 
@@ -614,7 +666,6 @@ describe("a scheduled occurrence that never ran", () => {
     await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce());
     const text = (h.post.mock.calls[0] as unknown as [unknown, string])[1];
     expect(text).toContain("the schedule has been turned off");
-    expect(text).toContain("Code: invalid_schedule");
     expect(text).toContain(`${T0.toISOString()} (UTC)`);
     expect(dispatch).not.toHaveBeenCalled();
     await scheduler.stop();
@@ -717,12 +768,13 @@ describe("a scheduled occurrence that never ran", () => {
     const occurrenceFacts = {
       agentId: value.agentId,
       name: "Hourly check",
+      prompt: "Check the build.",
       scheduleId: randomUUID(),
       scheduledFor: T0.toISOString(),
       targetSessionId: value.sessionId,
       timezone: "UTC",
     };
-    const input = { occurrence: occurrenceFacts, kind: "missed" as const, code: "late", requestId: randomUUID() };
+    const input = { occurrence: occurrenceFacts, kind: "missed" as const, requestId: randomUUID() };
     await h.notifier.notifyMissed(input, new AbortController().signal);
     expect(h.post).toHaveBeenCalledTimes(3);
     expect(h.logger.warn).toHaveBeenCalledWith(
@@ -752,6 +804,7 @@ describe("a scheduled occurrence that never ran", () => {
     const occurrenceFacts = {
       agentId: value.agentId,
       name: "Hourly check",
+      prompt: "Check the build.",
       scheduleId: randomUUID(),
       scheduledFor: T0.toISOString(),
       targetSessionId: internalId,
@@ -759,7 +812,7 @@ describe("a scheduled occurrence that never ran", () => {
     };
     for (const kind of ["missed", "disabled"] as const) {
       await h.notifier.notifyMissed(
-        { occurrence: occurrenceFacts, kind, code: "target_invalid", requestId: randomUUID() },
+        { occurrence: occurrenceFacts, kind, requestId: randomUUID() },
         new AbortController().signal,
       );
     }

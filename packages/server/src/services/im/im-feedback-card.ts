@@ -64,7 +64,7 @@ function cardActions(
 }
 
 /** The link stays in the text so readback can match the exact details URL on both providers. */
-function detailsLink(provider: FeedbackTarget["provider"], url: string, language: FeedbackLanguage): string {
+export function detailsLink(provider: FeedbackTarget["provider"], url: string, language: FeedbackLanguage): string {
   const label = FEEDBACK_LABELS.details[language];
   return provider === "slack" ? `<${url}|${label}>` : `[${label}](${url})`;
 }

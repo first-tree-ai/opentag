@@ -94,8 +94,12 @@ A scheduled message goes to the Agent only and posts nothing in IM when it start
 ([#1352](https://github.com/first-tree-ai/opentag/issues/1352)). It has no sender and no native input, so neither the
 sender notice nor a feedback target can carry its failure. This section covers a visible target; for an internal Session, see
 [Schedules on an internal Session](internal-session-collaboration.md#schedules-on-an-internal-session). The Server instead posts one plain message from the Session's
-Bot in the Session's own chat or thread, with the task name, scheduled time, stable code, and schedule details link. It
-stores no IM feedback state and adds no column.
+Bot in the Session's own chat or thread. It has the same shape as other [failure messages](#failure-messages): what
+happened with the task name and scheduled time, whether operations ran, what to do next, and a clickable link to the schedule.
+Stable codes stay out of the message; the schedule page shows the reason. A schedule has no sender, so the language follows
+its task text by the same rule. Brackets in the task name are replaced with lookalikes, so a name can't carry a mention or a
+disguised link; a bare URL in a name can still be linked by Feishu, but it shows its real address. The Server stores no IM
+feedback state for this and adds no column.
 
 | What happened | Example codes | Conversation hears |
 | --- | --- | --- |

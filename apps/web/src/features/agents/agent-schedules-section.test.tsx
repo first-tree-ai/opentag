@@ -138,6 +138,17 @@ describe("AgentSchedulesSection", () => {
     expect(screen.queryByText(/^Next /)).toBeNull();
   });
 
+  it("names the internal Session a schedule belongs to, in the row and in its details", async () => {
+    const item = schedule({ target: { ...schedule().target, internal: true } });
+    vi.spyOn(browserApi, "agentSchedules").mockResolvedValue({ items: [summaryOf(item)], nextCursor: null });
+    vi.spyOn(browserApi, "agentSchedule").mockResolvedValue(item);
+    mount();
+    expect(await screen.findByText(`Internal Session ${TARGET_ID.slice(0, 8)}`)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Daily check" }));
+    expect(await screen.findByText(`Internal Session ${TARGET_ID}`)).toBeTruthy();
+    expect(screen.queryByText("Feishu · thread")).toBeNull();
+  });
+
   it("keeps the full task behind the Account detail read", async () => {
     const item = schedule();
     vi.spyOn(browserApi, "agentSchedules").mockResolvedValue({ items: [summaryOf(item)], nextCursor: null });

@@ -11,6 +11,7 @@ import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstrap.js";
 import {
+  agentSchedules,
   agents,
   computers,
   imBindings,
@@ -254,6 +255,46 @@ describe("SessionService with the unit database", () => {
         create,
       };
     }
+
+    it("stops the schedules of the target and its whole tree with them, and nobody else's", async () => {
+      const { service, root, child, grandchild, authority, create } = await tree();
+      const greatGrandchild = (await create(grandchild)).session.id;
+      const sibling = (await create(root)).session.id;
+      const insert = (targetSessionId: string) =>
+        db.database
+          .insert(agentSchedules)
+          .values({
+            agentId: fixture.agentId,
+            targetSessionId,
+            name: "check",
+            prompt: "check",
+            schedule: { kind: "every", intervalSeconds: 3600, anchorAt: "2026-11-07T00:00:00.000Z" },
+            timezone: "UTC",
+            nextTriggerAt: new Date("2026-11-07T01:00:00.000Z"),
+          })
+          .returning({ id: agentSchedules.id })
+          .then(([row]) => row?.id as string);
+      const ofChild = await insert(child);
+      const ofGrandchild = await insert(grandchild);
+      const ofGreatGrandchild = await insert(greatGrandchild);
+      const ofRoot = await insert(root);
+      const ofSibling = await insert(sibling);
+      await service.stopInternalSession({ ...authority(root), targetSessionId: child });
+      const rows = await db.database.select().from(agentSchedules);
+      const row = (id: string) => rows.find((candidate) => candidate.id === id);
+      expect(row(ofChild)).toMatchObject({ enabled: false, nextTriggerAt: null, revision: 2 });
+      expect(row(ofGrandchild)).toMatchObject({ enabled: false, nextTriggerAt: null, revision: 2 });
+      expect(row(ofGreatGrandchild)).toMatchObject({ enabled: false, nextTriggerAt: null, revision: 2 });
+      expect(row(ofRoot)).toMatchObject({ enabled: true, revision: 1 });
+      expect(row(ofSibling)).toMatchObject({ enabled: true, revision: 1 });
+      // A repeated stop finds nothing left to change.
+      await service.stopInternalSession({ ...authority(root), targetSessionId: child });
+      const again = await db.database
+        .select()
+        .from(agentSchedules)
+        .where(inArray(agentSchedules.id, [ofChild, ofGrandchild, ofGreatGrandchild]));
+      expect(again.map(({ revision }) => revision)).toEqual([2, 2, 2]);
+    });
 
     it("ends the target and its whole tree for good, leaves the rest alone, and repeats harmlessly", async () => {
       const { service, root, child, grandchild, authority, create } = await tree();

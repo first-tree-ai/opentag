@@ -182,6 +182,14 @@ Needs a real Claude Code: the Lab's scripted Claude does not start background ta
 2. Send it another message. The transcript shows the Claude Code task notification and then the message, followed by an
    assistant reply, not `No response requested.`, and the record `succeeded` only after that reply.
 
+## Schedules on an internal Session
+
+1. Have an internal Session run `opentag agent self schedule create`. The result's `target` is that Session, with
+   `internal: true`. Web lists it as "Internal Session" with a short ID.
+2. When it fires, the message runs in that Session and nothing is posted to IM.
+3. Make a scheduled Run fail. Its creator gets one Run outcome notice, and IM gets nothing.
+4. Run `opentag session stop` from its creator. The schedule is off, and nothing fires afterwards.
+
 ## Steered Session messages
 
 1. Leave `OPENTAG_RUNTIME_CREDENTIAL_MODE` unset (the default Local credential mode). While a visible Session's IM Turn

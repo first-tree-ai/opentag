@@ -208,6 +208,73 @@ describe("SessionMessageInbox", () => {
     },
   );
 
+  describe("a completed Run whose success cannot be written", () => {
+    function failingSuccess(result: Record<string, unknown>) {
+      const store = new MemoryRuntimeDurabilityStore();
+      const logger = { warn: vi.fn() };
+      const onRunOutcome = vi.fn();
+      const prompt = vi.fn(async () => ({ runId: "run", status: "completed" as const, output: [], ...result }));
+      const make = (persistence: Pick<MemoryRuntimeDurabilityStore, "list" | "write">) =>
+        new SessionMessageInbox({
+          admission: new AdmissionController(),
+          credentialEnvironment: credentialEnvironment(),
+          imCredentialGrantVersion: () => 2,
+          sessionCollaborationVersion: () => 4,
+          logger,
+          onRunOutcome,
+          persistence,
+          reconciler: inboxReconciler(),
+          runtimeManager: {
+            ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+            sessionKind: vi.fn(() => "internal" as const),
+          },
+        });
+      const inbox = make({
+        list: store.list.bind(store),
+        write: async (record) => {
+          if (record.status === "succeeded") throw new Error("disk full");
+          await store.write(record);
+        },
+      });
+      return { store, logger, onRunOutcome, prompt, inbox, make };
+    }
+
+    it("reports no failure, ends here, and recovers as interrupted after a restart", async () => {
+      const { store, logger, onRunOutcome, prompt, inbox, make } = failingSuccess({});
+      const request = delivery();
+      await inbox.accept(request);
+      await inbox.settled();
+      expect(prompt).toHaveBeenCalledOnce();
+      expect(onRunOutcome).not.toHaveBeenCalled();
+      expect(inbox.getState(request.messageId)?.status).toBe("succeeded");
+      expect(inbox.pendingCount).toBe(0);
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ code: "SESSION_MESSAGE_PERSISTENCE_FAILED", status: "succeeded" }),
+        expect.any(String),
+      );
+      expect((await store.list("session-message"))[0]?.status).toBe("running");
+      inbox.stop();
+
+      const restarted = make(store);
+      await restarted.ready();
+      await restarted.settled();
+      await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(2));
+      restarted.stop();
+    });
+
+    it("still tells the sender about a later turn that failed", async () => {
+      const { onRunOutcome, inbox } = failingSuccess({
+        followUpFailure: { code: "provider_rate_limited", message: "429" },
+      });
+      await inbox.accept(delivery());
+      await inbox.settled();
+      expect(onRunOutcome).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ outcome: "unknown", reason: "provider_rate_limited" }),
+      );
+      inbox.stop();
+    });
+  });
+
   it("rejects a remembered scheduled delivery when the channel no longer has v3 capability", async () => {
     let version = 3;
     const prompt = vi.fn(async () => ({ runId: "run", status: "completed" as const, output: [] }));
@@ -3079,7 +3146,9 @@ describe("SessionMessageInbox", () => {
     expect(allText).not.toContain("Scheduled task started");
 
     const internal = buildSessionMessageInput(scheduled, "opentag", { sessionKind: "internal" });
-    expect(internal.items[1]?.text).toContain("No IM outbox is attached to this target Session.");
+    expect(internal.items[1]?.text).toContain(
+      "No IM outbox is attached to this target Session: this task can't post to IM.",
+    );
   });
 
   it("keeps visible callback context compact with shared CLI manuals in the system prompt", () => {

@@ -317,6 +317,30 @@ reconnects, and the Server answers an ended Session's entries with a cancellatio
 
 There is no Web entry point yet.
 
+## Schedules on an internal Session
+
+An internal Session can create a schedule with `opentag agent self schedule create`. Every schedule pins the Session that
+created it as its fixed target, and nothing in the request can name another one, so a Session can only schedule itself. A
+schedule created from an internal Session before this rule keeps its visible target.
+
+- **Delivery.** An occurrence reaches the Session as a scheduled message, through the same path as a visible target. It has no
+  IM outbox: a scheduled Run reports with `opentag session send`, like any other Run of that Session.
+- **Stopping.** `session stop` turns off the target's schedules in the transaction that ends it, and they can't be resumed.
+  Any other end of a Session, such as a disabled binding, is found at the next occurrence, which turns the schedule off.
+  The Agent's schedule commands are unchanged, so any of its Sessions can list, pause or delete a schedule, and each
+  schedule shows its target Session.
+- **A failed Run** notifies the target's creator, the [Run outcome notice](#run-outcome-notices) rule for a message with no
+  sender. The creator can be told again on every failed occurrence, as the conversation is for a visible target.
+- **A missed occurrence** that never reached the Session, including one whose target has ended, notifies nobody and logs no
+  warning. It stays in the schedule's last run summary, and the Web shows it. The reason: there is no message for an
+  outcome notice to name, and a child offline overnight should not wake its creator.
+
+No schema change is involved: `agent_schedules.target_session_id` already references any Session. The API response adds
+`target.internal: true` and keeps `target.sessionKind` as the Session's conversation scope, so released CLIs and open Web
+tabs drop the unknown key and still read the whole list, following
+[Response compatibility](../server-client-boundary.md#response-compatibility). Until they upgrade or reload, they show
+such a schedule as that channel or thread.
+
 ## Stopping a parent stops its children
 
 > **Planned — not yet implemented.** Tracking: #1304

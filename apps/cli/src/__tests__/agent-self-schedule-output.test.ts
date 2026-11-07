@@ -1,6 +1,10 @@
 import type { AgentSchedule } from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FULL_SCHEDULE_PRESENTATION } from "../core/agent/self-schedule.js";
+import {
+  FULL_SCHEDULE_PRESENTATION,
+  formatAgentSchedule,
+  formatAgentScheduleList,
+} from "../core/agent/self-schedule.js";
 import { presentCommand } from "../core/command/policy.js";
 
 const id = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
@@ -54,6 +58,24 @@ function present(value: AgentSchedule, json: boolean): string {
   );
   return stdout.join("");
 }
+
+describe("schedule list output", () => {
+  it("names the Session each schedule belongs to", () => {
+    const output = formatAgentScheduleList({ items: [schedule], nextCursor: null } as never);
+    expect(output.split("\n")[0]).toContain("TARGET SESSION");
+    expect(output).toContain(schedule.target.sessionId);
+  });
+});
+
+describe("one schedule's output", () => {
+  it("says where it fires, and doesn't present an internal Session's chat as its target", () => {
+    expect(formatAgentSchedule(schedule)).toContain(`Target: ${schedule.target.provider} ${schedule.target.channelId}`);
+    const output = formatAgentSchedule({ ...schedule, target: { ...schedule.target, internal: true } });
+    expect(output).toContain("Target: this internal Session (no IM outlet)");
+    expect(output).toContain(`Target Session: ${schedule.target.sessionId}`);
+    expect(output).not.toContain(schedule.target.channelId);
+  });
+});
 
 describe("full Schedule output", () => {
   it("prints the stored prompt verbatim as JSON, so it can be written back", () => {

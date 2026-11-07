@@ -89,6 +89,9 @@ export interface AgentRuntimeState extends RuntimeSnapshotHashes {
 
 export interface SessionRuntimeState extends RuntimeSnapshotHashes {
   agentId: string;
+  /** The Agent configuration this Session prepared on, which a newer one doesn't replace until it prepares again. */
+  agentRevisionId: string;
+  agentRevisionSequence: number;
   placementGeneration: number;
   provider: string;
   revisionId: string;
@@ -260,22 +263,23 @@ export class SessionReconciler {
     ) {
       return "session_binding_conflict";
     }
+    // Against what this Session prepared: other Sessions may already run a newer Agent configuration.
     if (
-      runtime.revision.agent.sequence < agent.revisionSequence ||
+      runtime.revision.agent.sequence < session.agentRevisionSequence ||
       runtime.revision.session.sequence < session.revisionSequence
     ) {
       return "stale_configuration";
     }
     if (
-      runtime.revision.agent.sequence > agent.revisionSequence ||
+      runtime.revision.agent.sequence > session.agentRevisionSequence ||
       runtime.revision.session.sequence > session.revisionSequence
     ) {
       return "session_not_ready";
     }
     if (
-      runtime.revision.agent.id !== agent.revisionId ||
+      runtime.revision.agent.id !== session.agentRevisionId ||
       runtime.revision.session.id !== session.revisionId ||
-      hashes.agentConfigHash !== agent.agentConfigHash ||
+      hashes.agentConfigHash !== session.agentConfigHash ||
       hashes.sessionConfigHash !== session.sessionConfigHash ||
       hashes.effectiveSnapshotHash !== session.effectiveSnapshotHash
     ) {
@@ -402,16 +406,16 @@ export class SessionReconciler {
         return this.#result(request, "busy", "active_turn");
       }
       const snapshot = request.runtime;
-      const existingAgent = this.#agents.get(request.agentId);
-      if (!snapshot || !existingAgent) return this.#result(request, "busy", "active_turn");
+      if (!snapshot) return this.#result(request, "busy", "active_turn");
       const hashes = computeRuntimeSnapshotHashes(snapshot);
+      // A running Session finishes on the Agent configuration it started with.
       const agentComparison = compareRevision(
         snapshot.revision.agent.sequence,
         snapshot.revision.agent.id,
         hashes.agentConfigHash,
-        existingAgent.revisionSequence,
-        existingAgent.revisionId,
-        existingAgent.agentConfigHash,
+        existingSession.agentRevisionSequence,
+        existingSession.agentRevisionId,
+        existingSession.agentConfigHash,
       );
       if (agentComparison === "stale") return this.#result(request, "rejected", "stale_configuration");
       if (agentComparison === "conflict") return this.#result(request, "rejected", "configuration_conflict");
@@ -466,11 +470,10 @@ export class SessionReconciler {
         existingAgent.revisionId,
         existingAgent.agentConfigHash,
       );
-      if (comparison === "stale") return this.#result(request, "rejected", "stale_configuration");
+      // Other running Sessions don't hold back a newer configuration: they keep what they started with.
+      // A resumed Turn does the same, so its pinned configuration may be older than the Agent's latest.
+      if (comparison === "stale" && !resumeTurn) return this.#result(request, "rejected", "stale_configuration");
       if (comparison === "conflict") return this.#result(request, "rejected", "configuration_conflict");
-      if (comparison === "newer" && this.#agentIsActive(request.agentId)) {
-        return this.#result(request, "busy", "agent_configuration_busy");
-      }
     }
 
     if (existingSession && request.placementGeneration === existingSession.placementGeneration) {
@@ -519,6 +522,8 @@ export class SessionReconciler {
       ...hashes,
       agentId: request.agentId,
       placementGeneration: request.placementGeneration,
+      agentRevisionId: snapshot.revision.agent.id,
+      agentRevisionSequence: snapshot.revision.agent.sequence,
       provider: snapshot.provider,
       revisionId: snapshot.revision.session.id,
       revisionSequence: snapshot.revision.session.sequence,
@@ -594,13 +599,6 @@ export class SessionReconciler {
       status,
       ...(reason ? { reason } : {}),
     };
-  }
-
-  #agentIsActive(agentId: string): boolean {
-    for (const sessionId of this.#activities.keys()) {
-      if (this.#sessions.get(sessionId)?.agentId === agentId) return true;
-    }
-    return false;
   }
 
   #trimRequests(): void {

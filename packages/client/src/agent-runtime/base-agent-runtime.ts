@@ -146,7 +146,7 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
       // Only an explicit probe that reports the input never started may refuse it for redelivery. No probe
       // means the Provider owns the input, and started input belongs to the Run that just settled.
       if (custody && !custody.started()) {
-        throw new AgentRuntimeError("run_mismatch", "the active run completed before steer was accepted");
+        throw new AgentRuntimeError("steer_not_sent", "the active run completed before steer was accepted");
       }
       return steerReceipt(active.promise, custody);
     }

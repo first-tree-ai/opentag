@@ -504,7 +504,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     if (!this.#promptAccepted) throw new AgentRuntimeError("run_mismatch", "there is no active Pi prompt");
     await this.#promptAccepted.promise;
     if (this.#nativeResources && this.#terminalClaimed) {
-      throw new AgentRuntimeError("run_mismatch", "Pi settled before steer was accepted");
+      throw new AgentRuntimeError("steer_not_sent", "Pi settled before steer was accepted");
     }
     const client = this.#client;
     /* v8 ignore next -- the client remains owned until the active Provider Run leaves executeRun. */

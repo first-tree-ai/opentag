@@ -36,7 +36,7 @@ Provider-specific configuration, binding, and protocol validation.
   (it may have begun, but the Run did not complete). Claude Code writes steer input to stdin, where the process can
   still exit before `command_lifecycle` reports it started, so it reports that start. Codex and Pi acknowledge steer
   over RPC without a per-input start signal; their input counts as possibly started. If the Run settles while the
-  Provider is accepting steer, only a Provider that reports the input never started may reject it (`run_mismatch`)
+  Provider is accepting steer, only a Provider that reports the input never started may reject it (`steer_not_sent`)
   for redelivery; otherwise the receipt reports the settled Run, so the caller never replays owned input.
 - The Base Runtime serializes and awaits event delivery before settling a Run.
 - Provider terminal ingress may be claimed before queued translation finishes;

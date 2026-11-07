@@ -927,9 +927,14 @@ describe("InterruptedWorkRecovery resume refusal", () => {
 describe("AgentTurnRunner steer refused after the Turn's result", () => {
   it.each([
     [
-      "the runtime refused it",
-      new AgentRuntimeError("run_mismatch", "Claude Code settled before steer was accepted"),
+      "the runtime refused it before sending",
+      new AgentRuntimeError("steer_not_sent", "Claude Code settled before steer was accepted"),
       "turn_not_running",
+    ],
+    [
+      "the provider took it and then settled, as Pi can",
+      new AgentRuntimeError("run_mismatch", "Pi settled before steer was accepted"),
+      "steer_state_unknown",
     ],
     [
       "a provider write failed",

@@ -360,7 +360,7 @@ describe("BaseAgentRuntime contract", () => {
       await run;
     };
     await expect(next.steer({ expectedRunId: "run-2", input: input("late") })).rejects.toMatchObject({
-      code: "run_mismatch",
+      code: "steer_not_sent",
     });
     await runtime.close();
     await next.close();

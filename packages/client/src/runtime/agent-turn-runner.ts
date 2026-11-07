@@ -1175,9 +1175,9 @@ const NO_TURN_RETRIES: NonNullable<AgentTurnRunnerOptions["retries"]> = {
   update: async () => undefined,
 };
 
-/** The runtime refused the steer itself. A wrapped cause means a provider write failed, which may have landed. */
+/** Only an explicit refusal proves the input had no effect: others can come after the provider took it. */
 function steerNeverStarted(error: unknown): boolean {
-  return error instanceof AgentRuntimeError && error.code === "run_mismatch" && error.cause === undefined;
+  return error instanceof AgentRuntimeError && error.code === "steer_not_sent";
 }
 
 function withRunTime(record: TurnRetryRecord, ranMs: number): TurnRetryRecord & { retryRanMs: number } {

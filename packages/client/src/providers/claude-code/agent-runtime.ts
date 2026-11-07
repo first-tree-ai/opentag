@@ -334,7 +334,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     this.#processReady ??= deferredProcess();
     const process = await this.#processReady.promise;
     if (!process?.steer || this.#terminalClaimed || this.#providerFailure)
-      throw new AgentRuntimeError("run_mismatch", "Claude Code settled before steer was accepted");
+      throw new AgentRuntimeError("steer_not_sent", "Claude Code settled before steer was accepted");
     try {
       return await process.steer({ ...claudeCodeUserMessage(request.input.items), uuid: randomUUID() });
     } catch (error) {

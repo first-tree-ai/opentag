@@ -26,11 +26,15 @@ function readyCandidate(row: DeliveryCandidate, context: DeliveryContext) {
   );
 }
 
+/** Whether this Computer's connected Client negotiated `runtime.sessionConfiguration`. */
+export type LocalSessionScoped = (computerId: string) => boolean;
+
 export function eligibleDeliveryCandidate(
   row: DeliveryCandidate,
   context: DeliveryContext | undefined,
   custody: DeliveryCustodySnapshot,
   targeted = false,
+  localSessionScoped: LocalSessionScoped = () => false,
 ): context is DeliveryContext & { computerId: string; computerKind: "local" | "cloud"; generation: number } {
   // A parked pending dispatch stays out of the work set; the scan excludes it in SQL as well.
   if (parkedDelivery(row)) return false;
@@ -57,6 +61,7 @@ export function eligibleDeliveryCandidate(
     sessionId: row.sessionId,
     agentId: context.agentId,
     computerKind: context.computerKind,
+    localSessionScoped: localSessionScoped(context.computerId),
   });
   const steer = canSteerCandidate(row, custody);
   return !other || !!steer;
@@ -71,10 +76,16 @@ export function needsPendingOrder(row: DeliveryCandidate, _context: DeliveryCont
 /** One bounded scan owns its cursor; occupancy is fresh each scan, metadata is only a hint. */
 export class ImDeliverySelector {
   readonly #cache = new Map<string, { context: DeliveryContext; expires: number }>();
+  readonly #localSessionScoped: LocalSessionScoped | undefined;
   #cursor: DeliveryCursor | undefined;
   #dueBefore: Date | undefined;
 
-  constructor(readonly database: DatabaseClient) {}
+  constructor(
+    readonly database: DatabaseClient,
+    localSessionScoped?: LocalSessionScoped,
+  ) {
+    this.#localSessionScoped = localSessionScoped;
+  }
 
   invalidate(sessionId?: string) {
     if (sessionId) this.#cache.delete(sessionId);
@@ -127,7 +138,7 @@ export class ImDeliverySelector {
     for (const row of rows) {
       if (!sessionId) this.#cursor = { time: row.cursorTime, id: row.id };
       const context = contexts.get(row.sessionId);
-      if (!eligibleDeliveryCandidate(row, context, custody, !!sessionId)) continue;
+      if (!eligibleDeliveryCandidate(row, context, custody, !!sessionId, this.#localSessionScoped)) continue;
       if (row.state === "pending" && row.dispatchRequestId === null && inboundPending.has(context.agentId)) continue;
       if (await this.#ordered(row, context, heads)) yield { row, context };
     }
@@ -172,6 +183,7 @@ export async function lockEligibleDelivery(
   expectedAgentId: string,
   now: Date,
   sessionId?: string,
+  localSessionScoped?: LocalSessionScoped,
 ) {
   const [fence] = await database.execute(
     sql`select pg_try_advisory_xact_lock(hashtextextended(${`im-agent-custody:${expectedAgentId}`}, 0)) as acquired`,
@@ -183,7 +195,10 @@ export async function lockEligibleDelivery(
   const contexts = await loadDeliveryContexts(database, [delivery.sessionId, ...rows.map((row) => row.sessionId)]);
   const context = contexts.get(delivery.sessionId);
   const custody = new DeliveryCustodySnapshot(rows, contexts);
-  if (!eligibleDeliveryCandidate(delivery, context, custody, !!sessionId) || context.agentId !== expectedAgentId)
+  if (
+    !eligibleDeliveryCandidate(delivery, context, custody, !!sessionId, localSessionScoped) ||
+    context.agentId !== expectedAgentId
+  )
     return undefined;
   if (
     delivery.state === "pending" &&

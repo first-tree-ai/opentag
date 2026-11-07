@@ -214,10 +214,10 @@ describe("session CLI", () => {
         sessionId: "s1",
         execution: "pending",
         alreadyStopped: true,
-        activeDescendantCount: 2,
+        stoppedDescendantCount: 2,
       }),
     ).toBe(
-      "status=stopped sessionId=s1 execution=pending alreadyStopped=true\nIts Computer did not confirm the stop; it is sent again when the Computer reconnects.\n2 descendant Session(s) keep running; stop them separately.",
+      "status=stopped sessionId=s1 execution=pending alreadyStopped=true\nIts Computer did not confirm the stop; it is sent again when the Computer reconnects.\n2 descendant Session(s) were stopped with it.",
     );
     expect(formatSessionStopResult({ status: "stopped", sessionId: "s1", execution: "not_interrupted" })).toContain(
       "too old to interrupt",

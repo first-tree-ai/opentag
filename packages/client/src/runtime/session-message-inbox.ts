@@ -11,6 +11,12 @@ import {
 import type { AgentInput, AgentRuntime, AgentSteerOutcome, AgentSteerReceipt } from "../agent-runtime/types.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import type { AdmissionController } from "./admission-controller.js";
+import {
+  beginChannelTurn,
+  type ChannelActivityStore,
+  endChannelTurn,
+  isChannelOutbox,
+} from "./channel-idle-compaction.js";
 import { ImCredentialEnvironmentError } from "./im-credential-environment-manager.js";
 import {
   buildContinuationNotice,
@@ -44,7 +50,12 @@ import {
   formatScheduleLocalTime,
   normalizeScheduleTaskPreview,
 } from "./scheduled-message-input.js";
-import { SessionMessageRun, sessionMessageOfRun, sessionMessageRunId } from "./session-message-run.js";
+import {
+  conversationIdentity,
+  SessionMessageRun,
+  sessionMessageOfRun,
+  sessionMessageRunId,
+} from "./session-message-run.js";
 import type { SessionReconciler } from "./session-reconciler.js";
 import type { SessionRuntimeManager } from "./session-runtime-manager.js";
 import { remainingBudgetMs } from "./turn-timeout.js";
@@ -73,6 +84,8 @@ export interface JoinableRuns {
 
 export interface SessionMessageInboxOptions {
   admission: AdmissionController;
+  /** Without one, Channel Sessions never compact on idle. */
+  channelActivity?: Pick<ChannelActivityStore, "beginTurn" | "recordActivity">;
   cliCommand?: string;
   credentialEnvironment: Pick<RuntimeCredentialEnvironmentManager, "cleanup" | "prepare"> &
     Partial<Pick<RuntimeCredentialEnvironmentManager, "mode" | "outboxContextForSession">>;
@@ -145,6 +158,7 @@ const MAX_STOPPED_PLACEMENTS = 1024;
 
 export class SessionMessageInbox {
   readonly #admission: AdmissionController;
+  readonly #channelActivity: SessionMessageInboxOptions["channelActivity"];
   readonly #cliCommand: string;
   readonly #credentialEnvironment: SessionMessageInboxOptions["credentialEnvironment"];
   readonly #turnPlan: SessionMessageInboxOptions["turnPlan"];
@@ -192,6 +206,8 @@ export class SessionMessageInbox {
   readonly #retryTimers = new Map<string, { cancel(): void }>();
   /** Steered messages waiting for the Run they joined to settle. */
   readonly #steerSettlements = new Set<Promise<void>>();
+  /** Steered messages whose outcome is being written: a later write must not put them back to `running`. */
+  readonly #settlingSteers = new Set<string>();
   /** This inbox's own Runs, which messages steer into like any joinable Run. */
   readonly #messageRuns = new Map<string, SessionMessageRun>();
   readonly #runningMessages = new Set<Promise<void>>();
@@ -200,6 +216,7 @@ export class SessionMessageInbox {
 
   constructor(options: SessionMessageInboxOptions) {
     this.#admission = options.admission;
+    this.#channelActivity = options.channelActivity;
     this.#cliCommand = options.cliCommand ?? "opentag";
     this.#credentialEnvironment = options.credentialEnvironment;
     this.#turnPlan = options.turnPlan;
@@ -337,14 +354,17 @@ export class SessionMessageInbox {
     } catch {
       this.#queuedTotal -= 1;
       this.#records.delete(key);
-      // A stop during this write already refuses the message for good; a disk failure is the lesser news.
-      const reason = this.#isStopped(request) ? "session_not_ready" : "provider_unavailable";
-      this.#remember(key, { hash, status: "rejected", reason });
       this.#logger.warn(
         { code: "SESSION_MESSAGE_PERSISTENCE_FAILED", messageId: request.messageId },
         "Session message persistence failed",
       );
-      return deliveryResult(request, "rejected", reason);
+      // A stop during this write already refuses the message for good; a disk failure is the lesser news.
+      if (this.#isStopped(request)) {
+        this.#remember(key, { hash, status: "rejected", reason: "session_not_ready" });
+        return deliveryResult(request, "rejected", "session_not_ready");
+      }
+      // A failed write says nothing about the message: not remembered, and a replay may succeed.
+      return deliveryResult(request, "rejected", "client_busy");
     }
     // A stop that began during this write must not queue it, and it never saw the capacity held here.
     if (this.#isStopped(request)) {
@@ -654,20 +674,23 @@ export class SessionMessageInbox {
     let record = this.#records.get(key);
     let receipt: AgentSteerReceipt;
     try {
-      receipt = await target.runtime.steer({
-        expectedRunId: runId,
-        // A message redelivered after an interruption says so: the Agent may have handled it already.
-        input: withContinuation(
-          buildSessionMessageInput(next.request, this.#cliCommand, target.turnContext, new Date(this.#now())),
-          record?.interruption,
-        ),
-      });
+      receipt = alreadyInConversation(record, runId, target.runtime)
+        ? JOINED_WITHOUT_INPUT
+        : await target.runtime.steer({
+            expectedRunId: runId,
+            // A message redelivered after an interruption says so: the Agent may have handled it already.
+            input: withContinuation(
+              buildSessionMessageInput(next.request, this.#cliCommand, target.turnContext, new Date(this.#now())),
+              record?.interruption,
+            ),
+          });
     } catch {
       joinable?.release(next.request, runId);
       return false;
     }
-    if (record) record = await this.#recordSteered(record, runId);
+    if (record) record = await this.#recordSteered(record, runId, receipt === JOINED_WITHOUT_INPUT);
     this.#remember(key, { hash: next.hash, status: "accepted" });
+    void receipt.inConversation?.then(() => this.#recordInConversation(key, runId, target.runtime));
     if (joinable) {
       if (record) this.#joinRun(record, next.hash);
       joinable.steered(next.request, runId, receipt);
@@ -675,6 +698,20 @@ export class SessionMessageInbox {
       this.#trackSteered(record, next.hash, receipt.outcome);
     }
     return true;
+  }
+
+  /** Best effort: without it a restart injects the message again with the notice, as for any unconfirmed steer. */
+  async #recordInConversation(key: string, runId: string, runtime: AgentRuntime): Promise<void> {
+    const record = this.#records.get(key);
+    const steerInConversation = conversationIdentity(runtime.binding);
+    if (!steerInConversation || this.#settlingSteers.has(key)) return;
+    if (record?.status !== "running" || record.joinedRunId !== runId) return;
+    await this.#persist({ ...record, steerInConversation }).catch(() =>
+      this.#logger.warn(
+        { code: "SESSION_MESSAGE_STEER_PERSISTENCE_FAILED", messageId: record.payload.messageId },
+        "A steered Session message's place in the conversation could not be recorded",
+      ),
+    );
   }
 
   #trackMessageRunTime(key: string): { finish(): Promise<number> } {
@@ -705,6 +742,7 @@ export class SessionMessageInbox {
   async #recordSteered(
     record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
     runId: string,
+    alreadyInRun: boolean,
   ): Promise<DurableWorkRecord<SessionMessageDeliveryRequestV3>> {
     try {
       // A restart before the joined Run settles recovers a `running` record like any interrupted Run.
@@ -714,6 +752,8 @@ export class SessionMessageInbox {
         interruption: undefined,
         joinedRunId: runId,
         retryRanMs: undefined,
+        // A new steer is unconfirmed again, whatever an earlier Run's conversation held.
+        ...(alreadyInRun ? {} : { steerInConversation: undefined }),
       });
     } catch {
       // The record stays `accepted` on disk, so a restart redelivers it; this process still settles it.
@@ -741,12 +781,14 @@ export class SessionMessageInbox {
 
   /**
    * A Turn's retries ran out at startup: the messages steered into it share its count, so they fail with
-   * it instead of running again. One whose failure cannot be written yet stays queued and is not run: the
+   * it instead of running again, unless the conversation it ended in does not hold them. One whose failure cannot be written yet stays queued and is not run: the
    * drain keeps trying before anything else. Never waits for that, so a full disk cannot hold up startup.
    */
-  async failJoinedRun(runId: string): Promise<void> {
+  async failJoinedRun(runId: string, conversation?: string): Promise<void> {
     for (const record of [...this.#records.values()]) {
       if (record.joinedRunId !== runId || record.status !== "retryable") continue;
+      // Confirmed in a conversation this Turn had left: it stays queued and runs on its own.
+      if (heldElsewhere(record, conversation)) continue;
       if (await this.#settleJoinedFailure(record.key)) continue;
       this.#failingJoined.add(record.key);
       // Not waiting for the Session to be prepared: nothing about failing it needs the Session.
@@ -755,9 +797,19 @@ export class SessionMessageInbox {
     }
   }
 
-  /** A joined message whose Turn ran out of retries never runs: it waits here for its failure to commit. */
+  /**
+   * A joined message whose Turn ran out of retries never runs: it waits here for its failure to commit. Nor
+   * does one already in the conversation of a Run that has ended: it takes that Run's outcome.
+   */
   async #holdFailingJoined(next: QueuedMessage): Promise<boolean> {
     const key = sessionMessageKey(next.request);
+    const record = this.#records.get(key);
+    const ended = record && endedRunOutcome(record, this.#joinedRun(record));
+    if (record && ended) {
+      await this.#settleSteered(record, next.hash, ended);
+      this.#dequeue(next.request.targetSessionId, next);
+      return true;
+    }
     if (!this.#failingJoined.has(key)) return false;
     if (!(await this.#settleJoinedFailure(key))) await this.#waitForReleaseOrSteerRetry();
     return true;
@@ -837,6 +889,19 @@ export class SessionMessageInbox {
    *   carry it, so it fails permanently.
    */
   async #settleSteered(
+    joined: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
+    hash: string,
+    outcome: AgentSteerOutcome,
+  ): Promise<void> {
+    this.#settlingSteers.add(joined.key);
+    try {
+      await this.#applySteerOutcome(joined, hash, outcome);
+    } finally {
+      this.#settlingSteers.delete(joined.key);
+    }
+  }
+
+  async #applySteerOutcome(
     joined: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
     hash: string,
     outcome: AgentSteerOutcome,
@@ -923,6 +988,7 @@ export class SessionMessageInbox {
     const key = `${next.request.targetSessionId}:${next.request.messageId}`;
     let current = this.#records.get(key);
     let credentialPrepared = false;
+    const channelTurn = { sessionId, channel: false };
     let preparedExecutionId: string | undefined;
     let turnPlanInput: ProviderCliTurnPlanPrepareInput | undefined;
     let phase = "runtime";
@@ -936,6 +1002,7 @@ export class SessionMessageInbox {
     let executionSignal: AbortSignal | undefined;
     let outcome: "completed" | "ended" | { retry: DurableWorkRecord<SessionMessageDeliveryRequestV3> } = "ended";
     let runTime: { finish(): Promise<number> } | undefined;
+    let ranIn: AgentRuntime | undefined;
     const settleRunTime = async () => {
       // Once per Run: a returned failure reaches this again on its way to the failure path.
       if (!runTime) return;
@@ -943,7 +1010,7 @@ export class SessionMessageInbox {
       runTime = undefined;
       // Recorded by the write that follows; the record may hold newer run time than `current`.
       const latest = this.#records.get(key) ?? current;
-      if (latest) current = withRunTime(latest, ranMs);
+      if (latest) current = { ...withRunTime(latest, ranMs), runConversation: conversationIdentity(ranIn?.binding) };
     };
     const ensureRunSignal = (): AbortSignal => {
       if (runSignal) return runSignal;
@@ -992,12 +1059,19 @@ export class SessionMessageInbox {
       runtimeSignal.throwIfAborted();
       const runtime = await this.#runtimeManager.ensureRuntime(sessionId, runtimeSignal);
       await runtime.waitForIdle();
+      ranIn = runtime;
       phase = "prompt";
       ensureRunSignal().throwIfAborted();
+      channelTurn.channel = isChannelOutbox(outboxContext);
       const context = turnContext(sessionKind, outboxContext);
       const result = await runtime.prompt({
         runId,
         allowedUnixSockets,
+        ...(await beginChannelTurn(
+          this.#channelActivity,
+          { ...channelTurn, retry: Boolean(continuation) },
+          this.#now(),
+        )),
         /*
          * The processing clock is sampled HERE — after the queue drain, admission reservation,
          * credential preparation, and `waitForIdle()` — so the Agent sees the actual processing
@@ -1031,6 +1105,7 @@ export class SessionMessageInbox {
     } finally {
       this.#runStops.delete(sessionId);
       timer?.cancel();
+      await endChannelTurn(this.#channelActivity, channelTurn, this.#now());
       await this.#cleanupTurnPlan(turnPlanInput);
       if (credentialPrepared) {
         await this.#credentialEnvironment.cleanup(sessionId, preparedExecutionId).catch(() => undefined);
@@ -1202,9 +1277,12 @@ export class SessionMessageInbox {
     }
     // Only now, with every record restored: a message fails with the Run it joined instead of running.
     for (const { record, hash } of waiting) {
-      if (this.#joinedRunFailed(record)) {
+      const ended = endedRunOutcome(record, this.#joinedRun(record), { atRestart: true });
+      if (ended === "interrupted") {
         const reason = recoverableFailure(record.interruption?.reason) ?? "daemon_crash";
         await this.#failTerminally(record, hash, "runtime", interruptedFailure(record.payload.requestId, reason));
+      } else if (ended) {
+        await this.#settleSteered(record, hash, ended);
       } else {
         this.#enqueue(record.payload, hash);
       }
@@ -1215,11 +1293,12 @@ export class SessionMessageInbox {
     }
   }
 
-  #joinedRunFailed(record: DurableWorkRecord<SessionMessageDeliveryRequestV3>): boolean {
+  /** The record of the message whose own Run this message joined, when it joined one. */
+  #joinedRun(
+    record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
+  ): DurableWorkRecord<SessionMessageDeliveryRequestV3> | undefined {
     const runMessageId = record.joinedRunId && sessionMessageOfRun(record.joinedRunId);
-    if (!runMessageId) return false;
-    const status = this.#records.get(`${record.payload.targetSessionId}:${runMessageId}`)?.status;
-    return status === "failed" || status === "dead-letter";
+    return runMessageId ? this.#records.get(`${record.payload.targetSessionId}:${runMessageId}`) : undefined;
   }
 
   /**
@@ -1583,6 +1662,51 @@ function backgroundWorkStoppedFailure(requestId: string): DurableFailure {
     message: "Background work this Run may have left behind stops when the Run ends",
   };
 }
+
+/**
+ * Whether a message is confirmed in some conversation other than this one. Every decision about a confirmed
+ * message and a Run goes through this: a Run in another conversation, or in none on record, never saw it.
+ */
+function heldElsewhere(
+  record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
+  conversation: string | undefined,
+): boolean {
+  return record.steerInConversation !== undefined && record.steerInConversation !== conversation;
+}
+
+function alreadyInConversation(
+  record: DurableWorkRecord<SessionMessageDeliveryRequestV3> | undefined,
+  runId: string,
+  runtime: AgentRuntime,
+): boolean {
+  return (
+    record?.steerInConversation !== undefined &&
+    record.joinedRunId === runId &&
+    !heldElsewhere(record, conversationIdentity(runtime.binding))
+  );
+}
+
+/**
+ * What an ended Run means for a message that joined it, when that decides the message:
+ * - Confirmed in another conversation: nothing. That Run never saw it, so it runs on its own.
+ * - Confirmed in the Run's conversation: the Run's outcome.
+ * - Not confirmed: it fails with a Run found failed at a restart, the Run it was steered into. Success proves
+ *   nothing about it, and a Run that fails while it waits to rejoin was never joined, so it runs on its own.
+ */
+function endedRunOutcome(
+  record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
+  run: DurableWorkRecord<SessionMessageDeliveryRequestV3> | undefined,
+  options: { atRestart?: boolean } = {},
+): AgentSteerOutcome | undefined {
+  if (!run || heldElsewhere(record, run.runConversation)) return undefined;
+  const confirmed = record.steerInConversation !== undefined;
+  if (run.status === "succeeded") return confirmed ? "processed" : undefined;
+  if (run.status !== "failed" && run.status !== "dead-letter") return undefined;
+  return confirmed || options.atRestart ? "interrupted" : undefined;
+}
+
+/** The message rejoins the Run without input: the Run's own outcome decides it, as for any joined message. */
+const JOINED_WITHOUT_INPUT: AgentSteerReceipt = { outcome: Promise.resolve("processed") };
 
 function steerInterruptedFailure(requestId: string): DurableFailure {
   return {

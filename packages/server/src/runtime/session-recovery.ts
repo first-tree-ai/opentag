@@ -2,12 +2,13 @@ import { randomUUID } from "node:crypto";
 import {
   DirectImMessageDeliveryRequestSchema,
   type EffectiveRuntimeSnapshot,
+  RUNTIME_CAPABILITY,
   type SessionReconcileRequest,
   type SessionReconcileResult,
   type SessionRecoverRequest,
   type SessionRecoverResult,
 } from "@opentag/shared";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, ne } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
 import { agents, computers, imBindings, imMessageDeliveries, sessionPlacements, sessions } from "../db/schema/index.js";
 import type { ServiceLogger } from "../observability/service-logger.js";
@@ -22,7 +23,7 @@ export interface SessionRecoveryServiceOptions {
   assembler: Pick<EffectiveRuntimeSnapshotAssembler, "assembleForSession">;
   database: DatabaseClient;
   logger?: Pick<ServiceLogger, "warn">;
-  registry: Pick<ConnectionRegistry, "canReceiveSnapshot">;
+  registry: Pick<ConnectionRegistry, "canReceiveSnapshot" | "supportsCapability">;
   /** Late-bound: the domain owner both routes the request here and sends the reconcile. */
   requestReconcile(
     computerId: string,
@@ -36,6 +37,37 @@ interface RecoveryScope {
   sessionKind: "channel" | "thread" | "internal";
   creatorSessionId: string | null;
   installationId: string;
+}
+
+/**
+ * A Client without `runtime.sessionConfiguration` compares configuration per Agent: once it prepares a newer
+ * revision it refuses an older one, and while an older Turn runs it holds a newer one. So after a rollback to such a
+ * Client, Turns accepted on different revisions recover oldest first, each waiting for the older ones to report.
+ * The Client's own retry limit bounds the wait.
+ */
+async function hasOlderConfigurationTurn(
+  database: DatabaseClient,
+  frame: SessionRecoverRequest,
+  agentRevision: number,
+): Promise<boolean> {
+  const rows = await database
+    .select({ payload: imMessageDeliveries.dispatchPayload })
+    .from(imMessageDeliveries)
+    .innerJoin(sessions, eq(sessions.id, imMessageDeliveries.sessionId))
+    .innerJoin(imBindings, eq(imBindings.id, sessions.imBindingId))
+    .where(
+      and(
+        eq(imBindings.agentId, frame.agentId),
+        eq(imMessageDeliveries.state, "accepted"),
+        isNull(imMessageDeliveries.reportedAt),
+        ne(imMessageDeliveries.sessionId, frame.sessionId),
+        isNull(sessions.endedAt),
+      ),
+    );
+  return rows.some(({ payload }) => {
+    const frozen = DirectImMessageDeliveryRequestSchema.safeParse(payload);
+    return frozen.success && frozen.data.runtime.revision.agent.sequence < agentRevision;
+  });
 }
 
 type Authorization = { refusal: string } | { scope: RecoveryScope; runtime?: EffectiveRuntimeSnapshot };
@@ -70,6 +102,16 @@ export class SessionRecoveryService {
       runtime = authorized.runtime ?? (await this.#options.assembler.assembleForSession(frame.sessionId));
     } catch {
       return { status: "retry", reason: "runtime_not_ready" };
+    }
+    if (
+      !this.#options.registry.supportsCapability(
+        context.computerId,
+        context.instanceId,
+        RUNTIME_CAPABILITY.sessionConfiguration,
+      ) &&
+      (await hasOlderConfigurationTurn(this.#options.database, frame, runtime.revision.agent.sequence))
+    ) {
+      return { status: "retry", reason: "older_configuration_recovering" };
     }
     const { scope } = authorized;
     this.#scheduleReconcile(frame, context, {

@@ -16,7 +16,7 @@ import {
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
 import { ApplicationCipher } from "../services/crypto.js";
 import { ImFeedbackActionsService } from "../services/im/im-feedback-actions.js";
-import { feedbackCardContent, renderFeedbackCard } from "../services/im/im-feedback-card.js";
+import { feedbackCardContent, renderFeedbackCard, renderFeedbackText } from "../services/im/im-feedback-card.js";
 import {
   FeedbackCooldownStorageError,
   FeedbackProviderError,
@@ -169,6 +169,42 @@ async function workspaceFixture() {
 }
 
 describe("durable IM feedback", () => {
+  it("creates plain text targets unless the rollback flag is set", async () => {
+    const h = await fixture();
+    expect((await h.target()).messageFormat).toBe("text_v1");
+  });
+
+  it("uses a card for a workspace failure because it needs buttons", async () => {
+    const h = await workspaceFixture();
+    expect((await h.target()).messageFormat).toBe("interactive_v1");
+  });
+
+  it("does not change the format of a message already sent", async () => {
+    const sent = await fixture();
+    await db.database
+      .update(imFeedbackTargets)
+      .set({ cardState: "sent", cardMessageId: "text-message" })
+      .where(eq(imFeedbackTargets.deliveryId, sent.frame.deliveryId));
+    await sent.finish("failed", "completed", "workspace_failed");
+    expect(await sent.target()).toMatchObject({ state: "workspace_blocked", messageFormat: "text_v1" });
+  });
+
+  it("keeps an ordinary failure in plain text and leaves code to the details page", async () => {
+    const h = await fixture();
+    await h.finish();
+    const target = await h.target();
+    expect(target.messageFormat).toBe("text_v1");
+    const text = renderFeedbackText(target, "https://example.test");
+    expect(text).not.toContain("provider_failed");
+    expect(text.split("\n\n")).toHaveLength(3);
+  });
+
+  it("reads the language of the input the target was created for", async () => {
+    const h = await fixture();
+    expect(await h.store.messageLanguage((await h.target()).messageId)).toBe("en");
+    expect(await h.store.messageLanguage(randomUUID())).toBe("en");
+  });
+
   it("freezes the message format at target creation across rollout flag changes", async () => {
     vi.stubEnv("OPENTAG_IM_FEEDBACK_TEXT_ENABLED", "true");
     const h = await fixture();
@@ -455,15 +491,18 @@ describe("durable IM feedback", () => {
     await h.finish();
     const t = await h.target();
     const card = renderFeedbackCard(t, "https://example.test");
-    expect(card.slack.text).toContain("may already have occurred");
-    expect(card.feishu).toContain("may already have occurred");
-    expect(card.slack.text).not.toContain("No task operations");
-    expect(card.feishu).not.toContain("No task operations");
+    expect(card.slack.text).toContain("may already have run");
+    expect(card.feishu).toContain("may already have run");
+    expect(card.slack.text).not.toContain("no operations were run");
+    expect(card.feishu).not.toContain("no operations were run");
+    expect(card.slack.text).not.toContain("provider_failed");
+    expect(card.feishu).not.toContain("provider_failed");
+    expect(JSON.stringify(card.slack.blocks)).not.toContain("provider_failed");
     expect(feedbackCardContent({ ...t, errorCode: "<@everyone> private raw details" }).title).toBe(
-      "Task failed: The task could not complete",
+      "The execution environment had a problem, so the task didn't finish.",
     );
     expect(renderFeedbackCard({ ...t, effects: "not_started" }, "https://example.test").slack.text).toContain(
-      "No task operations were executed",
+      "no operations were run",
     );
   });
 });

@@ -127,7 +127,7 @@ export interface ImDeliveryWorkerInput {
   operationTimeoutMs?: number;
   maxQueueAgeMs?: number;
   maxConcurrent?: number;
-  /** Per-lane queue bound: one lane per Local Agent or per Cloud Session. */
+  /** Per-lane queue bound: one lane per Session. */
   maxQueuedPerAgent?: number;
   maxQueuedTotal?: number;
   onMetric?: (metric: RuntimeDeliveryWorkerMetric) => void;

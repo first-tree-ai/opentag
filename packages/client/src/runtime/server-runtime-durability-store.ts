@@ -40,6 +40,8 @@ export class ServerRuntimeDurabilityStore implements RuntimeDurabilityStore {
       ranMs: _localRan,
       retryRanMs: _localRetryRan,
       joinedRunId: _localRun,
+      steerInConversation: _localConversation,
+      runConversation: _localRunConversation,
       interruption: _localReason,
       ...portable
     } = record;

@@ -251,6 +251,30 @@ describe("SessionMessageOutcomeReporter", () => {
     reporter.stop();
   });
 
+  it("does not let reconnects keep resending a report past the age limit", async () => {
+    const now = 1_000 + 25 * 60 * 60 * 1_000;
+    const persistence = new MemoryRuntimeDurabilityStore();
+    await persistence.write({
+      acceptedAt: 1_000,
+      attempts: 0,
+      key: "target:message",
+      kind: "session-message-outcome",
+      payload: outcome(),
+      status: "accepted",
+      updatedAt: 1_000,
+    } as never);
+    const { connection, sent } = fakeConnection(4);
+    const reporter = new SessionMessageOutcomeReporter({ connection, now: () => now, persistence });
+    await reporter.ready();
+    expect(sent).toHaveLength(1);
+    connection.emit("registered");
+    await vi.waitFor(async () =>
+      expect((await persistence.list("session-message-outcome"))[0]?.status).toBe("dead-letter"),
+    );
+    expect(sent).toHaveLength(1);
+    reporter.stop();
+  });
+
   it("keeps retrying with the default policy until one day has passed", async () => {
     const day = 24 * 60 * 60 * 1_000;
     let now = 0;

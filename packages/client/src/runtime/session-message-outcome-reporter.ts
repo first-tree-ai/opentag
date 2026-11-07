@@ -63,6 +63,8 @@ export class SessionMessageOutcomeReporter {
   readonly #now: () => number;
   readonly #persistence?: RuntimeDurabilityStore;
   readonly #policy: RuntimeRetryPolicy;
+  /** Reports past the age limit that already had their one attempt. */
+  readonly #finalAttempts = new Set<string>();
   readonly #scheduler: RuntimeRetryScheduler;
   readonly #records = new Map<string, DurableWorkRecord<SessionMessageOutcomeInput>>();
   readonly #inFlight = new Map<string, InFlight>();
@@ -205,13 +207,20 @@ export class SessionMessageOutcomeReporter {
   #send(key: string): void {
     const record = this.#records.get(key);
     if (!record || isFinal(record) || this.#inFlight.has(key) || this.#retryTimers.has(key)) return;
-    // The age limit ends retries after a failed attempt (`#retryLater`), not before one: a Computer that was
-    // off for a day still gets to tell the Server, and any failure then gives up at once.
     if (!this.#canSend()) {
       // A registered peer below v4 cannot accept the frame yet; an unregistered connection
       // resends on its next registration.
       if (this.#connection.state === "registered") void this.#retryLater(record, "unsupported_capability");
       return;
+    }
+    // A Computer that was off past the age limit still gets to tell the Server, once per process. A second
+    // send, whether a retry or a reconnect's resend, gives up, so reconnecting cannot extend the limit.
+    if (retryExhausted(this.#policy, record, this.#now())) {
+      if (this.#finalAttempts.has(key)) {
+        void this.#finish(record, "dead-letter");
+        return;
+      }
+      this.#finalAttempts.add(key);
     }
     const requestId = randomUUID();
     const frame: SessionMessageOutcomeReport = { type: "session:message:outcome", requestId, ...record.payload };

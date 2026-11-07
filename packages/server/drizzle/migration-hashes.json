@@ -375,6 +375,11 @@
       "idx": 74,
       "tag": "0074_im_feedback_message_format",
       "sha256": "3df92e19abc93e4ebdd33d98176bd4d4ba042b4e5f938c70610fd1d28a2730dc"
+    },
+    {
+      "idx": 75,
+      "tag": "0075_session_message_initiator",
+      "sha256": "198ad5cd1776d95682d988a9b5019a35aed849b1bbe69f7cf2381441da8be29b"
     }
   ]
 }

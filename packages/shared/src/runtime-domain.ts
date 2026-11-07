@@ -735,12 +735,11 @@ export const SessionMessageConversationSchema = z
   .strict();
 
 /**
- * Session-collaboration v5: where an ordinary message comes from, written by the Server from the
- * authenticated source and the stored message chain; a sender cannot supply any of it. `source` is the
- * direct sender's conversation. The initiator is the Session where the chain started and stays the same
- * across forwards. It is absent when the chain could not be followed to its start, which a receiver treats
- * as coming from an unknown conversation. Like the scheduled display metadata, none of this takes part in
- * the semantic conflict hash.
+ * Session-collaboration v5: where an ordinary message comes from, written by the Server; a sender cannot
+ * supply it. `source` is the direct sender's conversation. The initiator is the Session where the chain started,
+ * fixed when the message was recorded and the same across forwards. It is absent when it could not be proved,
+ * which a receiver treats as coming from an unknown conversation. Like the scheduled display metadata, none of
+ * this takes part in the semantic conflict hash.
  */
 export const SessionMessageProvenanceSchema = z
   .object({
@@ -749,7 +748,7 @@ export const SessionMessageProvenanceSchema = z
     initiator: SessionMessageConversationSchema.optional(),
     /** How many Session messages came before this one in the chain. */
     forwards: z.number().int().min(0),
-    /** True when the source or the initiator is outside the target's conversation. */
+    /** True when the source or a known initiator is outside the target's conversation. */
     crossConversation: z.boolean(),
   })
   .strict()

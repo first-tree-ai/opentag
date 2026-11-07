@@ -1,5 +1,10 @@
 import { createHash, createHmac, randomUUID } from "node:crypto";
-import { RUNTIME_CAPABILITY, type RuntimeUserTaskSource, type SessionReconcileRequest } from "@opentag/shared";
+import {
+  RUNTIME_CAPABILITY,
+  type RuntimeUserTaskSource,
+  type SessionReconcileRequest,
+  type SessionRunInput,
+} from "@opentag/shared";
 import { and, eq, exists, isNull } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
@@ -48,6 +53,8 @@ type ProofSourceRow = Awaited<ReturnType<typeof proofSourceQuery>>[number];
 export interface SessionCliSourceContext {
   proofId: string;
   userTaskSource?: RuntimeUserTaskSource;
+  /** What the sending Run says it is working on; the Server accepts only inputs addressed to this Session. */
+  runInputs?: readonly SessionRunInput[];
   agentId: string;
   computerId: string;
   connectionInstanceId: string;

@@ -1347,6 +1347,39 @@ describe("SessionMessageInbox", () => {
     }
   });
 
+  it("tells the CLI what its Run is working on, for the length of the Run", async () => {
+    const runInputs = {
+      addRunInput: vi.fn(async () => undefined),
+      beginRun: vi.fn(async () => undefined),
+      endRun: vi.fn(async () => undefined),
+      removeRunInput: vi.fn(async () => undefined),
+    };
+    const prompt = vi.fn(async ({ runId }: { runId: string }) => {
+      expect(runInputs.endRun).not.toHaveBeenCalled();
+      return { runId, status: "completed" as const, output: [] };
+    });
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      sessionCollaborationVersion: () => 5,
+      reconciler: inboxReconciler(),
+      runInputs,
+      runtimeManager: {
+        sessionKind: () => "internal",
+        ensureRuntime: async () => ({ waitForIdle: async () => undefined, prompt }) as never,
+      },
+    });
+    const request = delivery();
+    await inbox.accept(request);
+    await inbox.settled();
+    expect(runInputs.beginRun).toHaveBeenCalledWith(request.targetSessionId, expect.any(String), [
+      { kind: "session-message", messageId: request.messageId },
+    ]);
+    expect(runInputs.endRun).toHaveBeenCalledOnce();
+    inbox.stop();
+  });
+
   it("steers queued messages into a resumed retry Turn as soon as it runs", async () => {
     const store = new MemoryRuntimeDurabilityStore();
     const queued = delivery({ text: "queued during the outage" });
@@ -2988,7 +3021,7 @@ describe("SessionMessageInbox", () => {
         sessionKind: "visible",
         outboxContext: outbox as never,
       }).items[0]?.text;
-      expect(text).toContain("from a different conversation");
+      expect(text).toContain("may come from a different conversation");
       expect(text).toContain("answer the sender through session send");
       expect(text).not.toContain("continuing the visible Session's existing work");
     });

@@ -14,6 +14,7 @@ import type {
   SessionMessageConversation,
   SessionMessageProvenance,
   SessionPlacement,
+  SessionRunInput,
 } from "@opentag/shared";
 import { RuntimeUserTaskSourceSchema } from "@opentag/shared";
 import { and, desc, eq, gte, inArray, isNotNull, isNull, or, type SQL, sql } from "drizzle-orm";
@@ -57,9 +58,6 @@ interface LockedCollaborationAuthority {
   computers: AuthorityComputer[];
 }
 
-/** A chain longer than this reads as having no known start, which a receiver treats as non-owner. */
-const SESSION_MESSAGE_CHAIN_LIMIT = 32;
-
 function sessionConversation(session: SessionScope & { kind: SessionKind }): SessionMessageConversation {
   return {
     sessionKind: session.kind,
@@ -67,6 +65,12 @@ function sessionConversation(session: SessionScope & { kind: SessionKind }): Ses
     channelId: session.channelId,
     ...(session.threadKey ? { threadKey: session.threadKey } : {}),
   };
+}
+
+/** A schedule has no sending Session: its chain starts where it was asked for, or else where it runs. */
+function scheduledChainStart(message: { userTaskSource: unknown }, targetSessionId: string): string {
+  const recorded = RuntimeUserTaskSourceSchema.safeParse(message.userTaskSource);
+  return recorded.success ? recorded.data.sessionId : targetSessionId;
 }
 
 function sameSessionScope(left: SessionScope, right: SessionScope): boolean {
@@ -114,6 +118,8 @@ export interface EnsureChatSessionInTransactionInput {
 
 export interface CreateInternalSessionWithMessageInput {
   userTaskSource?: import("./session-cli-proof-service.js").SessionCliSourceContext["userTaskSource"];
+  /** What the sending Run is working on; it decides the message's initiator when the message is first recorded. */
+  runInputs?: readonly SessionRunInput[];
   creatorSessionId: string;
   creatorInstallationId: string;
   creatorConnectionInstanceId: string;
@@ -152,6 +158,8 @@ export interface StoppedInternalSession {
 
 export interface AuthorizeAndRecordSessionMessageInput {
   userTaskSource?: import("./session-cli-proof-service.js").SessionCliSourceContext["userTaskSource"];
+  /** What the sending Run is working on; it decides the message's initiator when the message is first recorded. */
+  runInputs?: readonly SessionRunInput[];
   messageId: string;
   sourceSessionId: string;
   sourceInstallationId: string;
@@ -465,12 +473,14 @@ export class SessionService {
         })
         .returning();
       if (!placement) throw new Error("Session placement insert did not return a row");
+      const chain = await this.#messageChain(transaction, input.creatorSessionId, input.runInputs);
       const [message] = await transaction
         .insert(sessionMessages)
         .values({
           id: input.messageId,
           sourceSessionId: input.creatorSessionId,
           userTaskSource: input.userTaskSource ?? null,
+          ...chain,
           targetSessionId: created.id,
           content: input.initialMessage,
           contentHash,
@@ -574,12 +584,14 @@ export class SessionService {
       } else {
         if (!input.serverDerivedId) assertOrdinaryMessageIdFree(input.messageId);
         const now = this.#now();
+        const chain = await this.#messageChain(transaction, input.sourceSessionId, input.runInputs);
         [message] = await transaction
           .insert(sessionMessages)
           .values({
             id: input.messageId,
             sourceSessionId: input.sourceSessionId,
             userTaskSource: input.userTaskSource ?? null,
+            ...chain,
             targetSessionId: input.targetSessionId,
             content: input.content,
             contentHash: hashSessionMessage(input.content),
@@ -1348,27 +1360,13 @@ export class SessionService {
   }
 
   /**
-   * Where an ordinary message comes from, derived from stored messages alone, so a sender cannot supply it.
-   * A send made inside a Run with an execution (Cloud and the Local proxy mode) records that Run's input in
-   * `user_task_source`. A send with no execution (the default Local mode) has no such link, so its Session's
-   * latest input before the send stands in: a person's message ends the chain there, and a Session message
-   * continues it. Reads are unlocked: every row followed is immutable apart from its outcome. See the
-   * collaboration docs for what this cannot tell apart.
+   * Where a recorded message comes from, read for its dispatch. The initiator and forward count were fixed
+   * when the message was recorded, and a Session's scope never changes, so every dispatch of one message says
+   * the same thing whatever else has happened since.
    */
   async resolveMessageProvenance(message: SessionMessageRow): Promise<SessionMessageProvenance> {
-    let current: SessionMessageRow = message;
-    let forwards = 0;
-    let initiatorSessionId: string | undefined;
-    for (; forwards <= SESSION_MESSAGE_CHAIN_LIMIT; forwards += 1) {
-      const step = await this.#messageChainStep(current);
-      if ("initiatorSessionId" in step) {
-        initiatorSessionId = step.initiatorSessionId;
-        break;
-      }
-      current = step.previous;
-    }
-    const ids = [message.sourceSessionId, message.targetSessionId, initiatorSessionId].filter(
-      (id): id is string => id !== undefined && id !== null,
+    const ids = [message.sourceSessionId, message.targetSessionId, message.initiatorSessionId].filter(
+      (id): id is string => id !== null,
     );
     const rows = await this.#database
       .select({
@@ -1384,73 +1382,63 @@ export class SessionService {
     const source = rows.find((row) => row.id === message.sourceSessionId);
     const target = rows.find((row) => row.id === message.targetSessionId);
     if (!source || !target) throw new Error("A recorded Session message lost its Sessions");
-    const found = rows.find((row) => row.id === initiatorSessionId);
+    const found = rows.find((row) => row.id === message.initiatorSessionId);
     // A Session from another binding belongs to the Agent's past; it cannot speak for this one.
     const initiator = found?.imBindingId === target.imBindingId ? found : undefined;
     return {
       source: sessionConversation(source),
       ...(initiator ? { initiatorSessionId: initiator.id, initiator: sessionConversation(initiator) } : {}),
-      forwards: Math.min(forwards, SESSION_MESSAGE_CHAIN_LIMIT),
-      crossConversation: !sameSessionScope(source, target) || !initiator || !sameSessionScope(initiator, target),
+      forwards: message.forwardCount,
+      crossConversation:
+        !sameSessionScope(source, target) || (initiator ? !sameSessionScope(initiator, target) : false),
     };
   }
 
-  async #messageChainStep(
-    message: SessionMessageRow,
-  ): Promise<{ initiatorSessionId: string } | { previous: SessionMessageRow }> {
-    const parsed = RuntimeUserTaskSourceSchema.safeParse(message.userTaskSource);
-    const recorded = parsed.success ? parsed.data : undefined;
-    const sourceSessionId = message.sourceSessionId;
-    // A schedule has no sending Session: the chain starts where the schedule was asked for, or where it runs.
-    if (!sourceSessionId) return { initiatorSessionId: recorded?.sessionId ?? message.targetSessionId };
-    if (recorded?.sessionId === sourceSessionId) {
-      if (recorded.source.kind !== "session-message") return { initiatorSessionId: sourceSessionId };
-      const previous = await this.#inboundMessage(sourceSessionId, eq(sessionMessages.id, recorded.source.messageId));
-      return previous ? { previous } : { initiatorSessionId: sourceSessionId };
-    }
-    const previous = await this.#inboundMessage(
-      sourceSessionId,
-      and(
-        eq(sessionMessages.lastOutcome, "accepted"),
-        sql`(${sessionMessages.createdAt}, ${sessionMessages.id}) < (${message.createdAt.toISOString()}::timestamptz, ${message.id}::uuid)`,
-      ),
-    );
-    if (!previous || (await this.#acceptedImInputBetween(sourceSessionId, previous.createdAt, message.createdAt))) {
-      return { initiatorSessionId: sourceSessionId };
-    }
-    return { previous };
-  }
-
   /**
-   * Whether a person's message reached this Session between two instants, which makes it the latest input.
-   * Only reached by a send with no recorded Run that follows a Session message, and bounded by the Session's
-   * own deliveries. An observer copy is not input to act on.
+   * The chain a new message continues, from what its Run says it is working on. Each input must really be
+   * addressed to the source Session. A Run working for more than one initiator, because something was steered
+   * into it, cannot say whose behalf a send is on, so that send has none. Nothing here is inferred: no inputs,
+   * or any input that does not check out, means no known initiator.
    */
-  async #acceptedImInputBetween(sessionId: string, after: Date, before: Date): Promise<boolean> {
-    const [row] = await this.#database
-      .select({ id: imMessageDeliveries.id })
-      .from(imMessageDeliveries)
-      .where(
-        and(
-          eq(imMessageDeliveries.sessionId, sessionId),
-          inArray(imMessageDeliveries.state, ["accepted", "steered"]),
-          sql`coalesce(${imMessageDeliveries.acceptedAt}, ${imMessageDeliveries.steeredAt}) > ${after.toISOString()}::timestamptz`,
-          sql`coalesce(${imMessageDeliveries.acceptedAt}, ${imMessageDeliveries.steeredAt}) < ${before.toISOString()}::timestamptz`,
-          sql`coalesce(${imMessageDeliveries.dispatchPayload} ->> 'replyRole', '') <> 'observer'`,
-        ),
-      )
-      .limit(1);
-    return Boolean(row);
-  }
-
-  async #inboundMessage(targetSessionId: string, predicate: SQL | undefined): Promise<SessionMessageRow | undefined> {
-    const [row] = await this.#database
-      .select()
-      .from(sessionMessages)
-      .where(and(eq(sessionMessages.targetSessionId, targetSessionId), predicate))
-      .orderBy(desc(sessionMessages.createdAt), desc(sessionMessages.id))
-      .limit(1);
-    return row;
+  async #messageChain(
+    transaction: DatabaseTransaction,
+    sourceSessionId: string,
+    inputs: readonly SessionRunInput[] = [],
+  ): Promise<{ initiatorSessionId: string | null; forwardCount: number }> {
+    const unknown = { initiatorSessionId: null, forwardCount: 0 };
+    if (inputs.length === 0) return unknown;
+    const messageIds = inputs.flatMap((input) => (input.kind === "session-message" ? [input.messageId] : []));
+    const deliveryIds = inputs.flatMap((input) => (input.kind === "delivery" ? [input.deliveryId] : []));
+    const messages = messageIds.length
+      ? await transaction
+          .select({
+            id: sessionMessages.id,
+            initiatorSessionId: sessionMessages.initiatorSessionId,
+            forwardCount: sessionMessages.forwardCount,
+            scheduledOrigin: sessionMessages.scheduledOrigin,
+            userTaskSource: sessionMessages.userTaskSource,
+          })
+          .from(sessionMessages)
+          .where(and(inArray(sessionMessages.id, messageIds), eq(sessionMessages.targetSessionId, sourceSessionId)))
+      : [];
+    const deliveries = deliveryIds.length
+      ? await transaction
+          .select({ id: imMessageDeliveries.id })
+          .from(imMessageDeliveries)
+          .where(and(inArray(imMessageDeliveries.id, deliveryIds), eq(imMessageDeliveries.sessionId, sourceSessionId)))
+      : [];
+    if (messages.length !== new Set(messageIds).size || deliveries.length !== new Set(deliveryIds).size) return unknown;
+    const initiators = new Set<string | null>(deliveries.map(() => sourceSessionId));
+    let forwardCount = 0;
+    for (const message of messages) {
+      initiators.add(
+        message.scheduledOrigin ? scheduledChainStart(message, sourceSessionId) : message.initiatorSessionId,
+      );
+      forwardCount = Math.max(forwardCount, message.forwardCount + 1);
+    }
+    const [initiatorSessionId, ...others] = initiators;
+    if (!initiatorSessionId || others.length > 0) return { initiatorSessionId: null, forwardCount };
+    return { initiatorSessionId, forwardCount };
   }
 
   async #recordSessionActivity(

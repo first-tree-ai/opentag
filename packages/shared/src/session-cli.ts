@@ -12,6 +12,33 @@ export const SESSION_CLI_DEFAULT_LIMIT = 20;
 export const SESSION_CLI_MAX_LIMIT = 100;
 export const SESSION_CLI_TASK_PREVIEW_MAX_BYTES = 256;
 export const SESSION_CLI_PROOF_HEADER = "x-opentag-session-proof";
+export const SESSION_CLI_RUN_INPUTS_HEADER = "x-opentag-run-inputs";
+/** A Run's own input, its in-place retry's carried messages, and the 16 it can have steered into it. */
+export const SESSION_CLI_RUN_INPUTS_MAX = 32;
+
+/** What a Run is working on, as `d:<deliveryId>` for an IM delivery and `m:<messageId>` for a Session message. */
+export type SessionRunInput = { kind: "delivery"; deliveryId: string } | { kind: "session-message"; messageId: string };
+
+const SESSION_RUN_INPUT_TOKEN = /^(d|m):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+
+export function formatSessionRunInput(input: SessionRunInput): string {
+  return input.kind === "delivery" ? `d:${input.deliveryId}` : `m:${input.messageId}`;
+}
+
+/** The inputs a header names. Anything malformed or over the limit names none, which reads as unprovable. */
+export function parseSessionRunInputs(header: string | undefined): SessionRunInput[] {
+  if (!header) return [];
+  const tokens = header.split(",");
+  if (tokens.length > SESSION_CLI_RUN_INPUTS_MAX) return [];
+  const inputs: SessionRunInput[] = [];
+  for (const token of tokens) {
+    const match = SESSION_RUN_INPUT_TOKEN.exec(token.trim());
+    const id = match?.[2];
+    if (!id) return [];
+    inputs.push(match?.[1] === "d" ? { kind: "delivery", deliveryId: id } : { kind: "session-message", messageId: id });
+  }
+  return inputs;
+}
 
 const SessionCliTextSchema = z
   .string()

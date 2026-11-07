@@ -171,39 +171,44 @@ adds little. A Session's conversation scope stays immutable; only the reach of `
 
 `session list --agent` finds a target: every live Session of the Agent, newest first, with its kind, conversation kind,
 channel, thread, and title or first task, the source itself marked `current`. `--visible` leaves out internal Sessions.
-It pages like `session list` and takes neither `--recursive`, `--include-stopped` nor `--since`. There is no index for this
-order, so a page sorts the Agent's own Sessions.
+It pages like `session list` and takes neither `--recursive`, `--include-stopped` nor `--since`. The partial index
+`sessions_im_binding_live_created_idx` serves this order.
 
 Delivery works as it does inside a conversation. The target decides what to do, and nothing reaches IM on its own. A visible
 target's outbox comes from its own scope, so it can reply only in its own conversation.
 
 **Provenance.** Every ordinary message carries `provenance`, written by the Server: the direct sender's conversation, the
-initiator, how many Session messages came before it (`forwards`), and whether the chain leaves the target's conversation
-(`crossConversation`). The initiator is the Session where the chain started. It stays the same across forwards: when A sends
-to B and B sends to C, C sees B as the direct sender and A as the initiator. Otherwise a request would look like a trusted
-internal one after a single hop. The target's managed context prints these facts, and a visible target receiving a
-cross-conversation message is told to post only what its own conversation may see instead of publishing the result.
+initiator, how many Session messages came before it (`forwards`), and whether the source or a known initiator is outside the
+target's conversation (`crossConversation`). The initiator is the Session where the chain started. It stays the same across
+forwards: when A sends to B and B sends to C, C sees B as the direct sender and A as the initiator. Otherwise a request would
+look like a trusted internal one after a single hop. The target's managed context prints these facts. A visible target
+receiving a cross-conversation message, or one with no known initiator, is told to post only what its own conversation may
+see instead of publishing the result.
 
-The Server derives provenance from stored messages at each dispatch, so a sender cannot supply it, and there is no new
-column. A send inside a Run with an execution, on Cloud or in the Local proxy mode, records that Run's input in
-`session_messages.user_task_source`, which links the message to the one that started the Run; a delivery or a validation Run
-ends the chain at that Session. A send with no execution, which is every send on a default Local Computer, has no such link, so
-its Session's latest input before the send stands in: a person's message accepted there ends the chain at that Session, and an
-accepted Session message continues it. A schedule starts the chain at the Session recorded when it was asked for, or else at
-the Session it runs in. A chain of more than 32 forwards reports no initiator, which the target treats as non-owner, as it
-does a Session of an earlier binding. A failure to read provenance leaves the message `unreachable`, since the target would
-otherwise take it as local.
+The initiator and forward count are fixed when the message is recorded, in `session_messages.initiator_session_id` and
+`forward_count`, and never change: not when a later message is accepted, and not on a retry of the send. They are never
+inferred from what else a Session received, because that decides whose instruction a message counts as.
 
-These links do not cover everything:
+They come from what the sending Run is working on. On a Local Computer the Client writes that list beside the Session's proof
+when a Run starts and whenever an input is steered into it, and the CLI sends it with each create, send and stop. On Cloud,
+and in the Local proxy mode, the Run's execution names its input as well. The Server checks each input is really addressed
+to the source Session, then:
 
-- On a default Local Computer "latest input" is an inference. A send from a long Run names whichever input arrived last,
-  including a message still queued behind that Run. A message from the owner's chain queued behind a Run working for a group
-  can therefore label the group's work as the owner's, and the reverse.
-- With an execution, the link names the Run's own input. A message steered into that Run has no execution of its own, so what
-  the Run then sends still names the Run's initiator, not the steered message's. A message from a group steered into a Run
-  started in the owner's direct message can therefore be forwarded under the owner's chain.
-- "Cannot be changed" holds against the Agent's normal commands. On Local, the proof is not a boundary against a compromised
-  sibling Session, as described above.
+- A person's message starts a chain at this Session.
+- A Session message continues that message's chain. A schedule starts its chain at the Session recorded when it was asked for,
+  or else at the Session it runs in.
+- A Run working for more than one initiator, because something from elsewhere was steered into it, has no initiator: it cannot
+  say on whose behalf a send is. An observer copy does not count as input.
+- A Run outcome notice continues the message it reports on, whatever its Session took on since. A stop notice follows the
+  stopping Session's Run, like any send.
+- Anything else has no known initiator: no list, an input that does not check out, or a chain with an unknown link. The target
+  treats that as non-owner, and also an initiator from an earlier binding.
+
+Three limits remain:
+
+- A send made by a client too old to name its inputs has no known initiator.
+- "Cannot be changed" holds against the Agent's normal commands. On Local, neither the list nor the proof is a boundary against
+  a compromised sibling Session, as described above; a forged list can only name inputs really addressed to that Session.
 - The Server has no record of which person a direct message belongs to. The Agent reads the initiator's conversation and
   applies what it knows about its owner; there is no owner flag.
 
@@ -225,9 +230,11 @@ into a Run that fails gets its one notice like any other, which applies across c
 **Compatibility.** `provenance` needs `runtime.sessionCollaboration` version 5 on a Local target and Runner
 Session-collaboration version 4 on a Cloud target. A same-conversation message reaches an older peer without it, on the frozen
 frame. A cross-conversation message to an older peer is `unreachable` with `unsupported_cross_conversation` before any frame
-leaves, since that peer would present it as its own conversation's work. A sender retries after the upgrade.
+leaves, since that peer would present it as its own conversation's work. A sender retries after the upgrade. A same-conversation
+message with no known initiator still reaches an older peer, so upgrading the Server first does not stop a child reporting to its parent.
 
-The Server logs each attempted cross-conversation dispatch at `info` with `operation: session.message.cross_conversation`, and
+The Server logs each attempted dispatch that is cross-conversation or has no known initiator at `info` with
+`operation: session.message.cross_conversation`, and
 each send refused for another Agent with `session.message.other_agent`; see
 [Server observability](../../operations/observability.md#cross-conversation-session-messages).
 
@@ -321,7 +328,7 @@ Safety rules:
   version 5 UUID: no Session can occupy a future notice's ID. A row recorded under such an ID before this rule still blocks that one
   notice, which is then ignored and logged.
 
-No schema change is involved: notices reuse `session_messages` and the existing closure activity projection.
+Notices reuse `session_messages` and the existing closure activity projection.
 
 The Server stores authorized logical messages and their latest observed delivery outcome for idempotency and conflict
 detection. The managed Local Runtime uses its existing bounded inbox and durable-work store, including its recovery and

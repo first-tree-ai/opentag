@@ -703,6 +703,60 @@ describe("SessionCollaborationService", () => {
       expect(JSON.stringify(bindings)).not.toContain(sendRequest(fixture).message);
     });
 
+    it("records a message with no known initiator, so its rate can be read", async () => {
+      const fixture = serviceFixture();
+      fixture.registry.capabilityVersion.mockReturnValue(5);
+      const { initiatorSessionId: _id, initiator: _initiator, ...unproved } = SAME_CONVERSATION_PROVENANCE;
+      fixture.sessions.resolveMessageProvenance.mockResolvedValue(unproved);
+      await fixture.service.send(sendRequest(fixture), fixture.source);
+      expect(fixture.logger.info).toHaveBeenCalledWith(
+        expect.objectContaining({ operation: "session.message.cross_conversation", initiatorSessionId: null }),
+        expect.any(String),
+      );
+    });
+
+    it("still reaches an older peer with a same-conversation message of unknown origin", async () => {
+      const fixture = serviceFixture();
+      fixture.registry.capabilityVersion.mockReturnValue(4);
+      const { initiatorSessionId: _id, initiator: _initiator, ...unproved } = SAME_CONVERSATION_PROVENANCE;
+      fixture.sessions.resolveMessageProvenance.mockResolvedValue(unproved);
+      await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+        status: "accepted",
+      });
+    });
+
+    it("passes what the Run names and what its execution proves when recording a send", async () => {
+      const fixture = serviceFixture();
+      const named = { kind: "session-message" as const, messageId: randomUUID() };
+      const deliveryId = randomUUID();
+      await fixture.service.send(sendRequest(fixture), {
+        ...fixture.source,
+        runInputs: [named],
+        userTaskSource: {
+          sessionId: fixture.source.sessionId,
+          source: { kind: "delivery", deliveryId, turnId: "turn" },
+        },
+      });
+      expect(fixture.sessions.authorizeAndRecordMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ runInputs: [named, { kind: "delivery", deliveryId }] }),
+      );
+    });
+
+    it("records a Run outcome notice as continuing the message it reports on", async () => {
+      const fixture = serviceFixture();
+      const reported = randomUUID();
+      await fixture.service.notifyRunOutcome({
+        childSessionId: fixture.targetSessionId,
+        messageId: reported,
+        outcome: "failed",
+        reason: "runtime_failed",
+        source: { computerId: "computer", connectionInstanceId: "instance", placementGeneration: 1 },
+      });
+      expect(fixture.sessions.authorizeAndRecordMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ runInputs: [{ kind: "session-message", messageId: reported }] }),
+      );
+    });
+
     it("records a refused send to another Agent", async () => {
       const fixture = serviceFixture();
       fixture.sessions.authorizeAndRecordMessage.mockRejectedValue(

@@ -92,6 +92,7 @@ import {
   runtimeSkillBundlePath,
   runtimeSkillPresetInstallPath,
   SESSION_CLI_PROOF_HEADER,
+  SESSION_CLI_RUN_INPUTS_HEADER,
   type SelfMCPOAuthStatus,
   SelfMCPOAuthStatusSchema,
   type SessionCliAgentListQuery,
@@ -603,7 +604,7 @@ export class OpenTagApi {
   createInternalSession(
     proof: string,
     input: SessionCliCreateRequest,
-    options?: RequestOptions & { executionId?: string },
+    options?: RequestOptions & { executionId?: string; runInputs?: string },
   ): Promise<SessionCliCommandResponse> {
     return this.#request(
       HTTP_PATHS.runtimeInternalSessions,
@@ -615,6 +616,7 @@ export class OpenTagApi {
           "content-type": "application/json",
           [SESSION_CLI_PROOF_HEADER]: proof,
           ...(options?.executionId ? { "x-opentag-execution-id": options.executionId } : {}),
+          ...(options?.runInputs ? { [SESSION_CLI_RUN_INPUTS_HEADER]: options.runInputs } : {}),
         },
       },
       options,
@@ -624,7 +626,7 @@ export class OpenTagApi {
   sendSessionMessage(
     proof: string,
     input: SessionCliSendRequest,
-    options?: RequestOptions & { executionId?: string },
+    options?: RequestOptions & { executionId?: string; runInputs?: string },
   ): Promise<SessionCliCommandResponse> {
     return this.#request(
       HTTP_PATHS.runtimeSessionMessages,
@@ -636,6 +638,7 @@ export class OpenTagApi {
           "content-type": "application/json",
           [SESSION_CLI_PROOF_HEADER]: proof,
           ...(options?.executionId ? { "x-opentag-execution-id": options.executionId } : {}),
+          ...(options?.runInputs ? { [SESSION_CLI_RUN_INPUTS_HEADER]: options.runInputs } : {}),
         },
       },
       options,
@@ -645,7 +648,7 @@ export class OpenTagApi {
   stopSession(
     proof: string,
     input: SessionCliStopRequest,
-    options?: RequestOptions & { executionId?: string },
+    options?: RequestOptions & { executionId?: string; runInputs?: string },
   ): Promise<SessionCliStopResponse> {
     return this.#request(
       HTTP_PATHS.runtimeSessionStop,
@@ -657,6 +660,7 @@ export class OpenTagApi {
           "content-type": "application/json",
           [SESSION_CLI_PROOF_HEADER]: proof,
           ...(options?.executionId ? { "x-opentag-execution-id": options.executionId } : {}),
+          ...(options?.runInputs ? { [SESSION_CLI_RUN_INPUTS_HEADER]: options.runInputs } : {}),
         },
       },
       options,
@@ -902,7 +906,7 @@ export class OpenTagApi {
   createRuntimeAgentSchedule(
     proof: string,
     input: CreateAgentScheduleRequest,
-    options?: RequestOptions & { executionId?: string },
+    options?: RequestOptions & { executionId?: string; runInputs?: string },
   ): Promise<AgentSchedule> {
     return this.#request(
       RUNTIME_AGENT_SCHEDULES_PATH,
@@ -914,6 +918,7 @@ export class OpenTagApi {
           "content-type": "application/json",
           [SESSION_CLI_PROOF_HEADER]: proof,
           ...(options?.executionId ? { "x-opentag-execution-id": options.executionId } : {}),
+          ...(options?.runInputs ? { [SESSION_CLI_RUN_INPUTS_HEADER]: options.runInputs } : {}),
         },
       },
       options,
@@ -951,7 +956,7 @@ export class OpenTagApi {
     proof: string,
     scheduleId: string,
     input: UpdateAgentScheduleRequest,
-    options?: RequestOptions & { executionId?: string },
+    options?: RequestOptions & { executionId?: string; runInputs?: string },
   ): Promise<AgentSchedule> {
     return this.#request(
       runtimeAgentSchedulePath(scheduleId),
@@ -963,6 +968,7 @@ export class OpenTagApi {
           "content-type": "application/json",
           [SESSION_CLI_PROOF_HEADER]: proof,
           ...(options?.executionId ? { "x-opentag-execution-id": options.executionId } : {}),
+          ...(options?.runInputs ? { [SESSION_CLI_RUN_INPUTS_HEADER]: options.runInputs } : {}),
         },
       },
       options,
@@ -991,7 +997,7 @@ export class OpenTagApi {
     proof: string,
     scheduleId: string,
     expectedRevision: number,
-    options?: RequestOptions & { executionId?: string },
+    options?: RequestOptions & { executionId?: string; runInputs?: string },
   ): Promise<AgentSchedule> {
     return this.#request(
       runtimeAgentScheduleResumePath(scheduleId),
@@ -1003,6 +1009,7 @@ export class OpenTagApi {
           "content-type": "application/json",
           [SESSION_CLI_PROOF_HEADER]: proof,
           ...(options?.executionId ? { "x-opentag-execution-id": options.executionId } : {}),
+          ...(options?.runInputs ? { [SESSION_CLI_RUN_INPUTS_HEADER]: options.runInputs } : {}),
         },
       },
       options,

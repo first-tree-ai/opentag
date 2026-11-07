@@ -7,6 +7,7 @@ import {
   SESSION_RUN_OUTCOME_NOTICE_HEADER,
   type SessionReconcileRequest,
   type SessionReconcileResult,
+  type SessionRunInput,
 } from "@opentag/shared";
 import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -784,15 +785,17 @@ describe("SessionService with the unit database", () => {
         (await service.ensureChatSession({ imBindingId: fixture.bindingId, channelId, conversationKind }, "channel"))
           .session;
       const [dm, group, other] = [await open("D1", "dm"), await open("G1", "channel"), await open("D2", "dm")];
-      const send = async (
+      const record = async (
         sourceSessionId: string,
         targetSessionId: string,
-        userTaskSource?: { sessionId: string; source: RuntimeExecutionSource },
+        runInputs: readonly SessionRunInput[] = [],
+        outcome: "accepted" | "unknown" = "accepted",
+        messageId: string = randomUUID(),
       ) => {
         const { message } = await service.authorizeAndRecordMessage({
-          messageId: randomUUID(),
+          messageId,
           sourceSessionId,
-          ...(userTaskSource ? { userTaskSource } : {}),
+          runInputs,
           sourceInstallationId: fixture.installationId,
           sourceConnectionInstanceId: fixture.instanceId,
           sourceComputerId: fixture.computerId,
@@ -800,12 +803,15 @@ describe("SessionService with the unit database", () => {
           targetSessionId,
           content: `from ${sourceSessionId}`,
         });
-        await service.recordMessageOutcome({ messageId: message.id, attemptCount: 1, outcome: "accepted" });
+        if (outcome === "accepted") {
+          await service.recordMessageOutcome({ messageId: message.id, attemptCount: 1, outcome });
+        }
         return message;
       };
-      const child = async (creatorSessionId: string) => {
+      const child = async (creatorSessionId: string, runInputs: readonly SessionRunInput[] = []) => {
         const created = await service.createInternalSessionWithMessage({
           creatorSessionId,
+          runInputs,
           creatorInstallationId: fixture.installationId,
           creatorConnectionInstanceId: fixture.instanceId,
           creatorComputerId: fixture.computerId,
@@ -814,15 +820,52 @@ describe("SessionService with the unit database", () => {
           initialMessage: "task",
         });
         await service.recordMessageOutcome({ messageId: created.message.id, attemptCount: 1, outcome: "accepted" });
-        return created.session;
+        return created;
       };
-      return { service, dm, group, other, send, child };
+      const delivery = async (sessionId: string, channelId: string): Promise<SessionRunInput> => {
+        const [imMessage] = await db.database
+          .insert(imMessages)
+          .values({
+            imBindingId: fixture.bindingId,
+            channelId,
+            externalMessageId: randomUUID(),
+            providerRevisionKey: "1",
+            operation: "created",
+            direction: "inbound",
+            authorKind: "human",
+            authorExternalId: "person",
+            content: { text: "from a person" },
+            providerContext: {},
+            occurredAt: new Date(),
+          } as never)
+          .returning();
+        if (!imMessage) throw new Error("IM message fixture was not created");
+        const [row] = await db.database
+          .insert(imMessageDeliveries)
+          .values({
+            messageId: imMessage.id,
+            sessionId,
+            attention: "direct",
+            state: "accepted",
+            placementGeneration: 1,
+            executionOrigin: "local",
+            turnId: randomUUID(),
+            reportOwnerInstanceId: randomUUID(),
+            inputHash: "a".repeat(64),
+            acceptedAt: new Date(),
+            expiresAt: new Date(Date.now() + 60_000),
+          })
+          .returning();
+        if (!row) throw new Error("IM delivery fixture was not created");
+        return { kind: "delivery", deliveryId: row.id };
+      };
+      return { service, dm, group, other, record, child, delivery };
     }
-    const fromIm = { kind: "delivery", deliveryId: "delivery", turnId: "turn" } as const;
+    const handling = (message: { id: string }): SessionRunInput => ({ kind: "session-message", messageId: message.id });
 
-    it("keeps the first Session as initiator across forwards recorded by Runs", async () => {
-      const { service, dm, group, other, send } = await chats();
-      const first = await send(dm.id, group.id, { sessionId: dm.id, source: fromIm });
+    it("keeps the first Session as initiator across forwards", async () => {
+      const { service, dm, group, other, record, delivery } = await chats();
+      const first = await record(dm.id, group.id, [await delivery(dm.id, "D1")]);
       await expect(service.resolveMessageProvenance(first)).resolves.toEqual({
         source: { sessionKind: "channel", conversationKind: "dm", channelId: "D1" },
         initiatorSessionId: dm.id,
@@ -830,10 +873,7 @@ describe("SessionService with the unit database", () => {
         forwards: 0,
         crossConversation: true,
       });
-      const second = await send(group.id, other.id, {
-        sessionId: group.id,
-        source: { kind: "session-message", messageId: first.id },
-      });
+      const second = await record(group.id, other.id, [handling(first)]);
       await expect(service.resolveMessageProvenance(second)).resolves.toMatchObject({
         source: { channelId: "G1" },
         initiatorSessionId: dm.id,
@@ -842,10 +882,58 @@ describe("SessionService with the unit database", () => {
       });
     });
 
+    it("does not let a later acceptance change a message already recorded", async () => {
+      const { service, dm, group, other, record, delivery, child } = await chats();
+      const relay = (await child(group.id, [await delivery(group.id, "G1")])).session;
+      const fromGroup = await record(group.id, relay.id, [await delivery(group.id, "G1")]);
+      const fromOwner = await record(dm.id, relay.id, [await delivery(dm.id, "D1")], "unknown");
+      const outgoing = await record(relay.id, other.id, [handling(fromGroup)]);
+      const before = await service.resolveMessageProvenance(outgoing);
+      expect(before.initiatorSessionId).toBe(group.id);
+      await service.recordMessageOutcome({ messageId: fromOwner.id, attemptCount: 1, outcome: "accepted" });
+      await expect(service.resolveMessageProvenance(outgoing)).resolves.toEqual(before);
+      // A retry of the same send keeps what was recorded, even if the Run now names something else.
+      const retried = await record(relay.id, other.id, [handling(fromOwner)], "unknown", outgoing.id);
+      expect(retried.initiatorSessionId).toBe(group.id);
+    });
+
+    it("has no initiator when a Run names nothing, or inputs that are not its own", async () => {
+      const { service, dm, group, other, record, delivery } = await chats();
+      const bare = await record(dm.id, group.id);
+      await expect(service.resolveMessageProvenance(bare)).resolves.toMatchObject({
+        forwards: 0,
+        crossConversation: true,
+      });
+      expect(bare.initiatorSessionId).toBeNull();
+      // An unknown link stays unknown down the chain.
+      const notMine = await record(group.id, other.id, [handling(bare)]);
+      expect(notMine.initiatorSessionId).toBeNull();
+      // A message addressed to someone else, and another Session's delivery, prove nothing.
+      const claimed = await record(other.id, group.id, [handling(bare)]);
+      expect(claimed.initiatorSessionId).toBeNull();
+      const othersDelivery = await record(other.id, group.id, [await delivery(dm.id, "D1")]);
+      expect(othersDelivery.initiatorSessionId).toBeNull();
+      const missing = await record(other.id, group.id, [{ kind: "delivery", deliveryId: randomUUID() }]);
+      expect(missing.initiatorSessionId).toBeNull();
+    });
+
+    it("has no initiator when something from elsewhere was steered into the Run", async () => {
+      const { service, dm, group, other, record, delivery } = await chats();
+      const fromGroupPerson = await delivery(dm.id, "D1");
+      const owner = await record(group.id, dm.id, [await delivery(group.id, "G1")]);
+      const mixed = await record(dm.id, other.id, [fromGroupPerson, handling(owner)]);
+      expect(mixed.initiatorSessionId).toBeNull();
+      const provenance = await service.resolveMessageProvenance(mixed);
+      expect(provenance.initiator).toBeUndefined();
+      expect(provenance.forwards).toBe(1);
+      const same = await record(dm.id, other.id, [await delivery(dm.id, "D1"), await delivery(dm.id, "D1")]);
+      expect(same.initiatorSessionId).toBe(dm.id);
+    });
+
     it("says a same-conversation chain stays in its conversation", async () => {
-      const { service, group, send, child } = await chats();
-      const worker = await child(group.id);
-      const report = await send(worker.id, group.id);
+      const { service, group, record, child, delivery } = await chats();
+      const created = await child(group.id, [await delivery(group.id, "G1")]);
+      const report = await record(created.session.id, group.id, [handling(created.message)]);
       await expect(service.resolveMessageProvenance(report)).resolves.toMatchObject({
         source: { sessionKind: "internal", channelId: "G1" },
         initiatorSessionId: group.id,
@@ -854,90 +942,15 @@ describe("SessionService with the unit database", () => {
       });
     });
 
-    it("follows an internal Run with no execution through the latest message it accepted", async () => {
-      const { service, dm, group, other, send, child } = await chats();
-      const worker = await child(group.id);
-      await send(dm.id, worker.id, { sessionId: dm.id, source: fromIm });
-      const forwarded = await send(worker.id, other.id);
-      await expect(service.resolveMessageProvenance(forwarded)).resolves.toMatchObject({
-        initiatorSessionId: dm.id,
-        forwards: 1,
-      });
-      // A message that came later, or was never accepted, does not change what was already sent.
-      const { message: refused } = await service.authorizeAndRecordMessage({
-        messageId: randomUUID(),
-        sourceSessionId: group.id,
-        sourceInstallationId: fixture.installationId,
-        sourceConnectionInstanceId: fixture.instanceId,
-        sourceComputerId: fixture.computerId,
-        sourcePlacementGeneration: 1,
-        targetSessionId: worker.id,
-        content: "not accepted",
-      });
-      expect(refused.lastOutcome).toBe("unknown");
-      const again = await send(worker.id, other.id);
-      await expect(service.resolveMessageProvenance(again)).resolves.toMatchObject({ initiatorSessionId: dm.id });
-      await expect(service.resolveMessageProvenance(forwarded)).resolves.toMatchObject({ initiatorSessionId: dm.id });
-    });
-
-    it("follows a visible Session with no recorded Run through its latest input", async () => {
-      const { service, dm, group, other, send } = await chats();
-      await send(dm.id, group.id);
-      const forwarded = await send(group.id, other.id);
-      await expect(service.resolveMessageProvenance(forwarded)).resolves.toMatchObject({
-        initiatorSessionId: dm.id,
-        forwards: 1,
-      });
-      const [imMessage] = await db.database
-        .insert(imMessages)
-        .values({
-          imBindingId: fixture.bindingId,
-          channelId: "G1",
-          externalMessageId: randomUUID(),
-          providerRevisionKey: "1",
-          operation: "created",
-          direction: "inbound",
-          authorKind: "human",
-          authorExternalId: "person",
-          content: { text: "from a person" },
-          providerContext: {},
-          occurredAt: new Date(),
-        } as never)
-        .returning();
-      if (!imMessage) throw new Error("IM message fixture was not created");
-      await db.database.insert(imMessageDeliveries).values({
-        messageId: imMessage.id,
-        sessionId: group.id,
-        attention: "direct",
-        state: "accepted",
-        placementGeneration: 1,
-        executionOrigin: "local",
-        turnId: randomUUID(),
-        reportOwnerInstanceId: randomUUID(),
-        inputHash: "a".repeat(64),
-        acceptedAt: new Date(Date.now() + 5),
-        expiresAt: new Date(Date.now() + 60_000),
-      });
-      await new Promise((resolve) => setTimeout(resolve, 20));
-      const afterPerson = await send(group.id, other.id);
-      await expect(service.resolveMessageProvenance(afterPerson)).resolves.toMatchObject({
-        initiatorSessionId: group.id,
-        forwards: 0,
-      });
-      await expect(service.resolveMessageProvenance(forwarded)).resolves.toMatchObject({ initiatorSessionId: dm.id });
-    });
-
-    it("treats a visible Session with no recorded Run as the chain's start", async () => {
-      const { service, dm, group, send } = await chats();
-      const message = await send(dm.id, group.id);
-      await expect(service.resolveMessageProvenance(message)).resolves.toMatchObject({
-        initiatorSessionId: dm.id,
-        forwards: 0,
-      });
+    it("does not call an unprovable same-conversation message cross-conversation, for an older peer's sake", async () => {
+      const { service, group, record, child } = await chats();
+      const { session } = await child(group.id);
+      const report = await record(session.id, group.id);
+      await expect(service.resolveMessageProvenance(report)).resolves.toMatchObject({ crossConversation: false });
     });
 
     it("starts a schedule's chain at its recorded Session, or where it runs", async () => {
-      const { service, dm, group, send } = await chats();
+      const { service, dm, group, record, delivery } = await chats();
       const insert = async (userTaskSource: { sessionId: string; source: RuntimeExecutionSource } | null) => {
         const [row] = await db.database
           .insert(sessionMessages)
@@ -958,35 +971,38 @@ describe("SessionService with the unit database", () => {
         if (!row) throw new Error("Scheduled message fixture was not created");
         return row;
       };
-      const forwardOf = (scheduled: { id: string }) =>
-        send(group.id, dm.id, { sessionId: group.id, source: { kind: "session-message", messageId: scheduled.id } });
-      await expect(
-        service.resolveMessageProvenance(await forwardOf(await insert({ sessionId: dm.id, source: fromIm }))),
-      ).resolves.toMatchObject({ initiatorSessionId: dm.id, forwards: 1 });
-      await expect(service.resolveMessageProvenance(await forwardOf(await insert(null)))).resolves.toMatchObject({
+      const input = await delivery(dm.id, "D1");
+      if (input.kind !== "delivery") throw new Error("Expected a delivery input");
+      const source = { kind: "delivery" as const, deliveryId: input.deliveryId, turnId: "turn" };
+      const recorded = await record(group.id, dm.id, [handling(await insert({ sessionId: dm.id, source }))]);
+      await expect(service.resolveMessageProvenance(recorded)).resolves.toMatchObject({
+        initiatorSessionId: dm.id,
+        forwards: 1,
+      });
+      const bare = await record(group.id, dm.id, [handling(await insert(null))]);
+      await expect(service.resolveMessageProvenance(bare)).resolves.toMatchObject({
         initiatorSessionId: group.id,
         forwards: 1,
       });
     });
 
-    it("reports no initiator once a chain is too long to follow", async () => {
-      const { service, dm, group, send } = await chats();
-      let message = await send(dm.id, group.id, { sessionId: dm.id, source: fromIm });
+    it("counts a long chain without following it", async () => {
+      const { service, dm, group, record, delivery } = await chats();
+      let message = await record(dm.id, group.id, [await delivery(dm.id, "D1")]);
       let [from, to] = [group.id, dm.id];
-      for (let hop = 0; hop < 34; hop += 1) {
-        message = await send(from, to, { sessionId: from, source: { kind: "session-message", messageId: message.id } });
+      for (let hop = 0; hop < 40; hop += 1) {
+        message = await record(from, to, [handling(message)]);
         [from, to] = [to, from];
       }
-      const provenance = await service.resolveMessageProvenance(message);
-      expect(provenance.initiatorSessionId).toBeUndefined();
-      expect(provenance.initiator).toBeUndefined();
-      expect(provenance.forwards).toBe(32);
-      expect(provenance.crossConversation).toBe(true);
+      await expect(service.resolveMessageProvenance(message)).resolves.toMatchObject({
+        initiatorSessionId: dm.id,
+        forwards: 40,
+      });
     });
 
     it("lists the Agent's live Sessions with their conversations", async () => {
       const { service, dm, group, other, child } = await chats();
-      const worker = await child(group.id);
+      const worker = (await child(group.id)).session;
       await db.database.update(sessions).set({ endedAt: new Date() }).where(eq(sessions.id, other.id));
       const { items } = await service.listAgentSessions(dm.id, { limit: 100 });
       const byId = new Map(items.map((item) => [item.sessionId, item]));
@@ -2261,6 +2277,8 @@ describe("SessionCollaborationService response mapping", () => {
         sourceSessionId: "source",
         scheduledOrigin: null,
         userTaskSource: null,
+        initiatorSessionId: null,
+        forwardCount: 0,
         targetSessionId: "target",
         content: "hello",
         contentHash: "a".repeat(64),

@@ -334,6 +334,24 @@ describe("session CLI", () => {
         status: "stopped",
       });
       expect(stop).toHaveBeenCalledWith("p".repeat(40), { targetSessionId: "33333333-3333-4333-8333-333333333333" });
+      const runInput = "m:55555555-5555-4555-8555-555555555555";
+      await writeFile(`${proofPath}.run-inputs`, JSON.stringify({ inputs: [runInput] }));
+      await runSessionSend("33333333-3333-4333-8333-333333333333", {
+        message: "from a tracked Run",
+        messageId: "66666666-6666-4666-8666-666666666666",
+      });
+      expect(send).toHaveBeenLastCalledWith(
+        "p".repeat(40),
+        expect.objectContaining({ message: "from a tracked Run" }),
+        { runInputs: runInput },
+      );
+      await runSessionStop("33333333-3333-4333-8333-333333333333");
+      expect(stop).toHaveBeenLastCalledWith(
+        "p".repeat(40),
+        { targetSessionId: "33333333-3333-4333-8333-333333333333" },
+        { runInputs: runInput },
+      );
+      await rm(`${proofPath}.run-inputs`);
       await expect(runSessionStop("not-a-uuid")).rejects.toThrow();
       await expect(
         runSessionList({ recursive: true, limit: 5, cursor: "c", since: "2026-01-01T00:00:00.000Z" }),

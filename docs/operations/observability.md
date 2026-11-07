@@ -441,8 +441,8 @@ No `im.inbound.process` span means openTag did not observe the provider callback
 
 ## Cross-conversation Session messages
 
-Messages between an Agent's conversations are on trial, so their volume stays visible without a new table or metric. Two
-sources answer different questions.
+Messages between an Agent's conversations are on trial, so their volume stays visible without a new metric. Two sources
+answer different questions.
 
 The database has every message since the trial began, and is the place to read volume. Its scope comparison uses the rows
 of the two Sessions:
@@ -457,7 +457,8 @@ where (s.channel_id, s.conversation_kind, coalesce(s.thread_key, ''))
 group by 1, 2 order by 1 desc;
 ```
 
-The Server's stdout has one `info` record per dispatch attempt whose chain leaves the target's conversation, with
+The Server's stdout has one `info` record per dispatch attempt that leaves the target's conversation or has no known initiator
+(`initiatorSessionId: null`), with
 `operation: session.message.cross_conversation`, `agentId`, `messageId`, `sourceSessionId`, `targetSessionId`,
 `initiatorSessionId`, `forwards`, `outcome`, and `code` when there is one. A growing `forwards` between the same two Sessions
 is a reply loop. A send refused for another Agent logs `operation: session.message.other_agent`. Neither carries message

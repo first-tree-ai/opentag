@@ -18,6 +18,7 @@ import {
   type SessionMessageRunOutcome,
   type SessionMessageScheduledOrigin,
   type SessionReconcileResult,
+  type SessionRunInput,
 } from "@opentag/shared";
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import type { ConnectionRegistry } from "../../runtime/connection-registry.js";
@@ -725,6 +726,7 @@ export class SessionCollaborationService {
       const attempt = await this.#sessions.createInternalSessionWithMessage({
         creatorSessionId: source.sessionId,
         ...(source.userTaskSource ? { userTaskSource: source.userTaskSource } : {}),
+        runInputs: sourceRunInputs(source),
         creatorInstallationId: source.installationId,
         creatorConnectionInstanceId: source.connectionInstanceId,
         creatorComputerId: source.computerId,
@@ -749,6 +751,7 @@ export class SessionCollaborationService {
         messageId: input.messageId,
         sourceSessionId: source.sessionId,
         ...(source.userTaskSource ? { userTaskSource: source.userTaskSource } : {}),
+        runInputs: sourceRunInputs(source),
         sourceInstallationId: source.installationId,
         sourceComputerId: source.computerId,
         sourceConnectionInstanceId: source.connectionInstanceId,
@@ -867,6 +870,7 @@ export class SessionCollaborationService {
         targetSessionId: target.creatorSessionId,
         content: renderSessionStoppedNotice(target.sessionId),
         serverDerivedId: true,
+        runInputs: sourceRunInputs(source),
       });
     } catch (error) {
       this.#logStopNoticeFailure(target, noticeId, this.#failure(noticeId, error).code);
@@ -959,6 +963,8 @@ export class SessionCollaborationService {
         targetSessionId: notice.recipientSessionId,
         content: renderRunOutcomeNotice(input),
         serverDerivedId: true,
+        // It continues the message it reports on, whatever the Session took on since.
+        runInputs: [{ kind: "session-message", messageId: input.messageId }],
       });
       if (attempt.attemptCount === null) {
         return this.#runOutcomeNoticeStatus(
@@ -1030,7 +1036,9 @@ export class SessionCollaborationService {
       return this.#record(response(attempt.message.id, "unreachable", sessionId, "runtime_unavailable"), attemptCount);
     }
     const result = await this.#deliverWithProvenance(attempt, attemptCount, sessionId, provenance, signal);
-    if (provenance.crossConversation) this.#logCrossConversation(attempt, provenance, result);
+    if (provenance.crossConversation || !provenance.initiatorSessionId) {
+      this.#logCrossConversation(attempt, provenance, result);
+    }
     return result;
   }
 
@@ -1067,7 +1075,7 @@ export class SessionCollaborationService {
     }
   }
 
-  /** The trial's record of what crosses conversations and how long chains get. No message content. */
+  /** The trial's record of what crosses conversations, what has no known start, and how long chains get. */
   #logCrossConversation(
     attempt: SessionMessageAttempt,
     provenance: SessionMessageProvenance,
@@ -1308,6 +1316,19 @@ export class SessionCollaborationService {
     this.#onDiagnostic?.("SESSION_COLLABORATION_RUNTIME_UNAVAILABLE");
     return response(messageId, "unreachable", undefined, "runtime_unavailable");
   }
+}
+
+/** What the source Run is working on: what its CLI named, plus what its execution proves when it has one. */
+function sourceRunInputs(source: SessionCliSourceContext): SessionRunInput[] {
+  const executed = source.userTaskSource?.source;
+  return [
+    ...(source.runInputs ?? []),
+    ...(executed?.kind === "delivery" || executed?.kind === "session-message" ? [executed] : []),
+  ].map((input) =>
+    input.kind === "delivery"
+      ? { kind: "delivery", deliveryId: input.deliveryId }
+      : { kind: "session-message", messageId: input.messageId },
+  );
 }
 
 function deliveryOutcomeUnknown(error: unknown, signal?: AbortSignal): boolean {

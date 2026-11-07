@@ -22,6 +22,14 @@ export const sessionMessages = pgTable(
      */
     sourceSessionId: uuid("source_session_id").references(() => sessions.id, { onDelete: "restrict" }),
     userTaskSource: jsonb("user_task_source").$type<RuntimeUserTaskSource>(),
+    /*
+     * The Session where this message's chain started, fixed when the message is recorded and never
+     * rewritten. Null when it could not be proved, which a receiver treats as non-owner. Traceability
+     * like `scheduleId`: deliberately no FK, so it never holds a Session back from deletion.
+     */
+    initiatorSessionId: uuid("initiator_session_id"),
+    /** How many Session messages came before this one in its chain, fixed with the initiator. */
+    forwardCount: integer("forward_count").notNull().default(0),
     scheduledOrigin: jsonb("scheduled_origin").$type<SessionMessageScheduledOrigin>(),
     targetSessionId: uuid("target_session_id")
       .notNull()

@@ -202,11 +202,10 @@ Server tells the Session that created it (`created_by_session_id`):
 - Background work: Local Claude Code runs one process per Run, and the process exits when the Run ends, so background
   shells, background subagents, Monitors and in-process timers stop then. They do not survive to the next message, and
   nothing wakes the Session later. A timer counts once its `ScheduleWakeup` or `CronCreate` call succeeded, until
-  `ScheduleWakeup` with `stop` or `CronDelete` removes it, or a one-shot timer is known to have fired. A
-  `command_lifecycle` with `wakeup_source` shows firing, but a cron frame names no job, so a one-shot cron job is removed
-  only when it is the sole cron job known to this process and past its `nextFireAt`. Otherwise it is kept, so the notice
-  and report may name a job that already ran, and both say the work may still be live. A `durable` cron job is on disk,
-  so it is never named, but it can still fire, so it counts as another job here. The result of a fired timer's own turn
+  `ScheduleWakeup` with `stop` or `CronDelete` removes it. A wakeup is also removed when a `command_lifecycle` with
+  `wakeup_source: loop_wakeup` names its `scheduled_for`. A cron firing names no job and can come from a durable job of an
+  earlier Run, so it removes nothing. The notice and report may therefore name a job that already ran, and both say the
+  work may still be live. A `durable` cron job is on disk and is not counted. The result of a fired timer's own turn
   does not end the Run. Before the process exits, the Run tells the Session once which work may stop
   (`[openTag notice] This Run is about to end.`), and gets one more model turn to wait for it, redo it in the foreground,
   or tell whoever is waiting. The result after that notice ends the Run, with or without a `command_lifecycle` for it. If

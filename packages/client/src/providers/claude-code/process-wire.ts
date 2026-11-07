@@ -448,23 +448,20 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
   }
 }
 
-interface LiveTimer {
-  /** How a report names it. A durable job has none: it is on disk, but it can still fire here. */
-  readonly label?: string;
-  /** When a one-shot job is due; a recurring job or wakeup has none. */
-  readonly oneShotAt?: number;
-}
-
 /**
- * The timers confirmed live in this process. A tool call counts only once its `tool_result` succeeded:
- * an invalid cron expression creates nothing, `CronDelete` and `ScheduleWakeup` with `stop` remove what
- * they name, and a one-shot timer is gone once it fired. A cron job with `durable: true` is written to disk, so it does not stop with the process.
+ * The timers that may be live in this process. A tool call counts only once its `tool_result` succeeded:
+ * an invalid cron expression creates nothing, and `CronDelete` and `ScheduleWakeup` with `stop` remove what
+ * they name. A cron firing names no job and can come from a durable job of an earlier Run, so it removes
+ * nothing, and a report may name a job that already ran. A cron job with `durable: true` is written to disk,
+ * so it does not stop with the process.
  */
 class InProcessTimers {
   /** Timer tool calls waiting for their `tool_result`, by tool call id. */
   readonly #calls = new Map<string, Record<string, unknown>>();
   /** Live timers by job id, with one entry for the Session's single pending wakeup. */
-  readonly #live = new Map<string, LiveTimer>();
+  readonly #live = new Map<string, string>();
+  /** When the pending wakeup is due, which is how its firing names it. */
+  #wakeupScheduledFor?: unknown;
   /** Turns Claude Code started because a timer fired, by command uuid. */
   readonly #firedTurns = new Set<string>();
 
@@ -482,30 +479,18 @@ class InProcessTimers {
     }
   }
 
-  /**
-   * Firing shows only here: `wakeup_source` is `loop_wakeup` for `ScheduleWakeup` and `schedule_wakeup`
-   * for a cron job. A wakeup is removed outright. The cron frame names no job, so a job is removed only
-   * when nothing else can have fired; otherwise it is kept, and the report may name a job that already ran.
-   */
+  /** Firing shows only here. `loop_wakeup` is a wakeup and `scheduled_for` matches it; a cron firing names no job. */
   #observeLifecycle(frame: Record<string, unknown>): void {
     const command = String(frame.command_uuid);
     if (frame.state === "completed") this.#firedTurns.delete(command);
     if (frame.state !== "started" || typeof frame.wakeup_source !== "string") return;
     this.#firedTurns.add(command);
-    if (frame.wakeup_source === "loop_wakeup") this.#live.delete(WAKEUP_TIMER);
-    if (frame.wakeup_source === "schedule_wakeup") this.#retireOnlyCronJob();
-  }
-
-  #retireOnlyCronJob(): void {
-    const jobs = [...this.#live].filter(([key]) => key !== WAKEUP_TIMER);
-    const [only] = jobs;
-    if (jobs.length !== 1 || !only) return;
-    const [jobId, { oneShotAt }] = only;
-    if (oneShotAt !== undefined && oneShotAt <= Date.now()) this.#live.delete(jobId);
+    const named = typeof frame.scheduled_for === "number" && frame.scheduled_for === this.#wakeupScheduledFor;
+    if (frame.wakeup_source === "loop_wakeup" && named) this.#live.delete(WAKEUP_TIMER);
   }
 
   labels(): string[] {
-    return [...this.#live.values()].flatMap((timer) => (timer.label ? [timer.label] : []));
+    return [...this.#live.values()];
   }
 
   #recordCall(block: Record<string, unknown>): void {
@@ -518,22 +503,17 @@ class InProcessTimers {
     this.#calls.delete(id);
     if (!call || block.is_error === true) return;
     const input = isRecord(call.input) ? call.input : {};
+    const result = isRecord(toolUseResult) ? toolUseResult : {};
     if (call.name === "ScheduleWakeup") {
       if (input.stop === true) this.#live.delete(WAKEUP_TIMER);
-      else this.#live.set(WAKEUP_TIMER, { label: WAKEUP_TIMER });
+      else this.#live.set(WAKEUP_TIMER, WAKEUP_TIMER);
+      this.#wakeupScheduledFor = result.scheduledFor;
     } else if (call.name === "CronDelete") {
       this.#live.delete(String(input.id));
-    } else {
-      this.#addCronJob(id, isRecord(toolUseResult) ? toolUseResult : {});
+    } else if (result.durable !== true) {
+      const jobId = typeof result.id === "string" ? result.id : id;
+      this.#live.set(jobId, `CronCreate job ${jobId}`);
     }
-  }
-
-  #addCronJob(toolCallId: string, result: Record<string, unknown>): void {
-    const jobId = typeof result.id === "string" ? result.id : toolCallId;
-    this.#live.set(jobId, {
-      ...(result.durable === true ? {} : { label: `CronCreate job ${jobId}` }),
-      ...(result.recurring === false ? { oneShotAt: Number(result.nextFireAt ?? 0) } : {}),
-    });
   }
 }
 

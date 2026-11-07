@@ -150,6 +150,24 @@ export function effectsCopy(effects: string | null, language: FeedbackLanguage):
   return copy[language];
 }
 
+/** Tells people how to recover, not only to wait. Names no Computer or administrator: everyone in the group reads it. */
+export function offlineNoticeCopy(language: FeedbackLanguage): { before: string; label: string; after: string } {
+  return language === "zh"
+    ? {
+        before:
+          "运行这个 Agent 的电脑离线了，暂时处理不了这条消息。\n请确认电脑已开机、已联网，再到 Agent 页面恢复连接。",
+        label: "恢复连接",
+        after: "如果这不是你管理的 Agent，请联系它的管理员。\n消息已保留，恢复后会自动处理；7 天内没恢复会过期。",
+      }
+    : {
+        before:
+          "The computer running this Agent is offline, so this message can't be handled yet.\nCheck that the computer is on and connected, then restore the connection on the Agent page.",
+        label: "Restore connection",
+        after:
+          "If you don't manage this Agent, contact its administrator.\nYour message is saved and will be handled after it reconnects. It expires after 7 days.",
+      };
+}
+
 export const FEEDBACK_LABELS = {
   details: { zh: "查看详情", en: "View details" },
   taskFailed: { zh: "任务失败", en: "Task failed" },

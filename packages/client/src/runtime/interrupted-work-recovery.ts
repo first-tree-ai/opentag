@@ -141,6 +141,7 @@ export class InterruptedWorkRecovery implements InterruptedTurnResumer {
       this.#options.custody.resume(pending.record.request, pending.record.turnId, {
         continuation: pending.interruption,
         steers: pending.steers,
+        ...(pending.record.steerConversations ? { steerConversations: pending.record.steerConversations } : {}),
       });
     this.#logger.info(
       { sessionId, turnId: turn.turnId, reason: pending.interruption.reason, started },

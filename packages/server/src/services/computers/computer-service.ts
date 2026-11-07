@@ -22,6 +22,7 @@ import {
   CLOUD_COMPUTER_ARCH,
   CLOUD_COMPUTER_DISPLAY_NAME,
   CLOUD_COMPUTER_PLATFORM,
+  COMPUTER_PRESENCE_TIMEOUT_MS,
   projectAccountComputerSummary,
   projectCloudComputerEnsure,
 } from "./cloud-computer.js";
@@ -74,7 +75,7 @@ export class ComputerService {
   constructor(database: DatabaseClient, _auth: ActiveUserResolver, options: ComputerServiceOptions = {}) {
     this.#database = database;
     this.#now = options.now ?? (() => new Date());
-    this.#presenceTimeoutMs = options.presenceTimeoutMs ?? 90_000;
+    this.#presenceTimeoutMs = options.presenceTimeoutMs ?? COMPUTER_PRESENCE_TIMEOUT_MS;
     this.#providerReadiness = options.providerReadiness;
     this.#cloudIdentities = options.cloudIdentities ?? { enabled: false };
     this.#assertCloudControlCredential = options.assertCloudControlCredential;

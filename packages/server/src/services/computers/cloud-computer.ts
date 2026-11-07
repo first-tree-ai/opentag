@@ -75,6 +75,9 @@ export function projectAccountComputerSummary(input: {
   };
 }
 
+/** A Computer silent for this long reads as offline everywhere, including the Agent page recovery entry. */
+export const COMPUTER_PRESENCE_TIMEOUT_MS = 90_000;
+
 function accountConnectionStatus(
   computer: ComputerRow,
   presenceCutoffMs: number,

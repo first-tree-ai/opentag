@@ -278,7 +278,7 @@ describe("AgentTurnRunner automatic retry", () => {
       });
       const hold = async () => {
         await inFlight;
-        return undefined;
+        return { outcome: Promise.resolve("processed" as const) };
       };
       if (slow === "provider steer") h.runtime.steer.mockImplementationOnce(hold);
       else {
@@ -325,7 +325,7 @@ describe("AgentTurnRunner automatic retry", () => {
     vi.useFakeTimers();
     const h = runnerHarness();
     h.records.set(h.request.sessionId, turnRetryRecord(h.request, "turn-1"));
-    h.runtime.steer.mockImplementationOnce(() => new Promise<undefined>(() => undefined));
+    h.runtime.steer.mockImplementationOnce(() => new Promise<never>(() => undefined));
     let endRun: () => void = () => undefined;
     h.prompt.mockImplementationOnce(() => {
       h.emit({ type: "run_started", runId: "turn-1" });
@@ -802,6 +802,7 @@ describe("AgentTurnRunner steer capture", () => {
       );
       h.runtime.steer.mockImplementation(async () => {
         order.push("steer");
+        return { outcome: Promise.resolve("processed" as const) };
       });
       h.runner.start(owner(h.request));
       await vi.waitFor(() => expect(h.prompt).toHaveBeenCalledOnce());
@@ -1686,7 +1687,7 @@ function runnerHarness(
   let sink: ((event: unknown) => Promise<void> | void) | undefined;
   const runtime = {
     prompt,
-    steer: vi.fn(async (_input: unknown) => undefined),
+    steer: vi.fn(async (_input: unknown) => ({ outcome: Promise.resolve("processed" as const) })),
     capabilities: { steer: "supported" },
     state: { phase: "running", activeRunId: "turn-1" },
   };

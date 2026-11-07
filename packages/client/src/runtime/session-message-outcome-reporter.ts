@@ -205,10 +205,8 @@ export class SessionMessageOutcomeReporter {
   #send(key: string): void {
     const record = this.#records.get(key);
     if (!record || isFinal(record) || this.#inFlight.has(key) || this.#retryTimers.has(key)) return;
-    if (retryExhausted(this.#policy, record, this.#now())) {
-      void this.#finish(record, "dead-letter");
-      return;
-    }
+    // The age limit ends retries after a failed attempt (`#retryLater`), not before one: a Computer that was
+    // off for a day still gets to tell the Server, and any failure then gives up at once.
     if (!this.#canSend()) {
       // A registered peer below v4 cannot accept the frame yet; an unregistered connection
       // resends on its next registration.

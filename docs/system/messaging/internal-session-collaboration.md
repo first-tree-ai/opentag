@@ -175,7 +175,7 @@ kind of Session the target is. A scheduled message has no sender: its notice goe
   After a restart, accepted messages wait without failing until the Server prepares their Session; if the Server
   refuses (for example the Session ended), they fail with that reason. The daemon then reports the outcome with
   `session:message:outcome`. Reports are kept in a local durable file and resent until the Server gives a final
-  answer or one day passes. The terminal inbox record and an `outcomeReport: pending` marker are written in one
+  answer or one day passes; a report that aged past that while the Computer was off still gets one attempt. The terminal inbox record and an `outcomeReport: pending` marker are written in one
   record write; the marker becomes `published` once the report is durable in the reporter's file. On startup a
   terminal record still marked `pending` (for example after a crash between the two writes) hands its report over
   again, and the child is never rerun. Terminal records written before the marker existed carry no marker and are

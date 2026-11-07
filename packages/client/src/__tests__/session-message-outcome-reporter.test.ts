@@ -215,6 +215,42 @@ describe("SessionMessageOutcomeReporter", () => {
     expect(sent).toEqual([]);
   });
 
+  it("still attempts a report that aged past the limit while the Computer was off", async () => {
+    const now = 1_000 + 25 * 60 * 60 * 1_000;
+    const persistence = new MemoryRuntimeDurabilityStore();
+    await persistence.write({
+      acceptedAt: 1_000,
+      attempts: 0,
+      key: "target:message",
+      kind: "session-message-outcome",
+      payload: {
+        messageId: randomUUID(),
+        targetSessionId: randomUUID(),
+        agentId: randomUUID(),
+        placementGeneration: 1,
+        outcome: "failed",
+        reason: "provider_failed",
+      },
+      status: "accepted",
+      updatedAt: 1_000,
+    } as never);
+    const send = vi.fn(async () => undefined);
+    const reporter = new SessionMessageOutcomeReporter({
+      connection: {
+        state: "registered",
+        capabilityVersion: () => 4,
+        send,
+        subscribeState: () => () => undefined,
+      } as never,
+      now: () => now,
+      persistence,
+    });
+    await reporter.ready();
+    expect(send).toHaveBeenCalledOnce();
+    expect((await persistence.list("session-message-outcome"))[0]?.status).not.toBe("dead-letter");
+    reporter.stop();
+  });
+
   it("keeps retrying with the default policy until one day has passed", async () => {
     const day = 24 * 60 * 60 * 1_000;
     let now = 0;

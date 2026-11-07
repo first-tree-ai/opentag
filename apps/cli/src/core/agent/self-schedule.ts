@@ -245,12 +245,17 @@ export const FULL_SCHEDULE_PRESENTATION = {
 } as const;
 
 export function formatAgentScheduleList(result: AgentScheduleListResponse): string {
-  const rows = ["ID\tNAME\tENABLED\tNEXT\tLAST HANDOFF"];
+  const rows = ["ID\tNAME\tTARGET SESSION\tENABLED\tNEXT\tLAST HANDOFF"];
   for (const item of result.items) {
     rows.push(
-      [item.id, item.name, String(item.enabled), item.nextTriggerAt ?? "—", item.lastDispatch?.outcome ?? "—"].join(
-        "\t",
-      ),
+      [
+        item.id,
+        item.name,
+        item.target.sessionId,
+        String(item.enabled),
+        item.nextTriggerAt ?? "—",
+        item.lastDispatch?.outcome ?? "—",
+      ].join("\t"),
     );
   }
   if (result.nextCursor) rows.push(`Next cursor: ${result.nextCursor}`);

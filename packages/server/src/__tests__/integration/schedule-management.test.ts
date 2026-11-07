@@ -207,59 +207,57 @@ describe("ScheduleService fixed-target resolution (P02)", () => {
     }
   });
 
-  it("maps an internal Session to the one existing visible Session of the same scope", async () => {
+  it("pins an internal Session to itself, never to a visible Session of the same scope", async () => {
     const seed = await seedConversation("a@example.com", "agent-a");
     registerProof("proof-internal-channel", seed, seed.internalChannelSessionId, "internal");
     registerProof("proof-internal-thread", seed, seed.internalThreadSessionId, "internal");
     try {
       const channelScope = await service.createForAgent(await authenticate("proof-internal-channel"), CREATE_EVERY);
-      expect(channelScope.target.sessionId).toBe(seed.channelSessionId);
+      expect(channelScope.target).toMatchObject({ sessionId: seed.internalChannelSessionId, sessionKind: "internal" });
       const threadScope = await service.createForAgent(await authenticate("proof-internal-thread"), CREATE_EVERY);
-      expect(threadScope.target.sessionId).toBe(seed.threadSessionId);
+      expect(threadScope.target).toMatchObject({ sessionId: seed.internalThreadSessionId, sessionKind: "internal" });
+      // Every read names the Session it belongs to.
+      const listed = await service.listForAgent(await authenticate("proof-internal-channel"), { limit: 10 });
+      expect(listed.items.map((item) => item.target.sessionId).sort()).toEqual(
+        [seed.internalChannelSessionId, seed.internalThreadSessionId].sort(),
+      );
     } finally {
       await closeClient();
     }
   });
 
-  it("refuses creation when no visible Session exists in the exact scope, without fallback", async () => {
+  it("creates for an internal Session with no visible Session in its scope, and resurrects none", async () => {
     const seed = await seedConversation("a@example.com", "agent-a");
-    const db = client.database;
-    // An internal Session on another Agent's binding that has no visible Session at all...
-    const lonely = await seedConversation("lonely@example.com", "agent-lonely");
-    await db.execute(
-      sqlRaw(
-        `update sessions set created_by_session_id = '${seed.channelSessionId}'
-       where im_binding_id = '${lonely.bindingId}' and kind = 'internal'`,
-      ),
+    await client.database.execute(
+      sqlRaw(`update sessions set channel_id = 'oc_nowhere' where id = '${seed.internalChannelSessionId}'`),
     );
-    await db.execute(sqlRaw(`delete from sessions where im_binding_id = '${lonely.bindingId}' and kind <> 'internal'`));
-    await db.execute(
-      sqlRaw(
-        `update sessions set channel_id = 'oc_nowhere'
-       where id = '${lonely.internalChannelSessionId}'`,
-      ),
-    );
-    // ...and an internal Session scoped to a thread that does not exist while its channel does.
-    const orphanThreadInternalId = randomUUID();
-    await db.execute(
-      sqlRaw(
-        `insert into sessions (id, im_binding_id, channel_id, conversation_kind, kind, thread_key, created_by_session_id)
-       values ('${orphanThreadInternalId}', '${seed.bindingId}', 'oc_channel', 'dm', 'internal', 'omt_missing', '${seed.channelSessionId}')`,
-      ),
-    );
-    registerProof("proof-lonely", lonely, lonely.internalChannelSessionId, "internal");
-    registerProof("proof-orphan-thread", seed, orphanThreadInternalId, "internal");
+    registerProof("proof-lonely", seed, seed.internalChannelSessionId, "internal");
     try {
-      for (const token of ["proof-lonely", "proof-orphan-thread"]) {
-        await expect(service.createForAgent(await authenticate(token), CREATE_EVERY)).rejects.toMatchObject({
-          code: SCHEDULE_ERROR_CODES.TARGET_REQUIRED,
-          statusCode: 409,
-        });
-      }
-      // Neither attempt created a schedule or resurrected a Session.
-      expect(await client.database.select().from(agentSchedules)).toHaveLength(0);
+      const created = await service.createForAgent(await authenticate("proof-lonely"), CREATE_EVERY);
+      expect(created.target.sessionId).toBe(seed.internalChannelSessionId);
       const visible = (await client.database.select().from(sessions)).filter((row) => row.kind !== "internal");
       expect(visible.map((row) => row.id).sort()).toEqual([seed.channelSessionId, seed.threadSessionId].sort());
+    } finally {
+      await closeClient();
+    }
+  });
+
+  it("refuses creation for a Session that has ended, and resume once its target ended", async () => {
+    const seed = await seedConversation("a@example.com", "agent-a");
+    registerProof("proof-internal", seed, seed.internalChannelSessionId, "internal");
+    try {
+      const scope = await authenticate("proof-internal");
+      const created = await service.createForAgent(scope, CREATE_EVERY);
+      const paused = await service.pauseForAgent(scope, created.id, created.revision);
+      await client.database.execute(
+        sqlRaw(`update sessions set ended_at = now() where id = '${seed.internalChannelSessionId}'`),
+      );
+      await expect(service.createForAgent(scope, CREATE_EVERY)).rejects.toMatchObject({
+        code: SCHEDULE_ERROR_CODES.TARGET_REQUIRED,
+      });
+      await expect(service.resumeForAgent(scope, created.id, paused.revision)).rejects.toMatchObject({
+        code: SCHEDULE_ERROR_CODES.TARGET_INVALID,
+      });
     } finally {
       await closeClient();
     }

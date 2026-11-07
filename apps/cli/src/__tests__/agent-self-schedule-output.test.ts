@@ -1,6 +1,6 @@
 import type { AgentSchedule } from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { FULL_SCHEDULE_PRESENTATION } from "../core/agent/self-schedule.js";
+import { FULL_SCHEDULE_PRESENTATION, formatAgentScheduleList } from "../core/agent/self-schedule.js";
 import { presentCommand } from "../core/command/policy.js";
 
 const id = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
@@ -54,6 +54,14 @@ function present(value: AgentSchedule, json: boolean): string {
   );
   return stdout.join("");
 }
+
+describe("schedule list output", () => {
+  it("names the Session each schedule belongs to", () => {
+    const output = formatAgentScheduleList({ items: [schedule], nextCursor: null } as never);
+    expect(output.split("\n")[0]).toContain("TARGET SESSION");
+    expect(output).toContain(schedule.target.sessionId);
+  });
+});
 
 describe("full Schedule output", () => {
   it("prints the stored prompt verbatim as JSON, so it can be written back", () => {

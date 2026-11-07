@@ -13,7 +13,7 @@ import {
   SCHEDULE_ERROR_CODES,
   type UpdateAgentScheduleRequest,
 } from "@opentag/shared";
-import { and, desc, eq, isNull, ne, type SQL, sql } from "drizzle-orm";
+import { and, desc, eq, ne, type SQL, sql } from "drizzle-orm";
 import { z } from "zod";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { agentSchedules, agents, imBindings, sessions } from "../../db/schema/index.js";
@@ -33,8 +33,8 @@ import { ScheduleServiceError, scheduleInvalidRequest } from "./errors.js";
 /*
  * ScheduleService — the Schedule management plane.
  *
- * A Schedule belongs to exactly one Agent and pins one visible Session as its fixed target at
- * creation; the target can never change afterwards. Two caller surfaces reach the same
+ * A Schedule belongs to exactly one Agent and pins the Session that created it as its fixed target;
+ * the target can never change afterwards. Two caller surfaces reach the same
  * operations: the Agent itself through a Session CLI proof (`/api/v1/runtime/agent/schedules`),
  * and the owning Account through the Web session (`/api/v1/agents/:agentId/schedules`,
  * read/pause/resume/delete only). Both conceal foreign or missing schedules as 404.
@@ -487,59 +487,23 @@ export class ScheduleService {
    * ---------------------------------------------------------------------------------------- */
 
   /**
-   * Resolve the fixed create target from the proof's Session. A channel/thread Session pins
-   * itself; an internal Session resolves exactly one existing active visible Session of the same
-   * IM binding, channel, conversation kind, and thread scope — never a fallback, never a new
-   * Session.
+   * The fixed create target is the proof's own Session, whatever its kind. Nothing a caller sends can
+   * name another Session, so a Session can only schedule itself.
    */
   async #resolveCreateTarget(transaction: DatabaseTransaction, scope: AgentScheduleScope): Promise<TargetFactsRow> {
     const [source] = await transaction
-      .select({
-        id: sessions.id,
-        kind: sessions.kind,
-        imBindingId: sessions.imBindingId,
-        channelId: sessions.channelId,
-        conversationKind: sessions.conversationKind,
-        threadKey: sessions.threadKey,
-        endedAt: sessions.endedAt,
-      })
+      .select({ endedAt: sessions.endedAt })
       .from(sessions)
       .where(eq(sessions.id, scope.sessionId))
       .limit(1);
     if (!source || source.endedAt) {
       throw new ScheduleServiceError(
         SCHEDULE_ERROR_CODES.TARGET_REQUIRED,
-        "A schedule requires an active visible conversation as its fixed target",
+        "A schedule requires an active Session as its fixed target",
       );
     }
-    if (source.kind === "channel" || source.kind === "thread") {
-      const target = await this.#targetFacts(transaction, source.id);
-      if (!target) throw new Error("The proof's Session is missing its target facts");
-      return target;
-    }
-    const candidates = await transaction
-      .select({ id: sessions.id })
-      .from(sessions)
-      .where(
-        and(
-          eq(sessions.imBindingId, source.imBindingId),
-          eq(sessions.channelId, source.channelId),
-          eq(sessions.conversationKind, source.conversationKind),
-          source.threadKey === null
-            ? eq(sessions.kind, "channel")
-            : and(eq(sessions.kind, "thread"), eq(sessions.threadKey, source.threadKey)),
-          isNull(sessions.endedAt),
-        ),
-      )
-      .limit(2);
-    if (candidates.length !== 1) {
-      throw new ScheduleServiceError(
-        SCHEDULE_ERROR_CODES.TARGET_REQUIRED,
-        "No existing visible Session matches this conversation; start one in the target Chat first",
-      );
-    }
-    const target = await this.#targetFacts(transaction, (candidates[0] as { id: string }).id);
-    if (!target) throw new Error("The resolved target Session is missing its target facts");
+    const target = await this.#targetFacts(transaction, scope.sessionId);
+    if (!target) throw new Error("The proof's Session is missing its target facts");
     return target;
   }
 
@@ -566,7 +530,7 @@ export class ScheduleService {
     if (!valid) {
       throw new ScheduleServiceError(
         SCHEDULE_ERROR_CODES.TARGET_INVALID,
-        "The schedule's fixed target is no longer valid; create a new schedule from an active conversation",
+        "The schedule's fixed target is no longer valid; create a new schedule from an active Session",
       );
     }
   }
@@ -770,10 +734,6 @@ function targetFactsColumns() {
 }
 
 function toScheduleTarget(row: TargetFactsRow): AgentScheduleTarget {
-  if (row.sessionKind !== "channel" && row.sessionKind !== "thread") {
-    // Unreachable through management: creation only ever pins a visible Session.
-    throw new Error("A schedule target must be a visible channel or thread Session");
-  }
   return {
     sessionId: row.sessionId,
     provider: row.provider,

@@ -217,7 +217,7 @@ export const AgentScheduleTargetSchema = z
   .object({
     sessionId: z.string().uuid(),
     provider: z.enum(["feishu", "slack"]),
-    sessionKind: z.enum(["channel", "thread"]),
+    sessionKind: z.enum(["channel", "thread", "internal"]),
     channelId: z.string().min(1).max(512),
     threadKey: z.string().min(1).max(512).nullable(),
   })

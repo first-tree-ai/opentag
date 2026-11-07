@@ -26,11 +26,31 @@ CLI release version. E3 adds no database migration or table.
 
 ## Lifecycle and control
 
+`SandboxRunnerService` remains the allocation and Account-operation facade. Its token authority
+validates and renews Runner scopes; the workspace sealer proves the exact saved archive before
+release; the idle-reclaim collaborator owns automatic claims and same-account reuse. Allocation
+operations retain their original transaction boundaries and provider calls remain outside transactions.
+The Cloud delivery and Session collaboration owners share exact-connection helpers while retaining
+their own custody and terminal protocols.
+
+The Runner uses one work-kind descriptor for delivery and Session-message FIFO admission,
+synchronous active-slot reservation, execution and interrupted-namespace cleanup. Delivery reports
+and Session settlements retain their separate durable formats. Deadline construction, steering and
+activity reporting remain specific to each kind of work.
+
 The existing lifecycle is `unallocated → preparing → ready → releasing → unallocated`.
 The Server reserves the allocation name before cloud I/O. Competing callers reconcile the same
 allocation. An uncertain create or delete retains the row's resource reference and an actionable
 error code; a 404 while a create may still arrive is not proof of cleanup. The provider UID and
 etag protect deletion against name reuse.
+
+Cloud Admin Instance and operation GETs make at most three attempts for HTTP 502/503/504
+or transport failures, with 150 ms then 300 ms backoff. Credential acquisition, requests,
+response reads and backoff share one deadline, capped by the caller's read budget and the
+configured API timeout; cancellation stops the read without another attempt. A missing
+Instance still returns absence immediately; other HTTP errors, invalid responses and ownership
+failures are not retried. This read policy does not retry create or delete requests. Image
+prewarming uses its own separate deadline-bound read loop.
 
 The Instance runs `opentag-runner serve`. It declares the single container port `8080`, and after
 native readiness is verified the Runner listens on that **declared port by default** (an injected
@@ -185,6 +205,14 @@ acknowledged before the new direct input is admitted.
 That old receipt can also retire after the child moves to a replacement Session: authenticated old
 scope and exact retired-parent evidence authorize only its old journal acknowledgement, not a
 mutation of the recovered child.
+
+Cloud direct and steer admission consume the same pre-send custody outcomes as Local dispatch.
+A selected batch member becoming unavailable defers with `IM_DELIVERY_BATCH_CHANGED`; a matching
+steer target's recorded completed report defers with `IM_DELIVERY_STEER_TARGET_ENDED`. The Cloud
+owner sends neither `delivery:run` nor `delivery:steer` for these outcomes and creates no pending
+request or release. The worker retains pending input, bounded backoff, retry warnings and counters
+without an error diagnostic. Identity and generation conflicts, frozen dispatches, transport errors
+and unknown outcomes keep their existing custody and recovery paths.
 
 The native worker exposes a bounded private Unix socket during its active Prompt. A per-execution
 token travels only through trusted Runner memory and Worker stdin. The Runner invokes a single

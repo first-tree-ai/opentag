@@ -614,7 +614,7 @@ describe("schedule claim against the real database clock", () => {
       })
       .returning();
     if (!staleRow) throw new Error("schedule fixture missing");
-    await expect(scheduler.claimOccurrence(staleRow.id, { allowDispatch: true })).resolves.toEqual({
+    await expect(scheduler.claimOccurrence(staleRow.id, { allowDispatch: true })).resolves.toMatchObject({
       kind: "skipped",
       code: "late",
     });

@@ -45,6 +45,7 @@ import type { RouterWebClient } from "./web-router-client.js";
 import { RuntimeWebService } from "./web-service.js";
 
 export * from "./capability-store.js";
+export * from "./capacity-error.js";
 export * from "./credential-broker.js";
 export * from "./data-transport.js";
 export * from "./execution-authority.js";

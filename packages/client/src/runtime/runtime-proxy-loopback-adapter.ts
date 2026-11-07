@@ -151,6 +151,7 @@ export class RuntimeProxyLoopbackAdapter {
   readonly #localHandleFor?: (provider: RuntimeProxyProvider) => string | undefined;
   readonly #logger: Pick<ClientLogger, "debug" | "warn">;
   readonly #openStream: RuntimeProxyLoopbackAdapterOptions["openStream"];
+  readonly #pendingConnects = new WeakMap<net.Socket, PendingConnect>();
   readonly #sockets = new Set<net.Socket>();
   readonly #verifyHandle: RuntimeProxyLoopbackAdapterOptions["verifyHandle"];
   #closed = false;
@@ -249,10 +250,10 @@ export class RuntimeProxyLoopbackAdapter {
       if (this.#closed) socket.destroy();
       else {
         if (head.length) socket.unshift(head);
-        (socket as unknown as { __opentagConnect: PendingConnect }).__opentagConnect = {
+        this.#pendingConnects.set(socket, {
           host: "github.com",
           provider: "github",
-        };
+        });
         inner.emit("connection", socket);
       }
     };
@@ -351,10 +352,10 @@ export class RuntimeProxyLoopbackAdapter {
     if (head.length > 0) socket.unshift(head);
     const encrypted = new tls.TLSSocket(socket, { isServer: true, secureContext });
     encrypted.on("error", () => encrypted.destroy());
-    (encrypted as unknown as { __opentagConnect?: PendingConnect }).__opentagConnect = {
+    this.#pendingConnects.set(encrypted, {
       host: target.host,
       ...(CONNECT_HOST_PROVIDERS[target.host] ? { provider: CONNECT_HOST_PROVIDERS[target.host] } : {}),
-    };
+    });
     this.#track(encrypted);
     inner.emit("connection", encrypted);
   }
@@ -400,7 +401,7 @@ export class RuntimeProxyLoopbackAdapter {
   }
 
   async #handleInnerRequest(request: http.IncomingMessage, response: http.ServerResponse): Promise<void> {
-    const pending = (request.socket as unknown as { __opentagConnect?: PendingConnect }).__opentagConnect;
+    const pending = this.#pendingConnects.get(request.socket);
     if (!pending?.provider) {
       replyText(response, 403, "forbidden");
       return;

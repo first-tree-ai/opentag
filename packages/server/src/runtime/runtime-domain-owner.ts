@@ -85,6 +85,16 @@ export class RuntimeDomainConflictError extends Error {
   }
 }
 
+export class RuntimeDispatchDeferredError extends Error {
+  readonly code: "IM_DELIVERY_STEER_TARGET_ENDED" | "IM_DELIVERY_BATCH_CHANGED";
+
+  constructor(reason: "target_ended" | "batch_changed") {
+    super(`The undispatched IM input was deferred: ${reason}`);
+    this.name = "RuntimeDispatchDeferredError";
+    this.code = reason === "target_ended" ? "IM_DELIVERY_STEER_TARGET_ENDED" : "IM_DELIVERY_BATCH_CHANGED";
+  }
+}
+
 export class RuntimeDomainRequestError extends Error {
   constructor(
     readonly code:
@@ -487,6 +497,7 @@ export class RuntimeDomainOwner {
     });
     signal?.throwIfAborted();
     if (dispatch === "inbound_pending") throw new InboundReceiptPendingError();
+    if (dispatch === "target_ended" || dispatch === "batch_changed") throw new RuntimeDispatchDeferredError(dispatch);
     if (dispatch === "conflict") throw new RuntimeDomainConflictError("The steer dispatch conflicts");
     if (dispatch === "stale_generation") {
       throw new RuntimeDomainRequestError("stale_placement", "The steer dispatch placement is stale");
@@ -702,6 +713,7 @@ export class RuntimeDomainOwner {
     });
     signal?.throwIfAborted();
     if (dispatch === "inbound_pending") throw new InboundReceiptPendingError();
+    if (dispatch === "batch_changed") throw new RuntimeDispatchDeferredError(dispatch);
     if (dispatch === "conflict") throw new RuntimeDomainConflictError("The delivery dispatch conflicts");
     if (dispatch === "stale_generation") {
       throw new RuntimeDomainRequestError("stale_placement", "The delivery dispatch placement is stale");
@@ -1382,6 +1394,7 @@ export class RuntimeDomainOwner {
 }
 
 function runtimeDomainFailureAttrs(error: unknown): Record<string, unknown> {
+  if (error instanceof RuntimeDispatchDeferredError) return outcomeAttrs("deferred", error.code);
   if (error instanceof InboundReceiptPendingError) return outcomeAttrs("deferred", error.code);
   let code = "RUNTIME_REQUEST_FAILED";
   if (error instanceof RuntimeDomainConflictError) {

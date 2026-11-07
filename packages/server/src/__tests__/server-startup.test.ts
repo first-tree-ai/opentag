@@ -352,6 +352,19 @@ vi.mock("../services/setup/index.js", () => ({
   AccountSetupService: class {},
 }));
 vi.mock("../services/schedules/index.js", () => ({
+  // Delegates like the real one for an unscheduled report, so these tests still prove the Local route.
+  ScheduledFailureNotifier: class {
+    readonly #runOutcomes: { notifyRunOutcomeInBackground(input: unknown): Promise<string> };
+    constructor(options: { runOutcomes: { notifyRunOutcomeInBackground(input: unknown): Promise<string> } }) {
+      this.#runOutcomes = options.runOutcomes;
+    }
+    notifyRunOutcomeInBackground(input: unknown) {
+      return this.#runOutcomes.notifyRunOutcomeInBackground(input);
+    }
+    close() {
+      state.events.push("scheduled-failures:close");
+    }
+  },
   ScheduleService: class {},
   ScheduleServiceError: class extends Error {},
   ScheduleScheduler: class {
@@ -711,10 +724,11 @@ describe("Server startup", () => {
     await app.close();
     // The schedule scanner stops first: no new claims and no late hand-off frames once the
     // Runtime and the database begin their own shutdown.
-    expect(state.events.slice(-9)).toEqual([
+    expect(state.events.slice(-10)).toEqual([
       "app:close",
       "scheduler:stop",
       "outcome-notices:close",
+      "scheduled-failures:close",
       "worker:stop",
       "inbox:close",
       "platform:close",
@@ -906,10 +920,11 @@ describe("Server startup", () => {
     expect(app.close).toHaveBeenCalledTimes(1);
     expect(state.events).not.toContain("ready:listen");
     expect(state.events).not.toContain("prewarm:start");
-    expect(state.events.slice(-10)).toEqual([
+    expect(state.events.slice(-11)).toEqual([
       "app:close",
       "scheduler:stop",
       "outcome-notices:close",
+      "scheduled-failures:close",
       "worker:stop",
       "inbox:close",
       "platform:close",

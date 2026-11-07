@@ -408,6 +408,91 @@ describe("CloudTurnRunner Session collaboration", () => {
     await h.runner.close();
   });
 
+  it.each(["delivery", "session-message"] as const)(
+    "holds the mixed-kind FIFO through %s interruption, cleanup and durable terminal evidence",
+    async (firstKind) => {
+      const sessionId = randomUUID();
+      const message = sessionMessage({ targetSessionId: sessionId });
+      const delivery = cloudDeliveryFixture({ sessionId });
+      const firstWorker = deferred<ExecResult>();
+      const reset = deferred<void>();
+      const events: string[] = [];
+      const sent: RunnerClientFrame[] = [];
+      let workers = 0;
+      const open = async (kind: string) => {
+        events.push(`open:${kind}`);
+        return {
+          executionDir: `/run/opentag-execution/${kind}`,
+          close: async () => {
+            events.push(`close:${kind}`);
+          },
+        };
+      };
+      const h = harness({
+        message,
+        worker: async () => (++workers === 1 ? firstWorker.promise : completedExec()),
+        runnerOptions: {
+          openExecution: () => open("delivery"),
+          openSessionExecution: () => open("session-message"),
+          sandboxReset: async () => {
+            events.push("reset:start");
+            await reset.promise;
+            events.push("reset:end");
+          },
+          send: (frame) => {
+            sent.push(frame);
+            if (frame.type === "delivery:report") events.push("terminal:delivery");
+            if (frame.type === "session:message:settled") events.push("terminal:session-message");
+          },
+        },
+      });
+      const enqueueDelivery = async () => {
+        await h.runner.handleDeliveryRun(deliveryRunFrame(delivery));
+        await h.runner.handleVerified(deliveryVerifiedFrame(delivery.requestId));
+      };
+      const enqueueSession = async () => {
+        await h.runner.handleSessionMessageRun(sessionRunFrame(message));
+        await h.runner.handleSessionMessageVerified(sessionVerifiedFrame(message.requestId));
+      };
+      const secondKind = firstKind === "delivery" ? "session-message" : "delivery";
+      try {
+        await (firstKind === "delivery" ? enqueueDelivery() : enqueueSession());
+        await waitFor(() => workers === 1, "first worker");
+        await (firstKind === "delivery" ? enqueueSession() : enqueueDelivery());
+        firstWorker.resolve(cancelledExec());
+        await waitFor(() => events.includes("reset:start"), "interrupted namespace reset");
+        expect(workers).toBe(1);
+        expect(events).toEqual([`open:${firstKind}`, `close:${firstKind}`, "reset:start"]);
+        expect(sent.some((frame) => frame.type === "delivery:report" || frame.type === "session:message:settled")).toBe(
+          false,
+        );
+        reset.resolve();
+        await waitFor(
+          () => events.filter((event) => event.startsWith("terminal:")).length === 2,
+          "both terminal records",
+        );
+        expect(events).toEqual([
+          `open:${firstKind}`,
+          `close:${firstKind}`,
+          "reset:start",
+          "reset:end",
+          `terminal:${firstKind}`,
+          `open:${secondKind}`,
+          `close:${secondKind}`,
+          `terminal:${secondKind}`,
+        ]);
+        expect(
+          sent.find((frame) => frame.type === "delivery:report" && firstKind === "delivery") ??
+            sent.find((frame) => frame.type === "session:message:settled" && firstKind === "session-message"),
+        ).toMatchObject(firstKind === "delivery" ? { report: { outcome: "cancelled" } } : { outcome: "cancelled" });
+      } finally {
+        firstWorker.resolve(cancelledExec());
+        reset.resolve();
+        await h.runner.close();
+      }
+    },
+  );
+
   it("shares the single FIFO slot with IM deliveries and preserves dispatch order", async () => {
     const sessionId = randomUUID();
     const delivery = cloudDeliveryFixture({ sessionId });

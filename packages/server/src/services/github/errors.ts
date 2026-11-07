@@ -1,4 +1,5 @@
 import { type ErrorCategory, GITHUB_CONNECTION_ERROR_CODES, type GitHubConnectionErrorCode } from "@opentag/shared";
+import { DomainServiceError } from "../domain-service-error.js";
 
 /*
  * The controlled GitHub failure vocabulary lives in @opentag/shared so the Account HTTP error
@@ -11,15 +12,15 @@ export { GITHUB_CONNECTION_ERROR_CODES, type GitHubConnectionErrorCode };
  * A controlled failure of the GitHub connection persistence services. Messages never carry secret
  * material — no ciphertext, OAuth state, session values, or token payloads.
  */
-export class GitHubConnectionServiceError extends Error {
+export class GitHubConnectionServiceError extends DomainServiceError<GitHubConnectionErrorCode, ErrorCategory, number> {
   constructor(
-    readonly code: GitHubConnectionErrorCode,
-    readonly statusCode: number,
+    code: GitHubConnectionErrorCode,
+    statusCode: number,
     message: string,
-    readonly category: ErrorCategory = "deterministic",
+    category: ErrorCategory = "deterministic",
     options?: ErrorOptions,
   ) {
-    super(message, options);
+    super({ code, category, message, statusCode, cause: options?.cause });
     this.name = "GitHubConnectionServiceError";
   }
 }

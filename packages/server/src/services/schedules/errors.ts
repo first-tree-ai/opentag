@@ -4,24 +4,18 @@ import {
   type ScheduleErrorCategory,
   type ScheduleErrorCode,
 } from "@opentag/shared";
+import { DomainServiceError } from "../domain-service-error.js";
 
 /**
  * A Schedule management failure with the stable code, category, and HTTP status the shared
  * `SCHEDULE_ERROR_CODE_METADATA` table assigns. The application error handler renders this as the
  * standard envelope, so callers always see the documented code.
  */
-export class ScheduleServiceError extends Error {
-  readonly code: ScheduleErrorCode;
-  readonly category: ScheduleErrorCategory;
-  readonly statusCode: number;
-
+export class ScheduleServiceError extends DomainServiceError<ScheduleErrorCode, ScheduleErrorCategory, number> {
   constructor(code: ScheduleErrorCode, message: string) {
-    super(message);
-    this.name = "ScheduleServiceError";
-    this.code = code;
     const metadata = SCHEDULE_ERROR_CODE_METADATA[code];
-    this.category = metadata.category;
-    this.statusCode = metadata.statusCode;
+    super({ code, category: metadata.category, statusCode: metadata.statusCode, message });
+    this.name = "ScheduleServiceError";
   }
 }
 

@@ -110,6 +110,42 @@ interface AssessedCandidate {
   readonly identity: ProviderCliFileIdentity;
 }
 
+async function validateCandidateFileAndFormat(
+  canonical: string,
+  platform: ProviderCliDetectOptions["platform"],
+  arch: ProviderCliDetectOptions["arch"],
+): Promise<string | undefined> {
+  const status = await lstat(canonical).catch((error: unknown) => {
+    logger.debug({ code: "candidate_stat_failed", error: String(error) }, "Provider CLI candidate stat failed");
+    return undefined;
+  });
+  if (!status) return "not-found";
+  if (!status.isFile() || status.isSymbolicLink()) return "not-regular-file";
+  if ((status.mode & 0o111) === 0) return "not-executable";
+  if ((status.mode & 0o002) !== 0) return "world-writable";
+
+  const header = await readExecutableHeader(canonical).catch((error: unknown) => {
+    logger.debug(
+      { code: "candidate_header_read_failed", error: String(error) },
+      "Provider CLI candidate header read failed",
+    );
+    return undefined;
+  });
+  if (!header) return "unreadable";
+  const format = inspectExecutableFormat(header);
+  if (format.kind === "unknown") return "unrecognized-format";
+  if (!executableFormatSupportsHost(format, platform, arch)) {
+    return "wrong-platform-architecture";
+  }
+  return undefined;
+}
+
+function probeFailureReason(code: string): string {
+  if (code === "unparseable_version") return "unparseable-version";
+  if (code === "version_incompatible") return "version-incompatible";
+  return "probe-failed";
+}
+
 /**
  * Validate one canonical executable path: regular file, executable, not world-writable,
  * right platform/architecture, version parse and compatibility, required command
@@ -122,28 +158,8 @@ async function assessCandidatePath(
   digests: ReadonlySet<string>,
   managedDigest?: string,
 ): Promise<AssessedCandidate | { reason: string; version?: string }> {
-  const status = await lstat(canonical).catch((error: unknown) => {
-    logger.debug({ code: "candidate_stat_failed", error: String(error) }, "Provider CLI candidate stat failed");
-    return undefined;
-  });
-  if (!status) return { reason: "not-found" };
-  if (!status.isFile() || status.isSymbolicLink()) return { reason: "not-regular-file" };
-  if ((status.mode & 0o111) === 0) return { reason: "not-executable" };
-  if ((status.mode & 0o002) !== 0) return { reason: "world-writable" };
-
-  const header = await readExecutableHeader(canonical).catch((error: unknown) => {
-    logger.debug(
-      { code: "candidate_header_read_failed", error: String(error) },
-      "Provider CLI candidate header read failed",
-    );
-    return undefined;
-  });
-  if (!header) return { reason: "unreadable" };
-  const format = inspectExecutableFormat(header);
-  if (format.kind === "unknown") return { reason: "unrecognized-format" };
-  if (!executableFormatSupportsHost(format, options.platform, options.arch)) {
-    return { reason: "wrong-platform-architecture" };
-  }
+  const validationReason = await validateCandidateFileAndFormat(canonical, options.platform, options.arch);
+  if (validationReason) return { reason: validationReason };
 
   const identity = await computeFileIdentity(canonical).catch((error: unknown) => {
     logger.debug({ code: "candidate_identity_failed", error: String(error) }, "Provider CLI candidate identity failed");
@@ -154,14 +170,7 @@ async function assessCandidatePath(
     execFile,
   });
   if (probed.status === "failed") {
-    return {
-      reason:
-        probed.code === "unparseable_version"
-          ? "unparseable-version"
-          : probed.code === "version_incompatible"
-            ? "version-incompatible"
-            : "probe-failed",
-    };
+    return { reason: probeFailureReason(probed.code) };
   }
   const trust: ProviderCliTrust =
     managedDigest !== undefined || digests.has(identity.sha256) ? "catalog-verified" : "compatible-unverified";
@@ -179,16 +188,13 @@ function managedDigestOf(selection: ProviderCliSelectionRecord): string | undefi
   return digest && digest.length > 0 ? digest : undefined;
 }
 
-export async function detectProviderCliCandidates(options: ProviderCliDetectOptions): Promise<ProviderCliDetection> {
-  const execFile = options.execFile ?? defaultProviderCliExecFile;
-  const digests = catalogExecutableDigests(options.entry);
-  const candidates: ProviderCliCandidate[] = [];
-  const ignored: IgnoredProviderCliCandidate[] = [];
-  const seenCanonical = new Set<string>();
-  const pathRanks = new Map<string, number>();
-  let sequence = 0;
-  let probedCandidateCount = 0;
+interface CanonicalLayoutPaths {
+  readonly launcherCanonical: string | undefined;
+  readonly accountHome: string;
+  readonly layoutRoot: string;
+}
 
+async function resolveCanonicalLayoutPaths(options: ProviderCliDetectOptions): Promise<CanonicalLayoutPaths> {
   const launcherPath = providerCliLauncherPath(options.layout, options.entry.command);
   const launcherCanonical = await realpath(launcherPath).catch((error: unknown) => {
     logger.debug(
@@ -213,115 +219,207 @@ export async function detectProviderCliCandidates(options: ProviderCliDetectOpti
     );
     return resolveProviderCliAccountLayout(accountHome, options.platform).root;
   });
+  return { launcherCanonical, accountHome, layoutRoot };
+}
+
+async function resolveExecutableInDir(dir: string, command: string): Promise<string | undefined> {
+  const candidatePath = join(dir, command);
+  try {
+    await access(candidatePath, constants.X_OK);
+    return await realpath(candidatePath);
+  } catch (error) {
+    logger.debug(
+      { code: "path_candidate_resolution_failed", error: String(error) },
+      "Provider CLI PATH candidate resolution failed",
+    );
+    return undefined;
+  }
+}
+
+interface PathScanState {
+  readonly candidates: ProviderCliCandidate[];
+  readonly ignored: IgnoredProviderCliCandidate[];
+  readonly pathRanks: Map<string, number>;
+  readonly execFile: ProviderCliExecFile;
+  readonly digests: ReadonlySet<string>;
+  readonly paths: CanonicalLayoutPaths;
+}
+
+function isManagedOrLauncherPath(canonical: string, paths: CanonicalLayoutPaths): boolean {
+  return canonical === paths.launcherCanonical || canonical.startsWith(`${paths.layoutRoot}${sep}`);
+}
+
+async function resolveNewExternalCandidateFromEntry(
+  rawEntry: string,
+  currentRank: number,
+  options: ProviderCliDetectOptions,
+  state: PathScanState,
+  seenCanonical: Set<string>,
+): Promise<{ canonical: string; dir: string } | undefined> {
+  if (rawEntry.length === 0) return undefined; // An empty entry means the current directory: never used.
+  const directory = await canonicalSafeDirectory(rawEntry, options.platform, state.paths.accountHome);
+  if ("reason" in directory) {
+    // Nonexistent directories are common PATH leftovers; only unsafe entries are reported.
+    if (directory.reason !== "unreadable-path-entry") {
+      state.ignored.push({ path: rawEntry, reason: directory.reason });
+    }
+    return undefined;
+  }
+  const canonical = await resolveExecutableInDir(directory.dir, options.entry.command);
+  if (!canonical) return undefined;
+
+  if (seenCanonical.has(canonical)) {
+    state.pathRanks.set(canonical, Math.min(state.pathRanks.get(canonical) ?? currentRank, currentRank));
+    return undefined;
+  }
+  seenCanonical.add(canonical);
+  state.pathRanks.set(canonical, currentRank);
+
+  // The account-global launcher and anything inside the OpenTag-managed root are
+  // classified as managed and never offered again as external candidates.
+  if (isManagedOrLauncherPath(canonical, state.paths)) {
+    return undefined;
+  }
+  return { canonical, dir: directory.dir };
+}
+
+async function scanPathCandidates(options: ProviderCliDetectOptions, state: PathScanState): Promise<void> {
+  const pathEntries = (options.env.PATH ?? "").split(delimiter).slice(0, PATH_ENTRY_LIMIT);
+  const seenCanonical = new Set<string>();
+  let rank = 0;
+  let sequence = 0;
+  let probedCandidateCount = 0;
+
+  for (const rawEntry of pathEntries) {
+    const currentRank = rank;
+    rank += 1;
+    const resolved = await resolveNewExternalCandidateFromEntry(rawEntry, currentRank, options, state, seenCanonical);
+    if (!resolved) continue;
+
+    if (probedCandidateCount >= CANDIDATE_PROBE_LIMIT) {
+      state.ignored.push({ path: rawEntry, reason: "candidate-probe-limit-reached" });
+      break;
+    }
+    probedCandidateCount += 1;
+
+    const assessed = await assessCandidatePath(resolved.canonical, options, state.execFile, state.digests);
+    if ("reason" in assessed) {
+      state.ignored.push({ path: resolved.canonical, sourceDir: resolved.dir, ...assessed });
+      continue;
+    }
+    sequence += 1;
+    state.candidates.push({
+      id: `candidate-${sequence}`,
+      provider: options.provider,
+      kind: "external",
+      path: resolved.canonical,
+      sourceDir: resolved.dir,
+      version: assessed.version,
+      trust: assessed.trust,
+      fingerprint: assessed.fingerprint,
+      pathRank: currentRank,
+      incumbent: false,
+    });
+  }
+}
+
+function normalizeIncumbentIgnoreReason(selection: ProviderCliSelectionRecord, rawReason: string): string {
+  if (selection.selection.kind === "external" && (rawReason === "not-found" || rawReason === "not-regular-file")) {
+    return "external-path-invalid";
+  }
+  return rawReason;
+}
+
+async function mergeIncumbentSelection(
+  selection: ProviderCliSelectionRecord,
+  options: ProviderCliDetectOptions,
+  state: Pick<PathScanState, "candidates" | "ignored" | "pathRanks" | "execFile" | "digests">,
+): Promise<void> {
+  const targetPath =
+    selection.selection.kind === "managed" ? selection.selection.targetPath : selection.selection.executablePath;
+  const managedDigest = managedDigestOf(selection);
+  const incumbent = await assessCandidatePath(targetPath, options, state.execFile, state.digests, managedDigest);
+  if ("reason" in incumbent) {
+    state.ignored.push({
+      path: targetPath,
+      sourceDir: "selection",
+      reason: normalizeIncumbentIgnoreReason(selection, incumbent.reason),
+    });
+    return;
+  }
+
+  const incumbentPath = incumbent.identity.path;
+  const merged: ProviderCliCandidate = {
+    id: "candidate-selection",
+    provider: options.provider,
+    kind: selection.selection.kind,
+    path: incumbentPath,
+    sourceDir: state.candidates.find((candidate) => candidate.path === incumbentPath)?.sourceDir ?? "selection",
+    version: incumbent.version,
+    trust: selection.selection.kind === "managed" ? "catalog-verified" : incumbent.trust,
+    fingerprint: incumbent.fingerprint,
+    ...(managedDigest ? { managedDigest } : {}),
+    pathRank: state.pathRanks.get(incumbentPath) ?? Number.MAX_SAFE_INTEGER,
+    incumbent: true,
+  };
+  if (options.mode === "managed-only" && merged.kind === "external") {
+    state.ignored.push({ path: incumbentPath, sourceDir: "selection", reason: "managed-only" });
+    return;
+  }
+  const existing = state.candidates.findIndex((candidate) => candidate.path === incumbentPath);
+  if (existing >= 0) state.candidates.splice(existing, 1, merged);
+  else state.candidates.push(merged);
+}
+
+export async function detectProviderCliCandidates(options: ProviderCliDetectOptions): Promise<ProviderCliDetection> {
+  const execFile = options.execFile ?? defaultProviderCliExecFile;
+  const digests = catalogExecutableDigests(options.entry);
+  const candidates: ProviderCliCandidate[] = [];
+  const ignored: IgnoredProviderCliCandidate[] = [];
+  const pathRanks = new Map<string, number>();
+  const paths = await resolveCanonicalLayoutPaths(options);
+  const state: PathScanState = { candidates, ignored, pathRanks, execFile, digests, paths };
 
   // --- PATH scan (skipped entirely in managed-only mode). ---
   if (options.mode === "auto") {
-    const pathEntries = (options.env.PATH ?? "").split(delimiter).slice(0, PATH_ENTRY_LIMIT);
-    let rank = 0;
-    for (const rawEntry of pathEntries) {
-      const currentRank = rank;
-      rank += 1;
-      if (rawEntry.length === 0) continue; // An empty entry means the current directory: never used.
-      const directory = await canonicalSafeDirectory(rawEntry, options.platform, accountHome);
-      if ("reason" in directory) {
-        // Nonexistent directories are common PATH leftovers; only unsafe entries are reported.
-        if (directory.reason !== "unreadable-path-entry") {
-          ignored.push({ path: rawEntry, reason: directory.reason });
-        }
-        continue;
-      }
-      const candidatePath = join(directory.dir, options.entry.command);
-      let canonical: string;
-      try {
-        await access(candidatePath, constants.X_OK);
-        canonical = await realpath(candidatePath);
-      } catch (error) {
-        logger.debug(
-          { code: "path_candidate_resolution_failed", error: String(error) },
-          "Provider CLI PATH candidate resolution failed",
-        );
-        continue; // A directory without this command contributes nothing.
-      }
-      if (seenCanonical.has(canonical)) {
-        pathRanks.set(canonical, Math.min(pathRanks.get(canonical) ?? currentRank, currentRank));
-        continue;
-      }
-      seenCanonical.add(canonical);
-      pathRanks.set(canonical, currentRank);
-
-      // The account-global launcher and anything inside the OpenTag-managed root are
-      // classified as managed and never offered again as external candidates.
-      if (canonical === launcherCanonical || canonical.startsWith(`${layoutRoot}${sep}`)) {
-        continue;
-      }
-
-      if (probedCandidateCount >= CANDIDATE_PROBE_LIMIT) {
-        ignored.push({ path: rawEntry, reason: "candidate-probe-limit-reached" });
-        break;
-      }
-      probedCandidateCount += 1;
-
-      const assessed = await assessCandidatePath(canonical, options, execFile, digests);
-      if ("reason" in assessed) {
-        ignored.push({ path: canonical, sourceDir: directory.dir, ...assessed });
-        continue;
-      }
-      sequence += 1;
-      candidates.push({
-        id: `candidate-${sequence}`,
-        provider: options.provider,
-        kind: "external",
-        path: canonical,
-        sourceDir: directory.dir,
-        version: assessed.version,
-        trust: assessed.trust,
-        fingerprint: assessed.fingerprint,
-        pathRank: currentRank,
-        incumbent: false,
-      });
-    }
+    await scanPathCandidates(options, state);
   }
 
   // --- The current selection is always part of the candidate set. ---
-  const selection = options.selection;
-  if (selection) {
-    const targetPath =
-      selection.selection.kind === "managed" ? selection.selection.targetPath : selection.selection.executablePath;
-    const managedDigest = managedDigestOf(selection);
-    const incumbent = await assessCandidatePath(targetPath, options, execFile, digests, managedDigest);
-    if ("reason" in incumbent) {
-      const reason =
-        selection.selection.kind === "external" &&
-        (incumbent.reason === "not-found" || incumbent.reason === "not-regular-file")
-          ? "external-path-invalid"
-          : incumbent.reason;
-      ignored.push({ path: targetPath, sourceDir: "selection", reason });
-    } else {
-      const incumbentPath = incumbent.identity.path;
-      const merged: ProviderCliCandidate = {
-        id: "candidate-selection",
-        provider: options.provider,
-        kind: selection.selection.kind,
-        path: incumbentPath,
-        sourceDir: candidates.find((candidate) => candidate.path === incumbentPath)?.sourceDir ?? "selection",
-        version: incumbent.version,
-        trust: selection.selection.kind === "managed" ? "catalog-verified" : incumbent.trust,
-        fingerprint: incumbent.fingerprint,
-        ...(managedDigest ? { managedDigest } : {}),
-        pathRank: pathRanks.get(incumbentPath) ?? Number.MAX_SAFE_INTEGER,
-        incumbent: true,
-      };
-      if (options.mode === "managed-only" && merged.kind === "external") {
-        ignored.push({ path: incumbentPath, sourceDir: "selection", reason: "managed-only" });
-      } else {
-        const existing = candidates.findIndex((candidate) => candidate.path === incumbentPath);
-        if (existing >= 0) candidates.splice(existing, 1, merged);
-        else candidates.push(merged);
-      }
-    }
+  if (options.selection) {
+    await mergeIncumbentSelection(options.selection, options, state);
   }
 
   return { candidates, ignored };
+}
+
+function compareProviderCliCandidates(left: ProviderCliCandidate, right: ProviderCliCandidate): number {
+  const byVersion = semver.rcompare(left.version, right.version);
+  if (byVersion !== 0) return byVersion;
+  const trustRank = (trust: ProviderCliTrust): number => (trust === "catalog-verified" ? 0 : 1);
+  const byTrust = trustRank(left.trust) - trustRank(right.trust);
+  if (byTrust !== 0) return byTrust;
+  const byIncumbent = Number(right.incumbent) - Number(left.incumbent);
+  if (byIncumbent !== 0) return byIncumbent;
+  const byPath = left.pathRank - right.pathRank;
+  if (byPath !== 0) return byPath;
+  return left.path.localeCompare(right.path);
+}
+
+function explainWinnerReason(winner: ProviderCliCandidate, runnerUp: ProviderCliCandidate | undefined): string {
+  if (!runnerUp || semver.compare(winner.version, runnerUp.version) !== 0) {
+    return "newest compatible version";
+  }
+  if (winner.trust !== runnerUp.trust) return "catalog-verified trust";
+  if (winner.incumbent && !runnerUp.incumbent) return "current selection";
+  return "first in PATH";
+}
+
+function explainLoserReason(winner: ProviderCliCandidate, loser: ProviderCliCandidate): string {
+  if (semver.compare(winner.version, loser.version) !== 0) return "older compatible version";
+  if (winner.trust !== loser.trust) return "same version with lower trust";
+  if (loser.incumbent !== winner.incumbent) return "same version, not the current selection";
+  return "same version, later in PATH";
 }
 
 /**
@@ -333,39 +431,13 @@ export function rankProviderCliCandidates(candidates: readonly ProviderCliCandid
   readonly ordered: readonly ProviderCliCandidate[];
   readonly reasons: ReadonlyMap<string, string>;
 } {
-  const ordered = [...candidates].sort((left, right) => {
-    const byVersion = semver.rcompare(left.version, right.version);
-    if (byVersion !== 0) return byVersion;
-    const trustRank = (trust: ProviderCliTrust): number => (trust === "catalog-verified" ? 0 : 1);
-    const byTrust = trustRank(left.trust) - trustRank(right.trust);
-    if (byTrust !== 0) return byTrust;
-    const byIncumbent = Number(right.incumbent) - Number(left.incumbent);
-    if (byIncumbent !== 0) return byIncumbent;
-    const byPath = left.pathRank - right.pathRank;
-    if (byPath !== 0) return byPath;
-    return left.path.localeCompare(right.path);
-  });
+  const ordered = [...candidates].sort(compareProviderCliCandidates);
   const reasons = new Map<string, string>();
   const winner = ordered[0];
   if (winner) {
-    const runnerUp = ordered[1];
-    let reason = "newest compatible version";
-    if (runnerUp && semver.compare(winner.version, runnerUp.version) === 0) {
-      if (winner.trust !== runnerUp.trust) reason = "catalog-verified trust";
-      else if (winner.incumbent && !runnerUp.incumbent) reason = "current selection";
-      else reason = "first in PATH";
-    }
-    reasons.set(winner.id, reason);
+    reasons.set(winner.id, explainWinnerReason(winner, ordered[1]));
     for (const loser of ordered.slice(1)) {
-      if (semver.compare(winner.version, loser.version) !== 0) {
-        reasons.set(loser.id, "older compatible version");
-      } else if (winner.trust !== loser.trust) {
-        reasons.set(loser.id, "same version with lower trust");
-      } else if (loser.incumbent !== winner.incumbent) {
-        reasons.set(loser.id, "same version, not the current selection");
-      } else {
-        reasons.set(loser.id, "same version, later in PATH");
-      }
+      reasons.set(loser.id, explainLoserReason(winner, loser));
     }
   }
   return { ordered, reasons };

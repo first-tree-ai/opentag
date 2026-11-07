@@ -8,6 +8,11 @@ import type { ServiceLogger } from "../../observability/service-logger.js";
 import type { ScheduleDispatch, ScheduledMessageSnapshot } from "../sessions/session-collaboration-service.js";
 import type { SessionService } from "../sessions/session-service.js";
 import { nextScheduleOccurrence, normalizeAndValidateRule } from "./calculator.js";
+import {
+  type ScheduledMissNotices,
+  type ScheduledOccurrence,
+  scheduledMissKind,
+} from "./scheduled-failure-notifier.js";
 import { type ScheduleClock, scheduleDatabaseClock, scheduleDetailUrl } from "./service.js";
 
 /*
@@ -51,17 +56,19 @@ export type ScheduleClaimOutcome =
   /** Due and deliverable, but no free dispatch slot: left untouched for a later scan. */
   | { kind: "deferred" }
   /** Skipped without a message: expired window or a known-temporary authority gap. */
-  | { kind: "skipped"; code: string }
+  | { kind: "skipped"; code: string; occurrence?: ScheduledOccurrence; previous?: AgentScheduleLastDispatch | null }
   /** Auto-disabled: invalid stored rule, permanent target failure, or message identity conflict. */
-  | { kind: "disabled"; code: string }
+  | { kind: "disabled"; code: string; occurrence?: ScheduledOccurrence }
   /** The identical message already existed: advanced without a second dispatch. */
   | { kind: "duplicate"; messageId: string }
   /** Claimed and committed; the snapshot is the only dispatch authorization. */
-  | { kind: "claimed"; snapshot: ScheduledMessageSnapshot };
+  | { kind: "claimed"; snapshot: ScheduledMessageSnapshot; previous?: AgentScheduleLastDispatch | null };
 
 export interface ScheduleSchedulerOptions {
   database: DatabaseClient;
   dispatch: ScheduleDispatch;
+  /** Tells the conversation about an occurrence that never reached its Agent. */
+  missNotices?: ScheduledMissNotices;
   sessions: Pick<SessionService, "resolveScheduledMessageRoute">;
   /** The trusted public origin for the dispatch frame's detail link. */
   publicUrl: string;
@@ -92,6 +99,7 @@ const DEFAULT_SCAN_INTERVAL_MS = 5_000;
 const DEFAULT_SCAN_LIMIT = 100;
 const DEFAULT_MAX_IN_FLIGHT = 100;
 const DEFAULT_CLAIM_WINDOW_MS = 30_000;
+const DISPATCH_FAILED_CODE = "dispatch_failed";
 
 function toDate(value: Date | string): Date {
   return value instanceof Date ? value : new Date(value);
@@ -106,6 +114,8 @@ export class ScheduleScheduler {
   readonly #maxInFlight: number;
   readonly #claimWindowMs: number;
   readonly #inFlight = new Set<{ controller: AbortController; done: Promise<void> }>();
+  readonly #noticesAbort = new AbortController();
+  readonly #notices = new Set<Promise<void>>();
   #timer: ReturnType<typeof setInterval> | undefined;
   #scanning = false;
   #currentScan: Promise<void> | undefined;
@@ -153,6 +163,8 @@ export class ScheduleScheduler {
     for (const entry of this.#inFlight) entry.controller.abort();
     await Promise.allSettled([...this.#inFlight].map((entry) => entry.done));
     await this.#currentScan?.catch(() => undefined);
+    this.#noticesAbort.abort();
+    await Promise.allSettled([...this.#notices]);
   }
 
   /** One explicit scan pass: waits out any running scan first, then runs exactly one. Test-facing. */
@@ -208,13 +220,25 @@ export class ScheduleScheduler {
         );
         continue;
       }
-      if (outcome.kind === "claimed") {
-        this.#track(outcome.snapshot);
-      } else if (outcome.kind === "skipped" || outcome.kind === "disabled") {
-        this.#options.logger?.info(
-          { event: `schedule.${outcome.kind}`, scheduleId: id, code: outcome.code },
-          "Schedule occurrence resolved without dispatch",
-        );
+      this.#afterClaim(id, outcome);
+    }
+  }
+
+  #afterClaim(scheduleId: string, outcome: ScheduleClaimOutcome): void {
+    if (outcome.kind === "claimed") {
+      this.#track(outcome.snapshot, outcome.previous ?? null);
+    } else if (outcome.kind === "skipped" || outcome.kind === "disabled") {
+      this.#options.logger?.info(
+        { event: `schedule.${outcome.kind}`, scheduleId, code: outcome.code },
+        "Schedule occurrence resolved without dispatch",
+      );
+      if (outcome.occurrence) {
+        this.#noticeMiss(outcome.occurrence, {
+          outcome: "skipped",
+          code: outcome.code,
+          previous: outcome.kind === "skipped" ? (outcome.previous ?? null) : null,
+          disabled: outcome.kind === "disabled",
+        });
       }
     }
   }
@@ -224,7 +248,7 @@ export class ScheduleScheduler {
    * until the task finishes. The entry is registered BEFORE the dispatch body runs, so even a
    * synchronous dispatch failure frees the slot; every failure converges to one logged result.
    */
-  #track(snapshot: ScheduledMessageSnapshot): void {
+  #track(snapshot: ScheduledMessageSnapshot, previous: AgentScheduleLastDispatch | null): void {
     if (this.#stopped) return;
     const controller = new AbortController();
     const entry: { controller: AbortController; done: Promise<void> } = {
@@ -232,13 +256,22 @@ export class ScheduleScheduler {
       done: Promise.resolve(),
     };
     this.#inFlight.add(entry);
-    entry.done = this.#runDispatch(entry, snapshot);
+    entry.done = this.#runDispatch(entry, snapshot, previous);
   }
 
   async #runDispatch(
     entry: { controller: AbortController; done: Promise<void> },
     snapshot: ScheduledMessageSnapshot,
+    previous: AgentScheduleLastDispatch | null,
   ): Promise<void> {
+    const occurrence: ScheduledOccurrence = {
+      agentId: snapshot.agentId,
+      name: snapshot.origin.name,
+      scheduleId: snapshot.scheduleId,
+      scheduledFor: snapshot.origin.scheduledFor,
+      targetSessionId: snapshot.targetSessionId,
+      timezone: snapshot.origin.timezone,
+    };
     try {
       const outcome = await this.#options.dispatch.dispatchScheduledMessage(snapshot, entry.controller.signal);
       this.#options.logger?.info(
@@ -252,6 +285,13 @@ export class ScheduleScheduler {
         },
         "Scheduled message dispatch settled",
       );
+      this.#noticeMiss(occurrence, {
+        outcome: outcome.outcome,
+        code: outcome.code,
+        previous,
+        // The only rejection left after the self-inflicted codes that also turned the schedule off.
+        disabled: outcome.outcome === "rejected" && outcome.code === "target_invalid",
+      });
     } catch {
       this.#options.logger?.error(
         {
@@ -262,9 +302,67 @@ export class ScheduleScheduler {
         },
         "Scheduled message dispatch failed",
       );
+      await this.#recordDispatchFailure(snapshot);
+      this.#noticeMiss(occurrence, { outcome: "unknown", code: DISPATCH_FAILED_CODE, previous });
     } finally {
       this.#inFlight.delete(entry);
     }
+  }
+
+  /**
+   * A thrown dispatch recorded nothing, so the summary still holds the claim's code-less `unknown`.
+   * Record the cause there, or the next occurrence's comparison would count it as a new one.
+   */
+  async #recordDispatchFailure(snapshot: ScheduledMessageSnapshot): Promise<void> {
+    try {
+      await this.#database
+        .update(agentSchedules)
+        .set({
+          lastDispatch: sql`${agentSchedules.lastDispatch} || jsonb_build_object('code', ${DISPATCH_FAILED_CODE}::text)`,
+        })
+        .where(
+          and(
+            eq(agentSchedules.id, snapshot.scheduleId),
+            sql`${agentSchedules.lastDispatch} ->> 'scheduledFor' = ${snapshot.origin.scheduledFor}`,
+            sql`${agentSchedules.lastDispatch} ->> 'outcome' = 'unknown'`,
+            sql`${agentSchedules.lastDispatch} ->> 'code' is null`,
+          ),
+        );
+    } catch {
+      this.#options.logger?.error(
+        { event: "schedule.dispatch_failure_write_failed", scheduleId: snapshot.scheduleId },
+        "Scheduled dispatch failure could not be recorded",
+      );
+    }
+  }
+
+  /**
+   * Report a miss outside the scan and the dispatch slot: an IM outage must delay neither. A stopping
+   * Server sends nothing new, because its aborted hand-offs say nothing about the target.
+   */
+  #noticeMiss(occurrence: ScheduledOccurrence, result: Parameters<typeof scheduledMissKind>[0]): void {
+    const { missNotices, logger } = this.#options;
+    if (!missNotices || this.#stopped) return;
+    const kind = scheduledMissKind(result);
+    if (!kind || result.code === null) return;
+    const notice = missNotices
+      .notifyMissed(
+        {
+          occurrence,
+          kind,
+          code: result.code,
+          requestId: scheduledMessageId(occurrence.scheduleId, new Date(occurrence.scheduledFor)),
+        },
+        this.#noticesAbort.signal,
+      )
+      .catch(() => {
+        logger?.error(
+          { event: "schedule.miss_notice_failed", scheduleId: occurrence.scheduleId },
+          "Scheduled miss notice failed",
+        );
+      })
+      .finally(() => this.#notices.delete(notice));
+    this.#notices.add(notice);
   }
 
   async #listDue(limit: number): Promise<readonly string[]> {
@@ -321,11 +419,16 @@ export class ScheduleScheduler {
     const plan = this.#planAdvance(row, claimNow);
     if (plan.kind === "invalid") {
       await this.#disableClaimed(transaction, row, claimNow, scheduledFor, "invalid_schedule");
-      return { kind: "disabled", code: "invalid_schedule" } as const;
+      return { kind: "disabled", code: "invalid_schedule", occurrence: occurrenceOf(row, scheduledFor) } as const;
     }
     if (claimNow.getTime() - scheduledFor.getTime() > this.#claimWindowMs) {
       await this.#skipClaimed(transaction, row, claimNow, scheduledFor, plan.next, "late");
-      return { kind: "skipped", code: "late" } as const;
+      return {
+        kind: "skipped",
+        code: "late",
+        occurrence: occurrenceOf(row, scheduledFor),
+        previous: row.lastDispatch,
+      } as const;
     }
     if (!options.allowDispatch) return { kind: "deferred" } as const;
 
@@ -338,11 +441,16 @@ export class ScheduleScheduler {
     );
     if (resolution.kind === "permanent") {
       await this.#disableClaimed(transaction, row, claimNow, scheduledFor, resolution.code);
-      return { kind: "disabled", code: resolution.code } as const;
+      return { kind: "disabled", code: resolution.code, occurrence: occurrenceOf(row, scheduledFor) } as const;
     }
     if (resolution.kind === "temporary") {
       await this.#skipClaimed(transaction, row, claimNow, scheduledFor, plan.next, resolution.code);
-      return { kind: "skipped", code: resolution.code } as const;
+      return {
+        kind: "skipped",
+        code: resolution.code,
+        occurrence: occurrenceOf(row, scheduledFor),
+        previous: row.lastDispatch,
+      } as const;
     }
     return this.#materializeClaim(transaction, row, claimNow, scheduledFor, plan.next);
   }
@@ -401,6 +509,7 @@ export class ScheduleScheduler {
       });
       return {
         kind: "claimed",
+        previous: row.lastDispatch,
         snapshot: {
           scheduleId: row.id,
           revision: row.revision,
@@ -449,7 +558,11 @@ export class ScheduleScheduler {
       return { kind: "duplicate", messageId } as const;
     }
     await this.#disableClaimed(transaction, row, claimNow, scheduledFor, "message_identity_conflict", messageId);
-    return { kind: "disabled", code: "message_identity_conflict" } as const;
+    return {
+      kind: "disabled",
+      code: "message_identity_conflict",
+      occurrence: occurrenceOf(row, scheduledFor),
+    } as const;
   }
 
   /** The one-time skip write for occurrences that never produce a message. */
@@ -527,6 +640,17 @@ export class ScheduleScheduler {
       .set({ nextTriggerAt: next, lastDispatch, updatedAt: claimNow })
       .where(eq(agentSchedules.id, row.id));
   }
+}
+
+function occurrenceOf(row: ScheduleRow, scheduledFor: Date): ScheduledOccurrence {
+  return {
+    agentId: row.agentId,
+    name: row.name,
+    scheduleId: row.id,
+    scheduledFor: scheduledFor.toISOString(),
+    targetSessionId: row.targetSessionId,
+    timezone: row.timezone,
+  };
 }
 
 /**

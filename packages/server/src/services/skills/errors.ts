@@ -4,23 +4,18 @@ import {
   type SkillErrorCategory,
   type SkillErrorCode,
 } from "@opentag/shared";
+import { DomainServiceError } from "../domain-service-error.js";
 
 /**
  * A Skill failure carrying the shared error contract: the code the client branches on, the retry
  * category, and the HTTP status. `app.ts` treats it as an Account-facing error, so its `code` and
  * `category` are exactly what the response envelope reports — nothing internal leaks through.
  */
-export class SkillServiceError extends Error {
-  readonly code: SkillErrorCode;
-  readonly category: SkillErrorCategory;
-  readonly statusCode: number;
-
+export class SkillServiceError extends DomainServiceError<SkillErrorCode, SkillErrorCategory, number> {
   constructor(code: SkillErrorCode, message: string) {
-    super(message);
+    const metadata = SKILL_ERROR_CODE_METADATA[code];
+    super({ code, category: metadata.category, statusCode: metadata.statusCode, message });
     this.name = "SkillServiceError";
-    this.code = code;
-    this.category = SKILL_ERROR_CODE_METADATA[code].category;
-    this.statusCode = SKILL_ERROR_CODE_METADATA[code].statusCode;
   }
 }
 

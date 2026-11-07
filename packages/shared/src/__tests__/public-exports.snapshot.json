@@ -1039,6 +1039,7 @@
   "WebToolErrorEnvelopeSchema",
   "WebToolTimeRangeSchema",
   "accountAgentCreationIntentPath",
+  "accountApiEndpoints",
   "accountComputerByIdPath",
   "accountComputerConnectCodePath",
   "accountComputerDisconnectPath",
@@ -1211,6 +1212,7 @@
   "taskDetailPath",
   "taskDetailSectionPath",
   "taskRepliesPath",
+  "toAccountApiRequestInit",
   "truncateImText",
   "webServiceScopeForOperation",
   "withComputerRuntimeProviderSupport"

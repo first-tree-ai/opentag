@@ -38,6 +38,7 @@ import { runImDeliverySteerRecovery } from "../runtime/im-delivery-janitor.js";
 import { ImDeliveryWorker } from "../runtime/im-delivery-worker.js";
 import { KeyedTaskScheduler } from "../runtime/keyed-task-scheduler.js";
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
+import { RuntimeDispatchDeferredError } from "../runtime/runtime-domain-owner.js";
 import { EffectiveRuntimeSnapshotAssemblerError } from "../services/runtime-config/errors.js";
 import { deferred } from "./support/deferred.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
@@ -2125,6 +2126,47 @@ describe("ImDeliveryWorker database workflow", () => {
     expect(diagnostic).not.toHaveBeenCalled();
     expect(error).not.toHaveBeenCalled();
   });
+
+  it.each(["target_ended", "batch_changed"] as const)(
+    "records explicit pre-send %s as a bounded deferral",
+    async (reason) => {
+      const f = reason === "target_ended" ? await steerFixture(unit) : await workerFixture(unit);
+      const clock = Date.now();
+      const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), f);
+      if (reason === "target_ended")
+        domain.requestSteer.mockRejectedValueOnce(new RuntimeDispatchDeferredError(reason));
+      else domain.requestDelivery.mockRejectedValueOnce(new RuntimeDispatchDeferredError(reason));
+      const diagnostic = vi.fn();
+      const metric = vi.fn();
+      const worker = new ImDeliveryWorker({
+        database: unit.database,
+        domain: domain as never,
+        registry: f.registry,
+        assembler: { assembleForSession: async () => f.runtime },
+        now: () => new Date(clock),
+        onDiagnostic: diagnostic,
+        onMetric: metric,
+      });
+      try {
+        await worker.runOnce();
+        const [row] = await unit.database
+          .select()
+          .from(imMessageDeliveries)
+          .where(eq(imMessageDeliveries.id, f.deliveryId));
+        expect(row).toMatchObject({
+          state: "pending",
+          attemptCount: 1,
+          dispatchRequestId: null,
+          lastErrorCode: reason === "target_ended" ? "IM_DELIVERY_STEER_TARGET_ENDED" : "IM_DELIVERY_BATCH_CHANGED",
+          nextAttemptAt: new Date(clock + 2_000),
+        });
+        expect(diagnostic).not.toHaveBeenCalled();
+        expect(metric).toHaveBeenCalledWith({ name: "retry", value: 1 });
+      } finally {
+        await worker.stop();
+      }
+    },
+  );
 
   it("rejects or retries steering when its authority changes", async () => {
     const ownerMismatch = await steerFixture(unit);

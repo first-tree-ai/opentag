@@ -255,6 +255,38 @@ describe("ClaudeCodeAgentRuntime exhaustive behavior", () => {
     await vi.waitFor(() => expect(runtime.state.phase).toBe("closed"));
   });
 
+  it("preserves the opaque HTTP gateway contract without applying Pi launch restrictions", async () => {
+    const url = "HTTP://Server.Example.test:80/custom?legacy=1#fragment";
+    const bridge = vi.fn(async () => ({
+      allowedTools: [] as readonly string[],
+      configPath: "/tmp/mcp.json",
+      pluginPath: "/tmp/opentag",
+      close: async () => undefined,
+    }));
+    const runtime = await new ClaudeCodeAgentRuntimeFactory({
+      createSessionId: () => SESSION_ID,
+      createProcess: () => new ManualClaudeCodeProcess([]),
+      startHostedToolBridge: bridge as never,
+    }).create({
+      ...createRequest(() => undefined),
+      configuration: { provider: { mcpGateway: { url, token: "opaque-bearer", legacy: true } } },
+    });
+    try {
+      await runtime.prompt({ runId: "opaque-http-gateway", input: input("work") });
+      expect(bridge).toHaveBeenCalledWith(
+        undefined,
+        "opaque-http-gateway",
+        expect.anything(),
+        [],
+        { url, token: "opaque-bearer" },
+        "/workspace",
+        expect.anything(),
+      );
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it("maps process construction, execution, and close failures without leaking them", async () => {
     const construction = new ClaudeCodeAgentRuntimeFactory({
       createSessionId: () => SESSION_ID,

@@ -40,7 +40,6 @@ import {
   type RuntimeRetryScheduler,
 } from "./runtime-durability.js";
 import {
-  buildScheduleStartNotification,
   escapeScheduledMetadataText,
   formatScheduleLocalTime,
   normalizeScheduleTaskPreview,
@@ -1441,9 +1440,9 @@ export function sessionMessageSemanticHash(request: SessionMessageDeliveryReques
  * branch exposes it as trustworthy UTC without guessing a local timezone. A scheduled message
  * additionally gains a distinct managed metadata item (schedule name, scheduled/sent/processing
  * times in UTC and the schedule's IANA timezone, message id, detail link, and the normalized
- * <=120 code-point preview) plus the single best-effort start-notification instruction. The full
- * prompt always stays its own trailing user-task item, and untrusted name/preview text enters the
- * managed block only JSON-escaped, so it can never close a managed tag or forge instructions.
+ * <=120 code-point preview). The full prompt always stays its own trailing user-task item, and
+ * untrusted name/preview text enters the managed block only JSON-escaped, so it can never close a
+ * managed tag or forge instructions.
  */
 export function buildSessionMessageInput(
   request: SessionMessageDeliveryRequestV3,
@@ -1548,10 +1547,9 @@ function buildInternalSessionMessageContext(
 }
 
 /**
- * The distinct managed metadata item of a scheduled input. All schedule facts plus the exact
- * best-effort start notification. The name and preview are untrusted snapshot text and appear
- * only JSON-escaped; the pre-composed notification filters emoji for display while the managed
- * fields and the full task body keep them.
+ * The distinct managed metadata item of a scheduled input. The name and preview are untrusted
+ * snapshot text and appear only JSON-escaped. The scheduled message goes to the Agent only: the
+ * Server, not the Agent, reports a failed or missed occurrence to the conversation.
  */
 function buildScheduledTaskMetadataItem(
   request: SessionMessageDeliveryRequestV3,
@@ -1584,23 +1582,10 @@ function buildScheduledTaskMetadataItem(
   ];
   if (turnContext.sessionKind === "visible") {
     lines.push(
-      "Start notification: exactly once, when you actually begin processing this task — never on receipt, while queued, or from any earlier marker — decode the JSON string below and send its resulting text unchanged as plain text (without Markdown or automatic link parsing) to this Session's IM conversation through the provider CLI described in the Session message context:",
-      `Notification JSON: ${escapeScheduledMetadataText(
-        buildScheduleStartNotification({
-          name: origin.name,
-          preview,
-          scheduledFor,
-          processedAt,
-          timezone,
-          detailUrl: request.scheduleDetailUrl,
-        }),
-      )}`,
-      "The notification is best-effort: if sending fails or the result is uncertain, apply the provider CLI verification rules and continue the task. Do not retry the notification separately, and never let it block, fail, or abort the task. Send no other schedule lifecycle notification — no completion, failure, or skip notices.",
+      "Post to this Session's IM conversation only if this task produces something the conversation should see; a run with nothing to report stays silent. Send no schedule lifecycle notice: no start, completion, failure, or skip message. openTag reports a failed Run to the conversation itself.",
     );
   } else {
-    lines.push(
-      "No IM outbox is attached to this target Session; do not send a start notification for this scheduled task.",
-    );
+    lines.push("No IM outbox is attached to this target Session.");
   }
   lines.push("</opentag-scheduled-task-metadata>");
   return lines.join("\n");

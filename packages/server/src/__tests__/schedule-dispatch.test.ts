@@ -367,7 +367,7 @@ describe("schedule claim window and clock (D02, D04)", () => {
     // real claim time (T0+60s), no message.
     const late = await insertSchedule(seed, { schedule: rule, nextTriggerAt: T0 });
     currentTime = new Date(T0.getTime() + 30_001);
-    expect(await claimOf(stack, late.id)).toEqual({ kind: "skipped", code: "late" });
+    expect(await claimOf(stack, late.id)).toMatchObject({ kind: "skipped", code: "late" });
     const lateRow = await scheduleRow(late.id);
     expect(lateRow?.nextTriggerAt?.toISOString()).toBe(new Date(T0.getTime() + 60_000).toISOString());
     expect(lateRow?.lastDispatch).toMatchObject({
@@ -391,7 +391,7 @@ describe("schedule claim window and clock (D02, D04)", () => {
       nextTriggerAt: T0,
     });
     currentTime = new Date(T0.getTime() + 185_000);
-    expect(await claimOf(stack, every.id)).toEqual({ kind: "skipped", code: "late" });
+    expect(await claimOf(stack, every.id)).toMatchObject({ kind: "skipped", code: "late" });
     const everyRow = await scheduleRow(every.id);
     // Only the stored due point is processed; the intermediate T0+60/120/180 are never enumerated.
     expect(everyRow?.nextTriggerAt?.toISOString()).toBe(new Date(T0.getTime() + 240_000).toISOString());
@@ -403,7 +403,7 @@ describe("schedule claim window and clock (D02, D04)", () => {
       schedule: { kind: "at", at: T0.toISOString() },
       nextTriggerAt: T0,
     });
-    expect(await claimOf(stack, once.id)).toEqual({ kind: "skipped", code: "late" });
+    expect(await claimOf(stack, once.id)).toMatchObject({ kind: "skipped", code: "late" });
     const onceRow = await scheduleRow(once.id);
     expect(onceRow?.nextTriggerAt).toBeNull();
     expect(onceRow?.enabled).toBe(true);
@@ -427,7 +427,7 @@ describe("claim clock ordering (D03)", () => {
       nextTriggerAt: T0,
     });
     currentTime = T0;
-    expect(await claimOf(stack, row.id)).toEqual({ kind: "skipped", code: "late" });
+    expect(await claimOf(stack, row.id)).toMatchObject({ kind: "skipped", code: "late" });
     expect(await db.database.select().from(sessionMessages)).toHaveLength(0);
     const after = await scheduleRow(row.id);
     expect(after?.lastDispatch).toMatchObject({ outcome: "skipped", code: "late" });
@@ -556,7 +556,7 @@ describe("message identity (D12, D13)", () => {
       createdAt: T0,
       updatedAt: T0,
     });
-    expect(await claimOf(stack, conflicted.id)).toEqual({ kind: "disabled", code: "message_identity_conflict" });
+    expect(await claimOf(stack, conflicted.id)).toMatchObject({ kind: "disabled", code: "message_identity_conflict" });
     const row2 = await scheduleRow(conflicted.id);
     expect(row2).toMatchObject({ enabled: false, nextTriggerAt: null, revision: 2 });
     expect(row2?.lastDispatch).toMatchObject({ outcome: "skipped", code: "message_identity_conflict" });
@@ -958,7 +958,7 @@ describe("target validity at claim and dispatch (P06, P07)", () => {
     });
     await invalidate(seed);
     currentTime = new Date(T0.getTime() + 60_000);
-    expect(await claimOf(stack, row.id)).toEqual({ kind: "disabled", code });
+    expect(await claimOf(stack, row.id)).toMatchObject({ kind: "disabled", code });
     const after = await scheduleRow(row.id);
     expect(after).toMatchObject({ enabled: false, nextTriggerAt: null, revision: 2 });
     expect(after?.lastDispatch).toMatchObject({ outcome: "skipped", code, messageId: null, attemptedAt: null });
@@ -1001,7 +1001,7 @@ describe("target validity at claim and dispatch (P06, P07)", () => {
     });
     await db.database.update(agents).set({ status: "suspended" }).where(eq(agents.id, seed.agentId));
     currentTime = new Date(T0.getTime() + 60_000);
-    expect(await claimOf(stack, row.id)).toEqual({ kind: "skipped", code: "agent_suspended" });
+    expect(await claimOf(stack, row.id)).toMatchObject({ kind: "skipped", code: "agent_suspended" });
     let after = await scheduleRow(row.id);
     expect(after).toMatchObject({ enabled: true, revision: 1 });
     expect(after?.nextTriggerAt?.toISOString()).toBe(new Date(T0.getTime() + 120_000).toISOString());

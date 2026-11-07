@@ -244,6 +244,8 @@ export interface AuthorizedScheduledMessageRoute {
   imBindingId: string;
   targetSessionId: string;
   targetSessionKind: SessionKind;
+  /** Null for a visible target. A reconcile of an internal target must name it. */
+  targetCreatorSessionId: string | null;
   targetInstallationId: string;
   targetComputerId: string;
   targetComputerKind: "local" | "cloud";
@@ -692,7 +694,18 @@ export class SessionService {
           .where(and(eq(sessions.id, input.targetSessionId), isNull(sessions.endedAt)));
         await markEndedDescendantsInactive(transaction, { sessionIds: [input.targetSessionId] });
       }
+      // Messages first, then schedules: the order every outcome write with a schedule summary takes.
       const heldNoticeComputerIds = await this.#settleHeldForStoppedTarget(transaction, input);
+      // A stopped Session's schedules stop with it, and can't be resumed. On a repeated stop this finds none.
+      await transaction
+        .update(agentSchedules)
+        .set({
+          enabled: false,
+          nextTriggerAt: null,
+          revision: sql`${agentSchedules.revision} + 1`,
+          updatedAt: this.#now(),
+        })
+        .where(and(eq(agentSchedules.targetSessionId, input.targetSessionId), eq(agentSchedules.enabled, true)));
       const [target] = await this.#internalStopTargets(transaction, eq(sessions.id, input.targetSessionId));
       if (!target) throw new SessionServiceError("SESSION_TARGET_UNAVAILABLE", "The target Session is not available");
       const [descendants] = await transaction
@@ -735,6 +748,7 @@ export class SessionService {
         id: sessionMessages.id,
         sourceSessionId: sessionMessages.sourceSessionId,
         content: sessionMessages.content,
+        scheduledOrigin: sessionMessages.scheduledOrigin,
       });
     if (settled.length === 0) return [];
     await transaction
@@ -748,6 +762,9 @@ export class SessionService {
       );
     const computerIds = new Set<string>();
     for (const message of settled) {
+      // A scheduled message has no sender, so its schedule's summary is where the answer shows.
+      if (message.scheduledOrigin)
+        await this.#writeStoppedScheduleSummary(transaction, message.id, message.scheduledOrigin, now);
       const sender = message.sourceSessionId;
       if (!sender || sender === input.sourceSessionId || sender === input.targetSessionId) continue;
       if (isRunOutcomeNotice(message) || isDeliveryFailureNotice(message)) continue;
@@ -1071,6 +1088,30 @@ export class SessionService {
     content: string;
   }): Promise<{ computerId: string } | undefined> {
     return this.#database.transaction((transaction) => this.#insertDeliveryFailureNotice(transaction, input));
+  }
+
+  async #writeStoppedScheduleSummary(
+    transaction: DatabaseTransaction,
+    messageId: string,
+    origin: SessionMessageScheduledOrigin,
+    now: Date,
+  ): Promise<void> {
+    const summary: AgentScheduleLastDispatch = {
+      scheduledFor: origin.scheduledFor,
+      attemptedAt: now.toISOString(),
+      messageId,
+      outcome: "rejected",
+      code: SESSION_MESSAGE_TARGET_STOPPED_CODE,
+    };
+    await transaction
+      .update(agentSchedules)
+      .set({ lastDispatch: summary })
+      .where(
+        and(
+          eq(agentSchedules.id, origin.scheduleId),
+          sql`${agentSchedules.lastDispatch} ->> 'messageId' = ${messageId}`,
+        ),
+      );
   }
 
   async #insertDeliveryFailureNotice(
@@ -1424,6 +1465,7 @@ export class SessionService {
       .select({
         sessionId: sessions.id,
         sessionKind: sessions.kind,
+        sessionCreatorId: sessions.createdBySessionId,
         sessionEndedAt: sessions.endedAt,
         bindingId: imBindings.id,
         bindingAgentId: imBindings.agentId,
@@ -1470,6 +1512,7 @@ export class SessionService {
         imBindingId: row.bindingId,
         targetSessionId: row.sessionId,
         targetSessionKind: row.sessionKind,
+        targetCreatorSessionId: row.sessionCreatorId,
         targetInstallationId: row.computerInstallationId,
         targetComputerId: row.placementComputerId,
         targetComputerKind: row.computerKind,

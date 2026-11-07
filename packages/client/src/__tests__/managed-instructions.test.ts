@@ -368,6 +368,8 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
       );
       expect(prompt).toContain("questions, and the final result.");
       expect(prompt).toContain("You may create further internal Sessions");
+      expect(prompt).toContain("agent self schedule create` fires back into this Session");
+      expect(prompt).toContain("It has no IM outlet");
       expect(prompt).not.toContain("Handle quick work directly");
       expect(prompt).not.toContain("post a short new IM message at each meaningful milestone");
       expect(prompt).toContain("Creator Session: session-parent-1");

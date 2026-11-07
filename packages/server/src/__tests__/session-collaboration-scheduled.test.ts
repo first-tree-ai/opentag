@@ -1,5 +1,9 @@
 import { randomUUID } from "node:crypto";
-import type { SessionMessageDeliveryResult, SessionReconcileResult } from "@opentag/shared";
+import {
+  type SessionMessageDeliveryResult,
+  SessionReconcileRequestSchema,
+  type SessionReconcileResult,
+} from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { type RuntimeDispatchAdmission, RuntimeDomainRequestError } from "../runtime/runtime-domain-owner.js";
 import {
@@ -24,6 +28,7 @@ function snapshotFixture(): { snapshot: ScheduledMessageSnapshot; route: Authori
     imBindingId: randomUUID(),
     targetSessionId: randomUUID(),
     targetSessionKind: "channel",
+    targetCreatorSessionId: null,
     targetInstallationId: randomUUID(),
     targetComputerId: randomUUID(),
     targetComputerKind: "local",
@@ -242,6 +247,17 @@ describe("SessionCollaborationService.dispatchScheduledMessage", () => {
         },
       }),
     );
+  });
+
+  it("names the creator when it reconciles an internal target, which the frame requires", async () => {
+    const { snapshot, route } = snapshotFixture();
+    const creator = randomUUID();
+    const fixture = makeFixture({ ...route, targetSessionKind: "internal", targetCreatorSessionId: creator });
+    await expect(fixture.service.dispatchScheduledMessage(snapshot)).resolves.toMatchObject({ outcome: "accepted" });
+    const frame = fixture.domain.requestReconcile.mock.calls[0]?.[2];
+    expect(frame).toMatchObject({ sessionKind: "internal", creatorSessionId: creator });
+    expect(SessionReconcileRequestSchema.safeParse(frame).success).toBe(true);
+    expect(fixture.domain.requestSessionMessageDelivery).toHaveBeenCalledOnce();
   });
 
   it("never sends when the one-shot fence is already taken or the message is gone", async () => {

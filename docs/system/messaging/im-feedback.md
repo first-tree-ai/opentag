@@ -72,7 +72,8 @@ and confirmation semantics.
 
 A scheduled message goes to the Agent only and posts nothing in IM when it starts or succeeds
 ([#1352](https://github.com/first-tree-ai/opentag/issues/1352)). It has no sender and no native input, so neither the
-sender notice nor a feedback target can carry its failure. The Server instead posts one plain message from the Session's
+sender notice nor a feedback target can carry its failure. This section covers a visible target; for an internal Session, see
+[Schedules on an internal Session](internal-session-collaboration.md#schedules-on-an-internal-session). The Server instead posts one plain message from the Session's
 Bot in the Session's own chat or thread, with the task name, scheduled time, stable code, and schedule details link. It
 stores no IM feedback state and adds no column.
 

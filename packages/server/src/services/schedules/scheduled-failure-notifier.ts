@@ -256,6 +256,8 @@ export class ScheduledFailureNotifier implements RunOutcomeNotifier, ScheduledMi
     input: { occurrence: ScheduledOccurrence; kind: ScheduledMissKind; code: string; requestId: string },
     signal: AbortSignal,
   ): Promise<void> {
+    // It has no conversation. The miss stays in the schedule's summary, and nobody is messaged for it.
+    if (await this.#targetIsInternal(input.occurrence.targetSessionId)) return;
     const text = renderMiss(input.occurrence, input.kind, input.code, this.#options.publicUrl);
     for (let attempt = 1; attempt <= MISS_SEND_ATTEMPTS; attempt += 1) {
       const sent = await this.#send(input.occurrence.targetSessionId, text, input.requestId);
@@ -275,6 +277,15 @@ export class ScheduledFailureNotifier implements RunOutcomeNotifier, ScheduledMi
       { code: "SCHEDULED_FAILURE_NOTICE_UNDELIVERED", scheduleId: input.occurrence.scheduleId },
       "A missed scheduled occurrence could not be reported to its conversation",
     );
+  }
+
+  async #targetIsInternal(sessionId: string): Promise<boolean> {
+    const [row] = await this.#options.database
+      .select({ kind: sessions.kind })
+      .from(sessions)
+      .where(eq(sessions.id, sessionId))
+      .limit(1);
+    return row?.kind === "internal";
   }
 
   /** The scheduled facts of a reported message whose target is a visible Session, else undefined. */

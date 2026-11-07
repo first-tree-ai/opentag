@@ -9,6 +9,7 @@ import {
   type SessionRecoverRequest,
 } from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { BaseAgentRuntime } from "../agent-runtime/base-agent-runtime.js";
 import { AgentRuntimeError } from "../agent-runtime/errors.js";
 import type { AgentRunResult } from "../agent-runtime/types.js";
 import { AdmissionController } from "../runtime/admission-controller.js";
@@ -961,6 +962,52 @@ describe("AgentTurnRunner steer refused after the Turn's result", () => {
     const steer = steerRequest(h.request, "more");
     await expect(h.runner.steer(steer)).resolves.toMatchObject({ status: "deferred", reason });
     expect(h.retries.removeSteer).toHaveBeenCalledWith(steer);
+    finish();
+    await h.runner.settled();
+  });
+
+  it("delivers after the Turn when the Run settles during retry capture", async () => {
+    const h = runnerHarness();
+    // A real Base Runtime whose Run has settled: its steer admission refuses before any Provider write.
+    const steerProvider = vi.fn(async () => undefined);
+    class SettledRuntime extends BaseAgentRuntime {
+      constructor() {
+        super({
+          manifest: { providerId: "settled", displayName: "Settled", version: "1" } as never,
+          capabilities: { steer: "supported", interactions: "unsupported" } as never,
+          eventSink: () => undefined,
+        });
+      }
+      protected executeRun(): never {
+        throw new Error("no Run in this test");
+      }
+      protected override steerProvider = steerProvider;
+      protected closeProvider = async () => undefined;
+    }
+    const settled = new SettledRuntime();
+    h.runtime.steer.mockImplementation(((request: never) => settled.steer(request)) as never);
+    let finishCapture: (status: "appended") => void = () => undefined;
+    h.retries.appendSteer = () =>
+      new Promise((resolve) => {
+        finishCapture = resolve;
+      });
+    let finish: () => void = () => undefined;
+    h.prompt.mockImplementation(
+      () =>
+        new Promise<AgentRunResult>((resolve) => {
+          finish = () => resolve({ runId: "turn-1", status: "completed", output: [] });
+          h.emit({ type: "run_started", runId: "turn-1" } as never);
+        }),
+    );
+    h.runner.start(owner(h.request));
+    await vi.waitFor(() =>
+      expect(h.updateUnresolved).toHaveBeenCalledWith(expect.anything(), expect.anything(), "turn-1", "running"),
+    );
+    const answer = h.runner.steer(steerRequest(h.request, "more"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    finishCapture("appended");
+    await expect(answer).resolves.toMatchObject({ status: "deferred", reason: "turn_not_running" });
+    expect(steerProvider).not.toHaveBeenCalled();
     finish();
     await h.runner.settled();
   });

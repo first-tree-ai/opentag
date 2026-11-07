@@ -259,8 +259,9 @@ describe("BaseAgentRuntime contract", () => {
     const run = runtime.prompt(prompt("run-1", "one"));
 
     await expect(runtime.steer({ expectedRunId: "stale", input: input("change") })).rejects.toMatchObject({
-      code: "run_mismatch",
+      code: "steer_not_sent",
     });
+    expect(runtime.steers).toHaveLength(0);
     await expect(runtime.abort({ expectedRunId: "stale" })).rejects.toMatchObject({ code: "run_mismatch" });
     await runtime.steer({ expectedRunId: "run-1", input: input("change") });
     expect(runtime.steers).toHaveLength(1);

@@ -140,7 +140,9 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
     assertIdentifier(request.expectedRunId, "expectedRunId");
     assertAgentInput(request.input);
     const snapshot = immutableSnapshot(request);
-    const active = this.#requireActive(snapshot.expectedRunId);
+    // Refused here, nothing reached the Provider: the caller may deliver the input after the Run.
+    const active = this.#activeRun(snapshot.expectedRunId);
+    if (!active) throw new AgentRuntimeError("steer_not_sent", "expectedRunId does not match the active run");
     const custody = await this.steerProvider(snapshot);
     if (active.state !== "active" || this.#active !== active) {
       // Only an explicit probe that reports the input never started may refuse it for redelivery. No probe
@@ -521,9 +523,14 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
     this.closeForProviderFailure();
   }
 
-  #requireActive(expectedRunId: string): RunRecord {
+  #activeRun(expectedRunId: string): RunRecord | undefined {
     const active = this.#active;
-    if (!active || active.request.runId !== expectedRunId || active.state !== "active") {
+    return active && active.request.runId === expectedRunId && active.state === "active" ? active : undefined;
+  }
+
+  #requireActive(expectedRunId: string): RunRecord {
+    const active = this.#activeRun(expectedRunId);
+    if (!active) {
       throw new AgentRuntimeError("run_mismatch", "expectedRunId does not match the active run");
     }
     return active;

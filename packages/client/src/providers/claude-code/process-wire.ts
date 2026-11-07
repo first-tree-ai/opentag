@@ -109,6 +109,8 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
   #backgroundTasks = new Map<string, string>();
   readonly #inProcessTimers = new InProcessTimers();
   #backgroundNoticeSent = false;
+  /** The result that the background notice continued past: the Run's own work was done by then. */
+  #completedBeforeNotice?: Record<string, unknown>;
   /** Sampled at the terminal result: stopping the process empties the lists above. */
   #abandonedAtTerminal: readonly string[] = [];
 
@@ -291,7 +293,7 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
     this.#observeBackgroundWork(parsed);
     const terminal = parsed.type === "result" && this.#endsRun(parsed);
     try {
-      this.#listener?.(parsed, terminal);
+      this.#listener?.(terminal ? this.#terminalReport(parsed) : parsed, terminal);
     } catch (error) {
       this.#logger.debug(
         { code: "protocol_listener_failed", error: String(error) },
@@ -325,7 +327,22 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
     if (this.#pendingSteers.size > 0) return false;
     if (result.is_error === true) return true;
     if (this.#isSelfGeneratedResult(result)) return false;
-    return !this.#sendBackgroundNotice();
+    if (!this.#sendBackgroundNotice()) return true;
+    this.#completedBeforeNotice = result;
+    return false;
+  }
+
+  /**
+   * The Run's work completed before the background notice, so a wrap-up turn that fails (a model 429,
+   * for example) must not turn it into a failed Run that runs again. Only the failure's usage is kept.
+   */
+  #terminalReport(result: Record<string, unknown>): Record<string, unknown> {
+    if (result.is_error !== true || !this.#completedBeforeNotice) return result;
+    this.#logger.warn(
+      { code: "background_notice_turn_failed", subtype: result.subtype },
+      "The turn after the background work notice failed; the Run's own work had completed",
+    );
+    return { ...this.#completedBeforeNotice, usage: result.usage ?? {}, num_turns: result.num_turns ?? 0 };
   }
 
   #isSelfGeneratedResult(result: Record<string, unknown>): boolean {

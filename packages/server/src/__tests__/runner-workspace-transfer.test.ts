@@ -27,6 +27,11 @@ function fixture() {
   const store: WorkspaceObjectStore = {
     head: async () => ({ ...object }),
     claim: async () => ({ ...object }),
+    inspectWrite: async () => ({ ...object }),
+    seal: async (_scope, previous) => {
+      object = { ...previous, sealed: true, metageneration: String(BigInt(previous.metageneration) + 1n) };
+      return object;
+    },
     read: async () => {
       throw new Error("unused read");
     },

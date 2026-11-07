@@ -16,6 +16,9 @@ export const SESSION_MESSAGE_HELD_EXPIRED_CODE = "delivery_expired";
 /** A later occurrence or an edit replaced a held scheduled message, so it is not delivered late. */
 export const SESSION_MESSAGE_HELD_SUPERSEDED_CODE = "delivery_superseded";
 
+/** The target was stopped for good, so there is nothing left to deliver to. */
+export const SESSION_MESSAGE_TARGET_STOPPED_CODE = "target_stopped";
+
 export function heldMessageCutoff(nowMs: number): Date {
   return new Date(nowMs - SESSION_MESSAGE_HELD_TTL_MS);
 }
@@ -66,6 +69,8 @@ export function renderDeliveryFailureNotice(input: {
     "",
     "A message you sent earlier was accepted by openTag but could not be delivered, so that Session never received it.",
     "This notice was written by openTag, not by that Session. openTag will not try again.",
-    `To deliver it, send it again: opentag session send ${input.targetSessionId} --message "<message>"`,
+    input.code === SESSION_MESSAGE_TARGET_STOPPED_CODE
+      ? "That Session was stopped and cannot receive messages, so do not send it again; decide what to do without it."
+      : `To deliver it, send it again: opentag session send ${input.targetSessionId} --message "<message>"`,
   ].join("\n");
 }

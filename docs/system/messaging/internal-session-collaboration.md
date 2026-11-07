@@ -197,6 +197,10 @@ Client is upgrading, restarting or full.
 - **Run outcome notices.** A Local report's background notice can be held like any message. The reporter keeps its report
   and retries until the notice is accepted, so a report answers `notified` only after delivery. A background attempt
   has no waiting sender, so it has no 5-second budget, and shutdown drains it.
+- **Stopped targets.** `session stop` ends the target's held messages in the same commit as `rejected / target_stopped`, and
+  a hand-off still in flight loses its write. The sender that asked for the stop gets no notice. Any other sender was told
+  `accepted`, so it gets one, which says not to send again. The sweep settles a held message whose target ended some other
+  way, or that became held just after the stop, the same way; there, every sender gets a notice.
 - **Scheduled messages.** A Local occurrence that provably never reached the Client is held the same way, as an exception
   to the one-shot hand-off. An `unknown` hand-off is not retried. Once the next occurrence is claimed the held one ends as
   `unreachable / delivery_superseded`, and it can also end as `delivery_expired`; the sweep applies both while the Computer

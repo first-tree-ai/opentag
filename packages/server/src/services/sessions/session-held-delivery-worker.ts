@@ -20,7 +20,10 @@ const ATTEMPT_SETTLE_MS = 2 * 60_000;
 const DEFAULT_READY_FOLLOW_UPS_MS = [5_000, 20_000];
 
 export interface SessionHeldDeliveryWorkerOptions {
-  collaboration: Pick<SessionCollaborationService, "expireHeld" | "redeliverHeld" | "settleReplacedHeld">;
+  collaboration: Pick<
+    SessionCollaborationService,
+    "expireHeld" | "redeliverHeld" | "settleEndedTargetHeld" | "settleReplacedHeld"
+  >;
   sessions: Pick<SessionService, "listHeldMessagesForTarget" | "listHeldTargetsForComputer" | "sweepHeldMessages">;
   registry: { currentInstanceId(computerId: string): string | undefined };
   logger?: Pick<ServiceLogger, "error">;
@@ -145,7 +148,8 @@ export class SessionHeldDeliveryWorker {
     if (this.#stopped) return;
     if (message.createdAt > cutoff && message.computerId) this.#pending.add(message.computerId);
     if (this.#attemptMayStillAnswer(message)) return;
-    if (message.createdAt <= cutoff) await this.#options.collaboration.expireHeld(message);
+    if (message.targetEnded) await this.#options.collaboration.settleEndedTargetHeld(message);
+    else if (message.createdAt <= cutoff) await this.#options.collaboration.expireHeld(message);
     else await this.#options.collaboration.settleReplacedHeld(message);
   }
 

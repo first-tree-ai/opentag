@@ -585,6 +585,93 @@ describe("Server-held Session message delivery", () => {
     ).resolves.toBeUndefined();
   });
 
+  describe("when the target is stopped", () => {
+    async function stoppable() {
+      const s = await stack({ sendBudgetMs: 20 });
+      const siblingId = await s.createChild();
+      const fromSibling = { ...s.source, sessionId: siblingId } as SessionCliSourceContext;
+      const sendFromSibling = (message: string) => {
+        const messageId = randomUUID();
+        return s.collaboration
+          .send({ messageId, targetSessionId: s.targetSessionId, message }, fromSibling)
+          .then((result) => ({ ...result, messageId }));
+      };
+      return { ...s, siblingId, sendFromSibling };
+    }
+
+    it("settles held messages at the stop and tells only the other senders", async () => {
+      const s = await stoppable();
+      s.state.answer = "client_busy";
+      const own = await s.send("from the stopper");
+      const other = await s.sendFromSibling("from a sibling");
+      expect(other.status).toBe("accepted");
+
+      await expect(s.collaboration.stop({ targetSessionId: s.targetSessionId }, s.source)).resolves.toMatchObject({
+        status: "stopped",
+      });
+
+      for (const { messageId } of [own, other]) {
+        expect(await s.row(messageId)).toMatchObject({ lastOutcome: "rejected", lastErrorCode: "target_stopped" });
+      }
+      await expect(s.row(deliveryFailureNoticeMessageId(own.messageId))).resolves.toBeUndefined();
+      const notice = await s.row(deliveryFailureNoticeMessageId(other.messageId));
+      expect(notice).toMatchObject({ targetSessionId: s.siblingId, sourceSessionId: s.targetSessionId });
+      expect(notice?.content).toContain("do not send it again");
+      expect(notice?.content).not.toContain("session send");
+    });
+
+    it("delivers the notice to the other sender and leaves nothing to expire", async () => {
+      const s = await stoppable();
+      s.state.answer = "client_busy";
+      const other = await s.sendFromSibling("from a sibling");
+      await s.collaboration.stop({ targetSessionId: s.targetSessionId }, s.source);
+      s.state.answer = "accepted";
+
+      await s.worker.flush(s.computerId);
+
+      await vi.waitFor(async () =>
+        expect(await s.row(deliveryFailureNoticeMessageId(other.messageId))).toMatchObject({ lastOutcome: "accepted" }),
+      );
+      const held = await new SessionService(db.database).sweepHeldMessages(null, 10);
+      expect(held).toEqual([]);
+    });
+
+    it("does not let a hand-off in flight overwrite the stop", async () => {
+      const s = await stoppable();
+      let release = () => {};
+      s.state.stalled = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      s.state.answer = "stall";
+      const sent = await s.send("in flight");
+      expect(sent.status).toBe("accepted");
+
+      await s.collaboration.stop({ targetSessionId: s.targetSessionId }, s.source);
+      release();
+
+      // Its final admission now finds the target ended, so no frame leaves and its write loses the fence.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(s.frames.filter((frame) => frame.messageId === sent.messageId)).toEqual([]);
+      expect(await s.row(sent.messageId)).toMatchObject({ lastOutcome: "rejected", lastErrorCode: "target_stopped" });
+    });
+
+    it("sweeps a held message whose target ended without a stop", async () => {
+      const s = await stoppable();
+      s.state.answer = "client_busy";
+      const sent = await s.send("target ended elsewhere");
+      await db.database.update(sessions).set({ endedAt: new Date() }).where(eq(sessions.id, s.targetSessionId));
+      await db.database
+        .update(sessionMessages)
+        .set({ lastAttemptAt: new Date(Date.now() - 3 * 60_000) })
+        .where(eq(sessionMessages.id, sent.messageId));
+
+      await s.worker.sweep();
+
+      expect(await s.row(sent.messageId)).toMatchObject({ lastOutcome: "rejected", lastErrorCode: "target_stopped" });
+      expect(await s.row(deliveryFailureNoticeMessageId(sent.messageId))).toBeDefined();
+    });
+  });
+
   it("still answers a permanent rejection on the first attempt", async () => {
     const s = await stack();
     s.state.answer = "target_mismatch";

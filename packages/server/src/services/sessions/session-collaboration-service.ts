@@ -400,7 +400,9 @@ export class SessionCollaborationService {
           sessionId: route.targetSessionId,
           agentId: route.agentId,
           placementGeneration: route.targetPlacementGeneration,
-          ...(route.targetSessionKind === "internal" ? { sessionKind: "internal" as const } : {}),
+          ...(route.targetSessionKind === "internal" && route.targetCreatorSessionId
+            ? { sessionKind: "internal" as const, creatorSessionId: route.targetCreatorSessionId }
+            : {}),
           desired: "ready",
           runtime,
         },

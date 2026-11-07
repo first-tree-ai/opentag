@@ -1850,7 +1850,9 @@ function buildScheduledTaskMetadataItem(
       "Post to this Session's IM conversation only if this task produces something the conversation should see; a run with nothing to report stays silent. Send no schedule lifecycle notice: no start, completion, failure, or skip message. openTag reports a failed Run to the conversation itself.",
     );
   } else {
-    lines.push("No IM outbox is attached to this target Session.");
+    lines.push(
+      "No IM outbox is attached to this target Session: this task can't post to IM. Report anything worth reporting with session send to the Session that needs it; a run with nothing to report stays silent.",
+    );
   }
   lines.push("</opentag-scheduled-task-metadata>");
   return lines.join("\n");

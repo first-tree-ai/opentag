@@ -165,6 +165,7 @@ function renderSession(context: ManagedSessionContext): readonly string[] {
       ? [
           `You are an internal Session. Focus on the delegated task and do not publish directly to IM. Report to the creating or coordinating Session with \`${context.cliCommand} session send\`: milestones only when useful (such as a key finding or being blocked), questions, and the final result.`,
           "You may create further internal Sessions when platform-level Session collaboration is useful.",
+          `A schedule you create with \`${context.cliCommand} agent self schedule create\` fires back into this Session, and can't target any other Session. It has no IM outlet: a scheduled Run reports with \`${context.cliCommand} session send\` like any other Run. Your schedules stop when this Session is stopped or ends.`,
         ]
       : [
           ...renderVisibleDelegation(context),

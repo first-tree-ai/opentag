@@ -736,6 +736,36 @@ describe("a scheduled occurrence that never ran", () => {
     await h.notifier.notifyMissed(input, aborted.signal);
     expect(h.post).toHaveBeenCalledOnce();
   });
+  it("sends and logs nothing for a miss on an internal Session, which has no conversation", async () => {
+    const value = await seed();
+    const internalId = randomUUID();
+    const [visible] = await db.database.select().from(sessions).where(eq(sessions.id, value.sessionId));
+    await db.database.insert(sessions).values({
+      id: internalId,
+      imBindingId: visible?.imBindingId as string,
+      channelId: visible?.channelId as string,
+      conversationKind: visible?.conversationKind as "dm",
+      kind: "internal",
+      createdBySessionId: value.sessionId,
+    });
+    const h = harness(vi.fn());
+    const occurrenceFacts = {
+      agentId: value.agentId,
+      name: "Hourly check",
+      scheduleId: randomUUID(),
+      scheduledFor: T0.toISOString(),
+      targetSessionId: internalId,
+      timezone: "UTC",
+    };
+    for (const kind of ["missed", "disabled"] as const) {
+      await h.notifier.notifyMissed(
+        { occurrence: occurrenceFacts, kind, code: "target_invalid", requestId: randomUUID() },
+        new AbortController().signal,
+      );
+    }
+    expect(h.post).not.toHaveBeenCalled();
+    expect(h.logger.warn).not.toHaveBeenCalled();
+  });
 });
 
 describe("scheduledMissKind", () => {

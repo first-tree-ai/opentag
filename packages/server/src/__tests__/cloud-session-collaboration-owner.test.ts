@@ -378,6 +378,7 @@ async function scheduledDeliveryInput(fixture: CloudFixture, messageId: string):
       imBindingId: fixture.bindingId,
       targetSessionId: fixture.sessionId,
       targetSessionKind: "channel",
+      targetCreatorSessionId: null,
       targetInstallationId: randomUUID(),
       targetComputerId: fixture.computerId,
       targetComputerKind: "cloud",

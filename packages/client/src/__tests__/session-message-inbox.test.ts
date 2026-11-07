@@ -3071,7 +3071,9 @@ describe("SessionMessageInbox", () => {
     expect(allText).not.toContain("Scheduled task started");
 
     const internal = buildSessionMessageInput(scheduled, "opentag", { sessionKind: "internal" });
-    expect(internal.items[1]?.text).toContain("No IM outbox is attached to this target Session.");
+    expect(internal.items[1]?.text).toContain(
+      "No IM outbox is attached to this target Session: this task can't post to IM.",
+    );
   });
 
   it("keeps visible callback context compact with shared CLI manuals in the system prompt", () => {

@@ -362,6 +362,10 @@ function snapshotsEqual(snapshot: StoredSnapshot, object: WorkspaceObject): bool
   );
 }
 
+function assertFenceDeadline(signal: AbortSignal): void {
+  if (signal.aborted) fail("timeout", "Workspace fencing claim exceeded its deadline");
+}
+
 function requireFenceSnapshot(
   scope: WorkspaceObjectScope,
   current: StoredSnapshot | undefined,
@@ -609,11 +613,12 @@ export class GcsWorkspaceObjectStore implements WorkspaceObjectStore {
       sealed: false,
     };
     for (let attempt = 0; ; attempt += 1) {
-      signal.throwIfAborted();
+      assertFenceDeadline(signal);
       try {
         return await this.#patchMetadata(location, scope, original, scope.environmentGeneration, false, signal);
       } catch (error) {
         if (!(error instanceof WorkspaceObjectStoreError) || !CLAIM_RETRYABLE.has(error.code)) throw error;
+        assertFenceDeadline(signal);
         const observed = await this.#getMetadata(location, scope, signal);
         const confirmed = confirmedFenceSnapshot(observed, original, expected);
         if (confirmed) return confirmed;

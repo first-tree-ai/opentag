@@ -315,6 +315,22 @@ function createFakeGcs() {
 type FakeGcs = ReturnType<typeof createFakeGcs>;
 
 describe("workspace metadata fencing and sealing", () => {
+  it("bounds an uncertain fence with one deadline and no readback or retry after cancellation", async () => {
+    const fake = createFakeGcs();
+    const planted = fake.plant(Buffer.from("complete baseline"), { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake, 30);
+    fake.setInterceptor(async ({ call }) => {
+      if (call.method !== "PATCH") return undefined;
+      return new Promise<never>((_, reject) => {
+        call.signal?.addEventListener("abort", () => reject(call.signal?.reason), { once: true });
+      });
+    });
+    await expect(store.claim(SCOPE, { fence: true })).rejects.toMatchObject({ code: "timeout" });
+    expect(fake.callsNamed("PATCH")).toHaveLength(1);
+    expect(fake.callsNamed("GET")).toHaveLength(1);
+    expect(fake.stored()).toEqual(planted);
+  });
+
   it.each(["claim", "upload"])(
     "never rebases an uncertain old fencing claim over a successor %s",
     async (successor) => {

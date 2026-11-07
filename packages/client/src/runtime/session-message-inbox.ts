@@ -44,7 +44,12 @@ import {
   formatScheduleLocalTime,
   normalizeScheduleTaskPreview,
 } from "./scheduled-message-input.js";
-import { SessionMessageRun, sessionMessageOfRun, sessionMessageRunId } from "./session-message-run.js";
+import {
+  conversationIdentity,
+  SessionMessageRun,
+  sessionMessageOfRun,
+  sessionMessageRunId,
+} from "./session-message-run.js";
 import type { SessionReconciler } from "./session-reconciler.js";
 import type { SessionRuntimeManager } from "./session-runtime-manager.js";
 import { remainingBudgetMs } from "./turn-timeout.js";
@@ -685,7 +690,7 @@ export class SessionMessageInbox {
   /** Best effort: without it a restart injects the message again with the notice, as for any unconfirmed steer. */
   async #recordInConversation(key: string, runId: string, runtime: AgentRuntime): Promise<void> {
     const record = this.#records.get(key);
-    const steerInConversation = conversationIdentity(runtime);
+    const steerInConversation = conversationIdentity(runtime.binding);
     if (!steerInConversation || this.#settlingSteers.has(key)) return;
     if (record?.status !== "running" || record.joinedRunId !== runId) return;
     await this.#persist({ ...record, steerInConversation }).catch(() =>
@@ -763,12 +768,14 @@ export class SessionMessageInbox {
 
   /**
    * A Turn's retries ran out at startup: the messages steered into it share its count, so they fail with
-   * it instead of running again. One whose failure cannot be written yet stays queued and is not run: the
+   * it instead of running again, unless the conversation it ended in does not hold them. One whose failure cannot be written yet stays queued and is not run: the
    * drain keeps trying before anything else. Never waits for that, so a full disk cannot hold up startup.
    */
-  async failJoinedRun(runId: string): Promise<void> {
+  async failJoinedRun(runId: string, conversation?: string): Promise<void> {
     for (const record of [...this.#records.values()]) {
       if (record.joinedRunId !== runId || record.status !== "retryable") continue;
+      // Confirmed in a conversation this Turn had left: it stays queued and runs on its own.
+      if (heldElsewhere(record, conversation)) continue;
       if (await this.#settleJoinedFailure(record.key)) continue;
       this.#failingJoined.add(record.key);
       // Not waiting for the Session to be prepared: nothing about failing it needs the Session.
@@ -989,7 +996,7 @@ export class SessionMessageInbox {
       runTime = undefined;
       // Recorded by the write that follows; the record may hold newer run time than `current`.
       const latest = this.#records.get(key) ?? current;
-      if (latest) current = { ...withRunTime(latest, ranMs), runConversation: ranIn && conversationIdentity(ranIn) };
+      if (latest) current = { ...withRunTime(latest, ranMs), runConversation: conversationIdentity(ranIn?.binding) };
     };
     const ensureRunSignal = (): AbortSignal => {
       if (runSignal) return runSignal;
@@ -1241,24 +1248,20 @@ export class SessionMessageInbox {
     }
     // Only now, with every record restored: a message fails with the Run it joined instead of running.
     for (const { record, hash } of waiting) {
-      if (this.#joinedRunFailed(record)) {
+      const ended = endedRunOutcome(record, this.#joinedRun(record), { atRestart: true });
+      if (ended === "interrupted") {
         const reason = recoverableFailure(record.interruption?.reason) ?? "daemon_crash";
         await this.#failTerminally(record, hash, "runtime", interruptedFailure(record.payload.requestId, reason));
+      } else if (ended) {
+        await this.#settleSteered(record, hash, ended);
       } else {
-        const ended = endedRunOutcome(record, this.#joinedRun(record));
-        if (ended) await this.#settleSteered(record, hash, ended);
-        else this.#enqueue(record.payload, hash);
+        this.#enqueue(record.payload, hash);
       }
     }
     for (const record of unpublished) {
       const { outcome, code } = terminalRunOutcome(record);
       await this.#publishRunOutcome(record, outcome, code);
     }
-  }
-
-  #joinedRunFailed(record: DurableWorkRecord<SessionMessageDeliveryRequestV3>): boolean {
-    const status = this.#joinedRun(record)?.status;
-    return status === "failed" || status === "dead-letter";
   }
 
   /** The record of the message whose own Run this message joined, when it joined one. */
@@ -1631,9 +1634,15 @@ function backgroundWorkStoppedFailure(requestId: string): DurableFailure {
   };
 }
 
-/** What identifies the provider conversation a steered message went into; a different one has lost it. */
-function conversationIdentity(runtime: AgentRuntime): string | undefined {
-  return runtime.binding ? JSON.stringify(runtime.binding) : undefined;
+/**
+ * Whether a message is confirmed in some conversation other than this one. Every decision about a confirmed
+ * message and a Run goes through this: a Run in another conversation, or in none on record, never saw it.
+ */
+function heldElsewhere(
+  record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
+  conversation: string | undefined,
+): boolean {
+  return record.steerInConversation !== undefined && record.steerInConversation !== conversation;
 }
 
 function alreadyInConversation(
@@ -1644,22 +1653,27 @@ function alreadyInConversation(
   return (
     record?.steerInConversation !== undefined &&
     record.joinedRunId === runId &&
-    record.steerInConversation === conversationIdentity(runtime)
+    !heldElsewhere(record, conversationIdentity(runtime.binding))
   );
 }
 
 /**
- * A message already in its Run's conversation ends with that Run. When the Run ended before the message
- * could rejoin it, the Run's own record says how, but only if the Run ended in the conversation that holds
- * the message. A Run that resumed another conversation, or left no record of one, never saw it.
+ * What an ended Run means for a message that joined it, when that decides the message:
+ * - Confirmed in another conversation: nothing. That Run never saw it, so it runs on its own.
+ * - Confirmed in the Run's conversation: the Run's outcome.
+ * - Not confirmed: it fails with a Run found failed at a restart, the Run it was steered into. Success proves
+ *   nothing about it, and a Run that fails while it waits to rejoin was never joined, so it runs on its own.
  */
 function endedRunOutcome(
   record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
   run: DurableWorkRecord<SessionMessageDeliveryRequestV3> | undefined,
+  options: { atRestart?: boolean } = {},
 ): AgentSteerOutcome | undefined {
-  if (!record.steerInConversation || run?.runConversation !== record.steerInConversation) return undefined;
-  if (run.status === "succeeded") return "processed";
-  return run.status === "failed" || run.status === "dead-letter" ? "interrupted" : undefined;
+  if (!run || heldElsewhere(record, run.runConversation)) return undefined;
+  const confirmed = record.steerInConversation !== undefined;
+  if (run.status === "succeeded") return confirmed ? "processed" : undefined;
+  if (run.status !== "failed" && run.status !== "dead-letter") return undefined;
+  return confirmed || options.atRestart ? "interrupted" : undefined;
 }
 
 /** The message rejoins the Run without input: the Run's own outcome decides it, as for any joined message. */

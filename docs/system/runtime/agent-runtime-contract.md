@@ -38,6 +38,10 @@ Provider-specific configuration, binding, and protocol validation.
   over RPC without a per-input start signal; their input counts as possibly started. If the Run settles while the
   Provider is accepting steer, only a Provider that reports the input never started may reject it (`run_mismatch`)
   for redelivery; otherwise the receipt reports the settled Run, so the caller never replays owned input.
+  A receipt may also carry `inConversation`, which resolves once the input is durably in the Provider's conversation, so a
+  process killed then and resumed still has it. Claude Code resolves it at the first top-level assistant message after the
+  input started, because `started` comes before its transcript flush. Codex resolves it with the `turn/steer` answer, since the
+  rollout already holds the input. Pi gives no such signal and omits it.
 - The Base Runtime serializes and awaits event delivery before settling a Run.
 - Provider terminal ingress may be claimed before queued translation finishes;
   public settlement still waits for the Provider execution to finish.

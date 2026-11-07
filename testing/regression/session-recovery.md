@@ -195,8 +195,9 @@ Needs a real Claude Code: the Lab's scripted Claude does not start background ta
    existing channel or thread outbox target; it does not wait to start a separate callback Run. Cover both channel and
    thread Sessions with Feishu and Slack.
 2. Kill and restart the daemon while the steered message is in the Turn.
-3. Expected: the Turn continues, and the message is steered into it again with the notice that it may already have been
-   handled. If that Turn fails, the message fails with it and does not run again: the person gets the error card, and the
+3. Expected: the Turn continues. If the Agent had already answered after the message, it is not injected again (Claude Code and
+   Codex). Otherwise, and always with Pi, it is steered in again with the notice that it may already have been handled. If that
+   Turn fails, the message fails with it and does not run again: the person gets the error card, and the
    message's sender gets a notice.
 4. Repeat with explicit `proxy` credential mode and verify the same steer and outbox target. A Server that does not
    negotiate credential grant v2 must refuse visible callback delivery; missing context never invents a target.

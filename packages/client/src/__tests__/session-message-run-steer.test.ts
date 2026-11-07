@@ -11,7 +11,12 @@ import {
   type RuntimeRetryScheduler,
 } from "../runtime/runtime-durability.js";
 import { SessionMessageInbox, type SessionMessageRunOutcomeEvent } from "../runtime/session-message-inbox.js";
-import { SessionMessageRun, sessionMessageOfRun, sessionMessageRunId } from "../runtime/session-message-run.js";
+import {
+  conversationIdentity,
+  SessionMessageRun,
+  sessionMessageOfRun,
+  sessionMessageRunId,
+} from "../runtime/session-message-run.js";
 
 type Items = readonly { text: string }[];
 
@@ -93,6 +98,7 @@ function makeInbox(
     now?: () => number;
     rateLimitRetryDelayMs?: number;
     maxRememberedMessages?: number;
+    isPrepared?: () => boolean;
     timeoutScheduler?: RuntimeRetryScheduler;
   } = {},
 ) {
@@ -121,6 +127,7 @@ function makeInbox(
       ensureRuntime: vi.fn(async () => runtime as never),
       runtime: vi.fn(() => runtime as never),
       sessionKind: vi.fn(() => "internal" as const),
+      ...(options.isPrepared ? { isPrepared: options.isPrepared } : {}),
     },
     steerRetryMs: 2,
     ...(options.now ? { now: options.now } : {}),
@@ -428,7 +435,7 @@ describe("a steered message the provider's conversation already holds", () => {
     const { message } = conversation();
     const [won, lost, leadWon, leadLost] = [message("won"), message("lost"), message("lead won"), message("lead lost")];
     const persistence = new MemoryRuntimeDurabilityStore();
-    const identity = JSON.stringify(BINDING);
+    const identity = conversationIdentity(BINDING);
     for (const stored of [
       record(leadWon, "succeeded", { runConversation: identity }),
       record(won, "running", { joinedRunId: sessionMessageRunId(leadWon.messageId), steerInConversation: identity }),
@@ -492,12 +499,14 @@ describe("a steered message the provider's conversation already holds", () => {
     const [lead, steered] = [message("lead"), message("steered")];
     const persistence = new MemoryRuntimeDurabilityStore();
     await persistence.write(
-      record(lead, "succeeded", { runConversation: JSON.stringify({ other: "conversation-b" }) }),
+      record(lead, "succeeded", {
+        runConversation: conversationIdentity({ ...BINDING, payload: { sessionId: "conversation-b" } }),
+      }),
     );
     await persistence.write(
       record(steered, "running", {
         joinedRunId: sessionMessageRunId(lead.messageId),
-        steerInConversation: JSON.stringify(BINDING),
+        steerInConversation: conversationIdentity(BINDING),
       }),
     );
     const { attempts, runtime } = harness();
@@ -518,7 +527,7 @@ describe("a steered message the provider's conversation already holds", () => {
     await persistence.write(
       record(steered, "running", {
         joinedRunId: sessionMessageRunId(lead.messageId),
-        steerInConversation: JSON.stringify(BINDING),
+        steerInConversation: conversationIdentity(BINDING),
       }),
     );
     const { attempts, runtime } = harness();
@@ -528,6 +537,115 @@ describe("a steered message the provider's conversation already holds", () => {
     expect(own.texts.at(-1)).toBe("steered");
     own.finish();
     await inbox.settled();
+  });
+
+  const conversationA = conversationIdentity(BINDING);
+  const conversationB = conversationIdentity({ ...BINDING, payload: { sessionId: "conversation-b" } });
+
+  it.each(["failed", "dead-letter"] as const)(
+    "runs on its own at a restart when its Run is %s in another conversation",
+    async (status) => {
+      const { message } = conversation();
+      const [lead, steered] = [message("lead"), message("steered")];
+      const persistence = new MemoryRuntimeDurabilityStore();
+      await persistence.write(record(lead, status, { outcomeReport: "published", runConversation: conversationB }));
+      await persistence.write(
+        record(steered, "running", {
+          joinedRunId: sessionMessageRunId(lead.messageId),
+          steerInConversation: conversationA,
+        }),
+      );
+      const { attempts, runtime } = harness();
+      const inbox = makeInbox(runtime, { persistence });
+      await inbox.ready();
+      const own = await started(attempts, 1);
+      expect(own.texts[0]).toContain(NOTICE);
+      expect(own.texts.at(-1)).toBe("steered");
+      own.finish();
+      await inbox.settled();
+      expect(inbox.getState(steered.messageId)?.status).toBe("succeeded");
+    },
+  );
+
+  it.each(["failed", "dead-letter"] as const)(
+    "fails at a restart when its Run is %s in the conversation holding it",
+    async (status) => {
+      const { message } = conversation();
+      const [lead, steered] = [message("lead"), message("steered")];
+      const persistence = new MemoryRuntimeDurabilityStore();
+      await persistence.write(record(lead, status, { outcomeReport: "published", runConversation: conversationA }));
+      await persistence.write(
+        record(steered, "running", {
+          joinedRunId: sessionMessageRunId(lead.messageId),
+          steerInConversation: conversationA,
+        }),
+      );
+      const { attempts, runtime } = harness();
+      const inbox = makeInbox(runtime, { persistence });
+      await inbox.ready();
+      expect(inbox.getState(steered.messageId)?.status).toBe("failed");
+      expect(attempts).toHaveLength(0);
+    },
+  );
+
+  it("runs on its own when the Run resumed another conversation and failed before the message could rejoin", async () => {
+    const { persistence, messages } = await crashedDaemon(["second"], ["second"]);
+    const { attempts, runtime, state } = harness({
+      binding: { ...BINDING, payload: { sessionId: "conversation-b" } },
+    });
+    let hidden = true;
+    let phase = "idle";
+    Object.defineProperty(state, "phase", { get: () => (hidden ? "idle" : phase), set: (next) => (phase = next) });
+    const inbox = makeInbox(runtime, { persistence });
+    await inbox.ready();
+    (await started(attempts, 1)).finish(new Error("the provider broke"));
+    hidden = false;
+    const own = await started(attempts, 2);
+    expect(own.texts.at(-1)).toBe("second");
+    own.finish();
+    await inbox.settled();
+    expect(inbox.getState((messages.second as SessionMessageDeliveryRequestV3).messageId)?.status).toBe("succeeded");
+  });
+
+  it.each([
+    ["in another conversation", conversationB, "running on its own"],
+    ["with no conversation on record", undefined, "running on its own"],
+    ["in the conversation holding it", conversationA, "failed"],
+  ])("takes a Turn's exhausted retries at startup %s", async (_label, turnConversation, expected) => {
+    const { message } = conversation();
+    const steered = message("steered");
+    const persistence = new MemoryRuntimeDurabilityStore();
+    await persistence.write(record(steered, "running", { joinedRunId: "turn-1", steerInConversation: conversationA }));
+    const { attempts, runtime } = harness();
+    let prepared = false;
+    const inbox = makeInbox(runtime, { persistence, isPrepared: () => prepared });
+    await inbox.ready();
+    await inbox.failJoinedRun("turn-1", turnConversation);
+    if (expected === "failed") {
+      expect(inbox.getState(steered.messageId)?.status).toBe("failed");
+      expect(attempts).toHaveLength(0);
+      return;
+    }
+    prepared = true;
+    inbox.sessionPrepared(steered.targetSessionId);
+    const own = await started(attempts, 1);
+    expect(own.texts.at(-1)).toBe("steered");
+    own.finish();
+    await inbox.settled();
+    expect(inbox.getState(steered.messageId)?.status).toBe("succeeded");
+  });
+
+  it("still fails an unconfirmed message with a Turn's exhausted retries at startup, whatever the conversation", async () => {
+    const { message } = conversation();
+    const steered = message("steered");
+    const persistence = new MemoryRuntimeDurabilityStore();
+    await persistence.write(record(steered, "running", { joinedRunId: "turn-1" }));
+    const { attempts, runtime } = harness();
+    const inbox = makeInbox(runtime, { persistence, isPrepared: () => false });
+    await inbox.ready();
+    await inbox.failJoinedRun("turn-1", conversationB);
+    expect(inbox.getState(steered.messageId)?.status).toBe("failed");
+    expect(attempts).toHaveLength(0);
   });
 
   it("does not bring a settled message back when the confirmation arrives during its settlement", async () => {
@@ -563,7 +681,7 @@ describe("a steered message the provider's conversation already holds", () => {
     confirmations.get("second")?.();
     await vi.waitFor(() =>
       expect(inbox.getState(id)?.steerInConversation).toBe(
-        JSON.stringify({ ...BINDING, payload: { sessionId: "another-session" } }),
+        conversationIdentity({ ...BINDING, payload: { sessionId: "another-session" } }),
       ),
     );
     resumed.finish();

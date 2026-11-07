@@ -399,10 +399,11 @@ A message stays queued and waits for the Turn to end when the runtime cannot ste
 already carries 16 Session messages, or when a visible Session has no IM outbox context.
 
 The accepted cost is extra delivery and repeated handling around a process interruption: each retry can replay the Turn and
-its messages, and work that runs at least 5 minutes between crashes is never stopped by the count. After a crash the resumed Turn may already have the steered message
-in its history, and the message is delivered again; the continuation notice tells the Agent, but cannot prevent every
-repeat. A message steered just before a crash, whose `running` state was not yet written, is delivered again without the
-notice. Cloud is not covered ([#1303](https://github.com/first-tree-ai/opentag/issues/1303)).
+its messages, and work that runs at least 5 minutes between crashes is never stopped by the count. After a crash the resumed Turn may already have an unconfirmed
+steered message in its history, and the message is delivered again; the continuation notice tells the Agent, but cannot prevent every
+repeat. A message the conversation is confirmed to hold is not delivered again; see
+[Messages the conversation already holds](#messages-the-conversation-already-holds). A message steered just before a crash, whose
+`running` state was not yet written, is delivered again without the notice. Cloud is not covered ([#1303](https://github.com/first-tree-ai/opentag/issues/1303)).
 
 ### Session messages steered into a Session message Run
 
@@ -441,5 +442,5 @@ The signal differs by Provider, and each was measured by killing the process at 
 - **Pi:** no signal, so the message is injected again with the notice, as before.
 
 A message without a confirmation is injected again with the notice, so a crash before it, or a failed write of the record, costs a
-repeat and never a loss. So does a Run that resumes a different Provider conversation, including one that ends before the message could rejoin it: a Run's record names the conversation it ran in, and the message only takes that Run's outcome if it is the conversation holding the message. A retry after a model HTTP 429 still carries
+repeat and never a loss. So does a Run that resumes a different Provider conversation, including one that ends before the message could rejoin it: a Run's record names the conversation it ran in, and a confirmed message takes that Run's outcome, success or failure, only if it is the conversation holding the message. Otherwise it runs on its own with the notice, and the same goes for a Turn whose retries ran out at startup. A message without a confirmation still fails with a Run found failed at a restart. A retry after a model HTTP 429 still carries
 every message in the Run, confirmed or not. A failed attempt may not have recorded them, and that path is unchanged.

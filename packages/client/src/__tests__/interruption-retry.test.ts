@@ -29,6 +29,7 @@ import {
 } from "../runtime/interruption-retry.js";
 import type { RuntimeConnectionState } from "../runtime/runtime-connection.js";
 import type { SessionBindingStore } from "../runtime/session-binding-store.js";
+import { conversationIdentity } from "../runtime/session-message-run.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
 import type { SessionRuntimeManager } from "../runtime/session-runtime-manager.js";
 import { type LiveTurnOwner, TurnCustodyOwner } from "../runtime/turn-custody-owner.js";
@@ -1091,6 +1092,23 @@ describe("InterruptedWorkRecovery", () => {
     });
   });
 
+  it("tells the inbox which conversation a Turn ended in when its retries run out", async () => {
+    const records = new Map<string, TurnRetryRecord>();
+    const request = delivery();
+    records.set(request.sessionId, { ...turnRetryRecord(request, "turn-1"), retries: 3 });
+    const f = recoveryFixture(records);
+    f.version = 1;
+    const runtimeBinding = { providerId: "claude-code", schemaVersion: 1, payload: { sessionId: "session-1" } };
+    f.unresolved.set(request.sessionId, {
+      turnId: "turn-1",
+      deliveryId: request.deliveryId,
+      phase: "running",
+      runtimeBinding,
+    });
+    await f.recovery.start();
+    expect(f.inbox.failJoinedRun).toHaveBeenCalledWith("turn-1", conversationIdentity(runtimeBinding));
+  });
+
   it("counts an interruption of a retry that began, and stops after the second", async () => {
     const records = new Map<string, TurnRetryRecord>();
     const request = delivery();
@@ -1109,7 +1127,7 @@ describe("InterruptedWorkRecovery", () => {
     const f = recoveryFixture(records);
     f.unresolved.set(request.sessionId, { turnId: "turn-1", deliveryId: request.deliveryId, phase: "running" });
     await f.recovery.start();
-    expect(f.inbox.failJoinedRun).toHaveBeenCalledWith("turn-1");
+    expect(f.inbox.failJoinedRun).toHaveBeenCalledWith("turn-1", undefined);
     f.recovery.stop();
   });
 
@@ -1136,7 +1154,7 @@ describe("InterruptedWorkRecovery", () => {
     const f = recoveryFixture(records);
     f.unresolved.set(request.sessionId, { turnId: "turn-1", deliveryId: request.deliveryId, phase: "running" });
     await f.recovery.start();
-    expect(f.inbox.failJoinedRun).toHaveBeenCalledWith("turn-1");
+    expect(f.inbox.failJoinedRun).toHaveBeenCalledWith("turn-1", undefined);
     f.recovery.stop();
   });
 
@@ -1427,6 +1445,7 @@ function recoveryFixture(records = new Map<string, TurnRetryRecord>()) {
       deliveryId: string;
       phase: string;
       recentRecordedInputs?: Array<{ kind: string; deliveryId: string; turnId: string }>;
+      runtimeBinding?: { providerId: string; schemaVersion: number; payload: unknown };
     }
   >();
   const sent: unknown[] = [];
@@ -1472,6 +1491,7 @@ function recoveryFixture(records = new Map<string, TurnRetryRecord>()) {
           ? {
               unresolvedTurn: unresolved.get(sessionId),
               recentRecordedInputs: unresolved.get(sessionId)?.recentRecordedInputs ?? [],
+              runtimeBinding: unresolved.get(sessionId)?.runtimeBinding,
             }
           : undefined) as never,
     },

@@ -1789,8 +1789,8 @@ function codexQuestionResult(method: string, response: AgentQuestionResponse): u
 
 function settleUnlessAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise<T>((resolve, reject) => {
+    signal.throwIfAborted();
     const onAbort = () => reject(signal.reason);
-    if (signal.aborted) return onAbort();
     signal.addEventListener("abort", onAbort, { once: true });
     promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
   });

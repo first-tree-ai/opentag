@@ -183,6 +183,15 @@ observation, so the caller can tell the human the URL is still valid and check a
   that require credentials, a human must authorize it again after a later attach. Prefer `disable` when the Server
   may be needed again.
 
+An Agent configuration change takes effect at once for every Session that prepares after it, on a Local Computer
+too: it doesn't wait for the Session that made the change or for any other running Session. A running Session finishes
+on the configuration it started with, and a Turn that resumes after a restart keeps its pinned one. Its next Turn picks
+up the change. Only per-Session configuration works this way. Sessions of one Agent share its working directory and
+Skills, so a change to the files there, such as Context Tree connections, reaches a running Session as soon as a new
+Session writes it. Platform access doesn't keep the old configuration either: a running Turn's execution is fenced by the
+Agent revision (`agent_revision_changed`), so from the save onwards its credential proxy, MCP gateway and web tools stop
+working. It keeps running on its model and instructions, but it may be unable to deliver a result.
+
 `self update` reads the current revision first and sends it as `expectedRevision`. A concurrent change returns
 `AGENT_REVISION_CONFLICT`; read again and retry. `--instructions` replaces the whole instruction text, so read the
 current value with `self show` and keep what still applies.

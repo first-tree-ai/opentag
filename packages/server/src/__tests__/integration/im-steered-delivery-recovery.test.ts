@@ -1186,6 +1186,7 @@ async function parkThroughNeverSettlingDispatch(
     registry: {
       canReceiveSnapshot: vi.fn(() => true),
       currentInstanceId: vi.fn(() => fixture.dispatchContext.instanceId),
+      supportsCapability: () => false,
       capabilityVersion: vi.fn(() => 2),
     } as never,
     intervalMs: 60_000,

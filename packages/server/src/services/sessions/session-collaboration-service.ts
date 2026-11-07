@@ -4,9 +4,13 @@ import {
   RUNTIME_CAPABILITY,
   RUNTIME_SESSION_COLLABORATION_SCHEDULED_VERSION,
   type RunnerCloudSessionMessageReceivedFrame,
+  SESSION_STOP_ANSWER_BUDGET_MS,
   type SessionCliCommandResponse,
   type SessionCliCreateRequest,
   type SessionCliSendRequest,
+  type SessionCliStopExecution,
+  type SessionCliStopRequest,
+  type SessionCliStopResponse,
   type SessionMessageDeliveryRequest,
   type SessionMessageDeliveryRequestV3,
   type SessionMessageDeliveryResult,
@@ -23,14 +27,21 @@ import {
 } from "../../runtime/runtime-domain-owner.js";
 import type { EffectiveRuntimeSnapshotAssembler } from "../runtime-config/index.js";
 import type { SessionCliSourceContext } from "./session-cli-proof-service.js";
-import { renderRunOutcomeNotice, runOutcomeNoticeMessageId } from "./session-run-outcome-notice.js";
+import {
+  renderRunOutcomeNotice,
+  renderSessionStoppedNotice,
+  runOutcomeNoticeMessageId,
+  sessionStoppedNoticeMessageId,
+} from "./session-run-outcome-notice.js";
 import type {
   AuthorizedScheduledMessageRoute,
   AuthorizedSessionMessageRoute,
+  InternalSessionStopTarget,
   ScheduledDispatchAdmissionFailure,
   SessionMessageAttempt,
   SessionMessageOutcome,
   SessionService,
+  StoppedInternalSession,
 } from "./session-service.js";
 
 /**
@@ -160,6 +171,9 @@ export interface ScheduleDispatch {
  * business execution. The ordinary entry points keep their per-stage timeouts and are not bounded
  * by this total.
  */
+/** A stop older than this is not sent again: a Run outlasting the Computer's absence is its Run budget's job. */
+const STOP_REDELIVERY_WINDOW_MS = 24 * 60 * 60 * 1000;
+const STOP_REDELIVERY_LIMIT = 64;
 const SCHEDULED_LOCAL_BUDGET_MS = 60_000;
 const SCHEDULED_CLOUD_BUDGET_MS = 50_000;
 const MAX_BACKGROUND_OUTCOME_NOTICES = 16;
@@ -234,12 +248,18 @@ export interface SessionCollaborationServiceOptions {
     | "hasAcceptedScheduledMessage"
     | "recordMessageOutcome"
     | "resolveRunOutcomeNotice"
+    | "recentlyEndedInternalSessions"
     | "resolveScheduledMessageRoute"
+    | "stopInternalSession"
     | "withCollaborationDispatchAdmission"
     | "withScheduledDispatchAdmission"
   >;
   /** E8 Cloud target dispatch; absent means Cloud-placed Sessions cannot be reached here. */
   cloud?: CloudSessionMessageDispatch;
+  /** Tells the execution side of ended internal Sessions to stop; absent means a stop stays `pending`. */
+  stopEnded?: (targets: InternalSessionStopTarget[]) => Promise<Map<string, SessionCliStopExecution>>;
+  /** Test seam for how long a stop waits for its execution side before answering `pending`. */
+  stopAnswerBudgetMs?: number;
   /** Test seam for the scheduled total budgets; production uses the stage-timeout sums. */
   scheduledBudgets?: { localMs?: number; cloudMs?: number };
   onDiagnostic?: (code: string) => void;
@@ -252,11 +272,14 @@ export class SessionCollaborationService {
   readonly #registry: SessionCollaborationServiceOptions["registry"];
   readonly #sessions: SessionCollaborationServiceOptions["sessions"];
   readonly #cloud: SessionCollaborationServiceOptions["cloud"];
+  readonly #stopEnded: SessionCollaborationServiceOptions["stopEnded"];
   readonly #scheduledLocalBudgetMs: number;
   readonly #scheduledCloudBudgetMs: number;
   readonly #onDiagnostic: SessionCollaborationServiceOptions["onDiagnostic"];
   readonly #logger: SessionCollaborationServiceOptions["logger"];
   readonly #outcomeNotices = new Map<string, { controller: AbortController; done: Promise<void> }>();
+  readonly #stopWork = new Set<Promise<void>>();
+  readonly #stopAnswerBudgetMs: number;
   #closing = false;
 
   constructor(options: SessionCollaborationServiceOptions) {
@@ -265,6 +288,8 @@ export class SessionCollaborationService {
     this.#registry = options.registry;
     this.#sessions = options.sessions;
     this.#cloud = options.cloud;
+    this.#stopEnded = options.stopEnded;
+    this.#stopAnswerBudgetMs = options.stopAnswerBudgetMs ?? SESSION_STOP_ANSWER_BUDGET_MS;
     this.#scheduledLocalBudgetMs = options.scheduledBudgets?.localMs ?? SCHEDULED_LOCAL_BUDGET_MS;
     this.#scheduledCloudBudgetMs = options.scheduledBudgets?.cloudMs ?? SCHEDULED_CLOUD_BUDGET_MS;
     this.#onDiagnostic = options.onDiagnostic;
@@ -735,6 +760,118 @@ export class SessionCollaborationService {
   }
 
   /**
+   * Stop an internal Session for good on behalf of an ancestor. The Session ends first, so a stop that cannot
+   * reach its execution side still takes away its authority. A creator that asked for the stop has its
+   * answer here and is not woken for it; a creator someone else overruled is told.
+   */
+  async stop(input: SessionCliStopRequest, source: SessionCliSourceContext): Promise<SessionCliStopResponse> {
+    const sessionId = input.targetSessionId;
+    let stopped: StoppedInternalSession;
+    try {
+      stopped = await this.#sessions.stopInternalSession({
+        sourceSessionId: source.sessionId,
+        sourceInstallationId: source.installationId,
+        sourceConnectionInstanceId: source.connectionInstanceId,
+        sourceComputerId: source.computerId,
+        sourcePlacementGeneration: source.placementGeneration,
+        targetSessionId: sessionId,
+      });
+    } catch (error) {
+      const mapped = mapExpectedFailure(error);
+      if (mapped) return { status: mapped.status, sessionId, code: mapped.code };
+      this.#onDiagnostic?.("SESSION_COLLABORATION_RUNTIME_UNAVAILABLE");
+      return { status: "unreachable", sessionId, code: "runtime_unavailable" };
+    }
+    // The stop already took effect, so a Client that does not answer delays only the news: the work goes on
+    // in the background, and the caller gets `pending` before its own request times out.
+    let execution: SessionCliStopExecution = "pending";
+    // Recorded before the answer: after a successful stop the caller has no reason to ask again.
+    const notice =
+      stopped.target.creatorSessionId === source.sessionId
+        ? undefined
+        : await this.#recordStopNotice(stopped.target, source);
+    const finished = this.#trackStopWork(async () => {
+      const executions = await this.#stopEnded?.([stopped.target]);
+      execution = executions?.get(sessionId) ?? "pending";
+      if (notice && !this.#closing) await this.#deliverStopNotice(notice, stopped.target);
+    });
+    await this.#withinStopAnswerBudget(finished);
+    return {
+      status: "stopped",
+      sessionId,
+      execution,
+      alreadyStopped: stopped.alreadyStopped,
+      activeDescendantCount: stopped.activeDescendantCount,
+    };
+  }
+
+  #trackStopWork(work: () => Promise<void>): Promise<void> {
+    const done: Promise<void> = work()
+      .catch(() => this.#onDiagnostic?.("SESSION_STOP_BACKGROUND_FAILED"))
+      .finally(() => this.#stopWork.delete(done));
+    this.#stopWork.add(done);
+    return done;
+  }
+
+  async #withinStopAnswerBudget(work: Promise<void>): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const budget = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, this.#stopAnswerBudgetMs);
+      timer.unref?.();
+    });
+    await Promise.race([work, budget]);
+    clearTimeout(timer);
+  }
+
+  /** A reconnected Computer may have missed a stop. Repeating one is harmless, so nothing tracks which did. */
+  async redeliverStops(computerId: string): Promise<void> {
+    if (!this.#stopEnded) return;
+    const targets = await this.#sessions.recentlyEndedInternalSessions(
+      computerId,
+      new Date(Date.now() - STOP_REDELIVERY_WINDOW_MS),
+      STOP_REDELIVERY_LIMIT,
+    );
+    if (targets.length > 0) await this.#stopEnded(targets);
+  }
+
+  async #recordStopNotice(
+    target: InternalSessionStopTarget,
+    source: SessionCliSourceContext,
+  ): Promise<SessionMessageAttempt | undefined> {
+    const noticeId = sessionStoppedNoticeMessageId(target.sessionId);
+    try {
+      return await this.#sessions.authorizeAndRecordMessage({
+        messageId: noticeId,
+        sourceSessionId: source.sessionId,
+        sourceInstallationId: source.installationId,
+        sourceComputerId: source.computerId,
+        sourceConnectionInstanceId: source.connectionInstanceId,
+        sourcePlacementGeneration: source.placementGeneration,
+        targetSessionId: target.creatorSessionId,
+        content: renderSessionStoppedNotice(target.sessionId),
+        serverDerivedId: true,
+      });
+    } catch (error) {
+      this.#logStopNoticeFailure(target, noticeId, this.#failure(noticeId, error).code);
+      return undefined;
+    }
+  }
+
+  async #deliverStopNotice(attempt: SessionMessageAttempt, target: InternalSessionStopTarget): Promise<void> {
+    let result: SessionCliCommandResponse;
+    try {
+      result = await this.#deliver(attempt, target.creatorSessionId);
+    } catch (error) {
+      result = this.#failure(attempt.message.id, error);
+    }
+    if (result.status !== "accepted") this.#logStopNoticeFailure(target, attempt.message.id, result.code);
+  }
+
+  #logStopNoticeFailure(target: InternalSessionStopTarget, noticeId: string, code: string | undefined): void {
+    this.#logInternalFailure("SESSION_STOP_NOTICE_NOT_DELIVERED", { childSessionId: target.sessionId, code, noticeId });
+  }
+
+  /**
    * Tell a message's sender that its Run ended without completing. The notice is an ordinary
    * SessionMessage from the target to the sender with a deterministic id, so it reuses the existing
    * authorization, lock order, idempotency, activity projection, and delivery (including
@@ -782,6 +919,7 @@ export class SessionCollaborationService {
     this.#closing = true;
     for (const { controller } of this.#outcomeNotices.values()) controller.abort();
     await Promise.all([...this.#outcomeNotices.values()].map(({ done }) => done));
+    await Promise.all(this.#stopWork);
   }
 
   async #prepareRunOutcomeNotice(
@@ -1127,6 +1265,7 @@ function mapExpectedFailure(error: unknown): { status: "unreachable" | "rejected
   if (code === "SESSION_PLACEMENT_STALE" || code === "SESSION_SOURCE_UNAVAILABLE") {
     return { status: "rejected", code: "source_unavailable" };
   }
+  if (code === "SESSION_STOP_NOT_ANCESTOR") return { status: "rejected", code: "not_ancestor" };
   if (code === "SESSION_TARGET_UNAVAILABLE") return { status: "rejected", code: "target_unavailable" };
   if (code === "SESSION_SCOPE_MISMATCH") return { status: "rejected", code: "scope_mismatch" };
   if (code === "SESSION_MESSAGE_CONFLICT") return { status: "rejected", code: "message_conflict" };

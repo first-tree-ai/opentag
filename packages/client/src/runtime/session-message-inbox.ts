@@ -951,11 +951,14 @@ export class SessionMessageInbox {
       const latest = this.#records.get(key) ?? current;
       if (latest) current = withRunTime(latest, ranMs);
     };
+    /** When the timer below stops the Run. Preparing the Run spends this time too. */
+    let limitAt = 0;
     const ensureRunSignal = (): AbortSignal => {
       if (runSignal) return runSignal;
-      timer = this.#timeoutScheduler.schedule(
-        remainingBudgetMs(next.request.runtime.budget?.maxDurationMs, current?.ranMs ?? 0),
-        () => timeout.abort(new Error("Session message Run timed out")),
+      const budgetMs = remainingBudgetMs(next.request.runtime.budget?.maxDurationMs, current?.ranMs ?? 0);
+      limitAt = this.#now() + budgetMs;
+      timer = this.#timeoutScheduler.schedule(budgetMs, () =>
+        timeout.abort(new Error("Session message Run timed out")),
       );
       if (current) runTime = this.#trackMessageRunTime(key);
       // Revocation or control/owner replacement aborts the Run and its provider children.
@@ -1023,7 +1026,7 @@ export class SessionMessageInbox {
           ),
         ),
         signal: ensureRunSignal(),
-        durationLimitInMs: remainingBudgetMs(next.request.runtime.budget?.maxDurationMs, current?.ranMs ?? 0),
+        durationLimitInMs: Math.max(1, limitAt - this.#now()),
         ...sessionMessageLaunchConfiguration(prepared, runtime),
       });
       await settleRunTime();

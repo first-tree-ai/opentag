@@ -393,7 +393,9 @@ shares the count of the Turn it joined, so they retry together and fail together
   resumed, the existing fallback applies: the waiting messages fail.
 - **Running out of retries, `turn_timeout`, or any other failure** ends the Turn, and the messages in it fail with it. When
   the count runs out at a restart, the messages steered into that Turn fail rather than run again; a message whose failure
-  cannot be written yet stays queued and does not run. Queued messages run on their own.
+  cannot be written yet stays queued and does not run. Queued messages run on their own. So does a message confirmed in a
+  Provider conversation the Turn no longer had when it ended, with the notice; see
+  [Messages the conversation already holds](#messages-the-conversation-already-holds).
 
 A message stays queued and waits for the Turn to end when the runtime cannot steer or refuses the steer, when the Turn
 already carries 16 Session messages, or when a visible Session has no IM outbox context.
@@ -421,11 +423,13 @@ Local Computer.
   one's count starts from 0.
 - **Running out of retries, `turn_timeout`, or any other failure** ends the Run, and the messages steered into it fail with it.
   Each sender gets a notice, with reason `session_message_steer_interrupted`. When the count runs out at a restart, the messages
-  steered into that Run fail with `run_interrupted`; queued messages run on their own.
+  steered into that Run fail with `run_interrupted`; queued messages run on their own. So does a message confirmed in a Provider
+  conversation other than the one the Run ended in, or when the Run recorded none, with the notice; see
+  [Messages the conversation already holds](#messages-the-conversation-already-holds).
 
-A crash can land between the Run's terminal write and those of its messages. If the Run failed, they fail at the restart. If
-it succeeded, a message its conversation already holds succeeds with it, and any other runs again on its own with the notice: this
-is the same accepted cost of repeated handling.
+A crash can land between the Run's terminal write and those of its messages. If the Run failed, they fail at the restart, unless
+they are confirmed in another conversation. If it succeeded, a message its conversation already holds succeeds with it, and any
+other runs again on its own with the notice: this is the same accepted cost of repeated handling.
 
 ### Messages the conversation already holds
 

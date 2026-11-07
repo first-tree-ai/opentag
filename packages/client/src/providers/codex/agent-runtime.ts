@@ -475,8 +475,25 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     this.#wait?.resolve();
   }
 
-  /** It reaches the model with the next turn, which starts now if the Run is waiting between turns. */
-  protected override async tellProviderAboutBackgroundWork(text: string): Promise<void> {
+  /**
+   * Into the running turn if there is one, without making that turn's failure the Run's. Otherwise it
+   * reaches the model with the next turn, which starts now if the Run is waiting between turns.
+   */
+  protected override async tellProvider(text: string): Promise<void> {
+    if (!this.providerContext) return;
+    if (!this.#wait && this.#providerTurnId) {
+      const accepted = await this.#client
+        .request("turn/steer", {
+          threadId: this.#threadId,
+          input: codexInput([{ type: "text", text }]),
+          expectedTurnId: this.#providerTurnId,
+        })
+        .then(
+          () => true,
+          () => false,
+        );
+      if (accepted) return;
+    }
     this.#wakeInputs.push({ item: { type: "text", text } });
     this.#wait?.resolve();
   }

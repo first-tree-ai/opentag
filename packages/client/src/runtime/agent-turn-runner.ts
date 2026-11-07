@@ -689,6 +689,7 @@ export class AgentTurnRunner {
          */
         input,
         signal: runSignal,
+        durationLimitInMs: Math.max(1, Date.parse(turn.expiresAt as string) - this.#now()),
         /*
          * Provider-specific launch facts are resolved only when this execution actually carries
          * one, so a runtime manager with nothing to inject is never consulted at all.

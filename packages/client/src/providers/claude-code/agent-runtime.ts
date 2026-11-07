@@ -349,7 +349,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
     }
   }
 
-  protected override async tellProviderAboutBackgroundWork(text: string): Promise<void> {
+  protected override async tellProvider(text: string): Promise<void> {
     await this.#process?.notice?.(text);
   }
 
@@ -410,6 +410,9 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
           : { permissions: claudePermissionRules(this.#policy.allowedCommands ?? [], this.#policy.managedCli) }),
       }),
       ...(this.#emptyNativeToolAllowList ? ["--tools", ""] : []),
+      // A native cron job lives in this process, which ends with the Run. Recurring work is an OpenTag Schedule.
+      "--disallowedTools",
+      "CronCreate,CronDelete,CronList",
       ...(configuration?.model ? ["--model", configuration.model] : []),
       ...(configuration?.reasoningEffort ? ["--effort", configuration.reasoningEffort] : []),
       "--append-system-prompt",

@@ -179,7 +179,21 @@ function renderSession(context: ManagedSessionContext): readonly string[] {
     ...renderSessionCollaboration(context),
     ...renderSlackProvisioning(context),
     "",
+    ...renderBackgroundWork(context),
     ...(context.sessionKind === "visible" ? renderWhenToSpeak() : []),
+  ];
+}
+
+function renderBackgroundWork(context: ManagedSessionContext): readonly string[] {
+  return [
+    "## Background work",
+    "",
+    "You may start work in the background and end your turn: this Run stays open while it is live, up to the Run's limit, and you are told when it ends. It uses this machine's resources, so use it when the work really runs, watch it, and stop what you no longer need.",
+    context.sessionCliAvailable
+      ? `Do not keep a background process just to wait (a sleep, or a loop that polls). Use a schedule, which needs no process between firings and gives each firing its own Run: \`${context.cliCommand} agent self schedule\`.`
+      : "Do not keep a background process just to wait (a sleep, or a loop that polls). End your turn and say what you are waiting for.",
+    "You are told before this Run reaches its limit. At the limit the Run stops, with its background work. Your next Run is told what happened.",
+    "",
   ];
 }
 

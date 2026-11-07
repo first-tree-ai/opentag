@@ -391,7 +391,7 @@ describe("ClaudeCodeProcess", () => {
     await run;
   });
 
-  describe("timers in the process", () => {
+  describe("a wakeup in the process", () => {
     const toolUse = (id: string, name: string, input: unknown = {}) => ({
       type: "assistant",
       message: { content: [{ type: "text" }, { type: "tool_use", id, name, input }, "invalid"] },
@@ -401,6 +401,18 @@ describe("ClaudeCodeProcess", () => {
       message: { content: [{ type: "tool_result", tool_use_id: id, ...extra }] },
       ...(toolUseResult === undefined ? {} : { tool_use_result: toolUseResult }),
     });
+    const fired = (uuid: string, source: string, state = "started") => ({
+      type: "command_lifecycle",
+      command_uuid: uuid,
+      state,
+      wakeup_source: source,
+      scheduled_for: 1000,
+    });
+    const firedTurn = (uuid: string, source: string) => [fired(uuid, source), fired(uuid, source, "completed")];
+    const wakeup = (id = "a", scheduledFor: unknown = 1000) => [
+      toolUse(id, "ScheduleWakeup", { delaySeconds: 60 }),
+      toolResult(id, {}, { scheduledFor }),
+    ];
 
     /** Runs the frames, then the Run's own result; returns what stayed live and whether that ended the Run. */
     async function runWith(frames: Record<string, unknown>[]) {
@@ -420,189 +432,71 @@ describe("ClaudeCodeProcess", () => {
       child.stdout.write('{"type":"assistant","message":{}}\n{"type":"result","user_message_uuids":["prompt"]}\n');
       await new Promise((resolve) => setImmediate(resolve));
       child.emit("exit", 143, null);
-      if (ended) await run;
-      else await run.catch(() => undefined);
+      await run.catch(() => undefined);
       return { live: live.map((item) => item.label), ended };
     }
 
-    it("counts a cron job and a wakeup whose tool succeeded", async () => {
+    it("holds the Run once its tool succeeded", async () => {
+      await expect(runWith(wakeup())).resolves.toEqual({ live: ["ScheduleWakeup timer"], ended: false });
+    });
+
+    it("does not hold the Run when its tool failed, has no result, or is another tool", async () => {
       await expect(
         runWith([
-          toolUse("a", "CronCreate"),
-          toolResult("a", {}, { id: "job-1", durable: false }),
+          toolUse("a", "ScheduleWakeup", { delaySeconds: 60 }),
+          toolResult("a", { is_error: true }),
           toolUse("b", "ScheduleWakeup", { delaySeconds: 60 }),
-          toolResult("b"),
-          // Without a job id, the tool call identifies it.
-          toolUse("c", "CronCreate", "invalid"),
-          toolResult("c", {}, "invalid"),
-          // Not a timer, and a result for a call never seen.
-          toolUse("d", "Bash"),
-          toolResult("d"),
+          toolUse("c", "Bash"),
+          toolResult("c"),
           toolResult("unseen"),
         ]),
+      ).resolves.toEqual({ live: [], ended: true });
+    });
+
+    it("ignores a result that is not an object", async () => {
+      await expect(
+        runWith([toolUse("a", "ScheduleWakeup", { delaySeconds: 60 }), toolResult("a", {}, "invalid")]),
+      ).resolves.toEqual({ live: ["ScheduleWakeup timer"], ended: false });
+      await expect(runWith([toolUse("a", "ScheduleWakeup", "invalid"), toolResult("a")])).resolves.toEqual({
+        live: ["ScheduleWakeup timer"],
+        ended: false,
+      });
+    });
+
+    it("stops holding it once stopped or fired, and holds it again when set again", async () => {
+      await expect(
+        runWith([...wakeup(), toolUse("b", "ScheduleWakeup", { stop: true }), toolResult("b")]),
+      ).resolves.toEqual({ live: [], ended: true });
+      await expect(
+        runWith([...wakeup(), fired("q", "loop_wakeup", "queued"), ...firedTurn("w", "loop_wakeup")]),
       ).resolves.toEqual({
-        live: ["CronCreate job job-1", "ScheduleWakeup timer", "CronCreate job c"],
+        live: [],
+        ended: true,
+      });
+      await expect(runWith([...wakeup(), ...firedTurn("w", "loop_wakeup"), ...wakeup("b")])).resolves.toEqual({
+        live: ["ScheduleWakeup timer"],
         ended: false,
       });
     });
 
-    it("does not count a timer whose tool has no result yet or failed", async () => {
-      await expect(
-        runWith([
-          toolUse("a", "CronCreate", { cron: "not a cron" }),
-          toolResult("a", { is_error: true }, "Error: Invalid cron expression"),
-          toolUse("b", "ScheduleWakeup", { delaySeconds: 60 }),
-          toolResult("b", { is_error: true }),
-          toolUse("c", "CronCreate"),
-        ]),
-      ).resolves.toEqual({ live: [], ended: true });
-    });
-
-    it("does not count a cron job written to disk", async () => {
-      await expect(
-        runWith([toolUse("a", "CronCreate"), toolResult("a", {}, { id: "job-1", durable: true })]),
-      ).resolves.toEqual({ live: [], ended: true });
-    });
-
-    it("stops counting a cron job once it is deleted, and only that one", async () => {
-      await expect(
-        runWith([
-          toolUse("a", "CronCreate"),
-          toolResult("a", {}, { id: "job-1", durable: false }),
-          toolUse("b", "CronCreate"),
-          toolResult("b", {}, { id: "job-2", durable: false }),
-          toolUse("c", "CronDelete", { id: "job-1" }),
-          toolResult("c", {}, { id: "job-1" }),
-          toolUse("d", "CronDelete", { id: "job-2" }),
-          toolResult("d", { is_error: true }),
-        ]),
-      ).resolves.toEqual({ live: ["CronCreate job job-2"], ended: false });
-    });
-
-    it("stops counting a wakeup once it is stopped", async () => {
-      await expect(
-        runWith([
-          toolUse("a", "ScheduleWakeup", { delaySeconds: 60 }),
-          toolResult("a"),
-          toolUse("b", "ScheduleWakeup", { stop: true }),
-          toolResult("b"),
-        ]),
-      ).resolves.toEqual({ live: [], ended: true });
-    });
-
-    const fired = (uuid: string, source: string, state = "started") => ({
-      type: "command_lifecycle",
-      command_uuid: uuid,
-      state,
-      wakeup_source: source,
-      scheduled_for: 1000,
-    });
-    const firedTurn = (uuid: string, source: string) => [fired(uuid, source), fired(uuid, source, "completed")];
-    const oneShot = (id: string, nextFireAt?: number) => [
-      toolUse(id, "CronCreate"),
-      toolResult(id, {}, { id, recurring: false, durable: false, ...(nextFireAt === undefined ? {} : { nextFireAt }) }),
-    ];
-
-    it("does not count a wakeup that fired", async () => {
-      await expect(
-        runWith([
-          toolUse("a", "ScheduleWakeup", { delaySeconds: 60 }),
-          toolResult("a", {}, { scheduledFor: 1000 }),
-          ...firedTurn("w", "loop_wakeup"),
-        ]),
-      ).resolves.toEqual({ live: [], ended: true });
-    });
-
-    it("counts a wakeup set again after one fired", async () => {
-      await expect(
-        runWith([
-          toolUse("a", "ScheduleWakeup", { delaySeconds: 60 }),
-          toolResult("a", {}, { scheduledFor: 1000 }),
-          ...firedTurn("w", "loop_wakeup"),
-          toolUse("b", "ScheduleWakeup", { delaySeconds: 60 }),
-          toolResult("b"),
-        ]),
-      ).resolves.toEqual({ live: ["ScheduleWakeup timer"], ended: false });
-    });
-
-    const recurring = (id: string) => [
-      toolUse(id, "CronCreate"),
-      toolResult(id, {}, { id, recurring: true, durable: false, nextFireAt: 0 }),
-    ];
-
-    it("does not count the only cron job once it fired and is one-shot and due", async () => {
-      await expect(
-        runWith([...oneShot("job"), fired("q", "schedule_wakeup", "queued"), ...firedTurn("c", "schedule_wakeup")]),
-      ).resolves.toEqual({ live: [], ended: true });
-    });
-
-    it("keeps a one-shot job when a recurring job fired and was then deleted", async () => {
-      await expect(
-        runWith([
-          ...recurring("every"),
-          ...oneShot("nearby", Date.now() + 90_000),
-          ...firedTurn("c", "schedule_wakeup"),
-          toolUse("d", "CronDelete", { id: "every" }),
-          toolResult("d", {}, { id: "every" }),
-        ]),
-      ).resolves.toEqual({ live: ["CronCreate job nearby"], ended: false });
-    });
-
-    it("retires every due one-shot job on a cron firing, so none holds the Run to its limit, and keeps the rest", async () => {
-      await expect(
-        runWith([...recurring("every"), ...oneShot("due", 1000), ...firedTurn("c", "schedule_wakeup")]),
-      ).resolves.toEqual({ live: ["CronCreate job every"], ended: false });
-      await expect(
-        runWith([...oneShot("first", 1000), ...oneShot("second", 2000), ...firedTurn("c", "schedule_wakeup")]),
-      ).resolves.toEqual({ live: [], ended: true });
-    });
-
-    it("keeps a wakeup when a firing does not name its time", async () => {
-      await expect(
-        runWith([
-          toolUse("a", "ScheduleWakeup", { delaySeconds: 60 }),
-          toolResult("a", {}, { scheduledFor: 2000 }),
-          ...firedTurn("w", "loop_wakeup"),
-        ]),
-      ).resolves.toEqual({ live: ["ScheduleWakeup timer"], ended: false });
-    });
-
-    it("keeps a one-shot job not yet due when a durable job fired", async () => {
-      await expect(
-        runWith([
-          toolUse("a", "CronCreate"),
-          toolResult("a", {}, { id: "disk", durable: true }),
-          ...oneShot("job", Date.now() + 90_000),
-          ...firedTurn("c", "schedule_wakeup"),
-        ]),
-      ).resolves.toEqual({ live: ["CronCreate job job"], ended: false });
-    });
-
-    it("keeps the only cron job when it is recurring or not due", async () => {
-      await expect(runWith([...recurring("every"), ...firedTurn("c", "schedule_wakeup")])).resolves.toEqual({
-        live: ["CronCreate job every"],
+    it("keeps it when a firing does not name it", async () => {
+      await expect(runWith([...wakeup("a", 2000), ...firedTurn("w", "loop_wakeup")])).resolves.toEqual({
+        live: ["ScheduleWakeup timer"],
         ended: false,
       });
-      await expect(
-        runWith([...oneShot("future", Date.now() + 90_000), ...firedTurn("c", "schedule_wakeup")]),
-      ).resolves.toEqual({ live: ["CronCreate job future"], ended: false });
-    });
-
-    it("keeps timers on a firing it does not recognize, and a cron frame leaves a wakeup alone", async () => {
-      await expect(runWith([...oneShot("job", 1000), ...firedTurn("c", "something_new")])).resolves.toEqual({
-        live: ["CronCreate job job"],
+      await expect(runWith([...wakeup(), ...firedTurn("c", "schedule_wakeup")])).resolves.toEqual({
+        live: ["ScheduleWakeup timer"],
         ended: false,
       });
-      await expect(
-        runWith([
-          toolUse("a", "ScheduleWakeup", { delaySeconds: 60 }),
-          toolResult("a", {}, { scheduledFor: 1000 }),
-          ...firedTurn("c", "schedule_wakeup"),
-        ]),
-      ).resolves.toEqual({ live: ["ScheduleWakeup timer"], ended: false });
     });
 
-    it("waits for a timer to fire, and ends the Run at the result of the turn it started", async () => {
+    it("is not held by a native cron tool, which this process never offers", async () => {
+      await expect(
+        runWith([toolUse("a", "CronCreate"), toolResult("a", {}, { id: "job", durable: false })]),
+      ).resolves.toEqual({ live: [], ended: true });
+    });
+
+    it("waits for it to fire, and ends the Run at the result of the turn it started", async () => {
       const child = fakeChild();
       const process = fakeProcess(child);
       const seen: (boolean | undefined)[] = [];
@@ -614,8 +508,7 @@ describe("ClaudeCodeProcess", () => {
         new AbortController().signal,
       );
       const frames = [
-        toolUse("a", "ScheduleWakeup", { delaySeconds: 60 }),
-        toolResult("a", {}, { scheduledFor: 1000 }),
+        ...wakeup(),
         { type: "result", user_message_uuids: ["prompt"] },
         fired("w", "loop_wakeup"),
         { type: "result", result: "WAKE-OK", num_turns: 1 },
@@ -627,7 +520,7 @@ describe("ClaudeCodeProcess", () => {
       await expect(run).resolves.toEqual({ stderr: "" });
     });
 
-    it("keeps waiting when the turn a timer started sets another timer", async () => {
+    it("keeps waiting when the turn it started sets another", async () => {
       const child = fakeChild();
       const process = fakeProcess(child);
       const seen: (boolean | undefined)[] = [];
@@ -639,12 +532,10 @@ describe("ClaudeCodeProcess", () => {
         new AbortController().signal,
       );
       const frames = [
-        toolUse("a", "ScheduleWakeup", { delaySeconds: 60 }),
-        toolResult("a", {}, { scheduledFor: 1000 }),
+        ...wakeup(),
         { type: "result", user_message_uuids: ["prompt"] },
         fired("w", "loop_wakeup"),
-        toolUse("b", "ScheduleWakeup", { delaySeconds: 60 }),
-        toolResult("b"),
+        ...wakeup("b", 3000),
         { type: "result", result: "again", num_turns: 1 },
       ];
       for (const frame of frames) child.stdout.write(`${JSON.stringify(frame)}\n`);

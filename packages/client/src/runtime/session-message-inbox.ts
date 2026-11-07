@@ -1023,6 +1023,7 @@ export class SessionMessageInbox {
           ),
         ),
         signal: ensureRunSignal(),
+        durationLimitInMs: remainingBudgetMs(next.request.runtime.budget?.maxDurationMs, current?.ranMs ?? 0),
         ...sessionMessageLaunchConfiguration(prepared, runtime),
       });
       await settleRunTime();

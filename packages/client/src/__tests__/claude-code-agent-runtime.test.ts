@@ -213,7 +213,6 @@ describe("ClaudeCodeAgentRuntime", () => {
     expect(processes[0]?.args).toContainEqual(expect.stringMatching(/^mcp__h[a-f0-9]{10}__example_tool$/));
     expect(processes[0]?.args).not.toContainEqual(expect.stringMatching(/^mcp__h[a-f0-9]{10}__Read$/));
     expect(argumentAfter(processes[0]?.args ?? [], "--permission-mode")).toBe("bypassPermissions");
-    expect(processes[0]?.args).not.toContain("--disallowedTools");
     await runtime.close();
   });
 
@@ -497,13 +496,36 @@ describe("ClaudeCodeAgentRuntime steer", () => {
     const notice = vi.fn(async () => undefined);
     Object.assign(steerable, { notice });
     const runtime = await steerableFactory(steerable).create(createRequest(() => undefined));
-    const tell = runtime as unknown as { tellProviderAboutBackgroundWork(text: string): Promise<void> };
+    const tell = runtime as unknown as { tellProvider(text: string): Promise<void> };
     try {
-      await tell.tellProviderAboutBackgroundWork("between Runs");
+      await tell.tellProvider("between Runs");
       const run = runtime.prompt({ runId: "notice", input: input("work") });
       await vi.waitFor(() => expect(steerable.executing).toBe(true));
-      await tell.tellProviderAboutBackgroundWork("quiet");
+      await tell.tellProvider("quiet");
       expect(notice).toHaveBeenCalledExactlyOnceWith("quiet");
+      steerable.emit(result("answer", 1, 0.01, 5), true);
+      steerable.finish();
+      await run;
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("does not offer native cron tools, whose jobs would end with the Run", async () => {
+    const steerable = new SteerableClaudeCodeProcess();
+    let args: readonly string[] = [];
+    const factory = new ClaudeCodeAgentRuntimeFactory({
+      createSessionId: () => SESSION_ID,
+      createProcess: (_cwd, seen) => {
+        args = seen;
+        return steerable;
+      },
+    });
+    const runtime = await factory.create(createRequest(() => undefined));
+    try {
+      const run = runtime.prompt({ runId: "cron", input: input("work") });
+      await vi.waitFor(() => expect(steerable.executing).toBe(true));
+      expect(args.join(" ")).toContain("--disallowedTools CronCreate,CronDelete,CronList");
       steerable.emit(result("answer", 1, 0.01, 5), true);
       steerable.finish();
       await run;

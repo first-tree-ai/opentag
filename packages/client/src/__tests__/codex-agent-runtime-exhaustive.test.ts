@@ -955,13 +955,36 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
       client.complete({ id: "turn-1", items: [] });
       await vi.waitFor(() => expect(background()).toHaveLength(1));
       await new Promise((resolve) => setImmediate(resolve));
-      await (
-        runtime as unknown as { tellProviderAboutBackgroundWork(text: string): Promise<void> }
-      ).tellProviderAboutBackgroundWork("quiet for a while");
+      await (runtime as unknown as { tellProvider(text: string): Promise<void> }).tellProvider("quiet for a while");
       await vi.waitFor(() => expect(turnStarts()).toBe(2));
       expect(JSON.stringify(client.calls.at(-1)?.params)).toContain("quiet for a while");
       client.complete({ id: "turn-2", status: "failed", error: { message: "429" }, items: [] });
       await expect(run).resolves.toMatchObject({ status: "completed", followUpFailure: { message: "429" } });
+    });
+
+    it("tells a running turn by steering it, without making its failure the Run's, and falls back to the next turn", async () => {
+      const client = new ManualCodexClient();
+      const runtime = await factory(client).create(createRequest(() => undefined));
+      const tell = runtime as unknown as { tellProvider(text: string): Promise<void> };
+      await tell.tellProvider("between Runs");
+      expect(client.call("turn/steer")).toBeUndefined();
+      const run = runtime.prompt({ runId: "tell", input: input("work") });
+      await client.called("turn/start");
+      await new Promise((resolve) => setImmediate(resolve));
+      await tell.tellProvider("the limit is near");
+      expect(JSON.stringify(client.call("turn/steer")?.params)).toContain("the limit is near");
+      const request = client.request.bind(client);
+      vi.spyOn(client, "request").mockImplementationOnce(async () => {
+        throw new Error("no active turn");
+      });
+      await tell.tellProvider("after the turn");
+      vi.mocked(client.request).mockImplementation(request);
+      client.complete({ id: "turn-1", items: [] });
+      await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(2));
+      expect(JSON.stringify(client.calls.at(-1)?.params)).toContain("after the turn");
+      client.complete({ id: "turn-2", items: [] });
+      await expect(run).resolves.toMatchObject({ status: "completed" });
+      await runtime.close();
     });
 
     it("refuses input that reached the wait as the Run was stopped", async () => {

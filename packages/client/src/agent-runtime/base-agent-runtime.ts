@@ -2,6 +2,7 @@ import { createLogger } from "../observability/logger.js";
 import { BackgroundWorkWatch } from "./background-work-watch.js";
 import { AgentProviderError, AgentRuntimeError } from "./errors.js";
 import { AgentRunEventValidator } from "./event-validator.js";
+import { scheduleRunLimitNotice } from "./run-limit-notice.js";
 import type {
   AgentAbortRequest,
   AgentInteractionRequest,
@@ -221,8 +222,8 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
     return Promise.reject(new AgentRuntimeError("unsupported_capability", "this runtime does not support steer"));
   }
 
-  /** Puts a notice in front of the model while the Run waits; its turn is one the Run started by itself. */
-  protected tellProviderAboutBackgroundWork(_text: string): Promise<void> {
+  /** Puts a platform notice in front of the model; a turn it starts is one the Run started by itself. */
+  protected tellProvider(_text: string): Promise<void> {
     return Promise.resolve();
   }
 
@@ -299,8 +300,9 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
     }
     let result: AgentRunResult;
     record.backgroundWorkWatch = new BackgroundWorkWatch({
-      notify: (text) => this.tellProviderAboutBackgroundWork(text),
+      notify: (text) => this.tellProvider(text),
     });
+    const limitNotice = scheduleRunLimitNotice(record.request.durationLimitInMs, (text) => this.tellProvider(text));
     try {
       await this.#dispatch({ type: "run_started", runId: record.request.runId });
       const providerExecution = Promise.resolve().then(() => this.executeRun(record.request, this.#context(record)));
@@ -311,6 +313,7 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
       result = this.#resultForThrownError(record, error);
     }
     record.backgroundWorkWatch.stop();
+    clearTimeout(limitNotice);
     record.state = "settling";
     this.#interactions.clear();
     if (!this.#sinkFailure) {
@@ -686,6 +689,7 @@ function snapshotPromptRequest(request: AgentPromptRequest): AgentPromptRequest 
     ...(request.allowedUnixSockets ? { allowedUnixSockets: immutableSnapshot(request.allowedUnixSockets) } : {}),
     ...(request.configuration ? { configuration: immutableSnapshot(request.configuration) } : {}),
     ...(request.signal ? { signal: request.signal } : {}),
+    ...(request.durationLimitInMs !== undefined ? { durationLimitInMs: request.durationLimitInMs } : {}),
   });
 }
 

@@ -59,6 +59,8 @@ export interface AgentPromptRequest {
   readonly input: AgentInput;
   readonly configuration?: AgentRunConfiguration;
   readonly signal?: AbortSignal;
+  /** How long until the Run's duration limit stops it, so the Session can be warned before that. */
+  readonly durationLimitInMs?: number;
 }
 
 export interface AgentSteerRequest {

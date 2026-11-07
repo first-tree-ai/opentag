@@ -19,7 +19,7 @@ ends:
 
 | Provider | What counts as live | How the model is woken |
 | --- | --- | --- |
-| Claude Code | `background_tasks_changed`, plus timers confirmed live in the process (`ScheduleWakeup`, a `CronCreate` job that is not `durable`) | Claude Code wakes itself |
+| Claude Code | `background_tasks_changed`, plus a pending `ScheduleWakeup` | Claude Code wakes itself |
 | Codex | A `commandExecution` still open when its turn completes | The adapter starts a turn with the exit code and output tail. Codex reports the end on the old turn's id and does not wake the model |
 | Pi | Work started with `background_bash`, a tool from OpenTag's own Pi extension, reported over `setStatus` | The extension calls `sendMessage` with `triggerTurn` |
 
@@ -28,8 +28,12 @@ every Run to its limit. A process a Provider cannot see holds nothing open. On P
 escapes to its own process group: the Run ends as usual, and it keeps running on Local and stops with the sandbox on
 Cloud. The extension's prompt guideline tells the model to use `background_bash`.
 
-A recurring timer that is not `durable` holds the Run until its limit: it only exists in the process. A cron firing names
-no job, so it retires every one-shot job already due.
+## Recurring work
+
+Each firing of recurring work is a new Run with its own limit, through an OpenTag Schedule (`opentag agent self schedule`).
+The Server holds the Schedule, so between firings there is no process, no Run and no sandbox. Claude Code's native cron tools
+are disabled: a job lives in the process, so it would either hold the Run to its limit or vanish with it. A one-shot
+`ScheduleWakeup` stays, and counts within its Run.
 
 Only a result for the Run's own input can complete it. On `--resume`, Claude Code reports a result for a notice it
 generated itself, with no model turn, and that never ends the Run.
@@ -56,6 +60,18 @@ experience value, to be adjusted from real notices.
 The signal is output only: the output file's size and modification time on Claude Code and Pi, output events on Codex.
 Timers are not watched. CPU time is not read, so a silent computation gets a notice, which costs one model turn. A notice
 that goes wrong is a turn the Run started by itself, so it follows the rule below.
+
+## Before the limit
+
+A Run is told before its duration limit stops it: a tenth of the time it has left, at most 5 minutes, and no notice when that
+would be under a minute. It is one `[openTag notice]` and no extra time. It joins a running turn, or starts one during a wait.
+A retried Run counts from what is left of its budget. A token or tool-call limit would warn at 90% of the limit, but no such
+limit exists yet.
+
+## The Agent's guide
+
+The managed instructions tell every Session, on every Provider, that background work uses the machine's resources, and that a
+plain wait uses a Schedule rather than a background process.
 
 ## The ledger
 

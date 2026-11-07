@@ -233,6 +233,7 @@ vi.mock("../services/sessions/index.js", () => ({
   },
   SessionCollaborationService: class {
     setHeldListener(): void {}
+    setHeldScheduledMissListener(): void {}
     notifyRunOutcomeInBackground(input: unknown) {
       return state.notifyRunOutcomeInBackground(input);
     }

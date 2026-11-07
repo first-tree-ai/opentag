@@ -178,9 +178,10 @@ Client is upgrading, restarting or full.
   Client is held only once it has negotiated `runtime.sessionRecovery`, which shipped just before the fix.
 - **Expiry and notices.** A held message older than 24 hours (`SESSION_MESSAGE_HELD_TTL_MS`, the IM ambient delivery TTL)
   ends as `unreachable / delivery_expired`. A sweep at Server startup and every 5 minutes applies this and finds held Computers after a Server restart,
-  reading the partial index `session_messages_held_idx`, which covers only held rows. A message attempted in the last 2
-  minutes waits for the next sweep, because that attempt may still get an answer, and the write applies only while the
-  row is still held, so a committed `accepted` is never replaced. A held message
+  reading the partial index `session_messages_held_idx`, which covers only held rows. The 24 hours is a minimum, not an exact time: a
+  message attempted in the last 2 minutes waits for the next sweep, because that attempt may still get an answer, so a
+  dead hand-off can stay held a few minutes longer. The write applies only while the row is still held, as one conditional
+  update, so a committed `accepted` is never replaced. A held message
   that ends in failure produces one notice to its sender, from the target, starting with
   `[openTag notice] Session message was not delivered` (`SESSION_DELIVERY_FAILURE_NOTICE_HEADER`), under a deterministic ID.
   The notice is held like any message. A failed notice is only logged, so two Sessions never exchange notices. A sender
@@ -189,9 +190,11 @@ Client is upgrading, restarting or full.
   and retries until the notice is accepted, so a report answers `notified` only after delivery. A background attempt
   has no waiting sender, so it has no 5-second budget, and shutdown drains it.
 - **Scheduled messages.** A Local occurrence that provably never reached the Client is held the same way, as an exception
-  to the one-shot hand-off. An `unknown` hand-off is not retried. Once the next occurrence is claimed, the schedule is
-  edited or paused, or the message expires, the held occurrence ends as `unreachable` (`delivery_superseded` or
-  `delivery_expired`) and is never delivered late. The schedule's latest summary shows `unknown / delivery_held` meanwhile.
+  to the one-shot hand-off. An `unknown` hand-off is not retried. Once the next occurrence is claimed the held one ends as
+  `unreachable / delivery_superseded`, and it can also end as `delivery_expired`; the sweep applies both while the Computer
+  is offline, and it is never delivered late. Both post the [scheduled task message](im-feedback.md#scheduled-tasks) once per
+  cause. A pause, edit or delete ends it as `schedule_disabled`, `schedule_changed` or `schedule_deleted`, which post nothing.
+  The schedule's latest summary shows `unknown / delivery_held` meanwhile, and that posts nothing either.
 - **Client queue.** The inbox FIFO is 256 per Session and 1024 in total, so a Client rarely refuses for a full queue. When
   it does, the refusal is an ordinary `client_busy` and the Server holds the message.
 - **Not covered.** Cloud targets keep their own Runner queue and retry contract. IM delivery already persists each

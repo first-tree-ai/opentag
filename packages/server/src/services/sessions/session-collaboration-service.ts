@@ -241,6 +241,21 @@ type DispatchAdmission = <T>(
 /** Shorter than the CLI's request timeout, and much longer than a hand-off to a healthy Client. */
 const SEND_BUDGET_MS = 5_000;
 
+/** A held occurrence that ended without reaching its Session, as the scheduler's IM notices read it. */
+export interface HeldScheduledMiss {
+  occurrence: {
+    agentId: string;
+    name: string;
+    scheduleId: string;
+    scheduledFor: string;
+    targetSessionId: string;
+    timezone: string;
+  };
+  outcome: SessionMessageOutcome;
+  code: string;
+  previous: { outcome: SessionMessageOutcome; code: string | null } | null;
+}
+
 type HeldListener = (computerId: string, options?: { flushNow: boolean }) => void;
 
 /** Whether a first attempt that outlived its budget now belongs to the Server. */
@@ -262,6 +277,20 @@ interface LocalHandOffInput {
   sourceSessionId: string;
   content: string;
   creatorSessionId: string | null;
+}
+
+/**
+ * Why a held occurrence must not be delivered any more, or undefined. A pause, edit or delete is someone's
+ * own action and keeps its existing code, which posts nothing; a later occurrence is a miss worth telling.
+ */
+function heldScheduleReplacement(
+  schedule: Awaited<ReturnType<SessionService["readHeldSchedule"]>>,
+  message: { id: string; content: string },
+): string | undefined {
+  if (!schedule) return "schedule_deleted";
+  if (!schedule.enabled) return "schedule_disabled";
+  if (schedule.prompt !== message.content) return "schedule_changed";
+  return schedule.lastDispatch?.messageId === message.id ? undefined : SESSION_MESSAGE_HELD_SUPERSEDED_CODE;
 }
 
 function isAdmissionRefusal(error: unknown): boolean {
@@ -293,6 +322,7 @@ export interface SessionCollaborationServiceOptions {
     | "hasOlderHeldMessage"
     | "markMessageHeld"
     | "readHeldSchedule"
+    | "readPreviousScheduledOutcome"
     | "recordDeliveryFailureNotice"
     | "recordMessageOutcome"
     | "resolveRunOutcomeNotice"
@@ -326,6 +356,7 @@ export class SessionCollaborationService {
   readonly #sendBudgetMs: number;
   readonly #inFlightHandOffs = new Set<string>();
   #onHeld: HeldListener | undefined;
+  #onHeldScheduledMiss: ((miss: HeldScheduledMiss) => void) | undefined;
   readonly #outcomeNotices = new Map<string, { controller: AbortController; done: Promise<void> }>();
   #closing = false;
 
@@ -341,6 +372,11 @@ export class SessionCollaborationService {
     this.#logger = options.logger;
     this.#scheduleDetailUrl = options.scheduleDetailUrl;
     this.#sendBudgetMs = options.sendBudgetMs ?? SEND_BUDGET_MS;
+  }
+
+  /** Tell the scheduler's IM notices that a held occurrence ended without reaching its Session. */
+  setHeldScheduledMissListener(listener: (miss: HeldScheduledMiss) => void): void {
+    this.#onHeldScheduledMiss = listener;
   }
 
   /** Tell the delivery worker a Computer now has a held message. */
@@ -1303,6 +1339,8 @@ export class SessionCollaborationService {
     attemptCount: number,
   ): Promise<"held" | "settled"> {
     const schedule = await this.#sessions.readHeldSchedule(origin.scheduleId);
+    const replaced = heldScheduleReplacement(schedule, message);
+    if (replaced) return this.#giveUpHeld(message, attemptCount, "unreachable", replaced);
     const detailUrl = this.#scheduleDetailUrl?.(route.agentId, origin.scheduleId);
     if (!detailUrl) return "held";
     const snapshot: ScheduledMessageSnapshot = {
@@ -1317,15 +1355,6 @@ export class SessionCollaborationService {
       detailUrl,
       attemptCount,
     };
-    // A later occurrence or an edit replaces this one, so it never arrives late and out of date.
-    if (
-      schedule?.enabled !== true ||
-      schedule.prompt !== message.content ||
-      schedule.lastDispatch?.messageId !== message.id
-    ) {
-      const dropped = await this.#recordScheduled(snapshot, "unreachable", SESSION_MESSAGE_HELD_SUPERSEDED_CODE);
-      return dropped.code === "outcome_write_failed" ? "held" : "settled";
-    }
     const runtime = await this.#assembleHeldRuntime(message);
     if (!runtime) return "held";
     let stillHeld = false;
@@ -1337,8 +1366,9 @@ export class SessionCollaborationService {
           stillHeld = true;
           return Promise.resolve({ outcome: "unknown", code: SESSION_MESSAGE_HELD_CODE });
         }
-        return this.#recordScheduled(snapshot, outcome, code).then((recorded) => {
+        return this.#recordScheduled(snapshot, outcome, code).then(async (recorded) => {
           stillHeld = recorded.code === "outcome_write_failed";
+          if (!stillHeld && code) await this.#reportHeldScheduledMiss(message, origin, outcome, code);
           return recorded;
         });
       });
@@ -1388,8 +1418,48 @@ export class SessionCollaborationService {
         : {}),
     });
     if (!updated) return "held";
+    if (message.scheduledOrigin) await this.#reportHeldScheduledMiss(message, message.scheduledOrigin, outcome, code);
     await this.#notifySenderOfFailure(message, code);
     return "settled";
+  }
+
+  /**
+   * Drop a held occurrence that a later occurrence or a schedule change replaced, even while its
+   * Computer is offline, so the conversation hears about it without waiting for the Client or the expiry.
+   */
+  async settleReplacedHeld(message: HeldSessionMessage): Promise<void> {
+    if (!message.scheduledOrigin) return;
+    const replaced = heldScheduleReplacement(
+      await this.#sessions.readHeldSchedule(message.scheduledOrigin.scheduleId),
+      message,
+    );
+    if (replaced) await this.#giveUpHeld(message, message.attemptCount, "unreachable", replaced);
+  }
+
+  /**
+   * A held occurrence ends here, not in the scheduler, so its conversation hears about it through this
+   * path. The previous occurrence stands in for the summary a later claim has overwritten.
+   */
+  async #reportHeldScheduledMiss(
+    message: HeldSessionMessage,
+    origin: SessionMessageScheduledOrigin,
+    outcome: SessionMessageOutcome,
+    code: string,
+  ): Promise<void> {
+    if (!this.#onHeldScheduledMiss || outcome === "accepted") return;
+    this.#onHeldScheduledMiss({
+      occurrence: {
+        agentId: message.agentId ?? "",
+        name: origin.name,
+        scheduleId: origin.scheduleId,
+        scheduledFor: origin.scheduledFor,
+        targetSessionId: message.targetSessionId,
+        timezone: origin.timezone,
+      },
+      outcome,
+      code,
+      previous: await this.#sessions.readPreviousScheduledOutcome(message.targetSessionId, origin.scheduleId, message),
+    });
   }
 
   /**

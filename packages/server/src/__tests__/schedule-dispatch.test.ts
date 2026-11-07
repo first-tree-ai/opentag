@@ -28,6 +28,7 @@ import {
 } from "../services/schedules/index.js";
 import { SessionCollaborationService, SessionService } from "../services/sessions/index.js";
 import type { ScheduledMessageSnapshot } from "../services/sessions/session-collaboration-service.js";
+import { SessionHeldDeliveryWorker } from "../services/sessions/session-held-delivery-worker.js";
 import { stubScheduleScope } from "./support/schedule-scope.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
@@ -927,6 +928,96 @@ describe("dispatch outcomes and the conditional summary (D09, D10, D16)", () => 
     });
     expect(stack.deliveryFrames.map(({ messageId }) => messageId)).not.toContain(first.snapshot.messageId);
     expect((await scheduleRow(row.id))?.lastDispatch).toMatchObject({ messageId: second.snapshot.messageId });
+  });
+
+  describe("IM notices for a held occurrence", () => {
+    async function offlineStack() {
+      const seed = await seedStack();
+      const stack = makeStack(seed);
+      const notifyMissed = vi.fn(async () => undefined);
+      const scheduler = new ScheduleScheduler({
+        database: db.database,
+        dispatch: stack.collaboration,
+        sessions: stack.sessions,
+        publicUrl: PUBLIC_URL,
+        clock: testClock,
+        missNotices: { notifyMissed },
+      });
+      stack.collaboration.setHeldScheduledMissListener((miss) => scheduler.reportHeldMiss(miss));
+      stack.registry.supportsCapability.mockReturnValue(true);
+      stack.registry.currentInstanceId.mockReturnValue(undefined);
+      const row = await insertSchedule(seed, { schedule: EVERY_MINUTE, nextTriggerAt: T0 });
+      const claimHeld = async (minute: number) => {
+        currentTime = new Date(T0.getTime() + minute * 60_000);
+        const claim = await claimOf(stack, row.id);
+        if (claim.kind !== "claimed") throw new Error("expected a claim");
+        await stack.collaboration.dispatchScheduledMessage(claim.snapshot);
+        return claim.snapshot;
+      };
+      const worker = new SessionHeldDeliveryWorker({
+        collaboration: stack.collaboration,
+        sessions: stack.sessions,
+        registry: stack.registry as never,
+        now: () => currentTime.getTime() + 3 * 60_000,
+      });
+      const missed = () =>
+        (notifyMissed.mock.calls as unknown as [{ kind: string; code: string; requestId: string }][]).map(
+          ([input]) => input,
+        );
+      return { claimHeld, missed, row, stack, worker };
+    }
+
+    it("posts once while the Computer is offline, however many occurrences are replaced", async () => {
+      const { claimHeld, missed, worker } = await offlineStack();
+      const first = await claimHeld(0);
+      const second = await claimHeld(1);
+      const third = await claimHeld(2);
+
+      await worker.sweep();
+
+      expect(await messageRow(first.messageId)).toMatchObject({ lastErrorCode: "delivery_superseded" });
+      expect(await messageRow(second.messageId)).toMatchObject({ lastErrorCode: "delivery_superseded" });
+      expect(await messageRow(third.messageId)).toMatchObject({ lastErrorCode: "delivery_held" });
+      expect(missed()).toEqual([
+        expect.objectContaining({ kind: "missed", code: "delivery_superseded", requestId: first.messageId }),
+      ]);
+    });
+
+    it("posts when a held occurrence expires", async () => {
+      const { claimHeld, missed, stack } = await offlineStack();
+      const first = await claimHeld(0);
+      const [held] = await stack.sessions.listHeldMessagesForTarget(first.targetSessionId, new Date(0), 10);
+      if (!held) throw new Error("expected a held message");
+
+      await stack.collaboration.expireHeld(held);
+
+      expect(await messageRow(first.messageId)).toMatchObject({ lastErrorCode: "delivery_expired" });
+      expect(missed()).toEqual([expect.objectContaining({ kind: "missed", code: "delivery_expired" })]);
+    });
+
+    it("posts nothing when someone paused the schedule", async () => {
+      const { claimHeld, missed, row, worker } = await offlineStack();
+      const first = await claimHeld(0);
+      await db.database
+        .update(agentSchedules)
+        .set({ enabled: false, nextTriggerAt: null })
+        .where(eq(agentSchedules.id, row.id));
+
+      await worker.sweep();
+
+      expect(await messageRow(first.messageId)).toMatchObject({ lastErrorCode: "schedule_disabled" });
+      expect(missed()).toEqual([]);
+    });
+
+    it("posts nothing while the occurrence is still held", async () => {
+      const { claimHeld, missed, worker } = await offlineStack();
+      const first = await claimHeld(0);
+
+      await worker.sweep();
+
+      expect(await messageRow(first.messageId)).toMatchObject({ lastErrorCode: "delivery_held" });
+      expect(missed()).toEqual([]);
+    });
   });
 
   it("refuses to send a scheduled origin to a v2-only peer with zero frames", async () => {

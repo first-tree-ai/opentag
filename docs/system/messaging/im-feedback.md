@@ -80,13 +80,15 @@ stores no IM feedback state and adds no column.
 | --- | --- | --- |
 | The Run failed, timed out, or was interrupted | `provider_unavailable`, `turn_timeout` | Every time, with a warning that some work may already have happened |
 | The Client rejected the message | `configuration_unsupported` | The first time per cause |
-| It never started | `runtime_unavailable`, `client_busy`, `late` | The first time per cause |
+| It never started | `runtime_unavailable`, `client_busy`, `late`, `delivery_superseded`, `delivery_expired` | The first time per cause |
 | The hand-off's fate is unknown | `delivery_timeout`, `delivery_uncertain`, `dispatch_failed` | The first time per cause, worded as "may not have run" |
 | The schedule turned itself off | `target_invalid`, `invalid_schedule` | Once, saying it stays off until resumed |
 | Someone stopped or changed it | `turn_cancelled`, `schedule_disabled`, `agent_suspended` | Nothing |
 
 "The first time per cause" compares the occurrence with the schedule's previous summary, so a Computer that stays offline
-posts one message, not one per occurrence. A delivered occurrence or a different code starts over. A Run failure that
+posts one message, not one per occurrence. A Local occurrence the Server held has no result yet, so it posts nothing until
+[held delivery](internal-session-collaboration.md#held-delivery) gives it up, usually within 5 minutes of the next occurrence,
+and is then compared with the occurrence before it. A delivered occurrence or a different code starts over. A Run failure that
 keeps recurring posts every time, as it would for repeated human messages.
 
 Delivery is best effort:

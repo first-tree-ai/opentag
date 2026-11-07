@@ -5,7 +5,11 @@ import { and, asc, eq, isNotNull, lte, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import { agentSchedules, sessionMessages } from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
-import type { ScheduleDispatch, ScheduledMessageSnapshot } from "../sessions/session-collaboration-service.js";
+import type {
+  HeldScheduledMiss,
+  ScheduleDispatch,
+  ScheduledMessageSnapshot,
+} from "../sessions/session-collaboration-service.js";
 import type { SessionService } from "../sessions/session-service.js";
 import { nextScheduleOccurrence, normalizeAndValidateRule } from "./calculator.js";
 import {
@@ -334,6 +338,11 @@ export class ScheduleScheduler {
         "Scheduled dispatch failure could not be recorded",
       );
     }
+  }
+
+  /** A held occurrence the Session delivery worker gave up; it ended outside this scheduler. */
+  reportHeldMiss(miss: HeldScheduledMiss): void {
+    this.#noticeMiss(miss.occurrence, { outcome: miss.outcome, code: miss.code, previous: miss.previous });
   }
 
   /**

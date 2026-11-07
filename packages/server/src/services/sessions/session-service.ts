@@ -12,7 +12,7 @@ import type {
   SessionMessageScheduledOrigin,
   SessionPlacement,
 } from "@opentag/shared";
-import { and, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, or, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
   agentSchedules,
@@ -813,6 +813,27 @@ export class SessionService {
       .where(eq(agentSchedules.id, scheduleId))
       .limit(1);
     return row;
+  }
+
+  /** The occurrence of this schedule before the given one, through the target and time index. */
+  async readPreviousScheduledOutcome(
+    targetSessionId: string,
+    scheduleId: string,
+    message: { id: string; createdAt: Date },
+  ): Promise<{ outcome: SessionMessageOutcome; code: string | null } | null> {
+    const [row] = await this.#database
+      .select({ outcome: sessionMessages.lastOutcome, code: sessionMessages.lastErrorCode })
+      .from(sessionMessages)
+      .where(
+        and(
+          eq(sessionMessages.targetSessionId, targetSessionId),
+          sql`${sessionMessages.scheduledOrigin} ->> 'scheduleId' = ${scheduleId}`,
+          sql`(${sessionMessages.createdAt}, ${sessionMessages.id}) < (${message.createdAt.toISOString()}::timestamptz, ${message.id}::uuid)`,
+        ),
+      )
+      .orderBy(desc(sessionMessages.createdAt), desc(sessionMessages.id))
+      .limit(1);
+    return row ?? null;
   }
 
   /**

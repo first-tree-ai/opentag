@@ -69,7 +69,7 @@ const STILL_DELIVERING_CODE = "delivery_held";
 export function scheduledMissKind(input: {
   outcome: AgentScheduleLastDispatch["outcome"];
   code: string | null;
-  previous: AgentScheduleLastDispatch | null;
+  previous: Pick<AgentScheduleLastDispatch, "code" | "outcome"> | null;
   disabled?: boolean;
 }): ScheduledMissKind | undefined {
   // A null code on `unknown` is a duplicate dispatcher or a stop, neither of which is a failure.

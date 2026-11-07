@@ -20,7 +20,7 @@ const ATTEMPT_SETTLE_MS = 2 * 60_000;
 const DEFAULT_READY_FOLLOW_UPS_MS = [5_000, 20_000];
 
 export interface SessionHeldDeliveryWorkerOptions {
-  collaboration: Pick<SessionCollaborationService, "expireHeld" | "redeliverHeld">;
+  collaboration: Pick<SessionCollaborationService, "expireHeld" | "redeliverHeld" | "settleReplacedHeld">;
   sessions: Pick<SessionService, "listHeldMessagesForTarget" | "listHeldTargetsForComputer" | "sweepHeldMessages">;
   registry: { currentInstanceId(computerId: string): string | undefined };
   logger?: Pick<ServiceLogger, "error">;
@@ -143,11 +143,10 @@ export class SessionHeldDeliveryWorker {
 
   async #sweepMessage(message: HeldSweepMessage, cutoff: Date): Promise<void> {
     if (this.#stopped) return;
-    if (message.createdAt > cutoff) {
-      if (message.computerId) this.#pending.add(message.computerId);
-      return;
-    }
-    if (!this.#attemptMayStillAnswer(message)) await this.#options.collaboration.expireHeld(message);
+    if (message.createdAt > cutoff && message.computerId) this.#pending.add(message.computerId);
+    if (this.#attemptMayStillAnswer(message)) return;
+    if (message.createdAt <= cutoff) await this.#options.collaboration.expireHeld(message);
+    else await this.#options.collaboration.settleReplacedHeld(message);
   }
 
   #attemptMayStillAnswer({ lastAttemptAt }: HeldSweepMessage): boolean {

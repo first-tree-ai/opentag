@@ -200,8 +200,11 @@ Use a steer-capable Provider (Claude Code on a current version). A child's long 
 1. While the child is working, have the parent run `opentag session send <child-id>` twice with short follow-ups.
 2. Expected: the follow-ups reach the running child at its next tool boundary, in order, with no new Provider Run for them;
    all messages succeed together when the Run completes.
-3. Repeat, then kill and restart the daemon after the follow-ups were steered. Expected: the child resumes with the crash
-   notice, the follow-ups arrive again in order, each with the notice, and the parent gets no failure notice.
+3. Repeat, then kill and restart the daemon after the child has answered the follow-ups. Expected: the child resumes with the crash
+   notice, the follow-ups are not injected again (its transcript holds each once), and the parent gets no failure notice. Check this
+   with Claude Code and Codex.
+   Repeat with Pi, which gives no confirmation, or kill the daemon right after a steer with Claude Code, before the model answers.
+   Expected: those follow-ups arrive again in order, each with the notice.
 4. Repeat the crash until the retries run out. Expected: the child's message fails, and the steered follow-ups fail with it:
    one notice per message to its sender, no further Run. A message queued but not yet steered runs on its own.
 5. Make the child's task fail without a retry while a follow-up is steered into it. Expected: both fail with one notice each to

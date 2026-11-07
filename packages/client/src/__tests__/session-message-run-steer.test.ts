@@ -27,17 +27,21 @@ afterEach(() => {
   for (const inbox of inboxes.splice(0)) inbox.stop();
 });
 
+const BINDING = { providerId: "claude-code", schemaVersion: 1, payload: { sessionId: "session-1" } };
+
 const rateLimited = { status: "failed", error: { code: "provider_rate_limited", message: "429" } } as const;
 
 /** A runtime whose Runs end when a test says so, and whose steers follow the Run they joined. */
-function harness(options: { steer?: "supported" | "unsupported" } = {}) {
+function harness(options: { steer?: "supported" | "unsupported"; binding?: typeof BINDING } = {}) {
   const state: { phase: string; activeRunId?: string } = { phase: "idle" };
   const attempts: Attempt[] = [];
   const steers: Array<{ runId: string; texts: string[] }> = [];
   let runEnded: Array<(outcome: AgentSteerOutcome) => void> = [];
   let lastEnd: AgentSteerOutcome = "processed";
   const steerOutcomes = new Map<string, AgentSteerOutcome | Error | Promise<void>>();
+  const confirmations = new Map<string, (() => void) | undefined>();
   const runtime = {
+    binding: options.binding ?? BINDING,
     capabilities: { steer: options.steer ?? "supported" },
     state,
     waitForIdle: async () => undefined,
@@ -47,13 +51,15 @@ function harness(options: { steer?: "supported" | "unsupported" } = {}) {
       if (scripted instanceof Error) throw scripted;
       if (scripted instanceof Promise) await scripted;
       steers.push({ runId: request.expectedRunId, texts: request.input.items.map((item) => item.text) });
+      confirmations.set(text, undefined);
+      const inConversation = new Promise<void>((resolve) => confirmations.set(text, resolve));
       const outcome = new Promise<AgentSteerOutcome>((resolve) => {
         const end = (ran: AgentSteerOutcome) => resolve(typeof scripted === "string" ? scripted : ran);
         // Acknowledged after the Run ended: the outcome is known already.
         if (state.activeRunId) runEnded.push(end);
         else end(lastEnd);
       });
-      return { outcome };
+      return { outcome, inConversation };
     }),
     prompt: vi.fn(
       (request: { runId: string; input: { items: Items } }) =>
@@ -76,7 +82,7 @@ function harness(options: { steer?: "supported" | "unsupported" } = {}) {
         }),
     ),
   };
-  return { attempts, runtime, state, steerOutcomes, steers };
+  return { attempts, confirmations, runtime, state, steerOutcomes, steers };
 }
 
 function makeInbox(
@@ -313,6 +319,188 @@ describe("background work left at the end of a Session message Run", () => {
       }),
     ]);
     expect(attempts).toHaveLength(1);
+  });
+});
+
+describe("a steered message the provider's conversation already holds", () => {
+  /** A daemon whose Run took `steered`, confirmed only `confirmed`, and then stopped under it. */
+  async function crashedDaemon(confirmed: readonly string[], steered = ["second", "third"]) {
+    const persistence = new MemoryRuntimeDurabilityStore();
+    const before = harness();
+    const stopping = makeInbox(before.runtime, { persistence });
+    const { message } = conversation();
+    const first = message("first");
+    const messages = Object.fromEntries(steered.map((text) => [text, message(text)]));
+    await stopping.accept(first);
+    const attempt = await started(before.attempts, 1);
+    for (const text of steered) await stopping.accept(messages[text] as SessionMessageDeliveryRequestV3);
+    await vi.waitFor(() => expect(before.steers).toHaveLength(steered.length));
+    for (const text of steered) {
+      const id = (messages[text] as SessionMessageDeliveryRequestV3).messageId;
+      await vi.waitFor(() => expect(stopping.getState(id)?.status).toBe("running"));
+    }
+    for (const text of confirmed) before.confirmations.get(text)?.();
+    for (const text of confirmed) {
+      const id = (messages[text] as SessionMessageDeliveryRequestV3).messageId;
+      await vi.waitFor(() => expect(stopping.getState(id)?.steerInConversation).toBeDefined());
+    }
+    stopping.stop();
+    attempt.finish(new Error("stopped"));
+    await stopping.settled();
+    return { persistence, first, messages };
+  }
+
+  it("is not injected again after a crash past its confirmation, and ends with the resumed Run", async () => {
+    const { persistence, first, messages } = await crashedDaemon(["second", "third"]);
+    const { attempts, runtime, steers } = harness();
+    const inbox = makeInbox(runtime, { persistence });
+    await inbox.ready();
+    const resumed = await started(attempts, 1);
+    expect(resumed.texts.at(-1)).toBe("first");
+    const second = messages.second as SessionMessageDeliveryRequestV3;
+    await vi.waitFor(() => expect(inbox.queuedCount).toBe(0));
+    await vi.waitFor(() => expect(inbox.getState(second.messageId)?.status).toBe("running"));
+    expect(runtime.steer).not.toHaveBeenCalled();
+    expect(steers).toEqual([]);
+    resumed.finish();
+    await inbox.settled();
+    expect(attempts).toHaveLength(1);
+    for (const request of [first, messages.second, messages.third]) {
+      expect(inbox.getState((request as SessionMessageDeliveryRequestV3).messageId)?.status).toBe("succeeded");
+    }
+  });
+
+  it("is injected again with the notice after a crash before its confirmation, in order", async () => {
+    const { persistence, messages } = await crashedDaemon(["second"]);
+    const { attempts, runtime, steers } = harness();
+    const inbox = makeInbox(runtime, { persistence });
+    await inbox.ready();
+    const resumed = await started(attempts, 1);
+    await vi.waitFor(() => expect(steers).toHaveLength(1));
+    expect(steers[0]?.texts.at(-1)).toBe("third");
+    expect(steers[0]?.texts[0]).toContain(NOTICE);
+    await vi.waitFor(() =>
+      expect(inbox.getState((messages.third as SessionMessageDeliveryRequestV3).messageId)?.status).toBe("running"),
+    );
+    resumed.finish();
+    await inbox.settled();
+    expect(inbox.getState((messages.third as SessionMessageDeliveryRequestV3).messageId)?.status).toBe("succeeded");
+  });
+
+  it("fails with the resumed Run: the rule that they fail together does not change", async () => {
+    const { persistence, first, messages } = await crashedDaemon(["second"], ["second"]);
+    const outcomes: SessionMessageRunOutcomeEvent[] = [];
+    const { attempts, runtime } = harness();
+    const inbox = makeInbox(runtime, { persistence, outcomes });
+    await inbox.ready();
+    const resumed = await started(attempts, 1);
+    const second = messages.second as SessionMessageDeliveryRequestV3;
+    await vi.waitFor(() => expect(inbox.queuedCount).toBe(0));
+    resumed.finish(new Error("the provider broke"));
+    await inbox.settled();
+    expect(attempts).toHaveLength(1);
+    expect(runtime.steer).not.toHaveBeenCalled();
+    expect(outcomes.map(({ messageId, reason }) => [messageId, reason])).toEqual([
+      [first.messageId, "provider_failed"],
+      [second.messageId, "session_message_steer_interrupted"],
+    ]);
+  });
+
+  it("is injected again when the resumed Run has a different provider conversation", async () => {
+    const { persistence, messages } = await crashedDaemon(["second"], ["second"]);
+    const { attempts, runtime, steers } = harness({
+      binding: { ...BINDING, payload: { sessionId: "another-session" } },
+    });
+    const inbox = makeInbox(runtime, { persistence });
+    await inbox.ready();
+    const resumed = await started(attempts, 1);
+    await vi.waitFor(() => expect(steers).toHaveLength(1));
+    expect(steers[0]?.texts.at(-1)).toBe("second");
+    expect(steers[0]?.texts[0]).toContain(NOTICE);
+    await vi.waitFor(() =>
+      expect(inbox.getState((messages.second as SessionMessageDeliveryRequestV3).messageId)?.status).toBe("running"),
+    );
+    resumed.finish();
+    await inbox.settled();
+  });
+
+  it("follows its Run's durable outcome when that Run ended before the crash reached it", async () => {
+    const { message } = conversation();
+    const [won, lost, leadWon, leadLost] = [message("won"), message("lost"), message("lead won"), message("lead lost")];
+    const persistence = new MemoryRuntimeDurabilityStore();
+    const identity = JSON.stringify(BINDING);
+    for (const stored of [
+      record(leadWon, "succeeded"),
+      record(won, "running", { joinedRunId: sessionMessageRunId(leadWon.messageId), steerInConversation: identity }),
+    ]) {
+      await persistence.write(stored);
+    }
+    const otherStore = new MemoryRuntimeDurabilityStore();
+    await otherStore.write(record(leadLost, "failed", { outcomeReport: "published" }));
+    await otherStore.write(
+      record(lost, "running", { joinedRunId: sessionMessageRunId(leadLost.messageId), steerInConversation: identity }),
+    );
+    const { attempts, runtime } = harness();
+    const inbox = makeInbox(runtime, { persistence });
+    await inbox.ready();
+    expect(inbox.getState(won.messageId)?.status).toBe("succeeded");
+    const other = makeInbox(harness().runtime, { persistence: otherStore });
+    await other.ready();
+    expect(other.getState(lost.messageId)?.status).toBe("failed");
+    expect(attempts).toHaveLength(0);
+  });
+
+  it("settles with the resumed Run even when that Run ends before the message could rejoin it", async () => {
+    const { persistence, messages } = await crashedDaemon(["second"], ["second"]);
+    const { attempts, runtime, state } = harness();
+    // The runtime never shows a running Run to the drain, so the message cannot rejoin.
+    Object.defineProperty(state, "phase", { get: () => "idle", set: () => undefined });
+    const inbox = makeInbox(runtime, { persistence });
+    await inbox.ready();
+    (await started(attempts, 1)).finish();
+    await inbox.settled();
+    expect(attempts).toHaveLength(1);
+    expect(inbox.getState((messages.second as SessionMessageDeliveryRequestV3).messageId)?.status).toBe("succeeded");
+  });
+
+  it("does not bring a settled message back when the confirmation arrives during its settlement", async () => {
+    const { attempts, confirmations, runtime, steers } = harness();
+    const inbox = makeInbox(runtime);
+    const { message } = conversation();
+    const second = message("second");
+    await inbox.accept(message("first"));
+    const attempt = await started(attempts, 1);
+    await inbox.accept(second);
+    await vi.waitFor(() => expect(steers).toHaveLength(1));
+    await vi.waitFor(() => expect(inbox.getState(second.messageId)?.status).toBe("running"));
+    attempt.finish();
+    confirmations.get("second")?.();
+    await inbox.settled();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(inbox.getState(second.messageId)?.status).toBe("succeeded");
+    expect(inbox.pendingCount).toBe(0);
+  });
+
+  it("does not reuse an old confirmation for a later steer", async () => {
+    const { persistence, messages } = await crashedDaemon(["second"], ["second"]);
+    const { attempts, runtime, confirmations, steers } = harness({
+      binding: { ...BINDING, payload: { sessionId: "another-session" } },
+    });
+    const inbox = makeInbox(runtime, { persistence });
+    await inbox.ready();
+    const resumed = await started(attempts, 1);
+    await vi.waitFor(() => expect(steers).toHaveLength(1));
+    const id = (messages.second as SessionMessageDeliveryRequestV3).messageId;
+    await vi.waitFor(() => expect(inbox.getState(id)?.status).toBe("running"));
+    expect(inbox.getState(id)?.steerInConversation).toBeUndefined();
+    confirmations.get("second")?.();
+    await vi.waitFor(() =>
+      expect(inbox.getState(id)?.steerInConversation).toBe(
+        JSON.stringify({ ...BINDING, payload: { sessionId: "another-session" } }),
+      ),
+    );
+    resumed.finish();
+    await inbox.settled();
   });
 });
 

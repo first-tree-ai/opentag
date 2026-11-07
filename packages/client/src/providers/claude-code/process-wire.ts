@@ -56,6 +56,12 @@ export type ClaudeCodeMessageListener = (message: Readonly<Record<string, unknow
 export interface ClaudeCodeSteerHandle {
   /** True once Claude Code reported `command_lifecycle` `started` (or `completed`) for this input. */
   started(): boolean;
+  /**
+   * Resolves at the first top-level assistant message after `started`. `started` itself is too early:
+   * Claude Code flushes the transcript about 100 ms later, so a kill right after it loses the input
+   * (measured on 2.1.319). That assistant message comes from a model request carrying the input.
+   */
+  readonly inConversation: Promise<void>;
 }
 
 export interface ClaudeCodeProcessClient {
@@ -103,6 +109,8 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
   #initializeTimer?: ReturnType<typeof setTimeout>;
   /** Steered command uuids written to stdin that Claude Code has not yet started. */
   readonly #pendingSteers = new Set<string>();
+  /** Steered commands not yet known to be in the transcript: how to resolve each `inConversation`. */
+  readonly #unconfirmedSteers = new Map<string, () => void>();
   /** Steered command uuids Claude Code reported as started. */
   readonly #startedSteers = new Set<string>();
   /** Claude Code's latest report of the background tasks it is running, by task id. */
@@ -218,7 +226,8 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
       throw new ClaudeCodeProcessError("protocol", "Claude Code input exceeds the JSONL line limit");
     // Registered before the write so a result racing the write still waits for this input.
     this.#pendingSteers.add(message.uuid);
-    const handle: ClaudeCodeSteerHandle = { started: () => this.#startedSteers.has(message.uuid) };
+    const inConversation = new Promise<void>((resolve) => this.#unconfirmedSteers.set(message.uuid, resolve));
+    const handle: ClaudeCodeSteerHandle = { started: () => this.#startedSteers.has(message.uuid), inConversation };
     if (this.#pendingInput !== undefined) {
       // Permission initialization has not finished: keep the steer behind the original prompt.
       this.#pendingInput += line;
@@ -280,6 +289,14 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
     }
   }
 
+  #confirmStartedSteers(): void {
+    for (const [uuid, confirm] of this.#unconfirmedSteers) {
+      if (!this.#startedSteers.has(uuid)) continue;
+      this.#unconfirmedSteers.delete(uuid);
+      confirm();
+    }
+  }
+
   #deliverMessage(parsed: Record<string, unknown>): void {
     if (
       parsed.type === "command_lifecycle" &&
@@ -288,6 +305,7 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
       this.#pendingSteers.delete(parsed.command_uuid)
     )
       this.#startedSteers.add(parsed.command_uuid);
+    if (parsed.type === "assistant" && parsed.parent_tool_use_id == null) this.#confirmStartedSteers();
     this.#observeBackgroundWork(parsed);
     const terminal = parsed.type === "result" && this.#endsRun(parsed);
     try {

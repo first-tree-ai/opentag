@@ -165,6 +165,11 @@ export interface DurableWorkRecord<T = unknown> {
   readonly retryRanMs?: number;
   /** Session-message only: the Run this message was steered into, whose retry count it shares. */
   readonly joinedRunId?: string;
+  /**
+   * Session-message only: this message is durably in the conversation of the provider session named by
+   * this binding, so resuming that session must not inject it again.
+   */
+  readonly steerInConversation?: string;
   readonly interruption?: { readonly reason: string; readonly at: string };
   readonly payload: T;
   readonly status: DurableWorkStatus;

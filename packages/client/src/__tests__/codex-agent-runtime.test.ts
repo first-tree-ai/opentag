@@ -125,7 +125,9 @@ describe("CodexAgentRuntime", () => {
     const run = runtime.prompt({ runId: "run-1", input: input("start") });
     await vi.waitFor(() => expect(client.call("turn/start")).toBeDefined());
 
-    await runtime.steer({ expectedRunId: "run-1", input: input("focus tests") });
+    const receipt = await runtime.steer({ expectedRunId: "run-1", input: input("focus tests") });
+    // The rollout holds the input once the App Server answers.
+    await expect(receipt.inConversation).resolves.toBeUndefined();
     expect(client.call("turn/steer")?.params).toMatchObject({
       threadId: "thread-1",
       expectedTurnId: "turn-1",

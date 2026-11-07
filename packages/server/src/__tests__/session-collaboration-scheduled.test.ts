@@ -86,7 +86,7 @@ interface Fixture {
     supportsCapability: ReturnType<typeof vi.fn>;
   };
   cloud: { deliver: ReturnType<typeof vi.fn> };
-  logger: { error: ReturnType<typeof vi.fn> };
+  logger: { error: ReturnType<typeof vi.fn>; warn: ReturnType<typeof vi.fn> };
 }
 
 async function dispatchWithAdmission<T>(
@@ -109,6 +109,7 @@ function makeFixture(
   route: AuthorizedScheduledMessageRoute,
   options: {
     budgets?: { localMs?: number; cloudMs?: number };
+    assemblyFails?: boolean;
     /** Refuse the admission with `dispatch_not_marked` from this stage number onwards. */
     refuseFrom?: number;
   } = {},
@@ -197,9 +198,14 @@ function makeFixture(
     ),
   };
   const cloud = { deliver: vi.fn(async () => ({ status: "accepted" as const })) };
-  const logger = { error: vi.fn() };
+  const logger = { error: vi.fn(), warn: vi.fn() };
   const service = new SessionCollaborationService({
-    assembler: { assembleForSession: vi.fn(async () => runtimeSnapshot(route.agentId)) },
+    assembler: {
+      assembleForSession: vi.fn(async () => {
+        if (options.assemblyFails) throw new Error("assembly failed");
+        return runtimeSnapshot(route.agentId);
+      }),
+    },
     domain: domain as never,
     registry: registry as never,
     sessions: sessions as never,
@@ -405,6 +411,69 @@ describe("SessionCollaborationService.dispatchScheduledMessage", () => {
     );
     const outcome = await fixture.service.dispatchScheduledMessage(snapshot);
     expect(outcome).toEqual({ outcome: "unknown", code: "delivery_timeout" });
+  });
+
+  describe("names the step that failed before the message left (#1428)", () => {
+    const reconcileAnswering = (status: string) => async () => ({
+      type: "session:reconcile:result",
+      requestId: randomUUID(),
+      sessionId: randomUUID(),
+      placementGeneration: 1,
+      status,
+    });
+    const reconcileFailing = (error: Error) => async () => {
+      throw error;
+    };
+
+    it.each([
+      [
+        "a reconcile that gets no answer",
+        reconcileFailing(new RuntimeDomainRequestError("timeout", "No answer")),
+        "reconcile_timeout",
+      ],
+      ["a reconcile whose send failed", reconcileFailing(new Error("socket closed")), "reconcile_failed"],
+      ["a busy Session", reconcileAnswering("busy"), "reconcile_busy"],
+      ["a refused reconcile", reconcileAnswering("rejected"), "reconcile_rejected"],
+      ["a Session awaiting recovery", reconcileAnswering("recovery_required"), "reconcile_recovery_required"],
+    ] as const)("%s", async (_label, answer, code) => {
+      const { snapshot, route } = snapshotFixture();
+      const fixture = makeFixture(route);
+      fixture.domain.requestReconcile.mockImplementation(answer as never);
+
+      await expect(fixture.service.dispatchScheduledMessage(snapshot)).resolves.toEqual({
+        outcome: "unreachable",
+        code,
+      });
+      expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
+    });
+
+    it("a runtime that cannot be assembled", async () => {
+      const { snapshot, route } = snapshotFixture();
+      const fixture = makeFixture(route, { assemblyFails: true });
+
+      await expect(fixture.service.dispatchScheduledMessage(snapshot)).resolves.toEqual({
+        outcome: "unreachable",
+        code: "runtime_assembly_failed",
+      });
+    });
+
+    it("holds the occurrence on a Client that can be held for, and logs the step", async () => {
+      const { snapshot, route } = snapshotFixture();
+      const fixture = makeFixture(route);
+      fixture.registry.supportsCapability.mockReturnValue(true);
+      fixture.domain.requestReconcile.mockImplementation(
+        reconcileFailing(new RuntimeDomainRequestError("timeout", "No answer")) as never,
+      );
+
+      await expect(fixture.service.dispatchScheduledMessage(snapshot)).resolves.toEqual({
+        outcome: "unknown",
+        code: "delivery_held",
+      });
+      expect(fixture.logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ code: "reconcile_timeout", domainCode: "timeout", messageId: snapshot.messageId }),
+        expect.any(String),
+      );
+    });
   });
 
   it("records a refused reconcile frame as unreachable: the message provably never left", async () => {

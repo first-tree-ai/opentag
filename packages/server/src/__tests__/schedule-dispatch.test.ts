@@ -1039,6 +1039,28 @@ describe("dispatch outcomes and the conditional summary (D09, D10, D16)", () => 
       });
     });
 
+    it("delivers a held one-shot occurrence, which no later occurrence can replace", async () => {
+      const seed = await seedStack();
+      const stack = makeStack(seed);
+      stack.registry.supportsCapability.mockReturnValue(true);
+      stack.registry.currentInstanceId.mockReturnValue(undefined);
+      const row = await insertSchedule(seed, { schedule: { kind: "at", at: T0.toISOString() }, nextTriggerAt: T0 });
+      currentTime = T0;
+      const claim = await claimOf(stack, row.id);
+      if (claim.kind !== "claimed") throw new Error("expected a claim");
+      await stack.collaboration.dispatchScheduledMessage(claim.snapshot);
+      expect(await messageRow(claim.snapshot.messageId)).toMatchObject({ lastErrorCode: "delivery_held" });
+      expect(await scheduleRow(row.id)).toMatchObject({ enabled: true, nextTriggerAt: null });
+
+      stack.registry.currentInstanceId.mockReturnValue(seed.instanceId);
+      const [held] = await stack.sessions.listHeldMessagesForTarget(seed.targetSessionId, new Date(0), 10);
+      if (!held) throw new Error("expected a held message");
+      await expect(stack.collaboration.redeliverHeld(held)).resolves.toBe("settled");
+
+      expect(await messageRow(claim.snapshot.messageId)).toMatchObject({ lastOutcome: "accepted" });
+      expect(stack.deliveryFrames.map(({ messageId }) => messageId)).toEqual([claim.snapshot.messageId]);
+    });
+
     it("posts nothing while the occurrence is still held", async () => {
       const { claimHeld, missed, worker } = await offlineStack();
       const first = await claimHeld(0);

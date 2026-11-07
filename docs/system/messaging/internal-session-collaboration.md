@@ -217,6 +217,17 @@ Client is upgrading, restarting or full.
   is offline, and it is never delivered late. Both post the [scheduled task message](im-feedback.md#scheduled-tasks) once per
   cause. A pause, edit or delete ends it as `schedule_disabled`, `schedule_changed` or `schedule_deleted`, which post nothing.
   The schedule's latest summary shows `unknown / delivery_held` meanwhile, and that posts nothing either.
+- **A dead connection.** A Local occurrence can fire on a connection that is dead while neither side has noticed
+  ([#1428](https://github.com/first-tree-ai/opentag/issues/1428)). Its reconcile frame gets no answer and times out after 30
+  seconds, even if the Client reconnected meanwhile, because the request waits on the old connection. The reconcile is
+  preparation and the message has its own later frame, so the message provably never left, and it is held with its
+  original message ID. The next-occurrence rule and the 24-hour expiry bound the retries, and the conversation hears only
+  when it is given up. An `at` schedule keeps its target and is delivered the same way, because no later occurrence replaces it.
+- **Which step failed.** A scheduled hand-off records the step that failed before the message left:
+  `runtime_assembly_failed`, `reconcile_timeout`, `reconcile_failed`, or `reconcile_<status>` for a status other than ready,
+  running or reporting. `runtime_not_ready` on a scheduled hand-off now means only that the Client refused the delivery
+  frame. A held occurrence's summary shows `delivery_held`, so the step is in the Server log as
+  `Scheduled message preparation failed before the message left`. A `session send` keeps `runtime_not_ready`.
 - **Client queue.** The inbox FIFO is 256 per Session and 1024 in total, so a Client rarely refuses for a full queue. When
   it does, the refusal is an ordinary `client_busy` and the Server holds the message.
 - **Not covered.** Cloud targets keep their own Runner queue and retry contract. IM delivery already persists each

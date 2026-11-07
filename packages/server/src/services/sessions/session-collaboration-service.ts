@@ -326,6 +326,30 @@ function isAdmissionRefusal(error: unknown): boolean {
   return error instanceof RuntimeDomainRequestError && error.code === "authority_unavailable";
 }
 
+/**
+ * Which step of a scheduled hand-off failed before the message left. `runtime_not_ready` alone could not say,
+ * so a failed occurrence had to be diagnosed by guessing (#1428). On a scheduled hand-off that code now means
+ * only that the Client refused the delivery frame because the Session was not ready.
+ */
+const SCHEDULED_ASSEMBLY_FAILED_CODE = "runtime_assembly_failed";
+const SCHEDULED_RECONCILE_TIMEOUT_CODE = "reconcile_timeout";
+const SCHEDULED_RECONCILE_FAILED_CODE = "reconcile_failed";
+const SCHEDULED_RECONCILE_STATUS_CODES: Readonly<Record<SessionReconcileResult["status"], string>> = {
+  ready: "reconcile_ready",
+  running: "reconcile_running",
+  reporting: "reconcile_reporting",
+  stopped: "reconcile_stopped",
+  busy: "reconcile_busy",
+  recovery_required: "reconcile_recovery_required",
+  rejected: "reconcile_rejected",
+};
+const SCHEDULED_PREPARATION_CODES = [
+  SCHEDULED_ASSEMBLY_FAILED_CODE,
+  SCHEDULED_RECONCILE_TIMEOUT_CODE,
+  SCHEDULED_RECONCILE_FAILED_CODE,
+  ...Object.values(SCHEDULED_RECONCILE_STATUS_CODES),
+];
+
 /** Failures a redelivery can overcome. `outbox_unavailable` waits on a negotiated grant, not on recovery. */
 const HOLDABLE_LOCAL_CODES: ReadonlySet<string> = new Set([
   "agent_busy",
@@ -334,6 +358,7 @@ const HOLDABLE_LOCAL_CODES: ReadonlySet<string> = new Set([
   "runtime_not_ready",
   "runtime_unavailable",
   "session_busy",
+  ...SCHEDULED_PREPARATION_CODES,
 ]);
 
 export interface SessionCollaborationServiceOptions {
@@ -375,7 +400,7 @@ export interface SessionCollaborationServiceOptions {
   /** Test seam for the scheduled total budgets; production uses the stage-timeout sums. */
   scheduledBudgets?: { localMs?: number; cloudMs?: number };
   onDiagnostic?: (code: string) => void;
-  logger?: Pick<ServiceLogger, "error">;
+  logger?: Pick<ServiceLogger, "error"> & Partial<Pick<ServiceLogger, "warn">>;
 }
 export class SessionCollaborationService {
   readonly #assembler: SessionCollaborationServiceOptions["assembler"];
@@ -493,7 +518,10 @@ export class SessionCollaborationService {
       const local = route.targetComputerKind !== "cloud";
       const settle = local ? this.#holdingScheduledRecord(snapshot, route.targetComputerId, record) : record;
       if (assembly.kind === "aborted") return settle("unreachable", "delivery_timeout");
-      if (assembly.kind === "failed") return settle("unreachable", "runtime_not_ready");
+      if (assembly.kind === "failed") {
+        this.#logScheduledPreparationFailure(snapshot, SCHEDULED_ASSEMBLY_FAILED_CODE);
+        return settle("unreachable", SCHEDULED_ASSEMBLY_FAILED_CODE);
+      }
       if (!local) return await this.#deliverScheduledCloud(snapshot, route, assembly.runtime, signal, record);
       return await this.#deliverScheduledLocal(snapshot, route, assembly.runtime, signal, settle);
     } finally {
@@ -555,9 +583,16 @@ export class SessionCollaborationService {
     if (reconcile.kind === "rejected") {
       return this.#recordScheduledAdmissionFailure(reconcile.reason, record, false);
     }
-    if (reconcile.kind === "failed") return record("unreachable", "runtime_not_ready");
+    if (reconcile.kind === "failed") {
+      const timedOut = reconcile.error instanceof RuntimeDomainRequestError && reconcile.error.code === "timeout";
+      const code = timedOut ? SCHEDULED_RECONCILE_TIMEOUT_CODE : SCHEDULED_RECONCILE_FAILED_CODE;
+      this.#logScheduledPreparationFailure(snapshot, code, reconcile.error);
+      return record("unreachable", code);
+    }
     if (!new Set(["ready", "running", "reporting"]).has(reconcile.result.status)) {
-      return record("unreachable", "runtime_not_ready");
+      const code = SCHEDULED_RECONCILE_STATUS_CODES[reconcile.result.status];
+      this.#logScheduledPreparationFailure(snapshot, code);
+      return record("unreachable", code);
     }
     const delivery = await this.#admitScheduled<SessionMessageDeliveryResult>(route, fence, signal, (admission) => {
       const request: SessionMessageDeliveryRequestV3 = {
@@ -802,7 +837,25 @@ export class SessionCollaborationService {
     }
   }
 
-  /** Assemble the target Session's runtime under the budget; a failure is runtime_not_ready. */
+  /**
+   * A held occurrence records `delivery_held`, and the schedule's summary has no room for more without breaking
+   * released strict parsers, so the log is where a held occurrence's step can be read.
+   */
+  #logScheduledPreparationFailure(snapshot: ScheduledMessageSnapshot, code: string, error?: unknown): void {
+    this.#logger?.warn?.(
+      {
+        code,
+        ...(error instanceof RuntimeDomainRequestError ? { domainCode: error.code } : {}),
+        attemptCount: snapshot.attemptCount ?? 1,
+        messageId: snapshot.messageId,
+        scheduleId: snapshot.scheduleId,
+        targetSessionId: snapshot.targetSessionId,
+      },
+      "Scheduled message preparation failed before the message left",
+    );
+  }
+
+  /** Assemble the target Session's runtime under the budget; a failure is runtime_assembly_failed. */
   async #assembleScheduledRuntime(
     snapshot: ScheduledMessageSnapshot,
     signal: AbortSignal,

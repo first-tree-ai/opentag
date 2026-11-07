@@ -344,12 +344,16 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
   });
 
-  it("rejects accepted work when the durable admission write fails", async () => {
+  it("refuses work retryably while the durable admission write fails", async () => {
     const logger = { warn: vi.fn() };
+    const prompt = vi.fn(async () => ({ runId: "run", status: "completed" as const, output: [] }));
+    const store = new MemoryRuntimeDurabilityStore();
+    let diskFull = true;
     const persistence = {
-      list: vi.fn(async () => []),
-      write: vi.fn(async () => {
-        throw new Error("disk full");
+      list: store.list.bind(store),
+      write: vi.fn(async (record: Parameters<typeof store.write>[0]) => {
+        if (diskFull) throw new Error("disk full");
+        await store.write(record);
       }),
     };
     const inbox = new SessionMessageInbox({
@@ -360,14 +364,15 @@ describe("SessionMessageInbox", () => {
       logger,
       persistence,
       reconciler: inboxReconciler(),
-      runtimeManager: { ensureRuntime: vi.fn(), sessionKind: vi.fn(() => "internal" as const) },
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
     });
     const request = delivery();
 
-    await expect(inbox.accept(request)).resolves.toMatchObject({
-      status: "rejected",
-      reason: "provider_unavailable",
-    });
+    // Retryable: the Server keeps the message instead of recording a final refusal.
+    await expect(inbox.accept(request)).resolves.toMatchObject({ status: "rejected", reason: "client_busy" });
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ code: "SESSION_MESSAGE_PERSISTENCE_FAILED", messageId: request.messageId }),
       "Session message persistence failed",
@@ -376,9 +381,14 @@ describe("SessionMessageInbox", () => {
     // A replay must not claim acceptance for a message that was never queued.
     await expect(inbox.accept({ ...request, requestId: randomUUID() })).resolves.toMatchObject({
       status: "rejected",
-      reason: "provider_unavailable",
+      reason: "client_busy",
     });
     expect(inbox.pendingCount).toBe(0);
+    // Once the disk recovers, the same message is accepted and runs.
+    diskFull = false;
+    await expect(inbox.accept({ ...request, requestId: randomUUID() })).resolves.toMatchObject({ status: "accepted" });
+    await inbox.settled();
+    expect(prompt).toHaveBeenCalledOnce();
     inbox.stop();
   });
 

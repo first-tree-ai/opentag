@@ -321,12 +321,12 @@ export class SessionMessageInbox {
     } catch {
       this.#queuedTotal -= 1;
       this.#records.delete(key);
-      this.#remember(key, { hash, status: "rejected", reason: "provider_unavailable" });
       this.#logger.warn(
         { code: "SESSION_MESSAGE_PERSISTENCE_FAILED", messageId: request.messageId },
         "Session message persistence failed",
       );
-      return deliveryResult(request, "rejected", "provider_unavailable");
+      // A failed write says nothing about the message: not remembered, and a replay may succeed.
+      return deliveryResult(request, "rejected", "client_busy");
     }
     // Queued only once durable: a drain already running takes it at once, and needs its record to track it.
     const queue = this.#queues.get(request.targetSessionId) ?? [];

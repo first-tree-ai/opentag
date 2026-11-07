@@ -578,7 +578,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     }
   }
 
-  protected override async tellProviderAboutBackgroundWork(text: string): Promise<void> {
+  protected override async tellProvider(text: string): Promise<void> {
     await this.#client?.request(
       { type: "prompt", message: text, streamingBehavior: "steer" },
       this.providerContext?.signal,

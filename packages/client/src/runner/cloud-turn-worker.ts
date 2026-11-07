@@ -647,6 +647,7 @@ export async function runCloudTurnWorker(
         ...(await channelTurn.begin()),
         input: await backgroundWork.prefix(cloudWorkerInput(request, new Date(options.now?.() ?? Date.now()))),
         signal: execution.signal,
+        durationLimitInMs: cloudDurationLimitInMs(request, options),
       });
       // A completed result is preserved; a stop/timeout that raced a failed result maps true.
       completion =
@@ -798,6 +799,10 @@ async function readPersistedBinding(path: string): Promise<AgentRuntimeBinding |
     throw error;
   }
   return PersistedBindingSchema.parse(JSON.parse(raw));
+}
+
+function cloudDurationLimitInMs(request: RunnerCloudWorkerRequest, options: CloudTurnWorkerRunOptions): number {
+  return Math.max(1, cloudWorkerTimeout(request, options.now?.() ?? Date.now()));
 }
 
 async function recordRunLimit(

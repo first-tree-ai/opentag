@@ -1147,6 +1147,35 @@ describe("InterruptedWorkRecovery", () => {
     f.recovery.stop();
   });
 
+  it("does not start a retry when the real store has no record to update, and keeps it pending", async () => {
+    const store = new TurnRetryStore(await home());
+    const request = delivery();
+    await store.write(turnRetryRecord(request, "turn-1"));
+    const f = recoveryFixture();
+    f.version = 1;
+    f.retries.list = () => store.list();
+    f.retries.write = (record) => store.write(record);
+    f.retries.update.mockImplementation((sessionId, turnId, change) => store.update(sessionId, turnId, change));
+    f.unresolved.set(request.sessionId, { turnId: "turn-1", deliveryId: request.deliveryId, phase: "running" });
+    await f.recovery.start();
+    await store.remove(request.sessionId);
+
+    const turn = { deliveryId: request.deliveryId, turnId: "turn-1" };
+    expect(await f.recovery.resume(request.sessionId, turn)).toBe(false);
+    expect(f.custody.resume).not.toHaveBeenCalled();
+    expect(f.recovery.pending(request.sessionId, turn)).toBe(true);
+    expect(f.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "TURN_RETRY_START_NOT_RECORDED" }),
+      expect.any(String),
+    );
+    // Another Turn's record is no record for this one, and it stays as it was.
+    await store.write(turnRetryRecord(request, "turn-2"));
+    expect(await f.recovery.resume(request.sessionId, turn)).toBe(false);
+    expect(f.custody.resume).not.toHaveBeenCalled();
+    expect(await store.read(request.sessionId)).toEqual(turnRetryRecord(request, "turn-2"));
+    f.recovery.stop();
+  });
+
   it("puts a refused retry back to waiting, keeping its reason, so a restart doesn't count it", async () => {
     const f = recoveryFixture();
     f.version = 1;
@@ -1189,6 +1218,44 @@ describe("InterruptedWorkRecovery", () => {
     expect(await resumed).toBe(false);
     expect(f.custody.resume).not.toHaveBeenCalled();
     expect(f.records.get(request.sessionId)).toMatchObject({ retries: 1, retryNotStarted: true });
+  });
+
+  it("starts nothing once stopped, and settles only when a write in flight has rolled back", async () => {
+    const f = recoveryFixture();
+    f.version = 1;
+    const request = delivery();
+    f.records.set(request.sessionId, turnRetryRecord(request, "turn-1"));
+    f.unresolved.set(request.sessionId, { turnId: "turn-1", deliveryId: request.deliveryId, phase: "running" });
+    await f.recovery.start();
+    const turn = { deliveryId: request.deliveryId, turnId: "turn-1" };
+    let release = () => {};
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const write = f.retries.update.getMockImplementation() as NonNullable<
+      ReturnType<typeof f.retries.update.getMockImplementation>
+    >;
+    f.retries.update.mockImplementationOnce(async (...args) => {
+      await blocked;
+      return write(...args);
+    });
+    const resumed = f.recovery.resume(request.sessionId, turn);
+    f.recovery.stop();
+    let settled = false;
+    const settling = f.recovery.settled().then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    release();
+    await settling;
+    expect(await resumed).toBe(false);
+    expect(f.custody.resume).not.toHaveBeenCalled();
+    expect(f.records.get(request.sessionId)).toMatchObject({ retries: 1, retryNotStarted: true });
+    // Nothing starts after the stop, and the store isn't touched either.
+    f.retries.update.mockClear();
+    expect(await f.recovery.resume(request.sessionId, turn)).toBe(false);
+    expect(f.retries.update).not.toHaveBeenCalled();
   });
 
   it("stays the owner after `scheduled` until the ready reconcile prepares the Session", async () => {

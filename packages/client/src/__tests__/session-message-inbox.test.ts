@@ -1409,7 +1409,7 @@ describe("SessionMessageInbox", () => {
       retries: {
         list: async () => [imRequest],
         write: async () => undefined,
-        update: async () => undefined,
+        update: async () => imRequest,
         remove: async () => undefined,
       },
     });

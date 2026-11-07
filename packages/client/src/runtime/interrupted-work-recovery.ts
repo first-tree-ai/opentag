@@ -68,6 +68,7 @@ export class InterruptedWorkRecovery implements InterruptedTurnResumer {
   readonly #now: () => number;
   readonly #scheduler: RuntimeRetryScheduler;
   readonly #turns = new Map<string, PendingTurn>();
+  readonly #resumes = new Set<Promise<boolean>>();
   readonly #requests = new Map<string, RecoverRequest>();
   readonly #unsubscribe: () => void;
   #stopped = false;
@@ -113,7 +114,19 @@ export class InterruptedWorkRecovery implements InterruptedTurnResumer {
     return this.#supported() && pending?.record.turnId === turn.turnId && pending.record.deliveryId === turn.deliveryId;
   }
 
-  async resume(sessionId: string, turn: SessionTurnIdentity): Promise<boolean> {
+  resume(sessionId: string, turn: SessionTurnIdentity): Promise<boolean> {
+    if (this.#stopped) return Promise.resolve(false);
+    const resuming = this.#resume(sessionId, turn).finally(() => this.#resumes.delete(resuming));
+    this.#resumes.add(resuming);
+    return resuming;
+  }
+
+  /** Resolves once no retry is between its start record and its dispatch, or its rollback. */
+  async settled(): Promise<void> {
+    await Promise.allSettled([...this.#resumes]);
+  }
+
+  async #resume(sessionId: string, turn: SessionTurnIdentity): Promise<boolean> {
     const pending = this.#turns.get(sessionId);
     if (!pending || pending.record.turnId !== turn.turnId) return false;
     // Recorded before the Turn starts: a Turn that crashes the daemon right away must still be counted.
@@ -156,20 +169,16 @@ export class InterruptedWorkRecovery implements InterruptedTurnResumer {
    * doesn't start, so no retry ever runs uncounted: it stays pending like one that could not start yet.
    */
   async #markRetryStarted(sessionId: string, turnId: string): Promise<boolean> {
-    try {
-      await this.#options.retries.update(
-        sessionId,
-        turnId,
-        ({ interruption: _ended, retryNotStarted: _waiting, ...started }) => started,
-      );
-      return true;
-    } catch {
-      this.#logger.warn(
-        { code: "TURN_RETRY_START_NOT_RECORDED", sessionId, turnId },
-        "Turn retry start could not be recorded, so it does not start yet",
-      );
-      return false;
-    }
+    const recorded = await this.#options.retries
+      .update(sessionId, turnId, ({ interruption: _ended, retryNotStarted: _waiting, ...started }) => started)
+      .catch(() => undefined);
+    // No record for this Turn is as much a failure as a failed write: nothing would count this retry.
+    if (recorded) return true;
+    this.#logger.warn(
+      { code: "TURN_RETRY_START_NOT_RECORDED", sessionId, turnId },
+      "Turn retry start could not be recorded, so it does not start yet",
+    );
+    return false;
   }
 
   /** The retry did not start after all. If this write fails, a restart counts it once more. */

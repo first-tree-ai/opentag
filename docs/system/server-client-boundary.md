@@ -138,8 +138,10 @@ are acceptable: the Provider may or may not have persisted the interrupted turn.
   restart while a counted retry waits does not count it again, and the retry keeps
   the reason it continues from. The daemon records that the retry began before it
   starts the Turn, so a Turn that crashes the daemon right away still counts. If
-  that record can't be written, the retry doesn't start and stays pending, as it
-  does when it can't start yet. When the
+  that record can't be written, or the Turn has no record to update, the retry
+  doesn't start and stays pending, as it does when it can't start yet. Shutdown
+  stops this before the runner and waits for a write in flight, so a retry that a
+  stopping daemon never ran goes back to waiting and isn't counted. When the
   retries have run out, the Turn gets its recovery report and the Session
   messages steered into it fail with it. The IM Turn's original
   input lives in a per-Session file under `data/runtime/turn-retries/`, written

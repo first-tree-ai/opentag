@@ -44,7 +44,7 @@ function fenceViolationError(violation: RuntimeFenceViolation): RuntimeWebError 
     case "ownership_mismatch":
       return new RuntimeWebError("credential_scope_denied", "The execution ownership fence changed");
     default:
-      // placement_stale / agent_mismatch / agent_inactive / agent_revision_changed / sandbox_mismatch:
+      // placement_stale / agent_mismatch / agent_inactive / agent_access_changed / sandbox_mismatch:
       // a stale generation or replaced owner can never keep using the execution.
       return new RuntimeWebError("execution_closed", "The execution fence is stale");
   }

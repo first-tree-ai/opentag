@@ -58,7 +58,7 @@ Agent Connector flow; there is no automatic mount or token import. GitHub sign-i
 The existing `runtime.contextTreeExecution` version 1 and `context-tree:git` service remain. Admission
 requires the current Agent's GitHub MCP authorization and verifiable user-task provenance. Local
 Unix command sockets, Cloud loopback bridges and pinned CLI command/flag validation remain unchanged.
-Every Context child proves its live parent, Account, Agent revision, Session, Computer/control connection,
+Every Context child proves its live parent, Account, Agent access generation, Session, Computer/control connection,
 placement, task source and exact current tree selection. Ordinary executions cannot acquire its provider.
 
 Only the trusted CLI child receives a short-lived proxy handle; the user OAuth token stays on the Server.

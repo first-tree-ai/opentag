@@ -195,7 +195,8 @@ export class RuntimeCredentialBroker {
   /**
    * Authorizes one data-plane request: capability hash must be live, provider/binding must match,
    * the execution must be open on a current control connection, and the fresh DB fence plus scope
-   * must still equal the values pinned at issuance.
+   * must still equal the values pinned at issuance. The credential itself is not pinned: the request
+   * uses the generation the binding holds now, so a rotation reaches a running Turn on its next request.
    */
   async beginRequest(input: {
     capability: string;
@@ -219,8 +220,8 @@ export class RuntimeCredentialBroker {
       bindingId: grant.bindingId,
       purpose: grant.purpose,
       scopeHash: grant.scopeHash,
-      authorizationRevision: grant.authorizationRevision,
-      credentialGeneration: grant.credentialGeneration,
+      authorizationRevision: material.authorizationRevision,
+      credentialGeneration: material.credentialGeneration,
       sessionId: execution.sessionId,
       accountId: execution.accountId,
       agentId: execution.agentId,
@@ -236,7 +237,7 @@ export class RuntimeCredentialBroker {
           bindingId: grant.bindingId,
           accountId: execution.accountId,
           agentId: execution.agentId,
-          credentialGeneration: grant.credentialGeneration,
+          credentialGeneration: material.credentialGeneration,
           signal,
         });
         signal?.throwIfAborted();
@@ -258,8 +259,9 @@ export class RuntimeCredentialBroker {
       throw new RuntimeCredentialError("credential_stale");
     }
     // A long-lived stream outlives its original capability. It stays authorized only while at
-    // least one live capability still matches this exact execution/provider/binding/scope and
-    // revision; renewal overlap is fine because current and previous grants both count, while
+    // least one live capability still matches this exact execution/provider/binding/scope. The
+    // revision check above ends a stream on the rotated credential; a renewal overlap is fine because
+    // current and previous grants both count, while
     // revocation or a stopped renewal ends the stream within the revalidation bound.
     if (
       !this.#options.capabilities.hasLiveMatching({
@@ -267,7 +269,6 @@ export class RuntimeCredentialBroker {
         provider: authorization.provider,
         bindingId: authorization.bindingId,
         scopeHash: authorization.scopeHash,
-        authorizationRevision: authorization.authorizationRevision,
       })
     ) {
       throw new RuntimeCredentialError("credential_stale");
@@ -405,7 +406,7 @@ export class RuntimeCredentialBroker {
       const generation = imCredentialGenerationPin("feishu", facts.binding.credentialGeneration);
       const outbox = imOutboxContext(facts, "feishu");
       return {
-        scopeHash: computeImScopeHash(execution, provider, bindingId, generation),
+        scopeHash: computeImScopeHash(execution, provider, bindingId),
         authorizationRevision: imAuthorizationRevision("feishu", facts.binding.credentialGeneration),
         credentialGeneration: generation,
         cli: {
@@ -427,7 +428,7 @@ export class RuntimeCredentialBroker {
     );
     const outbox = imOutboxContext(facts, "slack");
     return {
-      scopeHash: computeImScopeHash(execution, provider, bindingId, generation),
+      scopeHash: computeImScopeHash(execution, provider, bindingId),
       authorizationRevision: imAuthorizationRevision(
         "slack",
         facts.binding.credentialGeneration,

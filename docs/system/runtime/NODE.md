@@ -16,6 +16,8 @@ one Provider-neutral contract, and negotiates its protocol with the Server.
   schema, and capability versions between Client and Server.
 - **[Agent permissions](agent-permissions.md)** — permission modes, command
   rules, and IM approval requests.
+- **[Platform access during a Turn](platform-access-during-a-turn.md)** — what a
+  configuration save and a credential change do to a Turn already running.
 - **[Agent self-configuration](agent-self-configuration.md)** — what an Agent
   may change about itself through the CLI.
 - **[Agent status pipeline](computer-status-pipeline.md)** — single-replica registry,

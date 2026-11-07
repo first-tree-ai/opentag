@@ -662,7 +662,12 @@ async function bindTargetAgentWhenTargeted(
   if (agent.computerId === input.computerId) return agent.runtimeProvider;
   const [bound] = await transaction
     .update(agents)
-    .set({ computerId: input.computerId, revision: sql`${agents.revision} + 1`, updatedAt: input.now })
+    .set({
+      computerId: input.computerId,
+      revision: sql`${agents.revision} + 1`,
+      accessGeneration: sql`${agents.accessGeneration} + 1`,
+      updatedAt: input.now,
+    })
     .where(and(eq(agents.id, input.agentId), eq(agents.createdByUserId, input.accountId), isNull(agents.computerId)))
     .returning({ id: agents.id });
   if (!bound) {

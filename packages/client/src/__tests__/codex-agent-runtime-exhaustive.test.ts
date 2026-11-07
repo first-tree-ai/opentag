@@ -1001,6 +1001,45 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
       await runtime.close();
     });
 
+    it("drops a notice whose steer is refused only after its Run ended and another began", async () => {
+      const client = new ManualCodexClient();
+      const events: AgentRuntimeEvent[] = [];
+      const runtime = await factory(client).create(
+        createRequest((event) => {
+          events.push(event);
+        }),
+      );
+      const first = runtime.prompt({ runId: "a", input: input("first") });
+      await client.called("turn/start");
+      await new Promise((resolve) => setImmediate(resolve));
+      const refusal = deferred<void>();
+      const request = client.request.bind(client);
+      vi.spyOn(client, "request").mockImplementationOnce(async () => {
+        await refusal.promise;
+        throw new Error("no active turn");
+      });
+      const telling = tellOf(runtime).tellProvider("Run A nears its limit");
+      vi.mocked(client.request).mockImplementation(request);
+      client.complete({ id: "turn-1", items: [] });
+      await first;
+      const second = runtime.prompt({ runId: "b", input: input("second") });
+      await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(2));
+      await new Promise((resolve) => setImmediate(resolve));
+      client.emitItem("item/started", command("cmd"));
+      refusal.reject(new Error("no active turn"));
+      await telling;
+      client.complete({ id: "turn-2", items: [] });
+      await vi.waitFor(() => expect(events.some((event) => event.type === "background_work_changed")).toBe(true));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(2);
+      late(client, command("cmd", { status: "completed", exitCode: 0 }), "turn-2");
+      await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(3));
+      expect(JSON.stringify(client.calls.at(-1)?.params)).not.toContain("Run A nears its limit");
+      client.complete({ id: "turn-3", items: [] });
+      await expect(second).resolves.toMatchObject({ status: "completed" });
+      await runtime.close();
+    });
+
     it("carries a notice the turn refused into the wake, while background work is live", async () => {
       const { client, runtime, run, turnStarts, background } = await started();
       await new Promise((resolve) => setImmediate(resolve));

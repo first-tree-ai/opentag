@@ -484,7 +484,8 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
    * keeps a Run alive: a turn that ended with no work left ends the Run, and the notice with it.
    */
   protected override async tellProvider(text: string): Promise<void> {
-    if (!this.providerContext) return;
+    const run = this.providerContext;
+    if (!run) return;
     if (!this.#wait && this.#providerTurnId) {
       const accepted = await this.#client
         .request("turn/steer", {
@@ -496,7 +497,8 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
           () => true,
           () => false,
         );
-      if (accepted) return;
+      // The answer can arrive after this Run ended and another began; the notice is about this one only.
+      if (accepted || this.providerContext !== run) return;
     }
     this.#heldNotices.push({ item: { type: "text", text } });
     this.#wait?.resolve();

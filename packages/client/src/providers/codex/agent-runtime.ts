@@ -391,8 +391,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
    * One the turn's own items report as ended is not live, whatever its item events said.
    */
   async #holdOpenCommands(turn: ParsedTurn): Promise<void> {
-    const ended = new Set(turn.items.filter((item) => item.status !== "inProgress").map((item) => item.id));
-    const held = [...this.#openCommands].filter(([id]) => !ended.has(id));
+    const held = this.#heldCommands(turn);
     if (held.length === 0) return;
     const context = this.requireProviderContext();
     for (const [id, label] of held) {
@@ -858,9 +857,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       return;
     }
     if (method === "turn/completed") {
-      const turn = this.#parseCompletedTurn(params);
-      context.claimTerminal();
-      this.#terminal?.resolve(turn);
+      this.#settleTurn(this.#parseCompletedTurn(params));
       return;
     }
     if (method === "thread/tokenUsage/updated") {
@@ -1108,21 +1105,38 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       envelope.type !== "notification" ||
       envelope.message.method !== "turn/completed" ||
       this.#buffering ||
-      !this.providerContext ||
-      this.#mustContinue()
+      !this.providerContext
     ) {
       return;
     }
     try {
-      const turn = this.#parseCompletedTurn(record(envelope.message.params));
-      // Commands still open will hold the Run, and nothing else may read this as its end.
-      const ended = new Set(turn.items.map((item) => item.id));
-      if ([...this.#openCommands.keys()].some((id) => !ended.has(id))) return;
-      this.providerContext.claimTerminal();
+      if (this.#endsRun(this.#parseCompletedTurn(record(envelope.message.params))))
+        this.providerContext.claimTerminal();
     } catch (error) {
       logger.debug({ code: "terminal_message_invalid", error: String(error) }, "Codex terminal message was rejected");
       // The serial event queue preserves the authoritative fail-closed error path.
     }
+  }
+
+  #settleTurn(turn: ParsedTurn): void {
+    if (this.#endsRun(turn)) this.requireProviderContext().claimTerminal();
+    this.#terminal?.resolve(turn);
+  }
+
+  /**
+   * A claim lasts for the whole Run, and stops a failed interrupt from closing the provider. So only the turn
+   * that ends the Run may claim: a later turn of a continuing Run must stay interruptible.
+   */
+  #endsRun(turn: ParsedTurn): boolean {
+    if (this.#wakeInputs.length > 0) return false;
+    if (turn.status !== "completed") return true;
+    return this.#backgroundCommands.size === 0 && this.#heldCommands(turn).length === 0;
+  }
+
+  /** Commands still open at a completed turn's end, unless the turn's own items report them as ended. */
+  #heldCommands(turn: ParsedTurn): [string, string][] {
+    const ended = new Set(turn.items.filter((item) => item.status !== "inProgress").map((item) => item.id));
+    return [...this.#openCommands].filter(([id]) => !ended.has(id));
   }
 
   #parseCompletedTurn(params: Record<string, unknown> | undefined): ParsedTurn {

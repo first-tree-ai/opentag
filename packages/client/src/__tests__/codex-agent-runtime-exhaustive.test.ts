@@ -865,6 +865,29 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
       expect(client.closed).toBe(true);
     });
 
+    it("still closes the App Server when a wake turn cannot be interrupted", async () => {
+      const interruptResponse = Promise.reject(new Error("interrupt timed out"));
+      interruptResponse.catch(() => undefined);
+      const client = new ManualCodexClient({ interruptResponse });
+      const events: AgentRuntimeEvent[] = [];
+      const runtime = await factory(client).create(
+        createRequest((event) => {
+          events.push(event);
+        }),
+      );
+      const run = runtime.prompt({ runId: "bg", input: input("start it") });
+      await client.called("turn/start");
+      client.emitItem("item/started", command("cmd"));
+      client.complete({ id: "turn-1", items: [] });
+      await vi.waitFor(() => expect(events.some((event) => event.type === "background_work_changed")).toBe(true));
+      late(client, command("cmd", { status: "completed", exitCode: 0 }));
+      await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(2));
+      await new Promise((resolve) => setImmediate(resolve));
+      await expect(runtime.abort({ expectedRunId: "bg" })).rejects.toThrow("interrupt timed out");
+      await expect(run).resolves.toMatchObject({ status: "failed" });
+      await vi.waitFor(() => expect(client.closed).toBe(true));
+    });
+
     it("fails input it accepted for a turn that could not start", async () => {
       const { client, runtime, run, background } = await started();
       client.complete({ id: "turn-1", items: [] });

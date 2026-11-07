@@ -193,7 +193,9 @@ for stopping/replacing Instances separate from permission to run this catalogue.
    and race a seal with a claim. Expected: generation/metageneration preconditions prevent stale
    data or seals from replacing the current state; a same-owner claim cannot reopen a sealed object.
    Lose an older fencing response, then let a successor claim/save before readback. Expected: the
-   older request never advances the successor's pins. Restart a real Runner while the allocation
+   older request neither advances nor receives the successor's pins, including when the old PATCH
+   is rejected or never commits before response loss. The successor can still seal, while an old
+   upload with original pins is rejected. Restart a real Runner while the allocation
    is releasing and retry stop: it restores the same-owner object and completes the final seal.
 5. Inject missing/corrupt media, failed metadata updates, lost responses, transfer timeouts and
    cancellation. Expected: only exact durable readback proves success; uncertain results retain

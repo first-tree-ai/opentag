@@ -381,16 +381,10 @@ function requireFenceSnapshot(
   return current;
 }
 
-function confirmedFenceSnapshot(
-  observed: StoredSnapshot | undefined,
-  original: StoredSnapshot,
-  expected: StoredSnapshot,
-): StoredSnapshot | undefined {
-  if (observed && snapshotsEqual(observed, expected) && observed.writeId === original.writeId) return observed;
+function assertUnchangedFenceSnapshot(observed: StoredSnapshot | undefined, original: StoredSnapshot): void {
   if (!observed || !snapshotsEqual(observed, original) || observed.writeId !== original.writeId) {
-    fail("conflict", "Workspace changed during a fencing claim; refusing to rebase");
+    fail("unknown_result", "Workspace fencing result cannot be attributed to this claim");
   }
-  return undefined;
 }
 
 function validateWriteInput(input: WorkspaceObjectWriteInput): void {
@@ -606,22 +600,20 @@ export class GcsWorkspaceObjectStore implements WorkspaceObjectStore {
     const signal = AbortSignal.timeout(this.#timeoutMs);
     const original = requireFenceSnapshot(scope, await this.#getMetadata(location, scope, signal), sameOwnerOnly);
     if (original.ownerGeneration === scope.environmentGeneration && original.sealed) return original;
-    const expected = {
-      ...original,
-      ownerGeneration: scope.environmentGeneration,
-      metageneration: String(BigInt(original.metageneration) + 1n),
-      sealed: false,
-    };
     for (let attempt = 0; ; attempt += 1) {
       assertFenceDeadline(signal);
       try {
         return await this.#patchMetadata(location, scope, original, scope.environmentGeneration, false, signal);
       } catch (error) {
-        if (!(error instanceof WorkspaceObjectStoreError) || !CLAIM_RETRYABLE.has(error.code)) throw error;
+        if (
+          !(error instanceof WorkspaceObjectStoreError) ||
+          error.code === "conflict" ||
+          !CLAIM_RETRYABLE.has(error.code)
+        )
+          throw error;
         assertFenceDeadline(signal);
         const observed = await this.#getMetadata(location, scope, signal);
-        const confirmed = confirmedFenceSnapshot(observed, original, expected);
-        if (confirmed) return confirmed;
+        assertUnchangedFenceSnapshot(observed, original);
         if (attempt + 1 >= MAX_CLAIM_ATTEMPTS) throw error;
       }
     }

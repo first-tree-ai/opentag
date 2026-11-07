@@ -172,6 +172,34 @@ function invalidUploadResponse(kind: string, object: RunnerWorkspaceObject): Res
 }
 
 describe("Cloud workspace transfer", () => {
+  it("keeps an unprovable claim uninitialized and restores through a fresh authenticated request", async () => {
+    const store = storageFixture();
+    const first = await client(store);
+    await first.client.initialize();
+    await writeFile(join(first.workspace, "progress"), "saved work");
+    await first.client.save();
+    const saved = store.object();
+    let failClaim = true;
+    const runner = await client(store, 1, {
+      fetchImpl: async (input, init) => {
+        const response = await store.fetchImpl(input, init);
+        if (failClaim && String(input).endsWith("/claim")) {
+          failClaim = false;
+          return new Response(null, { status: 503 });
+        }
+        return response;
+      },
+    });
+    await expect(runner.client.initialize()).rejects.toMatchObject({ code: "restore_failed" });
+    expect(runner.client.initialized).toBe(false);
+    await expect(readdir(runner.workspace)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(store.object()).toEqual({ ...saved, metageneration: "2" });
+    await runner.client.initialize();
+    expect(await readFile(join(runner.workspace, "progress"), "utf8")).toBe("saved work");
+    expect(store.object()).toEqual({ ...saved, metageneration: "3" });
+    expect(store.uploads).toHaveLength(2);
+  });
+
   it("restores and seals unchanged bytes without packing or uploading them again", async () => {
     const store = storageFixture();
     const pack = vi.spyOn(workspaceArchive, "createWorkspaceArchive");

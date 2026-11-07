@@ -155,8 +155,11 @@ repacking or uploading the restored archive. Same-owner claims never reopen a se
 readback claims do not advance the fence. Only a first unsaved workspace needs an initial archive
 upload before readiness. These are native conditional-write tokens, not application storage versions.
 Fencing retries remain bound to the original generation and metageneration within one transfer
-deadline: an exact one-step metadata result proves success, and only an unchanged original object
-permits another attempt. A later claim, seal or upload never becomes a new base for the old request.
+deadline. Definitive CAS conflicts are rejected without reconciliation. After an uncertain result,
+only an unchanged original object permits another conditional attempt. Even a one-step metadata
+change cannot identify which claim committed, so changed readback fails closed and initialization
+retries through a fresh authenticated request. A later claim, seal or upload never becomes a new
+base for the old request.
 While releasing, a fresh process may fence and restore an existing same-owner object before answering
 the retry seal. It cannot seed missing storage or take ownership from another environment.
 See Google's [request preconditions](https://docs.cloud.google.com/storage/docs/request-preconditions)

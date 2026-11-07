@@ -315,6 +315,39 @@ function createFakeGcs() {
 type FakeGcs = ReturnType<typeof createFakeGcs>;
 
 describe("workspace metadata fencing and sealing", () => {
+  it.each(["rejected", "uncertain"])("never hands successor pins to an old %s fencing claim", async (outcome) => {
+    const fake = createFakeGcs();
+    const planted = fake.plant(Buffer.from("baseline"), { owner: 1, saved: true, sealed: false });
+    planted.contentDisposition = 'attachment; filename="state-d45b0afb-a231-4ffa-b562-72acd250613a.tar.gz"';
+    const original = previousOf(planted);
+    const store = createStore(fake);
+    let raced = false;
+    let successor: WorkspaceObject | undefined;
+    let oldResult: WorkspaceObject | undefined;
+    fake.setInterceptor(async ({ call, proceed }) => {
+      if (raced || call.method !== "PATCH") return undefined;
+      raced = true;
+      successor = await store.claim(SCOPE, { fence: true });
+      if (outcome === "rejected") return proceed();
+      throw new TypeError("old PATCH never committed, response lost");
+    });
+    await expect(
+      store.claim(SCOPE, { fence: true }).then((object) => {
+        oldResult = object;
+      }),
+    ).rejects.toMatchObject({ code: outcome === "rejected" ? "conflict" : "unknown_result" });
+    expect(oldResult).toBeUndefined();
+    expect(fake.callsNamed("PATCH")).toHaveLength(2);
+    expect(fake.callsNamed("GET")).toHaveLength(outcome === "rejected" ? 2 : 3);
+    expect(await store.head(SCOPE)).toEqual(successor);
+    await expect(store.write(SCOPE, original, archiveInput(Buffer.from("stale writer")))).rejects.toMatchObject({
+      code: "conflict",
+    });
+    expect(fake.callsNamed("POST")).toHaveLength(0);
+    const sealed = await store.seal(SCOPE, must(successor));
+    expect(Buffer.from(await streamToBytes(await store.read(SCOPE, sealed))).toString()).toBe("baseline");
+  });
+
   it("bounds an uncertain fence with one deadline and no readback or retry after cancellation", async () => {
     const fake = createFakeGcs();
     const planted = fake.plant(Buffer.from("complete baseline"), { owner: 1, saved: true, sealed: false });
@@ -348,7 +381,7 @@ describe("workspace metadata fencing and sealing", () => {
           successorObject = await store.write(SCOPE, successorObject, archiveInput(Buffer.from("successor work")));
         throw new TypeError("old fencing response lost");
       });
-      await expect(store.claim(SCOPE, { fence: true })).rejects.toMatchObject({ code: "conflict" });
+      await expect(store.claim(SCOPE, { fence: true })).rejects.toMatchObject({ code: "unknown_result" });
       expect(await store.head(SCOPE)).toEqual(successorObject);
       expect(fake.callsNamed("PATCH")).toHaveLength(2);
       expect(Buffer.from(await streamToBytes(await store.read(SCOPE, must(successorObject)))).toString()).toBe(
@@ -357,7 +390,7 @@ describe("workspace metadata fencing and sealing", () => {
     },
   );
 
-  it("reconciles an exact lost fence response and retries only an unchanged original snapshot", async () => {
+  it("retries only an unchanged original snapshot and fails closed after an unprovable committed response", async () => {
     const fake = createFakeGcs();
     fake.plant(Buffer.from("baseline"), { owner: 1, saved: true, sealed: false });
     const store = createStore(fake);
@@ -372,12 +405,17 @@ describe("workspace metadata fencing and sealing", () => {
       await proceed();
       throw new TypeError("committed response lost");
     });
-    expect(await store.claim(SCOPE, { fence: true })).toEqual({ ...previous, metageneration: "2" });
+    await expect(store.claim(SCOPE, { fence: true })).rejects.toMatchObject({ code: "unknown_result" });
+    expect(await store.head(SCOPE)).toEqual({ ...previous, metageneration: "2" });
     expect(fake.callsNamed("PATCH")).toHaveLength(2);
     for (const call of fake.callsNamed("PATCH"))
       expect(call.url).toBe(
         `${META_URL}?ifGenerationMatch=${previous.generation}&ifMetagenerationMatch=${previous.metageneration}`,
       );
+    fake.setInterceptor(undefined);
+    const fresh = await store.claim(SCOPE, { fence: true });
+    expect(fresh).toEqual({ ...previous, metageneration: "3" });
+    expect(Buffer.from(await streamToBytes(await store.read(SCOPE, fresh))).toString()).toBe("baseline");
   });
 
   it("never initializes or takes ownership for a same-owner-only releasing fence", async () => {

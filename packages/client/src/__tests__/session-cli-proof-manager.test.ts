@@ -45,13 +45,11 @@ describe("SessionCliProofManager", () => {
     await expect(readSessionRunInputsHeader(path)).resolves.toBe(`m:${own},m:${steered},d:${delivered}`);
     expect((await stat(sessionRunInputsPath(path))).mode & 0o777).toBe(0o600);
 
-    await manager.removeRunInput(sessionId, { kind: "delivery", deliveryId: delivered });
-    await manager.removeRunInput(sessionId, { kind: "delivery", deliveryId: delivered });
     // The same Run's retry keeps what it was given; another Run does not.
     await manager.beginRun(sessionId, "run-1", []);
-    await expect(readSessionRunInputsHeader(path)).resolves.toBe(`m:${own},m:${steered}`);
+    await expect(readSessionRunInputsHeader(path)).resolves.toBe(`m:${own},m:${steered},d:${delivered}`);
     await manager.endRun(sessionId, "someone-else");
-    await expect(readSessionRunInputsHeader(path)).resolves.toBe(`m:${own},m:${steered}`);
+    await expect(readSessionRunInputsHeader(path)).resolves.toBe(`m:${own},m:${steered},d:${delivered}`);
     await manager.beginRun(sessionId, "run-2", [{ kind: "delivery", deliveryId: delivered }]);
     await expect(readSessionRunInputsHeader(path)).resolves.toBe(`d:${delivered}`);
     await manager.endRun(sessionId, "run-2");

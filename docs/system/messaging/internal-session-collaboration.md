@@ -190,15 +190,17 @@ The initiator and forward count are fixed when the message is recorded, in `sess
 inferred from what else a Session received, because that decides whose instruction a message counts as.
 
 They come from what the sending Run is working on. On a Local Computer the Client writes that list beside the Session's proof
-when a Run starts and whenever an input is steered into it, and the CLI sends it with each create, send and stop. On Cloud,
-and in the Local proxy mode, the Run's execution names its input as well. The Server checks each input is really addressed
-to the source Session, then:
+when a Run starts and before each input is steered into it, and the CLI sends it with each create, send and stop. An input
+stays listed for the rest of the Run even if its steer fails, since a failure does not prove the provider never took it, and
+overheard observer copies count, since the Run has seen them. Without a list, a Local Run has no known inputs: its execution, in the
+proxy mode, proves only how the Run started. A Cloud Run takes no steered input, so its execution names everything it works on.
+The Server checks each input is really addressed to the source Session, then:
 
 - A person's message starts a chain at this Session.
 - A Session message continues that message's chain. A schedule starts its chain at the Session recorded when it was asked for,
   or else at the Session it runs in.
 - A Run working for more than one initiator, because something from elsewhere was steered into it, has no initiator: it cannot
-  say on whose behalf a send is. An observer copy does not count as input.
+  say on whose behalf a send is.
 - A Run outcome notice continues the message it reports on, whatever its Session took on since. A stop notice follows the
   stopping Session's Run, like any send.
 - Anything else has no known initiator: no list, an input that does not check out, or a chain with an unknown link. The target
@@ -230,8 +232,10 @@ into a Run that fails gets its one notice like any other, which applies across c
 **Compatibility.** `provenance` needs `runtime.sessionCollaboration` version 5 on a Local target and Runner
 Session-collaboration version 4 on a Cloud target. A same-conversation message reaches an older peer without it, on the frozen
 frame. A cross-conversation message to an older peer is `unreachable` with `unsupported_cross_conversation` before any frame
-leaves, since that peer would present it as its own conversation's work. A sender retries after the upgrade. A same-conversation
-message with no known initiator still reaches an older peer, so upgrading the Server first does not stop a child reporting to its parent.
+leaves, since that peer would present it as its own conversation's work. A message with no known initiator is treated the same, as
+it may have come from elsewhere. The one exception is a same-conversation message from a Local Client also too old to name its Run's
+inputs. This gate never gave that Client anything from another conversation, so upgrading the Server first does not stop a child
+reporting to its parent. A Client downgraded after receiving such a message falls outside that reasoning. A sender retries after the upgrade.
 
 The Server logs each attempted dispatch that is cross-conversation or has no known initiator at `info` with
 `operation: session.message.cross_conversation`, and

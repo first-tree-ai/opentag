@@ -56,6 +56,8 @@ describe("RuntimeDomainOwner", () => {
       })),
       resolveMessageProvenance: vi.fn(async () => ({
         source: { sessionKind: "internal", conversationKind: "channel", channelId: "C1" },
+        initiatorSessionId: childSessionId,
+        initiator: { sessionKind: "internal", conversationKind: "channel", channelId: "C1" },
         forwards: 0,
         crossConversation: false,
       })),

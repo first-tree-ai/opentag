@@ -1352,7 +1352,6 @@ describe("SessionMessageInbox", () => {
       addRunInput: vi.fn(async () => undefined),
       beginRun: vi.fn(async () => undefined),
       endRun: vi.fn(async () => undefined),
-      removeRunInput: vi.fn(async () => undefined),
     };
     const prompt = vi.fn(async ({ runId }: { runId: string }) => {
       expect(runInputs.endRun).not.toHaveBeenCalled();

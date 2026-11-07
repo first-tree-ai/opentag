@@ -57,6 +57,8 @@ export interface SessionCliSourceContext {
   runInputs?: readonly SessionRunInput[];
   agentId: string;
   computerId: string;
+  /** Where the source runs. A Cloud Run takes no steered input, so its execution names all it works on. */
+  computerKind?: "local" | "cloud";
   connectionInstanceId: string;
   creatorSessionId?: string;
   installationId: string;
@@ -514,6 +516,7 @@ export class SessionCliProofService {
       agentId: row.agentId,
       ...(userTaskSource ? { userTaskSource } : {}),
       computerId: row.computerId,
+      computerKind: row.computerKind,
       connectionInstanceId: row.connectionInstanceId,
       ...(row.creatorSessionId ? { creatorSessionId: row.creatorSessionId } : {}),
       installationId: row.installationId,

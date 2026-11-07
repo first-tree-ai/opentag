@@ -68,6 +68,8 @@ export type CloudSessionMessageDeliveryInput =
       route: AuthorizedSessionMessageRoute;
       message: { id: string; content: string };
       provenance?: SessionMessageProvenance;
+      /** An older Runner cannot be given this message, because it would present it as local work. */
+      requireProvenance?: boolean;
       runtime: EffectiveRuntimeSnapshot;
       /** The durable attempt fencing token from the authorization transaction. */
       attemptCount: number;
@@ -1181,6 +1183,23 @@ export class SessionCollaborationService {
     }
   }
 
+  /**
+   * Whether a target too old to show provenance must refuse this message, since it would present it as its
+   * conversation's own work. That covers a message from elsewhere, and one with no known initiator, which may
+   * have come from elsewhere. The exception is a same-conversation message from a Local Client also too old
+   * to name its Run's inputs: this gate never gave that Client anything from another conversation, so upgrading
+   * the Server first does not stop a child reporting to its parent.
+   */
+  #requiresProvenance(route: AuthorizedSessionMessageRoute, provenance: SessionMessageProvenance): boolean {
+    if (provenance.crossConversation) return true;
+    if (provenance.initiatorSessionId) return false;
+    const instanceId = this.#registry.currentInstanceId(route.sourceComputerId);
+    const sourceVersion = instanceId
+      ? this.#registry.capabilityVersion(route.sourceComputerId, instanceId, RUNTIME_CAPABILITY.sessionCollaboration)
+      : undefined;
+    return sourceVersion === undefined || sourceVersion >= RUNTIME_SESSION_COLLABORATION_PROVENANCE_VERSION;
+  }
+
   /** The pre-transport gate for a Local target. Every refusal here happens before a single frame exists. */
   #localDeliveryGate(
     route: AuthorizedSessionMessageRoute,
@@ -1213,8 +1232,9 @@ export class SessionCollaborationService {
         targetInstanceId,
         RUNTIME_CAPABILITY.sessionCollaboration,
       ) ?? 0) >= RUNTIME_SESSION_COLLABORATION_PROVENANCE_VERSION;
-    // An older Client would present a message from elsewhere as this conversation's own work.
-    if (provenance.crossConversation && !provenanceSupported) return { code: "unsupported_cross_conversation" };
+    if (!provenanceSupported && this.#requiresProvenance(route, provenance)) {
+      return { code: "unsupported_cross_conversation" };
+    }
     return { targetInstanceId, provenanceSupported };
   }
 
@@ -1267,6 +1287,7 @@ export class SessionCollaborationService {
           route: attempt.route,
           message: { id: attempt.message.id, content: attempt.message.content },
           provenance,
+          requireProvenance: this.#requiresProvenance(attempt.route, provenance),
           runtime,
           attemptCount,
         },
@@ -1320,17 +1341,21 @@ export class SessionCollaborationService {
   }
 }
 
-/** What the source Run is working on: what its CLI named, plus what its execution proves when it has one. */
+/**
+ * What the source Run is working on. The Client's list is complete by construction. Without it, a Local Run's
+ * execution proves only how the Run started, not what was steered in since, so that send has no known inputs.
+ * A Cloud Run takes no steered input, so there its execution is the whole answer.
+ */
 function sourceRunInputs(source: SessionCliSourceContext): SessionRunInput[] {
   const executed = source.userTaskSource?.source;
-  return [
-    ...(source.runInputs ?? []),
-    ...(executed?.kind === "delivery" || executed?.kind === "session-message" ? [executed] : []),
-  ].map((input) =>
-    input.kind === "delivery"
-      ? { kind: "delivery", deliveryId: input.deliveryId }
-      : { kind: "session-message", messageId: input.messageId },
-  );
+  const proved: SessionRunInput[] =
+    executed?.kind === "delivery"
+      ? [{ kind: "delivery", deliveryId: executed.deliveryId }]
+      : executed?.kind === "session-message"
+        ? [{ kind: "session-message", messageId: executed.messageId }]
+        : [];
+  if (source.runInputs?.length) return [...source.runInputs, ...proved];
+  return source.computerKind === "cloud" ? proved : [];
 }
 
 function deliveryOutcomeUnknown(error: unknown, signal?: AbortSignal): boolean {

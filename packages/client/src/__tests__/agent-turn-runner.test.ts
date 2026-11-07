@@ -1613,7 +1613,6 @@ describe("AgentTurnRunner", () => {
       addRunInput: vi.fn(async () => undefined),
       beginRun: vi.fn(async () => undefined),
       endRun: vi.fn(async () => undefined),
-      removeRunInput: vi.fn(async () => undefined),
     };
     let resolvePrompt!: (result: AgentRunResult) => void;
     let resolveReporting!: () => void;
@@ -1722,8 +1721,8 @@ describe("AgentTurnRunner", () => {
     expect(runInputs.beginRun).toHaveBeenCalledWith(expect.any(String), "turn-1", [
       { kind: "delivery", deliveryId: expect.any(String) },
     ]);
-    expect(runInputs.addRunInput).toHaveBeenCalled();
-    expect(runInputs.removeRunInput).toHaveBeenCalled();
+    // The first steer threw, the provider may still have taken it, and its input stays listed.
+    expect(runInputs.addRunInput).toHaveBeenCalledTimes(steer.mock.calls.length);
     expect(steer).toHaveBeenCalledWith(expect.objectContaining({ expectedRunId: "turn-1" }));
     expect(bindingStore.recordSteer).toHaveBeenCalledTimes(2);
     await expect(

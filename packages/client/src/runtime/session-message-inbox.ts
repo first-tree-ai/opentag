@@ -659,8 +659,7 @@ export class SessionMessageInbox {
     const key = sessionMessageKey(next.request);
     let record = this.#records.get(key);
     let receipt: AgentSteerReceipt;
-    const steeredInput = sessionMessageRunInput(next.request);
-    await this.#runInputs?.addRunInput(sessionId, steeredInput);
+    await this.#runInputs?.addRunInput(sessionId, sessionMessageRunInput(next.request));
     try {
       receipt = await target.runtime.steer({
         expectedRunId: runId,
@@ -672,7 +671,6 @@ export class SessionMessageInbox {
       });
     } catch {
       joinable?.release(next.request, runId);
-      await this.#runInputs?.removeRunInput(sessionId, steeredInput);
       return false;
     }
     if (record) record = await this.#recordSteered(record, runId);

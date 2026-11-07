@@ -351,10 +351,7 @@ export class AgentTurnRunner {
 
     // Only a steer with a durable receipt transfers to this Turn; a retry replays exactly those, so a
     // capture whose steer or receipt failed (answered `deferred`) is dropped and stays with the Server.
-    // An observer copy is overheard context, not a request this Turn acts on.
-    const steeredInput =
-      request.replyRole === "observer" ? undefined : ({ kind: "delivery", deliveryId: request.deliveryId } as const);
-    if (steeredInput) await this.#runInputs?.addRunInput(request.sessionId, steeredInput);
+    await this.#runInputs?.addRunInput(request.sessionId, { kind: "delivery", deliveryId: request.deliveryId });
     try {
       await runtime.steer({
         expectedRunId: request.expectedTurnId,
@@ -364,7 +361,6 @@ export class AgentTurnRunner {
       await this.#bindingStore.recordSteer(request, semanticHash);
     } catch {
       await this.#retries.removeSteer(request).catch(() => undefined);
-      if (steeredInput) await this.#runInputs?.removeRunInput(request.sessionId, steeredInput);
       return steerResult(request, "deferred", "steer_state_unknown");
     }
     return steerResult(request, "steered");

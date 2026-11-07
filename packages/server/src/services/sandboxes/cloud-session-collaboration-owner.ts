@@ -737,6 +737,7 @@ export class CloudSessionCollaborationOwner {
     const sandbox = ready.sandbox;
 
     const scheduled = isScheduledCloudDelivery(input);
+    const requirement = { scheduled, requireProvenance: !scheduled && input.requireProvenance === true };
     const request: SessionMessageDeliveryRequestV3 = {
       type: "session:message:deliver",
       // A fresh request-attempt identity per dispatch: the Runner correlates this exact attempt
@@ -788,7 +789,7 @@ export class CloudSessionCollaborationOwner {
           sandboxId: sandbox.id,
         },
         () =>
-          this.#dispatchToRunnerForReceipt(sandbox, request, envelope, scheduled, admission, signal, () => {
+          this.#dispatchToRunnerForReceipt(sandbox, request, envelope, requirement, admission, signal, () => {
             attempts += 1;
           }),
         {
@@ -820,13 +821,13 @@ export class CloudSessionCollaborationOwner {
     sandbox: typeof sandboxes.$inferSelect,
     request: SessionMessageDeliveryRequestV3,
     envelope: CloudSessionTargetEnvelope,
-    scheduled: boolean,
+    requirement: { scheduled: boolean; requireProvenance: boolean },
     admission: RuntimeDispatchAdmission<RunnerCloudSessionMessageReceivedFrame>,
     signal: AbortSignal | undefined,
     onAttempt: () => void,
   ): Promise<{ admitted: false } | { admitted: true; receipt: RunnerCloudSessionMessageReceivedFrame }> {
     const outcome = await admission((onDispatched) =>
-      this.#sendSessionMessageToRunner(sandbox, request, envelope, scheduled, onDispatched, signal, onAttempt),
+      this.#sendSessionMessageToRunner(sandbox, request, envelope, requirement, onDispatched, signal, onAttempt),
     );
     if (!outcome.admitted) return { admitted: false };
     return { admitted: true, receipt: await outcome.result };
@@ -836,7 +837,7 @@ export class CloudSessionCollaborationOwner {
     sandbox: typeof sandboxes.$inferSelect,
     request: SessionMessageDeliveryRequestV3,
     envelope: CloudSessionTargetEnvelope,
-    scheduled: boolean,
+    { scheduled, requireProvenance }: { scheduled: boolean; requireProvenance: boolean },
     onDispatched: () => void,
     signal: AbortSignal | undefined,
     onAttempt: () => void,
@@ -848,8 +849,7 @@ export class CloudSessionCollaborationOwner {
       throw new CloudScheduledOriginUnsupportedError();
     }
     if (connection.sessionCollaborationVersion < RUNNER_SESSION_COLLABORATION_V4) {
-      // An older Runner would present a message from elsewhere as this conversation's own work.
-      if (request.provenance?.crossConversation) throw new CloudCrossConversationUnsupportedError();
+      if (requireProvenance) throw new CloudCrossConversationUnsupportedError();
       delete request.provenance;
     }
     const socket = this.#socketFor(connection);

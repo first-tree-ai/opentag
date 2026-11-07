@@ -42,6 +42,8 @@ describe("Session CLI contract", () => {
     ];
     expect(parseSessionRunInputs(inputs.map(formatSessionRunInput).join(","))).toEqual(inputs);
     expect(parseSessionRunInputs(undefined)).toEqual([]);
+    // A Turn at both steer limits: its own input, 16 IM steers and 16 Session message steers.
+    expect(parseSessionRunInputs(Array(33).fill(`m:${id}`).join(","))).toHaveLength(33);
     expect(parseSessionRunInputs(`m:${id},x:${id}`)).toEqual([]);
     expect(
       parseSessionRunInputs(

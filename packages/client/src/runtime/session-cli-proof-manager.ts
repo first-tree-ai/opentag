@@ -29,10 +29,7 @@ export async function readSessionRunInputsHeader(proofPath: string): Promise<str
 }
 
 /** Tells the Session's CLI what its current Run is working on. */
-export type SessionRunInputTracker = Pick<
-  SessionCliProofManager,
-  "addRunInput" | "beginRun" | "endRun" | "removeRunInput"
->;
+export type SessionRunInputTracker = Pick<SessionCliProofManager, "addRunInput" | "beginRun" | "endRun">;
 
 export class SessionCliProofManager {
   readonly #home: string;
@@ -54,18 +51,15 @@ export class SessionCliProofManager {
     return this.#publish(sessionId);
   }
 
-  /** An input steered into the running Run. No-op when no Run is tracked; such a send stays unprovable. */
+  /**
+   * An input about to be steered into the running Run, kept for the rest of the Run even if the steer then
+   * fails: a failure does not prove the provider never took it. A send afterwards can only lose its initiator.
+   * No-op when no Run is tracked; such a send stays unprovable.
+   */
   addRunInput(sessionId: string, input: SessionRunInput): Promise<void> {
     const run = this.#runs.get(sessionId);
     if (!run) return Promise.resolve();
     run.inputs.add(formatSessionRunInput(input));
-    return this.#publish(sessionId);
-  }
-
-  /** A steer the runtime refused never reached the Run. */
-  removeRunInput(sessionId: string, input: SessionRunInput): Promise<void> {
-    const run = this.#runs.get(sessionId);
-    if (!run?.inputs.delete(formatSessionRunInput(input))) return Promise.resolve();
     return this.#publish(sessionId);
   }
 

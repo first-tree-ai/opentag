@@ -715,7 +715,22 @@ describe("SessionCollaborationService", () => {
       );
     });
 
-    it("still reaches an older peer with a same-conversation message of unknown origin", async () => {
+    it("refuses an older peer a message of unknown origin from a Client that could have mixed inputs", async () => {
+      const fixture = serviceFixture();
+      Object.assign(fixture.attempt.route, { sourceComputerId: "newer-computer" });
+      fixture.registry.capabilityVersion.mockImplementation((computerId: string) =>
+        computerId === "newer-computer" ? 5 : 4,
+      );
+      const { initiatorSessionId: _id, initiator: _initiator, ...unproved } = SAME_CONVERSATION_PROVENANCE;
+      fixture.sessions.resolveMessageProvenance.mockResolvedValue(unproved);
+      await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+        status: "unreachable",
+        code: "unsupported_cross_conversation",
+      });
+      expect(fixture.domain.requestReconcile).not.toHaveBeenCalled();
+    });
+
+    it("still lets an older Client's same-conversation message reach an older peer", async () => {
       const fixture = serviceFixture();
       fixture.registry.capabilityVersion.mockReturnValue(4);
       const { initiatorSessionId: _id, initiator: _initiator, ...unproved } = SAME_CONVERSATION_PROVENANCE;
@@ -723,22 +738,41 @@ describe("SessionCollaborationService", () => {
       await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
         status: "accepted",
       });
+      expect(fixture.domain.requestSessionMessageDelivery.mock.calls[0]?.[2]).not.toHaveProperty("provenance");
     });
 
-    it("passes what the Run names and what its execution proves when recording a send", async () => {
+    it("uses what the Run names plus what its execution proves", async () => {
       const fixture = serviceFixture();
       const named = { kind: "session-message" as const, messageId: randomUUID() };
       const deliveryId = randomUUID();
-      await fixture.service.send(sendRequest(fixture), {
-        ...fixture.source,
-        runInputs: [named],
-        userTaskSource: {
-          sessionId: fixture.source.sessionId,
-          source: { kind: "delivery", deliveryId, turnId: "turn" },
-        },
-      });
+      const userTaskSource = {
+        sessionId: fixture.source.sessionId,
+        source: { kind: "delivery" as const, deliveryId, turnId: "turn" },
+      };
+      await fixture.service.send(sendRequest(fixture), { ...fixture.source, runInputs: [named], userTaskSource });
       expect(fixture.sessions.authorizeAndRecordMessage).toHaveBeenCalledWith(
         expect.objectContaining({ runInputs: [named, { kind: "delivery", deliveryId }] }),
+      );
+    });
+
+    it("does not take a Local execution's starting input for the whole Run when the list is missing", async () => {
+      const fixture = serviceFixture();
+      const messageId = randomUUID();
+      await fixture.service.send(sendRequest(fixture), {
+        ...fixture.source,
+        computerKind: "local",
+        userTaskSource: { sessionId: fixture.source.sessionId, source: { kind: "session-message", messageId } },
+      });
+      expect(fixture.sessions.authorizeAndRecordMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ runInputs: [] }),
+      );
+      await fixture.service.send(sendRequest(fixture), {
+        ...fixture.source,
+        computerKind: "cloud",
+        userTaskSource: { sessionId: fixture.source.sessionId, source: { kind: "session-message", messageId } },
+      });
+      expect(fixture.sessions.authorizeAndRecordMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ runInputs: [{ kind: "session-message", messageId }] }),
       );
     });
 

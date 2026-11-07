@@ -13,8 +13,8 @@ export const SESSION_CLI_MAX_LIMIT = 100;
 export const SESSION_CLI_TASK_PREVIEW_MAX_BYTES = 256;
 export const SESSION_CLI_PROOF_HEADER = "x-opentag-session-proof";
 export const SESSION_CLI_RUN_INPUTS_HEADER = "x-opentag-run-inputs";
-/** A Run's own input, its in-place retry's carried messages, and the 16 it can have steered into it. */
-export const SESSION_CLI_RUN_INPUTS_MAX = 32;
+/** Above a Turn's most: its own input, 16 IM steers and 16 independently counted Session message steers. */
+export const SESSION_CLI_RUN_INPUTS_MAX = 64;
 
 /** What a Run is working on, as `d:<deliveryId>` for an IM delivery and `m:<messageId>` for a Session message. */
 export type SessionRunInput = { kind: "delivery"; deliveryId: string } | { kind: "session-message"; messageId: string };

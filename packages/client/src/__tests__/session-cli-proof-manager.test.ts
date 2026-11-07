@@ -59,7 +59,33 @@ describe("SessionCliProofManager", () => {
     await expect(readSessionRunInputsHeader(path)).resolves.toBeUndefined();
   });
 
-  it("leaves no list behind when one cannot be written, and reads a broken one as none", async () => {
+  it("rejects when a list can neither be replaced nor removed, so nothing runs on a stale one", async () => {
+    const home = await mkdtemp(join(tmpdir(), "opentag-session-proof-"));
+    homes.push(home);
+    const logger = { warn: vi.fn() };
+    const manager = new SessionCliProofManager(home, logger);
+    const sessionId = randomUUID();
+    const path = manager.pathForSession(sessionId);
+    const owner = randomUUID();
+    await manager.beginRun(sessionId, "run-1", [{ kind: "session-message", messageId: owner }]);
+    // A non-empty directory in its place can be neither replaced nor removed.
+    await rm(sessionRunInputsPath(path));
+    await mkdir(join(sessionRunInputsPath(path), "blocked"), { recursive: true });
+    await expect(
+      manager.addRunInput(sessionId, { kind: "session-message", messageId: randomUUID() }),
+    ).rejects.toBeDefined();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "SESSION_RUN_INPUTS_WRITE_FAILED", sessionId }),
+      expect.any(String),
+    );
+    // Ending the Run reports nothing further, and a later publish still gets its turn.
+    await expect(manager.endRun(sessionId, "run-1")).resolves.toBeUndefined();
+    await rm(sessionRunInputsPath(path), { recursive: true });
+    await manager.beginRun(sessionId, "run-2", [{ kind: "delivery", deliveryId: owner }]);
+    await expect(readSessionRunInputsHeader(path)).resolves.toBe(`d:${owner}`);
+  });
+
+  it("leaves no list behind when a write fails but the old one can go, and reads a broken one as none", async () => {
     const home = await mkdtemp(join(tmpdir(), "opentag-session-proof-"));
     homes.push(home);
     const logger = { warn: vi.fn() };
@@ -67,15 +93,8 @@ describe("SessionCliProofManager", () => {
     const sessionId = randomUUID();
     const path = manager.pathForSession(sessionId);
     await manager.materialize(randomUUID(), { proofId: randomUUID(), token: "x".repeat(43) });
-    await mkdir(sessionRunInputsPath(path));
-    await manager.beginRun(sessionId, "run-1", [{ kind: "delivery", deliveryId: randomUUID() }]);
-    expect(logger.warn).toHaveBeenCalledWith(
-      expect.objectContaining({ code: "SESSION_RUN_INPUTS_WRITE_FAILED", sessionId }),
-      expect.any(String),
-    );
-    await expect(readSessionRunInputsHeader(path)).resolves.toBeUndefined();
-    await rm(sessionRunInputsPath(path), { recursive: true });
     await writeFile(sessionRunInputsPath(path), '{"inputs":[1]}');
     await expect(readSessionRunInputsHeader(path)).resolves.toBeUndefined();
+    await manager.cleanup(sessionId);
   });
 });

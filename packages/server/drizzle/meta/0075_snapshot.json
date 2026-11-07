@@ -1,5 +1,5 @@
 {
-  "id": "126ce3bb-4d57-4fd3-9584-6f675113d565",
+  "id": "4d778d8b-562e-4aa8-86df-1437e3fe7ce1",
   "prevId": "f2026f00-cb88-4f41-85c4-355aa7b35cf0",
   "version": "7",
   "dialect": "postgresql",
@@ -6358,6 +6358,13 @@
           "primaryKey": false,
           "notNull": true,
           "default": 0
+        },
+        "legacy_local_send": {
+          "name": "legacy_local_send",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": true,
+          "default": false
         },
         "scheduled_origin": {
           "name": "scheduled_origin",

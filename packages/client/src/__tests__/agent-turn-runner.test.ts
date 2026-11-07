@@ -1717,12 +1717,17 @@ describe("AgentTurnRunner", () => {
     await expect(runner.steer({ ...successfulRequest, requestId: randomUUID() })).resolves.toMatchObject({
       status: "steered",
     });
+    // A list that cannot be kept true stops the steer before the provider sees it.
+    runInputs.addRunInput.mockRejectedValueOnce(new Error("the list can neither be replaced nor removed"));
+    await expect(
+      runner.steer({ ...request, requestId: randomUUID(), deliveryId: "delivery-unlisted" }),
+    ).resolves.toMatchObject({ status: "deferred", reason: "steer_state_unknown" });
     expect(steer).toHaveBeenCalledTimes(3);
     expect(runInputs.beginRun).toHaveBeenCalledWith(expect.any(String), "turn-1", [
       { kind: "delivery", deliveryId: expect.any(String) },
     ]);
     // The first steer threw, the provider may still have taken it, and its input stays listed.
-    expect(runInputs.addRunInput).toHaveBeenCalledTimes(steer.mock.calls.length);
+    expect(runInputs.addRunInput).toHaveBeenCalledTimes(steer.mock.calls.length + 1);
     expect(steer).toHaveBeenCalledWith(expect.objectContaining({ expectedRunId: "turn-1" }));
     expect(bindingStore.recordSteer).toHaveBeenCalledTimes(2);
     await expect(

@@ -103,6 +103,8 @@ async function setAvatarUrl(db: UnitDatabase, bindingId: string, providerUrl = A
 
 const SAME_CONVERSATION = {
   source: { sessionKind: "channel", conversationKind: "channel", channelId: "C1" },
+  initiatorSessionId: "00000000-0000-4000-8000-000000000001",
+  initiator: { sessionKind: "channel", conversationKind: "channel", channelId: "C1" },
   forwards: 0,
   crossConversation: false,
 };
@@ -643,7 +645,7 @@ describe("SessionService with the unit database", () => {
         ),
       } as never,
       registry: {
-        capabilityVersion: vi.fn().mockReturnValue(4),
+        capabilityVersion: vi.fn().mockReturnValue(5),
         currentInstanceId: vi.fn().mockReturnValue(fixture.instanceId),
         supportsCapability: vi.fn().mockReturnValue(true),
       } as never,
@@ -783,7 +785,7 @@ describe("SessionService with the unit database", () => {
         ),
       } as never,
       registry: {
-        capabilityVersion: vi.fn().mockReturnValue(4),
+        capabilityVersion: vi.fn().mockReturnValue(5),
         currentInstanceId: vi.fn().mockReturnValue(fixture.instanceId),
         supportsCapability: vi.fn().mockReturnValue(true),
       } as never,
@@ -960,6 +962,43 @@ describe("SessionService with the unit database", () => {
       expect(provenance.forwards).toBe(1);
       const same = await record(dm.id, other.id, [await delivery(dm.id, "D1"), await delivery(dm.id, "D1")]);
       expect(same.initiatorSessionId).toBe(dm.id);
+    });
+
+    it("records a legacy Client's same-conversation send as local, for good", async () => {
+      const { service, group, other, child } = await chats();
+      const { session } = await child(group.id);
+      const send = (targetSessionId: string, legacySource: boolean, messageId: string = randomUUID()) =>
+        service.authorizeAndRecordMessage({
+          messageId,
+          sourceSessionId: session.id,
+          legacySource,
+          sourceInstallationId: fixture.installationId,
+          sourceConnectionInstanceId: fixture.instanceId,
+          sourceComputerId: fixture.computerId,
+          sourcePlacementGeneration: 1,
+          targetSessionId,
+          content: "report",
+        });
+      const local = (await send(group.id, true)).message;
+      expect(local.legacyLocalSend).toBe(true);
+      expect((await send(other.id, true)).message.legacyLocalSend).toBe(false);
+      // A current Client's unknown send stays unprovable, even if retried after that Client rolled back.
+      const current = (await send(group.id, false)).message;
+      expect(current.legacyLocalSend).toBe(false);
+      expect((await send(group.id, true, current.id)).message.legacyLocalSend).toBe(false);
+      // A notice about a local message is local; one mixing in anything else is not.
+      const notice = await service.authorizeAndRecordMessage({
+        messageId: randomUUID(),
+        sourceSessionId: group.id,
+        runInputs: [handling(local)],
+        sourceInstallationId: fixture.installationId,
+        sourceConnectionInstanceId: fixture.instanceId,
+        sourceComputerId: fixture.computerId,
+        sourcePlacementGeneration: 1,
+        targetSessionId: session.id,
+        content: "notice",
+      });
+      expect(notice.message).toMatchObject({ initiatorSessionId: null, forwardCount: 1, legacyLocalSend: true });
     });
 
     it("says a same-conversation chain stays in its conversation", async () => {
@@ -2311,6 +2350,7 @@ describe("SessionCollaborationService response mapping", () => {
         userTaskSource: null,
         initiatorSessionId: null,
         forwardCount: 0,
+        legacyLocalSend: false,
         targetSessionId: "target",
         content: "hello",
         contentHash: "a".repeat(64),

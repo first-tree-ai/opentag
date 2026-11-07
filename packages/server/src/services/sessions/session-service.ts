@@ -120,6 +120,8 @@ export interface CreateInternalSessionWithMessageInput {
   userTaskSource?: import("./session-cli-proof-service.js").SessionCliSourceContext["userTaskSource"];
   /** What the sending Run is working on; it decides the message's initiator when the message is first recorded. */
   runInputs?: readonly SessionRunInput[];
+  /** The sender's Client is too old to name its Run's inputs, on the connection this request came through. */
+  legacySource?: boolean;
   creatorSessionId: string;
   creatorInstallationId: string;
   creatorConnectionInstanceId: string;
@@ -160,6 +162,8 @@ export interface AuthorizeAndRecordSessionMessageInput {
   userTaskSource?: import("./session-cli-proof-service.js").SessionCliSourceContext["userTaskSource"];
   /** What the sending Run is working on; it decides the message's initiator when the message is first recorded. */
   runInputs?: readonly SessionRunInput[];
+  /** The sender's Client is too old to name its Run's inputs, on the connection this request came through. */
+  legacySource?: boolean;
   messageId: string;
   sourceSessionId: string;
   sourceInstallationId: string;
@@ -475,7 +479,7 @@ export class SessionService {
         })
         .returning();
       if (!placement) throw new Error("Session placement insert did not return a row");
-      const chain = await this.#messageChain(transaction, input.creatorSessionId, input.runInputs);
+      const chain = await this.#messageChain(transaction, input.creatorSessionId, input, true);
       const [message] = await transaction
         .insert(sessionMessages)
         .values({
@@ -586,7 +590,12 @@ export class SessionService {
       } else {
         if (!input.serverDerivedId) assertOrdinaryMessageIdFree(input.messageId);
         const now = this.#now();
-        const chain = await this.#messageChain(transaction, input.sourceSessionId, input.runInputs);
+        const chain = await this.#messageChain(
+          transaction,
+          input.sourceSessionId,
+          input,
+          sameSessionScope(source.session, target.session),
+        );
         [message] = await transaction
           .insert(sessionMessages)
           .values({
@@ -1417,10 +1426,18 @@ export class SessionService {
   async #messageChain(
     transaction: DatabaseTransaction,
     sourceSessionId: string,
-    inputs: readonly SessionRunInput[] = [],
-  ): Promise<{ initiatorSessionId: string | null; forwardCount: number }> {
-    const unknown = { initiatorSessionId: null, forwardCount: 0 };
-    if (inputs.length === 0) return unknown;
+    sender: { runInputs?: readonly SessionRunInput[]; legacySource?: boolean },
+    staysInConversation: boolean,
+  ): Promise<{ initiatorSessionId: string | null; forwardCount: number; legacyLocalSend: boolean }> {
+    const inputs = sender.runInputs ?? [];
+    if (inputs.length === 0) {
+      return {
+        initiatorSessionId: null,
+        forwardCount: 0,
+        legacyLocalSend: staysInConversation && sender.legacySource === true,
+      };
+    }
+    const unknown = { initiatorSessionId: null, forwardCount: 0, legacyLocalSend: false };
     const messageIds = inputs.flatMap((input) => (input.kind === "session-message" ? [input.messageId] : []));
     const deliveryIds = inputs.flatMap((input) => (input.kind === "delivery" ? [input.deliveryId] : []));
     const messages = messageIds.length
@@ -1429,6 +1446,7 @@ export class SessionService {
             id: sessionMessages.id,
             initiatorSessionId: sessionMessages.initiatorSessionId,
             forwardCount: sessionMessages.forwardCount,
+            legacyLocalSend: sessionMessages.legacyLocalSend,
             scheduledOrigin: sessionMessages.scheduledOrigin,
             userTaskSource: sessionMessages.userTaskSource,
           })
@@ -1451,8 +1469,10 @@ export class SessionService {
       forwardCount = Math.max(forwardCount, message.forwardCount + 1);
     }
     const [initiatorSessionId, ...others] = initiators;
-    if (!initiatorSessionId || others.length > 0) return { initiatorSessionId: null, forwardCount };
-    return { initiatorSessionId, forwardCount };
+    if (initiatorSessionId && others.length === 0) return { initiatorSessionId, forwardCount, legacyLocalSend: false };
+    // A notice about a local legacy message is local too; anything mixed in ends that.
+    const allLocal = deliveries.length === 0 && messages.every((message) => message.legacyLocalSend);
+    return { initiatorSessionId: null, forwardCount, legacyLocalSend: staysInConversation && allLocal };
   }
 
   async #recordSessionActivity(

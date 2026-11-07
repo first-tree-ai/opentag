@@ -6,7 +6,11 @@ import type {
   SessionReconcileRequest,
   SessionReconcileResult,
 } from "@opentag/shared";
-import { SESSION_RUN_OUTCOME_NOTICE_HEADER } from "@opentag/shared";
+import {
+  RUNTIME_CAPABILITY,
+  RUNTIME_SESSION_COLLABORATION_PROVENANCE_VERSION,
+  SESSION_RUN_OUTCOME_NOTICE_HEADER,
+} from "@opentag/shared";
 import type { StartedPostgreSqlContainer } from "@testcontainers/postgresql";
 import { eq } from "drizzle-orm";
 import postgres from "postgres";
@@ -1362,7 +1366,8 @@ async function createCollaborationFixture(
       assembler: { assembleForSession: options.assemble ?? (async () => runtimeSnapshot(fixture.agentId)) },
       domain,
       registry: {
-        capabilityVersion: () => 2,
+        capabilityVersion: (_computerId: string, _instanceId: string, capability: string) =>
+          capability === RUNTIME_CAPABILITY.sessionCollaboration ? RUNTIME_SESSION_COLLABORATION_PROVENANCE_VERSION : 2,
         currentInstanceId: () => instanceId,
         supportsCapability: () => true,
       },

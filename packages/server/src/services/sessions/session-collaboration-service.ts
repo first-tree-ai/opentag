@@ -731,6 +731,7 @@ export class SessionCollaborationService {
         creatorSessionId: source.sessionId,
         ...(source.userTaskSource ? { userTaskSource: source.userTaskSource } : {}),
         runInputs: sourceRunInputs(source),
+        legacySource: this.#isLegacySource(source),
         creatorInstallationId: source.installationId,
         creatorConnectionInstanceId: source.connectionInstanceId,
         creatorComputerId: source.computerId,
@@ -756,6 +757,7 @@ export class SessionCollaborationService {
         sourceSessionId: source.sessionId,
         ...(source.userTaskSource ? { userTaskSource: source.userTaskSource } : {}),
         runInputs: sourceRunInputs(source),
+        legacySource: this.#isLegacySource(source),
         sourceInstallationId: source.installationId,
         sourceComputerId: source.computerId,
         sourceConnectionInstanceId: source.connectionInstanceId,
@@ -875,6 +877,7 @@ export class SessionCollaborationService {
         content: renderSessionStoppedNotice(target.sessionId),
         serverDerivedId: true,
         runInputs: sourceRunInputs(source),
+        legacySource: this.#isLegacySource(source),
       });
     } catch (error) {
       this.#logStopNoticeFailure(target, noticeId, this.#failure(noticeId, error).code);
@@ -1110,7 +1113,7 @@ export class SessionCollaborationService {
     attemptCount: number,
     signal?: AbortSignal,
   ): Promise<SessionCliCommandResponse> {
-    const gate = this.#localDeliveryGate(attempt.route, provenance);
+    const gate = this.#localDeliveryGate(attempt.route, requiresProvenance(attempt.message, provenance));
     if ("code" in gate)
       return this.#record(response(attempt.message.id, "unreachable", sessionId, gate.code), attemptCount);
     const { targetInstanceId, provenanceSupported } = gate;
@@ -1184,26 +1187,23 @@ export class SessionCollaborationService {
   }
 
   /**
-   * Whether a target too old to show provenance must refuse this message, since it would present it as its
-   * conversation's own work. That covers a message from elsewhere, and one with no known initiator, which may
-   * have come from elsewhere. The exception is a same-conversation message from a Local Client also too old
-   * to name its Run's inputs: this gate never gave that Client anything from another conversation, so upgrading
-   * the Server first does not stop a child reporting to its parent.
+   * Whether the sender's Client is too old to name its Run's inputs, on the connection this request came through.
+   * Read once, when the message is recorded; a later retry goes by what was recorded.
    */
-  #requiresProvenance(route: AuthorizedSessionMessageRoute, provenance: SessionMessageProvenance): boolean {
-    if (provenance.crossConversation) return true;
-    if (provenance.initiatorSessionId) return false;
-    const instanceId = this.#registry.currentInstanceId(route.sourceComputerId);
-    const sourceVersion = instanceId
-      ? this.#registry.capabilityVersion(route.sourceComputerId, instanceId, RUNTIME_CAPABILITY.sessionCollaboration)
-      : undefined;
-    return sourceVersion === undefined || sourceVersion >= RUNTIME_SESSION_COLLABORATION_PROVENANCE_VERSION;
+  #isLegacySource(source: SessionCliSourceContext): boolean {
+    if (source.computerKind === "cloud") return false;
+    const version = this.#registry.capabilityVersion(
+      source.computerId,
+      source.connectionInstanceId,
+      RUNTIME_CAPABILITY.sessionCollaboration,
+    );
+    return version !== undefined && version < RUNTIME_SESSION_COLLABORATION_PROVENANCE_VERSION;
   }
 
   /** The pre-transport gate for a Local target. Every refusal here happens before a single frame exists. */
   #localDeliveryGate(
     route: AuthorizedSessionMessageRoute,
-    provenance: SessionMessageProvenance,
+    needsProvenance: boolean,
   ): { code: string } | { targetInstanceId: string; provenanceSupported: boolean } {
     const targetInstanceId = this.#registry.currentInstanceId(route.targetComputerId);
     if (
@@ -1232,9 +1232,7 @@ export class SessionCollaborationService {
         targetInstanceId,
         RUNTIME_CAPABILITY.sessionCollaboration,
       ) ?? 0) >= RUNTIME_SESSION_COLLABORATION_PROVENANCE_VERSION;
-    if (!provenanceSupported && this.#requiresProvenance(route, provenance)) {
-      return { code: "unsupported_cross_conversation" };
-    }
+    if (needsProvenance && !provenanceSupported) return { code: "unsupported_cross_conversation" };
     return { targetInstanceId, provenanceSupported };
   }
 
@@ -1287,7 +1285,7 @@ export class SessionCollaborationService {
           route: attempt.route,
           message: { id: attempt.message.id, content: attempt.message.content },
           provenance,
-          requireProvenance: this.#requiresProvenance(attempt.route, provenance),
+          requireProvenance: requiresProvenance(attempt.message, provenance),
           runtime,
           attemptCount,
         },
@@ -1346,6 +1344,16 @@ export class SessionCollaborationService {
  * execution proves only how the Run started, not what was steered in since, so that send has no known inputs.
  * A Cloud Run takes no steered input, so there its execution is the whole answer.
  */
+/**
+ * Whether a target too old to show provenance must refuse this message, since it would present it as its
+ * conversation's own work. That covers a message from elsewhere, and one with no known initiator, which may have
+ * come from elsewhere, unless the message was recorded as provably local.
+ */
+function requiresProvenance(message: SessionMessageAttempt["message"], provenance: SessionMessageProvenance): boolean {
+  if (provenance.crossConversation) return true;
+  return !provenance.initiatorSessionId && !message.legacyLocalSend;
+}
+
 function sourceRunInputs(source: SessionCliSourceContext): SessionRunInput[] {
   const executed = source.userTaskSource?.source;
   const proved: SessionRunInput[] =

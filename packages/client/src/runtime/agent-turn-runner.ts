@@ -351,8 +351,9 @@ export class AgentTurnRunner {
 
     // Only a steer with a durable receipt transfers to this Turn; a retry replays exactly those, so a
     // capture whose steer or receipt failed (answered `deferred`) is dropped and stays with the Server.
-    await this.#runInputs?.addRunInput(request.sessionId, { kind: "delivery", deliveryId: request.deliveryId });
     try {
+      // A list that cannot be kept true stops the steer; the message stays with the Server.
+      await this.#runInputs?.addRunInput(request.sessionId, { kind: "delivery", deliveryId: request.deliveryId });
       await runtime.steer({
         expectedRunId: request.expectedTurnId,
         // Steer input assembles at the moment of the steer, so it carries its own UTC sample.

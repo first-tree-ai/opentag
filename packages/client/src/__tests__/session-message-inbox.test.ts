@@ -1903,6 +1903,49 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
   });
 
+  it("does not steer when the Run's input list cannot be kept true, and runs the message later", async () => {
+    const admission = new AdmissionController();
+    const targetSessionId = randomUUID();
+    const agentId = randomUUID();
+    const held = admission.reserve(targetSessionId, agentId);
+    if (!held.accepted) throw new Error("Expected the test reservation");
+    held.reservation.markActive();
+    const steer = vi.fn();
+    const prompt = vi.fn(async () => ({ runId: "run", status: "completed", output: [] }));
+    const runtime = {
+      capabilities: { steer: "supported" },
+      state: { phase: "running", activeRunId: "im-turn" },
+      steer,
+      waitForIdle: async () => undefined,
+      prompt,
+    };
+    const addRunInput = vi.fn(async () => {
+      throw new Error("the list can neither be replaced nor removed");
+    });
+    const inbox = new SessionMessageInbox({
+      admission,
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      sessionCollaborationVersion: () => 5,
+      reconciler: inboxReconciler(),
+      runInputs: { addRunInput, beginRun: vi.fn(async () => undefined), endRun: vi.fn(async () => undefined) },
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => runtime as never),
+        runtime: vi.fn(() => runtime as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+      steerRetryMs: 5,
+    });
+    await inbox.accept(delivery({ targetSessionId, agentId, text: "queued" }));
+    await vi.waitFor(() => expect(addRunInput).toHaveBeenCalled());
+    expect(steer).not.toHaveBeenCalled();
+    expect(prompt).not.toHaveBeenCalled();
+    held.reservation.release();
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce());
+    expect(steer).not.toHaveBeenCalled();
+    inbox.stop();
+  });
+
   it.each(["unsupported", "not-ready", "no-outbox"] as const)(
     "keeps a message queued when the running Turn cannot take steered input (%s)",
     async (scenario) => {

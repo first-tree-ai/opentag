@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import {
   HTTP_PATHS,
+  RUNTIME_CAPABILITY,
   SESSION_CLI_PROOF_HEADER,
   type SessionCliCreateRequest,
   type SessionCliSendRequest,
@@ -715,13 +716,15 @@ describe("SessionCollaborationService", () => {
       );
     });
 
-    it("refuses an older peer a message of unknown origin from a Client that could have mixed inputs", async () => {
+    const unproved = (() => {
+      const { initiatorSessionId: _id, initiator: _initiator, ...rest } = SAME_CONVERSATION_PROVENANCE;
+      return rest;
+    })();
+
+    it("goes by what was recorded, not the source's version at dispatch", async () => {
+      // Recorded by a current Client, then retried after that Client rolled back: still refused.
       const fixture = serviceFixture();
-      Object.assign(fixture.attempt.route, { sourceComputerId: "newer-computer" });
-      fixture.registry.capabilityVersion.mockImplementation((computerId: string) =>
-        computerId === "newer-computer" ? 5 : 4,
-      );
-      const { initiatorSessionId: _id, initiator: _initiator, ...unproved } = SAME_CONVERSATION_PROVENANCE;
+      fixture.registry.capabilityVersion.mockReturnValue(4);
       fixture.sessions.resolveMessageProvenance.mockResolvedValue(unproved);
       await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
         status: "unreachable",
@@ -730,15 +733,50 @@ describe("SessionCollaborationService", () => {
       expect(fixture.domain.requestReconcile).not.toHaveBeenCalled();
     });
 
-    it("still lets an older Client's same-conversation message reach an older peer", async () => {
+    it("lets a message recorded as provably local reach an older peer", async () => {
       const fixture = serviceFixture();
       fixture.registry.capabilityVersion.mockReturnValue(4);
-      const { initiatorSessionId: _id, initiator: _initiator, ...unproved } = SAME_CONVERSATION_PROVENANCE;
       fixture.sessions.resolveMessageProvenance.mockResolvedValue(unproved);
+      Object.assign(fixture.attempt.message, { legacyLocalSend: true });
       await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
         status: "accepted",
       });
       expect(fixture.domain.requestSessionMessageDelivery.mock.calls[0]?.[2]).not.toHaveProperty("provenance");
+    });
+
+    it("tells Cloud the same: an unprovably local message needs provenance", async () => {
+      const fixture = serviceFixture({ targetComputerKind: "cloud" });
+      fixture.sessions.resolveMessageProvenance.mockResolvedValue(unproved);
+      fixture.cloud.deliver.mockResolvedValue({ status: "accepted" });
+      await fixture.service.send(sendRequest(fixture), fixture.source);
+      expect(fixture.cloud.deliver.mock.calls[0]?.[0]).toMatchObject({ requireProvenance: true });
+      Object.assign(fixture.attempt.message, { legacyLocalSend: true });
+      await fixture.service.send(sendRequest(fixture), fixture.source);
+      expect(fixture.cloud.deliver.mock.calls[1]?.[0]).toMatchObject({ requireProvenance: false });
+    });
+
+    it("reads the sender's version when recording, on its own connection", async () => {
+      const fixture = serviceFixture();
+      fixture.registry.capabilityVersion.mockReturnValue(4);
+      await fixture.service.send(sendRequest(fixture), fixture.source);
+      expect(fixture.sessions.authorizeAndRecordMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ legacySource: true }),
+      );
+      expect(fixture.registry.capabilityVersion).toHaveBeenCalledWith(
+        fixture.source.computerId,
+        fixture.source.connectionInstanceId,
+        RUNTIME_CAPABILITY.sessionCollaboration,
+      );
+      fixture.registry.capabilityVersion.mockReturnValue(5);
+      await fixture.service.send(sendRequest(fixture), fixture.source);
+      expect(fixture.sessions.authorizeAndRecordMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ legacySource: false }),
+      );
+      fixture.registry.capabilityVersion.mockReturnValue(4);
+      await fixture.service.send(sendRequest(fixture), { ...fixture.source, computerKind: "cloud" });
+      expect(fixture.sessions.authorizeAndRecordMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ legacySource: false }),
+      );
     });
 
     it("uses what the Run names plus what its execution proves", async () => {

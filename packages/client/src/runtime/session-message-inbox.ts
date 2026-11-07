@@ -659,8 +659,9 @@ export class SessionMessageInbox {
     const key = sessionMessageKey(next.request);
     let record = this.#records.get(key);
     let receipt: AgentSteerReceipt;
-    await this.#runInputs?.addRunInput(sessionId, sessionMessageRunInput(next.request));
     try {
+      // A list that cannot be kept true stops the steer; the message stays queued.
+      await this.#runInputs?.addRunInput(sessionId, sessionMessageRunInput(next.request));
       receipt = await target.runtime.steer({
         expectedRunId: runId,
         // A message redelivered after an interruption says so: the Agent may have handled it already.

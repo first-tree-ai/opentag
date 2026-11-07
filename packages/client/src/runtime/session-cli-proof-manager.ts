@@ -63,36 +63,43 @@ export class SessionCliProofManager {
     return this.#publish(sessionId);
   }
 
+  /** Rejects like the others only so a caller can tell; nothing more runs on this list once its Run has ended. */
   endRun(sessionId: string, runId: string): Promise<void> {
     if (this.#runs.get(sessionId)?.runId !== runId) return Promise.resolve();
     this.#runs.delete(sessionId);
-    return this.#publish(sessionId);
+    return this.#publish(sessionId).catch(() => undefined);
   }
 
-  /** Writes in call order. A failed write removes the file: no list is safe, a stale one is not. */
+  /**
+   * Writes in call order. A write that fails removes the file: no list means an unknown initiator, which is safe.
+   * If the old list cannot be removed either it would read as complete, so this rejects, and the caller must
+   * not start the Run or the steer.
+   */
   #publish(sessionId: string): Promise<void> {
-    const write = (this.#writes.get(sessionId) ?? Promise.resolve()).then(async () => {
-      const path = sessionRunInputsPath(this.pathForSession(sessionId));
-      const run = this.#runs.get(sessionId);
-      try {
-        if (!run) {
-          await removeIfPresent(path);
-          return;
+    const write = (this.#writes.get(sessionId) ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(async () => {
+        const path = sessionRunInputsPath(this.pathForSession(sessionId));
+        const run = this.#runs.get(sessionId);
+        try {
+          if (run) {
+            await ensurePrivateDirectory(this.#home, sessionCliProofRoot(this.#home));
+            await writeDurableJson(path, { inputs: [...run.inputs] });
+            return;
+          }
+        } catch (error) {
+          this.#logger.warn(
+            { code: "SESSION_RUN_INPUTS_WRITE_FAILED", err: error, sessionId },
+            "Session Run inputs could not be written; this Run's messages will have no known initiator",
+          );
         }
-        await ensurePrivateDirectory(this.#home, sessionCliProofRoot(this.#home));
-        await writeDurableJson(path, { inputs: [...run.inputs] });
-      } catch (error) {
-        this.#logger.warn(
-          { code: "SESSION_RUN_INPUTS_WRITE_FAILED", err: error, sessionId },
-          "Session Run inputs could not be written; this Run's messages will have no known initiator",
-        );
-        await removeIfPresent(path).catch(() => undefined);
-      }
-    });
+        await removeIfPresent(path);
+      });
     this.#writes.set(sessionId, write);
-    void write.finally(() => {
+    const release = () => {
       if (this.#writes.get(sessionId) === write) this.#writes.delete(sessionId);
-    });
+    };
+    void write.then(release, release);
     return write;
   }
 
@@ -111,7 +118,7 @@ export class SessionCliProofManager {
 
   async cleanup(sessionId: string): Promise<void> {
     this.#runs.delete(sessionId);
-    await this.#publish(sessionId);
+    await this.#publish(sessionId).catch(() => undefined);
     await removeIfPresent(this.pathForSession(sessionId));
   }
 }

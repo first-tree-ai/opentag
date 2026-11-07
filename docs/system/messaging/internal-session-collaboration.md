@@ -194,6 +194,8 @@ when a Run starts and before each input is steered into it, and the CLI sends it
 stays listed for the rest of the Run even if its steer fails, since a failure does not prove the provider never took it, and
 overheard observer copies count, since the Run has seen them. Without a list, a Local Run has no known inputs: its execution, in the
 proxy mode, proves only how the Run started. A Cloud Run takes no steered input, so its execution names everything it works on.
+A list that cannot be written is removed, which reads as no list. If it can neither be replaced nor removed, the Run or the steer
+does not start, because the old list would read as complete.
 The Server checks each input is really addressed to the source Session, then:
 
 - A person's message starts a chain at this Session.
@@ -232,10 +234,11 @@ into a Run that fails gets its one notice like any other, which applies across c
 **Compatibility.** `provenance` needs `runtime.sessionCollaboration` version 5 on a Local target and Runner
 Session-collaboration version 4 on a Cloud target. A same-conversation message reaches an older peer without it, on the frozen
 frame. A cross-conversation message to an older peer is `unreachable` with `unsupported_cross_conversation` before any frame
-leaves, since that peer would present it as its own conversation's work. A message with no known initiator is treated the same, as
-it may have come from elsewhere. The one exception is a same-conversation message from a Local Client also too old to name its Run's
-inputs. This gate never gave that Client anything from another conversation, so upgrading the Server first does not stop a child
-reporting to its parent. A Client downgraded after receiving such a message falls outside that reasoning. A sender retries after the upgrade.
+leaves, since that peer would present it as its own conversation's work. A message with no known initiator is treated the same, as it may have come from elsewhere, unless it was recorded as provably
+local (`session_messages.legacy_local_send`). That is set when the message is recorded, from the connection that sent it: a same-conversation
+send from a Local Client too old to name its Run's inputs, which this gate never gave anything from another conversation, and a notice about
+such a message. So upgrading the Server first does not stop a child reporting to its parent, and a retry after a Client rolls back goes by what
+was recorded. A message recorded before the migration is not marked, so an old peer refuses its retries and notices. A sender retries after the upgrade.
 
 The Server logs each attempted dispatch that is cross-conversation or has no known initiator at `info` with
 `operation: session.message.cross_conversation`, and

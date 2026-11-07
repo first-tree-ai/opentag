@@ -167,6 +167,51 @@ describe("a Session message steered into an IM Turn that retries in place", () =
     await first.stop();
   });
 
+  it("repeats a confirmed IM steer after a crash when writing its confirmation failed", async () => {
+    const first = await system();
+    first.prompt.mockImplementationOnce(hangs(first));
+    await first.startTurn();
+    // The first write records the steer itself; the second is its confirmation.
+    const update = first.retries.update.bind(first.retries);
+    const write = vi
+      .spyOn(first.retries, "update")
+      .mockImplementationOnce(update)
+      .mockRejectedValueOnce(new Error("disk full"));
+    first.fixture.confirmSteers = true;
+    await expect(first.runner.steer(first.imSteer("im confirmed"))).resolves.toMatchObject({ status: "steered" });
+    await vi.waitFor(() => expect(write).toHaveBeenCalledTimes(2));
+    await new Promise(setImmediate);
+    expect((await first.retries.read(first.request.sessionId))?.steerConversations).toBeUndefined();
+    const second = await system({ home: first.home, request: first.request, prepared: false });
+    second.receipts.push(...first.receipts);
+    second.prompt.mockImplementationOnce(second.finishes);
+    await second.inbox.ready();
+    await second.recovery.start();
+    second.prepare();
+    await expect(second.recovery.resume(second.request.sessionId, second.identity)).resolves.toBe(true);
+    await vi.waitFor(() => expect(second.prompt).toHaveBeenCalledOnce());
+    expect(second.promptText(0)).toContain("im confirmed");
+    await second.stop();
+    await first.stop();
+  });
+
+  it("records no conversation for a confirmed IM steer on a runtime with no binding, so a retry repeats it", async () => {
+    const s = await system();
+    s.prompt.mockImplementationOnce(attempt(s, "provider_rate_limited")).mockImplementationOnce(s.finishes);
+    await s.startTurn();
+    const binding = s.runtime.binding;
+    s.runtime.binding = undefined;
+    s.fixture.confirmSteers = true;
+    await expect(s.runner.steer(s.imSteer("im confirmed"))).resolves.toMatchObject({ status: "steered" });
+    await new Promise(setImmediate);
+    expect((await s.retries.read(s.request.sessionId))?.steerConversations).toBeUndefined();
+    s.runtime.binding = binding;
+    s.endAttempt();
+    await s.runner.settled();
+    expect(s.promptText(1)).toContain("im confirmed");
+    await s.stop();
+  });
+
   it("keeps IM and Session messages in their original order", async () => {
     const s = await system();
     s.prompt.mockImplementationOnce(attempt(s, "provider_rate_limited")).mockImplementationOnce(s.finishes);

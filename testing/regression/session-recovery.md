@@ -219,6 +219,29 @@ Use a steer-capable Provider (Claude Code on a current version). A child's long 
 5. Make the child's task fail without a retry while a follow-up is steered into it. Expected: both fail with one notice each to
    the sender, and no further Run.
 
+## Steers the conversation already holds
+
+A message steered into a Run and confirmed by the Provider is not sent again in the same Provider conversation, on any path. It
+still shares the Run's retries and its outcome. Use Claude Code and Codex, and count each message in the Provider transcript
+(Claude Code's project JSONL, Codex's rollout). Pi gives no confirmation, so it always repeats the message with the notice.
+
+1. **IM Turn, restart.** While an IM Turn is working, send a follow-up in the same conversation and wait until the Agent has
+   answered after it. Kill and restart the daemon. Expected: the Turn continues, and the transcript holds the follow-up once.
+2. **Session message, restart.** Repeat step 1 with a Session message steered into the Turn, and with one steered into a child's
+   Session message Run. Expected: the same, and the Agent can still quote the message after the restart.
+3. **Not confirmed.** With Claude Code, repeat steps 1 and 2 but kill the daemon right after the steer, before the model answers.
+   Expected: the message arrives again with the notice, in order, and the transcript holds it once more. Codex confirms a steer
+   with its answer, so a message it has not answered has not joined the Run and is delivered as a new steer, without the notice.
+4. **Different conversation.** Repeat steps 1 and 2, and while the daemon is down remove the Session's runtime binding (under
+   `data/runtime/session-bindings`), so the Run starts a new Provider conversation. Expected: each message arrives again in the new conversation with the notice.
+5. **Model HTTP 429.** Where a 429 can be provoked safely (an authorized low-limit test key; do not provoke it on shared accounts),
+   steer an IM follow-up and a Session message into a Run, let the model answer after them, then let the next request get the 429.
+   Expected: the Run retries in place with the rate-limit notice, and the retry input leaves out both messages. Steer again
+   into a request the 429 rejects, so the model never answers that steer. Expected: the retry input includes that message, in order.
+6. **Shared outcome.** After steps 1, 2 and 5, let the Run complete. Expected: every message it carried succeeds with it, including
+   those not sent again, with no notice to their senders. Then repeat and make the Run fail, or exhaust its retries. Expected: every
+   message that conversation held fails with it, one notice to each sender, and no further Run.
+
 ## Failure notice to the sender
 
 1. Have a child send a Session message to its visible parent, and make that Run fail. Expected: the child, as the sender, gets

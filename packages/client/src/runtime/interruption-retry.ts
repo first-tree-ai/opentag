@@ -69,7 +69,7 @@ export function nextRetry(previous: RetryCount): { count: number; exhausted: boo
 /**
  * Actual run time of one attempt, recorded periodically so that a crash loses little of it. A timer
  * tick that comes far too late means the Computer slept or the clock moved: that gap is not run time,
- * so it counts as one interval at most, and never as negative.
+ * so it counts as two intervals at most, and never as negative.
  */
 export function trackRunTime(
   now: () => number,

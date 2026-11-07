@@ -105,6 +105,7 @@ export async function recordInboundInputs(
     registry: {
       canReceiveSnapshot: () => true,
       currentInstanceId: () => f.computer.currentInstanceId,
+      supportsCapability: () => false,
       capabilityVersion: () => 2,
     } as never,
     assembler: {

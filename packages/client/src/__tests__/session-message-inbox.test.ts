@@ -352,6 +352,50 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
   });
 
+  it.each([
+    ["an idle Channel Session compacts", "channel" as const, true, true],
+    ["an active Channel Session does not compact", "channel" as const, false, undefined],
+    ["a Thread Session is never tracked", "thread" as const, true, undefined],
+  ])("%s before a Session message", async (_name, sessionKind, idle, expected) => {
+    const prompt = vi.fn(async (input: { runId: string }) => ({
+      runId: input.runId,
+      status: "completed" as const,
+      output: [],
+    }));
+    const runtime = { prompt, waitForIdle: vi.fn(async () => undefined) };
+    const beginTurn = vi.fn(async () => idle);
+    const recordActivity = vi.fn(async () => undefined);
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      channelActivity: { beginTurn, recordActivity },
+      credentialEnvironment: {
+        prepare: vi.fn(async () => ({
+          path: "/tmp/provider-env.sh",
+          provider: "feishu" as const,
+          outboxContext:
+            sessionKind === "channel"
+              ? { provider: "feishu" as const, sessionKind, chatId: "oc_visible" }
+              : { provider: "feishu" as const, sessionKind, chatId: "oc_visible", threadId: "omt_1" },
+        })),
+        cleanup: vi.fn(async () => undefined),
+      },
+      imCredentialGrantVersion: () => 2,
+      sessionCollaborationVersion: () => 3,
+      reconciler: inboxReconciler(),
+      runtimeManager: { ensureRuntime: vi.fn(async () => runtime as never), sessionKind: () => "visible" as const },
+    });
+    await expect(inbox.accept(scheduledDelivery({ text: "Report the status" }))).resolves.toMatchObject({
+      status: "accepted",
+    });
+    await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce());
+    await inbox.settled();
+    inbox.stop();
+    expect(prompt.mock.lastCall?.[0]).toEqual(expect.objectContaining({ runId: expect.any(String) }));
+    expect((prompt.mock.lastCall?.[0] as { compactContext?: boolean } | undefined)?.compactContext).toBe(expected);
+    expect(recordActivity).toHaveBeenCalledTimes(sessionKind === "channel" ? 1 : 0);
+    expect(beginTurn).toHaveBeenCalledTimes(sessionKind === "channel" ? 1 : 0);
+  });
+
   it("rejects new messages while quiesced but drains messages accepted before the pause", async () => {
     const admission = new AdmissionController();
     const targetSessionId = randomUUID();
@@ -413,12 +457,16 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
   });
 
-  it("rejects accepted work when the durable admission write fails", async () => {
+  it("refuses work retryably while the durable admission write fails", async () => {
     const logger = { warn: vi.fn() };
+    const prompt = vi.fn(async () => ({ runId: "run", status: "completed" as const, output: [] }));
+    const store = new MemoryRuntimeDurabilityStore();
+    let diskFull = true;
     const persistence = {
-      list: vi.fn(async () => []),
-      write: vi.fn(async () => {
-        throw new Error("disk full");
+      list: store.list.bind(store),
+      write: vi.fn(async (record: Parameters<typeof store.write>[0]) => {
+        if (diskFull) throw new Error("disk full");
+        await store.write(record);
       }),
     };
     const inbox = new SessionMessageInbox({
@@ -429,14 +477,15 @@ describe("SessionMessageInbox", () => {
       logger,
       persistence,
       reconciler: inboxReconciler(),
-      runtimeManager: { ensureRuntime: vi.fn(), sessionKind: vi.fn(() => "internal" as const) },
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
     });
     const request = delivery();
 
-    await expect(inbox.accept(request)).resolves.toMatchObject({
-      status: "rejected",
-      reason: "provider_unavailable",
-    });
+    // Retryable: the Server keeps the message instead of recording a final refusal.
+    await expect(inbox.accept(request)).resolves.toMatchObject({ status: "rejected", reason: "client_busy" });
     expect(logger.warn).toHaveBeenCalledWith(
       expect.objectContaining({ code: "SESSION_MESSAGE_PERSISTENCE_FAILED", messageId: request.messageId }),
       "Session message persistence failed",
@@ -445,9 +494,14 @@ describe("SessionMessageInbox", () => {
     // A replay must not claim acceptance for a message that was never queued.
     await expect(inbox.accept({ ...request, requestId: randomUUID() })).resolves.toMatchObject({
       status: "rejected",
-      reason: "provider_unavailable",
+      reason: "client_busy",
     });
     expect(inbox.pendingCount).toBe(0);
+    // Once the disk recovers, the same message is accepted and runs.
+    diskFull = false;
+    await expect(inbox.accept({ ...request, requestId: randomUUID() })).resolves.toMatchObject({ status: "accepted" });
+    await inbox.settled();
+    expect(prompt).toHaveBeenCalledOnce();
     inbox.stop();
   });
 
@@ -2559,7 +2613,7 @@ describe("SessionMessageInbox", () => {
         expect(inbox.queuedCount).toBe(2);
 
         write.fail();
-        await expect(accepting).resolves.toMatchObject({ status: "rejected", reason: "provider_unavailable" });
+        await expect(accepting).resolves.toMatchObject({ status: "rejected", reason: "client_busy" });
         expect(inbox.queuedCount).toBe(1);
 
         held.reservation.release();

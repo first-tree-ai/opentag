@@ -59,6 +59,11 @@ export interface AgentPromptRequest {
   readonly input: AgentInput;
   readonly configuration?: AgentRunConfiguration;
   readonly signal?: AbortSignal;
+  /**
+   * Compact the existing native conversation before this input, keeping its identity. A failed
+   * compaction is a `provider_warning` and the input still runs; a new conversation compacts nothing.
+   */
+  readonly compactContext?: boolean;
 }
 
 export interface AgentSteerRequest {
@@ -78,6 +83,8 @@ export type AgentSteerOutcome = "processed" | "not_started" | "interrupted";
 export interface AgentSteerReceipt {
   /** Settles with the joined Run; never rejects. */
   readonly outcome: Promise<AgentSteerOutcome>;
+  /** See `AgentProviderSteerCustody.inConversation`. */
+  readonly inConversation?: Promise<void>;
 }
 
 /**
@@ -86,6 +93,11 @@ export interface AgentSteerReceipt {
  */
 export interface AgentProviderSteerCustody {
   started(): boolean;
+  /**
+   * Resolves once the input is durably in the Provider's conversation, so a process killed now and resumed
+   * still has it. Never settles otherwise, and absent when the Provider gives no such signal.
+   */
+  readonly inConversation?: Promise<void>;
 }
 
 export interface AgentAbortRequest {

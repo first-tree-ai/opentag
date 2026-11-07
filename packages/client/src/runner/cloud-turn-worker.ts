@@ -37,6 +37,12 @@ import {
   type TurnCompletion,
 } from "../runtime/agent-turn-runner.js";
 import { BackgroundWorkLedger, type BackgroundWorkLedgerStorage } from "../runtime/background-work-ledger.js";
+import {
+  beginChannelTurn,
+  ChannelActivityStore,
+  endChannelTurn,
+  isChannelOutbox,
+} from "../runtime/channel-idle-compaction.js";
 import { serializeEnvironment } from "../runtime/im-credential-environment-manager.js";
 import { buildContinuationNotice, type Interruption, nextRetry } from "../runtime/interruption-retry.js";
 import {
@@ -438,6 +444,19 @@ function cloudPiDiagnostics(
   };
 }
 
+/** Its activity time lives beside the Pi history it describes, and survives a native rootfs reset with it. */
+function cloudChannelTurn(request: RunnerCloudWorkerRequest, continuityDirectory: string, now = Date.now) {
+  const activity = new ChannelActivityStore(continuityDirectory);
+  const turn = {
+    sessionId: request.kind === "turn" ? request.delivery.sessionId : request.message.targetSessionId,
+    channel: isChannelOutbox(request.outboxContext),
+  };
+  return {
+    begin: () => beginChannelTurn(activity, turn, now()),
+    end: () => endChannelTurn(activity, turn, now()),
+  };
+}
+
 export async function runCloudTurnWorker(
   request: RunnerCloudWorkerRequest,
   options: CloudTurnWorkerRunOptions,
@@ -623,6 +642,7 @@ export async function runCloudTurnWorker(
       return undefined;
     });
     let completion: TurnCompletion;
+    const channelTurn = cloudChannelTurn(request, continuityDirectory, options.now);
     try {
       completion = await runAttempts(
         attempts,
@@ -634,6 +654,8 @@ export async function runCloudTurnWorker(
             const result = await activeRuntime.prompt({
               runId: randomTurnRunId(request),
               configuration,
+              // A retry continues the Turn that already compacted or found the Session active.
+              ...(interruption ? {} : await channelTurn.begin()),
               input: await backgroundWork.prefix(
                 withInterruption(
                   cloudWorkerInput(request, new Date(options.now?.() ?? Date.now())),
@@ -666,6 +688,7 @@ export async function runCloudTurnWorker(
       completion = completionForError(error, execution.stopReason());
     } finally {
       execution.signal.removeEventListener("abort", onAbort);
+      await channelTurn.end();
       await steering?.close().catch((error: unknown) => diagnostics.failure(error));
     }
     completion = withEarlierEffects(completion, attempts);

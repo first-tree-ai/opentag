@@ -13,6 +13,7 @@ import type { RuntimeConnection, RuntimeConnectionState } from "./runtime-connec
 import { defaultRuntimeRetryScheduler, type RuntimeRetryScheduler } from "./runtime-durability.js";
 import type { SessionBindingStore } from "./session-binding-store.js";
 import type { SessionMessageInbox } from "./session-message-inbox.js";
+import { conversationIdentity } from "./session-message-run.js";
 import type { InterruptedTurnResumer, SessionReconciler, SessionTurnIdentity } from "./session-reconciler.js";
 import type { TurnCustodyOwner } from "./turn-custody-owner.js";
 
@@ -292,7 +293,7 @@ export class InterruptedWorkRecovery implements InterruptedTurnResumer {
         "Interrupted Turn used its automatic retries and falls back to failure reporting",
       );
       // The messages steered into this Turn share its count, so they fail with it.
-      await this.#options.inbox.failJoinedRun(record.turnId);
+      await this.#options.inbox.failJoinedRun(record.turnId, conversationIdentity(unresolved.runtimeBinding));
       return;
     }
     this.#turns.set(record.sessionId, {

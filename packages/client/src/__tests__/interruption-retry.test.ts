@@ -10,6 +10,8 @@ import {
   type SessionRecoverRequest,
 } from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { BaseAgentRuntime } from "../agent-runtime/base-agent-runtime.js";
+import { AgentRuntimeError } from "../agent-runtime/errors.js";
 import type { AgentRunResult } from "../agent-runtime/types.js";
 import { AdmissionController } from "../runtime/admission-controller.js";
 import { AgentTurnRunner, type AgentTurnRunnerOptions, buildRetryAgentInput } from "../runtime/agent-turn-runner.js";
@@ -30,6 +32,7 @@ import {
 } from "../runtime/interruption-retry.js";
 import type { RuntimeConnectionState } from "../runtime/runtime-connection.js";
 import type { SessionBindingStore } from "../runtime/session-binding-store.js";
+import { conversationIdentity } from "../runtime/session-message-run.js";
 import { SessionReconciler } from "../runtime/session-reconciler.js";
 import type { SessionRuntimeManager } from "../runtime/session-runtime-manager.js";
 import { type LiveTurnOwner, TurnCustodyOwner } from "../runtime/turn-custody-owner.js";
@@ -963,6 +966,94 @@ describe("InterruptedWorkRecovery resume refusal", () => {
   });
 });
 
+describe("AgentTurnRunner steer refused after the Turn's result", () => {
+  it.each([
+    [
+      "the runtime refused it before sending",
+      new AgentRuntimeError("steer_not_sent", "Claude Code settled before steer was accepted"),
+      "turn_not_running",
+    ],
+    [
+      "the provider took it and then settled, as Pi can",
+      new AgentRuntimeError("run_mismatch", "Pi settled before steer was accepted"),
+      "steer_state_unknown",
+    ],
+    [
+      "a provider write failed",
+      new AgentRuntimeError("run_mismatch", "Claude Code did not accept the steer input", {
+        cause: new Error("EPIPE"),
+      }),
+      "steer_state_unknown",
+    ],
+  ])("when %s, the answer tells the Server what became of it", async (_label, error, reason) => {
+    const h = runnerHarness();
+    h.runtime.steer.mockRejectedValueOnce(error);
+    let finish: () => void = () => undefined;
+    h.prompt.mockImplementation(
+      () =>
+        new Promise<AgentRunResult>((resolve) => {
+          finish = () => resolve({ runId: "turn-1", status: "completed", output: [] });
+          h.emit({ type: "run_started", runId: "turn-1" } as never);
+        }),
+    );
+    h.runner.start(owner(h.request));
+    await vi.waitFor(() =>
+      expect(h.updateUnresolved).toHaveBeenCalledWith(expect.anything(), expect.anything(), "turn-1", "running"),
+    );
+    const steer = steerRequest(h.request, "more");
+    await expect(h.runner.steer(steer)).resolves.toMatchObject({ status: "deferred", reason });
+    expect(h.retries.removeSteer).toHaveBeenCalledWith(steer);
+    finish();
+    await h.runner.settled();
+  });
+
+  it("delivers after the Turn when the Run settles during retry capture", async () => {
+    const h = runnerHarness();
+    // A real Base Runtime whose Run has settled: its steer admission refuses before any Provider write.
+    const steerProvider = vi.fn(async () => undefined);
+    class SettledRuntime extends BaseAgentRuntime {
+      constructor() {
+        super({
+          manifest: { providerId: "settled", displayName: "Settled", version: "1" } as never,
+          capabilities: { steer: "supported", interactions: "unsupported" } as never,
+          eventSink: () => undefined,
+        });
+      }
+      protected executeRun(): never {
+        throw new Error("no Run in this test");
+      }
+      protected override steerProvider = steerProvider;
+      protected closeProvider = async () => undefined;
+    }
+    const settled = new SettledRuntime();
+    h.runtime.steer.mockImplementation(((request: never) => settled.steer(request)) as never);
+    let finishCapture: (status: "appended") => void = () => undefined;
+    h.retries.appendSteer = () =>
+      new Promise((resolve) => {
+        finishCapture = resolve;
+      });
+    let finish: () => void = () => undefined;
+    h.prompt.mockImplementation(
+      () =>
+        new Promise<AgentRunResult>((resolve) => {
+          finish = () => resolve({ runId: "turn-1", status: "completed", output: [] });
+          h.emit({ type: "run_started", runId: "turn-1" } as never);
+        }),
+    );
+    h.runner.start(owner(h.request));
+    await vi.waitFor(() =>
+      expect(h.updateUnresolved).toHaveBeenCalledWith(expect.anything(), expect.anything(), "turn-1", "running"),
+    );
+    const answer = h.runner.steer(steerRequest(h.request, "more"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    finishCapture("appended");
+    await expect(answer).resolves.toMatchObject({ status: "deferred", reason: "turn_not_running" });
+    expect(steerProvider).not.toHaveBeenCalled();
+    finish();
+    await h.runner.settled();
+  });
+});
+
 describe("TurnCustodyOwner acceptance with retry input", () => {
   it("rejects and undoes the acceptance when the retry input cannot be written", async () => {
     const home_ = await home();
@@ -1131,6 +1222,23 @@ describe("InterruptedWorkRecovery", () => {
     });
   });
 
+  it("tells the inbox which conversation a Turn ended in when its retries run out", async () => {
+    const records = new Map<string, TurnRetryRecord>();
+    const request = delivery();
+    records.set(request.sessionId, { ...turnRetryRecord(request, "turn-1"), retries: 3 });
+    const f = recoveryFixture(records);
+    f.version = 1;
+    const runtimeBinding = { providerId: "claude-code", schemaVersion: 1, payload: { sessionId: "session-1" } };
+    f.unresolved.set(request.sessionId, {
+      turnId: "turn-1",
+      deliveryId: request.deliveryId,
+      phase: "running",
+      runtimeBinding,
+    });
+    await f.recovery.start();
+    expect(f.inbox.failJoinedRun).toHaveBeenCalledWith("turn-1", conversationIdentity(runtimeBinding));
+  });
+
   it("counts an interruption of a retry that began, and stops after the second", async () => {
     const records = new Map<string, TurnRetryRecord>();
     const request = delivery();
@@ -1149,7 +1257,7 @@ describe("InterruptedWorkRecovery", () => {
     const f = recoveryFixture(records);
     f.unresolved.set(request.sessionId, { turnId: "turn-1", deliveryId: request.deliveryId, phase: "running" });
     await f.recovery.start();
-    expect(f.inbox.failJoinedRun).toHaveBeenCalledWith("turn-1");
+    expect(f.inbox.failJoinedRun).toHaveBeenCalledWith("turn-1", undefined);
     f.recovery.stop();
   });
 
@@ -1176,7 +1284,7 @@ describe("InterruptedWorkRecovery", () => {
     const f = recoveryFixture(records);
     f.unresolved.set(request.sessionId, { turnId: "turn-1", deliveryId: request.deliveryId, phase: "running" });
     await f.recovery.start();
-    expect(f.inbox.failJoinedRun).toHaveBeenCalledWith("turn-1");
+    expect(f.inbox.failJoinedRun).toHaveBeenCalledWith("turn-1", undefined);
     f.recovery.stop();
   });
 
@@ -1467,6 +1575,7 @@ function recoveryFixture(records = new Map<string, TurnRetryRecord>()) {
       deliveryId: string;
       phase: string;
       recentRecordedInputs?: Array<{ kind: string; deliveryId: string; turnId: string }>;
+      runtimeBinding?: { providerId: string; schemaVersion: number; payload: unknown };
     }
   >();
   const sent: unknown[] = [];
@@ -1512,6 +1621,7 @@ function recoveryFixture(records = new Map<string, TurnRetryRecord>()) {
           ? {
               unresolvedTurn: unresolved.get(sessionId),
               recentRecordedInputs: unresolved.get(sessionId)?.recentRecordedInputs ?? [],
+              runtimeBinding: unresolved.get(sessionId)?.runtimeBinding,
             }
           : undefined) as never,
     },

@@ -222,7 +222,7 @@ describe("Local Pi prompt ownership", () => {
     client.complete();
     client.fence.resolve();
     await expect(run).resolves.toMatchObject({ status: "completed" });
-    await expect(steer).resolves.toMatchObject({ code: "run_mismatch" });
+    await expect(steer).resolves.toMatchObject({ code: "steer_not_sent" });
     expect(client.commands.some((command) => command.type === "steer")).toBe(false);
     await runtime.close();
   });

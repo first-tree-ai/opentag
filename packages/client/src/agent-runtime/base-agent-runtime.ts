@@ -142,13 +142,15 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
     assertIdentifier(request.expectedRunId, "expectedRunId");
     assertAgentInput(request.input);
     const snapshot = immutableSnapshot(request);
-    const active = this.#requireActive(snapshot.expectedRunId);
+    // Refused here, nothing reached the Provider: the caller may deliver the input after the Run.
+    const active = this.#activeRun(snapshot.expectedRunId);
+    if (!active) throw new AgentRuntimeError("steer_not_sent", "expectedRunId does not match the active run");
     const custody = await this.steerProvider(snapshot);
     if (active.state !== "active" || this.#active !== active) {
       // Only an explicit probe that reports the input never started may refuse it for redelivery. No probe
       // means the Provider owns the input, and started input belongs to the Run that just settled.
       if (custody && !custody.started()) {
-        throw new AgentRuntimeError("run_mismatch", "the active run completed before steer was accepted");
+        throw new AgentRuntimeError("steer_not_sent", "the active run completed before steer was accepted");
       }
       return steerReceipt(active.promise, custody);
     }
@@ -535,9 +537,14 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
     this.closeForProviderFailure();
   }
 
-  #requireActive(expectedRunId: string): RunRecord {
+  #activeRun(expectedRunId: string): RunRecord | undefined {
     const active = this.#active;
-    if (!active || active.request.runId !== expectedRunId || active.state !== "active") {
+    return active && active.request.runId === expectedRunId && active.state === "active" ? active : undefined;
+  }
+
+  #requireActive(expectedRunId: string): RunRecord {
+    const active = this.#activeRun(expectedRunId);
+    if (!active) {
       throw new AgentRuntimeError("run_mismatch", "expectedRunId does not match the active run");
     }
     return active;
@@ -686,6 +693,7 @@ function snapshotPromptRequest(request: AgentPromptRequest): AgentPromptRequest 
     ...(request.allowedUnixSockets ? { allowedUnixSockets: immutableSnapshot(request.allowedUnixSockets) } : {}),
     ...(request.configuration ? { configuration: immutableSnapshot(request.configuration) } : {}),
     ...(request.signal ? { signal: request.signal } : {}),
+    ...(request.compactContext ? { compactContext: true } : {}),
   });
 }
 
@@ -704,7 +712,10 @@ function immutableSnapshot<T>(value: T): T {
 }
 
 function steerReceipt(run: Promise<AgentRunResult>, custody: AgentProviderSteerCustody | undefined): AgentSteerReceipt {
-  return { outcome: run.then((result) => steerOutcome(result, custody)) };
+  return {
+    outcome: run.then((result) => steerOutcome(result, custody)),
+    ...(custody?.inConversation ? { inConversation: custody.inConversation } : {}),
+  };
 }
 
 function steerOutcome(result: AgentRunResult, custody: AgentProviderSteerCustody | undefined): AgentSteerOutcome {

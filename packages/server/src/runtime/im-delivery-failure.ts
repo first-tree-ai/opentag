@@ -507,6 +507,8 @@ export interface UnreportableTurnSettlement {
    * transaction, so a reactivated authority cannot lose to the synthetic report.
    */
   requireAbsentAuthority?: boolean;
+  /** Recovery only: the instance that answered without the report must still be current at the write. */
+  requireCurrentInstance?: string;
 }
 
 /**
@@ -539,7 +541,8 @@ export async function settleLostReportOrDefer(
     code === "IM_DELIVERY_RECOVERY_AWAITING_REPORT" &&
     row.delivery.reportOwnerInstanceId !== instanceId &&
     acceptedReportClosed(row.delivery.acceptedAt, nowMs);
-  if (lost && (await settleUnreportableTurn(deps, row))) return;
+  // Decided from the answer; the write itself rechecks that instance, since the owner may re-register meanwhile.
+  if (lost && (await settleUnreportableTurn(deps, row, { requireCurrentInstance: instanceId }))) return;
   await deferRecoveryRetry(deps, attempt, attemptCount, code);
 }
 
@@ -571,7 +574,10 @@ export async function settleUnreportableTurn(
       instanceId: ownerInstanceId,
       signal: new AbortController().signal,
     },
-    { ...(options.requireAbsentAuthority ? { requireAbsentAuthority: true } : {}) },
+    {
+      ...(options.requireAbsentAuthority ? { requireAbsentAuthority: true } : {}),
+      ...(options.requireCurrentInstance ? { requireCurrentInstance: options.requireCurrentInstance } : {}),
+    },
   );
   if (status !== "recorded" && status !== "already_recorded") return false;
   deps.onDiagnostic("IM_DELIVERY_TURN_STATE_UNKNOWN", {

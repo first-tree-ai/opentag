@@ -130,6 +130,11 @@ export interface RecordTurnOptions {
    * locks. A genuine report never passes this.
    */
   requireAbsentAuthority?: boolean;
+  /**
+   * Maintenance only: the instance whose answer justified a synthetic report. The write holds the Computer
+   * `FOR SHARE` and needs this instance still current, so an owner that re-registered keeps its own report.
+   */
+  requireCurrentInstance?: string;
 }
 
 export interface TerminalReportWriteOptions {
@@ -798,7 +803,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       if (replay) return replay;
       if (!recordTurnFenceMatches(scope, context, report)) return undefined;
       // Reloaded under every lock now held: the authority, and the identities it was locked for.
-      if (!(await maintenanceStillAbsent(transaction, gate, this.#now()))) return "conflict";
+      if (!(await syntheticAuthorityHolds(transaction, gate, scope, options, this.#now()))) return "conflict";
       const terminalized = await writeTerminalReport(transaction, report, this.#now(), this.#sessions);
       if (!terminalized) return "conflict";
       terminalizedIds.push(...terminalized);
@@ -1072,6 +1077,24 @@ function recordedReportStatus(
   return delivery.resultHash === report.resultHash && sameReport(delivery.turnReport as TurnReportRequest, report)
     ? "already_recorded"
     : "conflict";
+}
+
+/** The authority a synthetic report was decided on, rechecked under the locks of the write; a real report has none. */
+async function syntheticAuthorityHolds(
+  transaction: DatabaseTransaction,
+  gate: Parameters<typeof maintenanceStillAbsent>[1],
+  scope: DeliveryScope,
+  options: RecordTurnOptions,
+  now: Date,
+): Promise<boolean> {
+  if (!(await maintenanceStillAbsent(transaction, gate, now))) return false;
+  if (options.requireCurrentInstance === undefined) return true;
+  const [computer] = await transaction
+    .select({ currentInstanceId: computers.currentInstanceId })
+    .from(computers)
+    .where(eq(computers.id, scope.workspaceComputer.id))
+    .for("share");
+  return computer?.currentInstanceId === options.requireCurrentInstance;
 }
 
 function recordTurnFenceMatches(

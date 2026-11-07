@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentRunResult } from "../agent-runtime/types.js";
 import { AdmissionController } from "../runtime/admission-controller.js";
 import { AgentTurnRunner, buildRetryAgentInput } from "../runtime/agent-turn-runner.js";
-import { InterruptedWorkRecovery } from "../runtime/interrupted-work-recovery.js";
+import { InterruptedWorkRecovery, type InterruptedWorkRecoveryOptions } from "../runtime/interrupted-work-recovery.js";
 import {
   buildContinuationNotice,
   MAX_AUTOMATIC_RETRIES,
@@ -695,7 +695,7 @@ describe("an automatic upgrade interrupting an IM Turn", () => {
       status: "scheduled",
     });
     const turn = { deliveryId: h.request.deliveryId, turnId: "turn-1" };
-    expect(restarted.recovery.resume(h.request.sessionId, turn)).toBe(true);
+    expect(await restarted.recovery.resume(h.request.sessionId, turn)).toBe(true);
     expect(restarted.custody.resume).toHaveBeenCalledExactlyOnceWith(h.request, "turn-1", {
       continuation: expect.objectContaining({ reason: "client_shutdown" }),
       steers: [],
@@ -825,7 +825,7 @@ describe("AgentTurnRunner steer custody", () => {
       });
       await f.recovery.start();
       f.version = 1;
-      f.recovery.resume(h.request.sessionId, { deliveryId: h.request.deliveryId, turnId: "turn-1" });
+      await f.recovery.resume(h.request.sessionId, { deliveryId: h.request.deliveryId, turnId: "turn-1" });
       expect(f.custody.resume).toHaveBeenCalledWith(h.request, "turn-1", expect.objectContaining({ steers: [] }));
       f.recovery.stop();
     },
@@ -848,7 +848,9 @@ describe("AgentTurnRunner steer custody", () => {
     await f.recovery.start();
     f.version = 1;
     expect(f.recovery.isPendingRetry(request.sessionId, "turn-1")).toBe(false);
-    expect(f.recovery.resume(request.sessionId, { deliveryId: request.deliveryId, turnId: "turn-1" })).toBe(false);
+    expect(await f.recovery.resume(request.sessionId, { deliveryId: request.deliveryId, turnId: "turn-1" })).toBe(
+      false,
+    );
     expect(f.custody.resume).not.toHaveBeenCalled();
     expect(f.records.get(request.sessionId)?.retries).toBe(0);
     f.recovery.stop();
@@ -863,7 +865,9 @@ describe("AgentTurnRunner steer custody", () => {
     });
     await f.recovery.start();
     f.version = 1;
-    expect(f.recovery.resume(request.sessionId, { deliveryId: request.deliveryId, turnId: "turn-1" })).toBe(false);
+    expect(await f.recovery.resume(request.sessionId, { deliveryId: request.deliveryId, turnId: "turn-1" })).toBe(
+      false,
+    );
     expect(f.custody.resume).not.toHaveBeenCalled();
     expect(f.records.has(request.sessionId)).toBe(false);
     f.recovery.stop();
@@ -882,7 +886,7 @@ describe("AgentTurnRunner steer custody", () => {
     });
     await f.recovery.start();
     f.version = 1;
-    f.recovery.resume(request.sessionId, { deliveryId: request.deliveryId, turnId: "turn-1" });
+    await f.recovery.resume(request.sessionId, { deliveryId: request.deliveryId, turnId: "turn-1" });
     expect(f.custody.resume).toHaveBeenCalledWith(request, "turn-1", expect.objectContaining({ steers: [steer] }));
     f.recovery.stop();
   });
@@ -907,12 +911,12 @@ describe("InterruptedWorkRecovery resume refusal", () => {
       status: "scheduled",
     });
     f.custody.resume.mockReturnValueOnce(false);
-    expect(f.recovery.resume(request.sessionId, turn)).toBe(false);
+    expect(await f.recovery.resume(request.sessionId, turn)).toBe(false);
     // Still pending: the ordinary recovery path does not report it, and another reconcile is requested.
     expect(f.recovery.isPendingRetry(request.sessionId, "turn-1")).toBe(true);
     await vi.advanceTimersByTimeAsync(10_000);
     expect(f.sent).toHaveLength(2);
-    expect(f.recovery.resume(request.sessionId, turn)).toBe(true);
+    expect(await f.recovery.resume(request.sessionId, turn)).toBe(true);
     expect(f.recovery.isPendingRetry(request.sessionId, "turn-1")).toBe(false);
     expect(f.inbox.failAwaitingPreparation).not.toHaveBeenCalled();
     f.recovery.stop();
@@ -1004,9 +1008,12 @@ describe("InterruptedWorkRecovery", () => {
     f.records.set(request.sessionId, turnRetryRecord(request, "turn-1"));
     f.unresolved.set(request.sessionId, { turnId: "turn-1", deliveryId: request.deliveryId, phase: "running" });
     await f.recovery.start();
-    // The reason goes to the resumed Turn's notice; on disk it would be taken for what ended that Turn.
-    expect(f.records.get(request.sessionId)).toMatchObject({ retries: 1 });
-    expect(f.records.get(request.sessionId)?.interruption).toBeUndefined();
+    // Counted, not begun: the record says so until the retry starts.
+    expect(f.records.get(request.sessionId)).toMatchObject({
+      retries: 1,
+      retryNotStarted: true,
+      interruption: { reason: "daemon_crash" },
+    });
     expect(f.reconciler.setRecovery).toHaveBeenCalledWith(request.sessionId, {
       deliveryId: request.deliveryId,
       turnId: "turn-1",
@@ -1036,12 +1043,15 @@ describe("InterruptedWorkRecovery", () => {
       sessionId: request.sessionId,
       status: "scheduled",
     });
-    expect(f.recovery.resume(request.sessionId, turn)).toBe(true);
+    expect(await f.recovery.resume(request.sessionId, turn)).toBe(true);
     expect(f.custody.resume).toHaveBeenCalledExactlyOnceWith(request, "turn-1", {
       continuation: expect.objectContaining({ reason: "daemon_crash" }),
       steers: [],
     });
     expect(f.recovery.pending(request.sessionId, turn)).toBe(false);
+    // The reason goes to the resumed Turn's notice; on disk it would be taken for what ended that Turn.
+    await vi.waitFor(() => expect(f.records.get(request.sessionId)?.retryNotStarted).toBeUndefined());
+    expect(f.records.get(request.sessionId)?.interruption).toBeUndefined();
     // Waiting Session messages are released by the resume, to be steered into the resumed Turn.
     expect(f.inbox.sessionPrepared).toHaveBeenCalledWith(request.sessionId);
 
@@ -1057,6 +1067,221 @@ describe("InterruptedWorkRecovery", () => {
       expect(f.inbox.failAwaitingPreparation).toHaveBeenCalledWith("child-session", "session_ended"),
     );
     f.recovery.stop();
+  });
+
+  it("does not spend a retry on restarts while the retry never began", async () => {
+    const records = new Map<string, TurnRetryRecord>();
+    const request = delivery();
+    records.set(request.sessionId, {
+      ...turnRetryRecord(request, "turn-1"),
+      interruption: { reason: "provider_rate_limited", at: "T" },
+      retries: 1,
+    });
+    for (let start = 0; start < 4; start += 1) {
+      const f = recoveryFixture(records);
+      f.unresolved.set(request.sessionId, { turnId: "turn-1", deliveryId: request.deliveryId, phase: "running" });
+      await f.recovery.start();
+      expect(f.inbox.failJoinedRun).not.toHaveBeenCalled();
+      f.recovery.stop();
+    }
+    // The reason survives too, for the notice of the retry that finally runs.
+    expect(records.get(request.sessionId)).toMatchObject({
+      retries: 1,
+      interruption: { reason: "provider_rate_limited" },
+    });
+  });
+
+  it("counts an interruption of a retry that began, and stops after the second", async () => {
+    const records = new Map<string, TurnRetryRecord>();
+    const request = delivery();
+    records.set(request.sessionId, turnRetryRecord(request, "turn-1"));
+    const turn = { deliveryId: request.deliveryId, turnId: "turn-1" };
+    for (const retries of [1, 2]) {
+      const f = recoveryFixture(records);
+      f.version = 1;
+      f.unresolved.set(request.sessionId, { turnId: "turn-1", deliveryId: request.deliveryId, phase: "running" });
+      await f.recovery.start();
+      expect(records.get(request.sessionId)?.retries).toBe(retries);
+      expect(await f.recovery.resume(request.sessionId, turn)).toBe(true);
+      await vi.waitFor(() => expect(records.get(request.sessionId)?.retryNotStarted).toBeUndefined());
+      f.recovery.stop();
+    }
+    const f = recoveryFixture(records);
+    f.unresolved.set(request.sessionId, { turnId: "turn-1", deliveryId: request.deliveryId, phase: "running" });
+    await f.recovery.start();
+    expect(f.inbox.failJoinedRun).toHaveBeenCalledWith("turn-1");
+    f.recovery.stop();
+  });
+
+  it("records that the retry began before the Turn starts, so an immediate crash still counts", async () => {
+    const records = new Map<string, TurnRetryRecord>();
+    const request = delivery();
+    records.set(request.sessionId, turnRetryRecord(request, "turn-1"));
+    const turn = { deliveryId: request.deliveryId, turnId: "turn-1" };
+    for (const retries of [1, 2]) {
+      const f = recoveryFixture(records);
+      f.version = 1;
+      f.unresolved.set(request.sessionId, { turnId: "turn-1", deliveryId: request.deliveryId, phase: "running" });
+      await f.recovery.start();
+      expect(records.get(request.sessionId)).toMatchObject({ retries, retryNotStarted: true });
+      let onDiskAtStart: TurnRetryRecord | undefined;
+      f.custody.resume.mockImplementation(() => {
+        onDiskAtStart = records.get(request.sessionId);
+        return true;
+      });
+      expect(await f.recovery.resume(request.sessionId, turn)).toBe(true);
+      expect(onDiskAtStart?.retryNotStarted).toBeUndefined();
+      f.recovery.stop();
+    }
+    const f = recoveryFixture(records);
+    f.unresolved.set(request.sessionId, { turnId: "turn-1", deliveryId: request.deliveryId, phase: "running" });
+    await f.recovery.start();
+    expect(f.inbox.failJoinedRun).toHaveBeenCalledWith("turn-1");
+    f.recovery.stop();
+  });
+
+  it("does not start a retry whose start can't be recorded, across restarts, and starts it once it can", async () => {
+    const records = new Map<string, TurnRetryRecord>();
+    const request = delivery();
+    records.set(request.sessionId, turnRetryRecord(request, "turn-1"));
+    const turn = { deliveryId: request.deliveryId, turnId: "turn-1" };
+    for (let restart = 0; restart < 2; restart += 1) {
+      const f = recoveryFixture(records);
+      f.version = 1;
+      f.unresolved.set(request.sessionId, { turnId: "turn-1", deliveryId: request.deliveryId, phase: "running" });
+      await f.recovery.start();
+      f.retries.update.mockRejectedValueOnce(new Error("disk full"));
+      expect(await f.recovery.resume(request.sessionId, turn)).toBe(false);
+      expect(f.custody.resume).not.toHaveBeenCalled();
+      expect(f.inbox.failJoinedRun).not.toHaveBeenCalled();
+      expect(f.logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ code: "TURN_RETRY_START_NOT_RECORDED" }),
+        expect.any(String),
+      );
+      expect(f.recovery.pending(request.sessionId, turn)).toBe(true);
+      f.recovery.stop();
+    }
+    // It never ran, so the two restarts spent nothing.
+    expect(records.get(request.sessionId)).toMatchObject({ retries: 1, retryNotStarted: true });
+    const f = recoveryFixture(records);
+    f.version = 1;
+    f.unresolved.set(request.sessionId, { turnId: "turn-1", deliveryId: request.deliveryId, phase: "running" });
+    await f.recovery.start();
+    expect(await f.recovery.resume(request.sessionId, turn)).toBe(true);
+    expect(records.get(request.sessionId)).toMatchObject({ retries: 1 });
+    expect(records.get(request.sessionId)?.retryNotStarted).toBeUndefined();
+    f.recovery.stop();
+  });
+
+  it("does not start a retry when the real store has no record to update, and keeps it pending", async () => {
+    const store = new TurnRetryStore(await home());
+    const request = delivery();
+    await store.write(turnRetryRecord(request, "turn-1"));
+    const f = recoveryFixture();
+    f.version = 1;
+    f.retries.list = () => store.list();
+    f.retries.write = (record) => store.write(record);
+    f.retries.update.mockImplementation((sessionId, turnId, change) => store.update(sessionId, turnId, change));
+    f.unresolved.set(request.sessionId, { turnId: "turn-1", deliveryId: request.deliveryId, phase: "running" });
+    await f.recovery.start();
+    await store.remove(request.sessionId);
+
+    const turn = { deliveryId: request.deliveryId, turnId: "turn-1" };
+    expect(await f.recovery.resume(request.sessionId, turn)).toBe(false);
+    expect(f.custody.resume).not.toHaveBeenCalled();
+    expect(f.recovery.pending(request.sessionId, turn)).toBe(true);
+    expect(f.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "TURN_RETRY_START_NOT_RECORDED" }),
+      expect.any(String),
+    );
+    // Another Turn's record is no record for this one, and it stays as it was.
+    await store.write(turnRetryRecord(request, "turn-2"));
+    expect(await f.recovery.resume(request.sessionId, turn)).toBe(false);
+    expect(f.custody.resume).not.toHaveBeenCalled();
+    expect(await store.read(request.sessionId)).toEqual(turnRetryRecord(request, "turn-2"));
+    f.recovery.stop();
+  });
+
+  it("puts a refused retry back to waiting, keeping its reason, so a restart doesn't count it", async () => {
+    const f = recoveryFixture();
+    f.version = 1;
+    const request = delivery();
+    f.records.set(request.sessionId, {
+      ...turnRetryRecord(request, "turn-1"),
+      interruption: { reason: "provider_rate_limited", at: "T" },
+      retries: 1,
+    });
+    f.unresolved.set(request.sessionId, { turnId: "turn-1", deliveryId: request.deliveryId, phase: "running" });
+    await f.recovery.start();
+    f.custody.resume.mockReturnValue(false);
+    const turn = { deliveryId: request.deliveryId, turnId: "turn-1" };
+    expect(await f.recovery.resume(request.sessionId, turn)).toBe(false);
+    expect(f.records.get(request.sessionId)).toMatchObject({
+      retries: 1,
+      retryNotStarted: true,
+      interruption: { reason: "provider_rate_limited" },
+    });
+    // If even that write fails, the worst case is one extra count on the next restart.
+    f.retries.update.mockImplementationOnce(f.retries.update.getMockImplementation() as never);
+    f.retries.update.mockRejectedValueOnce(new Error("disk full"));
+    expect(await f.recovery.resume(request.sessionId, turn)).toBe(false);
+    expect(f.logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "TURN_RETRY_WAIT_NOT_RECORDED" }),
+      expect.any(String),
+    );
+    f.recovery.stop();
+  });
+
+  it("does not start the retry when the daemon stops during the write", async () => {
+    const f = recoveryFixture();
+    f.version = 1;
+    const request = delivery();
+    f.records.set(request.sessionId, turnRetryRecord(request, "turn-1"));
+    f.unresolved.set(request.sessionId, { turnId: "turn-1", deliveryId: request.deliveryId, phase: "running" });
+    await f.recovery.start();
+    const resumed = f.recovery.resume(request.sessionId, { deliveryId: request.deliveryId, turnId: "turn-1" });
+    f.recovery.stop();
+    expect(await resumed).toBe(false);
+    expect(f.custody.resume).not.toHaveBeenCalled();
+    expect(f.records.get(request.sessionId)).toMatchObject({ retries: 1, retryNotStarted: true });
+  });
+
+  it("starts nothing once stopped, and settles only when a write in flight has rolled back", async () => {
+    const f = recoveryFixture();
+    f.version = 1;
+    const request = delivery();
+    f.records.set(request.sessionId, turnRetryRecord(request, "turn-1"));
+    f.unresolved.set(request.sessionId, { turnId: "turn-1", deliveryId: request.deliveryId, phase: "running" });
+    await f.recovery.start();
+    const turn = { deliveryId: request.deliveryId, turnId: "turn-1" };
+    let release = () => {};
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const write = f.retries.update.getMockImplementation() as NonNullable<
+      ReturnType<typeof f.retries.update.getMockImplementation>
+    >;
+    f.retries.update.mockImplementationOnce(async (...args) => {
+      await blocked;
+      return write(...args);
+    });
+    const resumed = f.recovery.resume(request.sessionId, turn);
+    f.recovery.stop();
+    let settled = false;
+    const settling = f.recovery.settled().then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    release();
+    await settling;
+    expect(await resumed).toBe(false);
+    expect(f.custody.resume).not.toHaveBeenCalled();
+    expect(f.records.get(request.sessionId)).toMatchObject({ retries: 1, retryNotStarted: true });
+    // Nothing starts after the stop, and the store isn't touched either.
+    f.retries.update.mockClear();
+    expect(await f.recovery.resume(request.sessionId, turn)).toBe(false);
+    expect(f.retries.update).not.toHaveBeenCalled();
   });
 
   it("stays the owner after `scheduled` until the ready reconcile prepares the Session", async () => {
@@ -1142,8 +1367,7 @@ describe("InterruptedWorkRecovery", () => {
     f.unresolved.set(spent.sessionId, { turnId: "turn-spent", deliveryId: spent.deliveryId, phase: "running" });
     await f.recovery.start();
     f.version = 1;
-    expect(f.records.get(stopped.sessionId)).toMatchObject({ retries: 1 });
-    expect(f.records.get(stopped.sessionId)?.interruption).toBeUndefined();
+    expect(f.records.get(stopped.sessionId)).toMatchObject({ retries: 1, retryNotStarted: true });
     expect(f.recovery.isPendingRetry(stopped.sessionId, "turn-stopped")).toBe(true);
     expect(f.records.get(spent.sessionId)).toMatchObject({ retries: 2 });
     expect(f.recovery.isPendingRetry(spent.sessionId, "turn-spent")).toBe(true);
@@ -1151,7 +1375,7 @@ describe("InterruptedWorkRecovery", () => {
     expect(f.records.has(recorded.sessionId)).toBe(false);
     expect(f.reconciler.setRecovery).toHaveBeenCalledTimes(2);
     // The recorded reason still reaches the resumed Turn's notice.
-    f.recovery.resume(stopped.sessionId, { deliveryId: stopped.deliveryId, turnId: "turn-stopped" });
+    await f.recovery.resume(stopped.sessionId, { deliveryId: stopped.deliveryId, turnId: "turn-stopped" });
     expect(f.custody.resume).toHaveBeenCalledWith(
       stopped,
       "turn-stopped",
@@ -1195,8 +1419,7 @@ describe("InterruptedWorkRecovery", () => {
   });
 });
 
-function recoveryFixture() {
-  const records = new Map<string, TurnRetryRecord>();
+function recoveryFixture(records = new Map<string, TurnRetryRecord>()) {
   const unresolved = new Map<
     string,
     {
@@ -1222,6 +1445,23 @@ function recoveryFixture() {
     },
     custody: { resume: vi.fn(() => true) },
     reconciler: { setRecovery: vi.fn(), clearRecovery: vi.fn(() => true) },
+    logger: { info: vi.fn(), warn: vi.fn() },
+    retries: {
+      list: async () => [...records.values()],
+      write: async (record) => {
+        records.set(record.sessionId, record);
+      },
+      update: vi.fn(async (sessionId: string, turnId: string, change: (record: TurnRetryRecord) => TurnRetryRecord) => {
+        const current = records.get(sessionId);
+        if (!current || current.turnId !== turnId) return undefined;
+        const next = change(current);
+        records.set(sessionId, next);
+        return next;
+      }),
+      remove: async (sessionId) => {
+        records.delete(sessionId);
+      },
+    } satisfies InterruptedWorkRecoveryOptions["retries"],
     setState: (state: RuntimeConnectionState) => listener(state),
     recovery: undefined as unknown as InterruptedWorkRecovery,
   };
@@ -1248,18 +1488,10 @@ function recoveryFixture() {
     },
     custody: fixture.custody,
     inbox: fixture.inbox,
-    logger: { info: vi.fn(), warn: vi.fn() },
+    logger: fixture.logger,
     now: () => Date.parse("2026-11-05T00:00:00.000Z"),
     reconciler: fixture.reconciler,
-    retries: {
-      list: async () => [...records.values()],
-      write: async (record) => {
-        records.set(record.sessionId, record);
-      },
-      remove: async (sessionId) => {
-        records.delete(sessionId);
-      },
-    },
+    retries: fixture.retries,
   });
   return fixture;
 }

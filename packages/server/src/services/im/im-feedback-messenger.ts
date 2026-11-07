@@ -4,7 +4,7 @@ import { createFeishuHttpInstance, feishuDomainForWorkspaceBrand } from "../im-b
 import type { ImBindingService } from "../im-bindings/im-binding-service.js";
 import { SLACK_WEB_CLIENT_OPTIONS } from "../im-bindings/slack/default-api-client.js";
 import { type ExternalCallPolicy, ExternalCallPolicyError } from "./external-call-policy.js";
-import { renderFeedbackCard, renderFeedbackText } from "./im-feedback-card.js";
+import { renderFeedbackCard, renderFeedbackText, renderOfflineNotice } from "./im-feedback-card.js";
 import type { FeedbackLanguage } from "./im-feedback-copy.js";
 import type { FeedbackAction, FeedbackTarget, ImFeedbackStore, SlackFeedbackScope } from "./im-feedback-store.js";
 
@@ -28,6 +28,7 @@ export class FeedbackCooldownStorageError extends FeedbackProviderError {
 export interface FeedbackTransport {
   reaction(target: FeedbackTarget, desired: FeedbackTarget["desiredReaction"]): Promise<void>;
   post(target: FeedbackTarget, action?: FeedbackAction): Promise<string>;
+  postOfflineNotice(target: FeedbackTarget): Promise<void>;
   update(target: FeedbackTarget, action?: FeedbackAction): Promise<void>;
   find(target: FeedbackTarget, cursor?: string): Promise<{ ids: string[]; cursor?: string }>;
 }
@@ -271,6 +272,44 @@ export class ImFeedbackMessenger implements FeedbackTransport {
           if (r.code !== 0 || !r.data?.message_id || r.data.chat_id !== target.channelId)
             throw new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false);
           return r.data.message_id;
+        },
+        { maxAttempts: 1, timeoutMs: 8_000 },
+      );
+    } catch (error) {
+      throw postFailure(error);
+    }
+  }
+
+  /**
+   * Sends a reply outside the card identity: `providerRequestId` belongs to the failure message, and
+   * Feishu would swallow that later message as a duplicate of this one.
+   */
+  async postOfflineNotice(target: FeedbackTarget): Promise<void> {
+    try {
+      const text = renderOfflineNotice(target, this.publicUrl, await this.#language(target));
+      await this.#run(
+        `${target.provider}.feedback.offline_notice`,
+        async (signal) => {
+          if (target.provider === "slack") {
+            const { api } = await this.#slack(target, signal);
+            const r = await this.#slackCall(target, () =>
+              api.chat.postMessage({
+                channel: target.channelId,
+                thread_ts: target.threadKey ?? target.inputExternalId,
+                text,
+                unfurl_links: false,
+                unfurl_media: false,
+              }),
+            );
+            if (!r.ok) throw new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false);
+            return;
+          }
+          const { api } = await this.#feishu(target, signal);
+          const r = await api.im.v1.message.reply({
+            path: { message_id: target.inputExternalId },
+            data: { msg_type: "text", content: JSON.stringify({ text }) },
+          });
+          if (r.code !== 0) throw new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false);
         },
         { maxAttempts: 1, timeoutMs: 8_000 },
       );

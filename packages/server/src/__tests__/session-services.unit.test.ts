@@ -2184,7 +2184,9 @@ describe("SessionCollaborationService response mapping", () => {
     await expect(
       value.service.send({ messageId: "message-channel", targetSessionId: "target", message: "hello" }, source),
     ).resolves.toMatchObject({ status: "accepted" });
-    value.registry.capabilityVersion.mockReturnValue(1);
+    value.registry.capabilityVersion.mockImplementation((_computer, _instance, capability) =>
+      capability === "runtime.imCredentialGrant" ? 1 : undefined,
+    );
     await expect(
       value.service.send({ messageId: "message-3", targetSessionId: "target", message: "hello" }, source),
     ).resolves.toMatchObject({ code: "outbox_unavailable" });

@@ -961,9 +961,7 @@ describe("dispatch outcomes and the conditional summary (D09, D10, D16)", () => 
         now: () => currentTime.getTime() + 3 * 60_000,
       });
       const missed = () =>
-        (notifyMissed.mock.calls as unknown as [{ kind: string; code: string; requestId: string }][]).map(
-          ([input]) => input,
-        );
+        (notifyMissed.mock.calls as unknown as [{ kind: string; requestId: string }][]).map(([input]) => input);
       return { claimHeld, missed, row, stack, worker };
     }
 
@@ -978,9 +976,7 @@ describe("dispatch outcomes and the conditional summary (D09, D10, D16)", () => 
       expect(await messageRow(first.messageId)).toMatchObject({ lastErrorCode: "delivery_superseded" });
       expect(await messageRow(second.messageId)).toMatchObject({ lastErrorCode: "delivery_superseded" });
       expect(await messageRow(third.messageId)).toMatchObject({ lastErrorCode: "delivery_held" });
-      expect(missed()).toEqual([
-        expect.objectContaining({ kind: "missed", code: "delivery_superseded", requestId: first.messageId }),
-      ]);
+      expect(missed()).toEqual([expect.objectContaining({ kind: "missed", requestId: first.messageId })]);
     });
 
     it("posts when a held occurrence expires", async () => {
@@ -992,7 +988,7 @@ describe("dispatch outcomes and the conditional summary (D09, D10, D16)", () => 
       await stack.collaboration.expireHeld(held);
 
       expect(await messageRow(first.messageId)).toMatchObject({ lastErrorCode: "delivery_expired" });
-      expect(missed()).toEqual([expect.objectContaining({ kind: "missed", code: "delivery_expired" })]);
+      expect(missed()).toEqual([expect.objectContaining({ kind: "missed", requestId: first.messageId })]);
     });
 
     it("posts nothing when someone paused the schedule", async () => {

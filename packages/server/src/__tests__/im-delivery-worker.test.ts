@@ -1613,18 +1613,23 @@ describe("ImDeliveryWorker database workflow", () => {
   });
 
   it("starts and stops its interval without scheduling duplicate runs", async () => {
+    const fixture = await workerFixture(unit);
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture) as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+      registry: fixture.registry,
+      intervalMs: 5,
+    });
+    // Fake timers cover only this synchronous block: the count is global, so an awaited fixture under them
+    // would also count a timer set by any other async work still running in this process.
     vi.useFakeTimers();
     try {
-      const fixture = await workerFixture(unit);
-      const worker = new ImDeliveryWorker({
-        database: unit.database,
-        domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture) as never,
-        assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
-        registry: fixture.registry,
-        intervalMs: 5,
-      });
       worker.start();
+      const started = vi.getTimerCount();
+      expect(started).toBeGreaterThan(0);
       worker.start();
+      expect(vi.getTimerCount()).toBe(started);
       worker.stop();
       worker.stop();
       expect(vi.getTimerCount()).toBe(0);

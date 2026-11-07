@@ -271,6 +271,7 @@ export class ScheduleScheduler {
     const occurrence: ScheduledOccurrence = {
       agentId: snapshot.agentId,
       name: snapshot.origin.name,
+      prompt: snapshot.content,
       scheduleId: snapshot.scheduleId,
       scheduledFor: snapshot.origin.scheduledFor,
       targetSessionId: snapshot.targetSessionId,
@@ -353,13 +354,12 @@ export class ScheduleScheduler {
     const { missNotices, logger } = this.#options;
     if (!missNotices || this.#stopped) return;
     const kind = scheduledMissKind(result);
-    if (!kind || result.code === null) return;
+    if (!kind) return;
     const notice = missNotices
       .notifyMissed(
         {
           occurrence,
           kind,
-          code: result.code,
           requestId: scheduledMessageId(occurrence.scheduleId, new Date(occurrence.scheduledFor)),
         },
         this.#noticesAbort.signal,
@@ -655,6 +655,7 @@ function occurrenceOf(row: ScheduleRow, scheduledFor: Date): ScheduledOccurrence
   return {
     agentId: row.agentId,
     name: row.name,
+    prompt: row.prompt,
     scheduleId: row.id,
     scheduledFor: scheduledFor.toISOString(),
     targetSessionId: row.targetSessionId,

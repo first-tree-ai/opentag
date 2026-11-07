@@ -16,6 +16,23 @@ the same Session after the daemon is back, its input begins with
 - One Agent on that Computer with an IM binding, and permission to stop, kill and restart its daemon.
 - For internal Sessions: a request that makes the visible Session run `opentag session create` for a long task.
 
+## Offline notice
+
+With an IM test binding on a Local Computer and permission to stop its daemon:
+
+1. Stop the daemon and send a direct request in Chinese. Expected: no reply before sixty seconds, then one reply within
+   about seventy-five seconds with the agreed four sentences and a Restore connection link. No Computer name or person
+   is named.
+2. Send two more requests in the same Session. Expected: no further notice. Send one in another Session of the Agent.
+   Expected: that Session gets its own single notice.
+3. Open the link signed in as the Agent owner. Expected: the Agent page shows the Computer as offline, and its link
+   opens the recovery page with the restore command. Open it signed out. Expected: sign-in. Open it as an Account with
+   other Agents. Expected: not found. Open it as an Account with no Agents. Expected: first-Agent setup.
+4. Restart the daemon. Expected: the parked messages run and no "back online" message appears. Stop it again and send
+   a request. Expected: one new notice for this new offline period.
+5. Restart the daemon within sixty seconds of a new request. Expected: no notice.
+6. Send a request to an Agent on Cloud while its Runner is unavailable. Expected: no offline notice.
+
 ## Failure messages
 
 With an IM test binding and a runtime that can be made to fail on request:
@@ -243,6 +260,29 @@ Use a steer-capable Provider (Claude Code on a current version). A child's long 
    one notice per message to its sender, no further Run. A message queued but not yet steered runs on its own.
 5. Make the child's task fail without a retry while a follow-up is steered into it. Expected: both fail with one notice each to
    the sender, and no further Run.
+
+## Steers the conversation already holds
+
+A message steered into a Run and confirmed by the Provider is not sent again in the same Provider conversation, on any path. It
+still shares the Run's retries and its outcome. Use Claude Code and Codex, and count each message in the Provider transcript
+(Claude Code's project JSONL, Codex's rollout). Pi gives no confirmation, so it always repeats the message with the notice.
+
+1. **IM Turn, restart.** While an IM Turn is working, send a follow-up in the same conversation and wait until the Agent has
+   answered after it. Kill and restart the daemon. Expected: the Turn continues, and the transcript holds the follow-up once.
+2. **Session message, restart.** Repeat step 1 with a Session message steered into the Turn, and with one steered into a child's
+   Session message Run. Expected: the same, and the Agent can still quote the message after the restart.
+3. **Not confirmed.** With Claude Code, repeat steps 1 and 2 but kill the daemon right after the steer, before the model answers.
+   Expected: the message arrives again with the notice, in order, and the transcript holds it once more. Codex confirms a steer
+   with its answer, so a message it has not answered has not joined the Run and is delivered as a new steer, without the notice.
+4. **Different conversation.** Repeat steps 1 and 2, and while the daemon is down remove the Session's runtime binding (under
+   `data/runtime/session-bindings`), so the Run starts a new Provider conversation. Expected: each message arrives again in the new conversation with the notice.
+5. **Model HTTP 429.** Where a 429 can be provoked safely (an authorized low-limit test key; do not provoke it on shared accounts),
+   steer an IM follow-up and a Session message into a Run, let the model answer after them, then let the next request get the 429.
+   Expected: the Run retries in place with the rate-limit notice, and the retry input leaves out both messages. Steer again
+   into a request the 429 rejects, so the model never answers that steer. Expected: the retry input includes that message, in order.
+6. **Shared outcome.** After steps 1, 2 and 5, let the Run complete. Expected: every message it carried succeeds with it, including
+   those not sent again, with no notice to their senders. Then repeat and make the Run fail, or exhaust its retries. Expected: every
+   message that conversation held fails with it, one notice to each sender, and no further Run.
 
 ## Failure notice to the sender
 

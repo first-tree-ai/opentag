@@ -1,6 +1,6 @@
 ---
 title: "IM task feedback and safe recovery"
-description: "Durable working reactions, plain-text failure messages, Account confirmations, and conservative recovery of unknown provider outcomes."
+description: "Durable working reactions, offline notices, plain-text failure messages, Account confirmations, and conservative recovery of unknown provider outcomes."
 ---
 
 # IM task feedback and safe recovery
@@ -46,6 +46,41 @@ while the retry is pending or running, so the working reaction stays on the inpu
 appears. Failure feedback appears only once the Turn is terminal — when the one retry also fails, or when the failure
 was not recoverable — and then follows the rules above for that final report. A retry that completes removes the
 working reaction like any successful Turn.
+
+## Offline notice
+
+A direct message parked on an offline Local Computer otherwise shows nothing, because the working reaction waits for
+custody. After sixty seconds the Bot replies once with the reason, how to recover, and that the message is saved:
+
+> The computer running this Agent is offline, so this message can't be handled yet.
+> Check that the computer is on and connected, then restore the connection on the Agent page. [Restore connection]
+> If you don't manage this Agent, contact its administrator.
+> Your message is saved and will be handled after it reconnects. It expires after 7 days.
+
+The link opens the Agent page. For its owner the Computer row shows **Offline** with a link to the Computer recovery
+page, which offers the restore command. Signed-out people reach sign-in. Another Account gets a not-found page, or
+first-Agent setup if it has no Agents, so the third sentence tells them to contact the administrator. The notice names neither the Computer
+nor an administrator, because everyone in the conversation reads it. It follows the same language rule as failure
+messages.
+
+- **When.** Sixty seconds after the later of the message's receipt and the Computer's `last_seen_at`, with the Computer
+  offline by the same rule the Web uses: disconnected, no current instance, or silent past the presence timeout. A
+  message that waited behind a running Turn gets no notice the moment its Computer disconnects, and upgrades and short
+  disconnects stay silent. The feedback worker revisits queued targets every fifteen seconds, which is the extra delay.
+- **How often.** Once per Session and offline period. `last_seen_at` is frozen while offline and rewritten on
+  reconnect, so a feedback send at or after it belongs to the current period. A Computer that never connected has been offline
+  since it was created, so that time is its period start. The baseline must not be the message's receipt, which would
+  repeat the notice for every later message in one outage. Any send counts, including a failure
+  message. `im_feedback_targets.send_started_at` records the reservation, so this adds no table or column. The Session
+  row lock makes concurrent targets of a Session take turns, eligibility is read again under it because the Computer
+  can reconnect during the wait, and the check walks the Session's deliveries rather than the input's lifetime. An
+  outage longer than the ninety-day feedback retention can send another notice.
+- **Crash and provider outcomes.** The reservation commits before provider I/O, so a crash or lost acknowledgement can
+  lose a notice but never repeats one. A send the provider definitely did not apply, such as a rate limit, is released
+  for a later pass. A cooldown-storage failure stops the worker pass, as it does for other feedback calls. The notice does not use the failure message's request identity, which Feishu would deduplicate.
+- **Scope.** Local Computers only: Cloud placements never match. A paused or suspended Agent, an expired credential,
+  and a deleted Computer are out of scope. Recovery sends no "back online" message, because the working reaction and
+  reply are the signal, and an expired message keeps the existing failure message.
 
 ## Failure messages
 
@@ -94,8 +129,12 @@ A scheduled message goes to the Agent only and posts nothing in IM when it start
 ([#1352](https://github.com/first-tree-ai/opentag/issues/1352)). It has no sender and no native input, so neither the
 sender notice nor a feedback target can carry its failure. This section covers a visible target; for an internal Session, see
 [Schedules on an internal Session](internal-session-collaboration.md#schedules-on-an-internal-session). The Server instead posts one plain message from the Session's
-Bot in the Session's own chat or thread, with the task name, scheduled time, stable code, and schedule details link. It
-stores no IM feedback state and adds no column.
+Bot in the Session's own chat or thread. It has the same shape as other [failure messages](#failure-messages): what
+happened with the task name and scheduled time, whether operations ran, what to do next, and a clickable link to the schedule.
+Stable codes stay out of the message; the schedule page shows the reason. A schedule has no sender, so the language follows
+its task text by the same rule. Brackets in the task name are replaced with lookalikes, so a name can't carry a mention or a
+disguised link; a bare URL in a name can still be linked by Feishu, but it shows its real address. The Server stores no IM
+feedback state for this and adds no column.
 
 | What happened | Example codes | Conversation hears |
 | --- | --- | --- |
@@ -126,7 +165,11 @@ Delivery is best effort:
   loses the message. The Agent schedule page still shows the miss from `last_dispatch`.
 - A Client that never returns never reports a message it accepted; its next occurrence reports the miss instead.
 
-The schedule page is unchanged: its last run shows delivery, so a Run that failed after delivery still reads as run.
+The message links to the schedule, whose last run shows the reason. A Run that failed after delivery writes its code to
+the summary's existing `last_dispatch.code` with the outcome still `accepted`, and the page reads as failed. A slower
+hand-off result for the same occurrence does not replace it, since the Run's report may be gone by then. The summary only
+describes the latest occurrence: once the next one is claimed, the link shows that one, and an older report writes
+nothing. A cancelled Run leaves the summary alone.
 
 ## Account operations
 

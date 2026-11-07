@@ -1377,6 +1377,9 @@ export class SessionService {
         .update(sessionDescendants)
         .set({ lastDeliveryOutcome: input.outcome })
         .where(eq(sessionDescendants.lastMessageId, input.messageId));
+      // A Run that already failed is the last word on this occurrence: its report may be gone by the
+      // time a slower hand-off result arrives, so nothing would write the reason again.
+      const keepsRunFailure = sql`not coalesce(${agentSchedules.lastDispatch} ->> 'outcome' = 'accepted' and ${agentSchedules.lastDispatch} ->> 'code' is not null, false)`;
       if (input.scheduleSummary) {
         const summary: AgentScheduleLastDispatch = {
           scheduledFor: input.scheduleSummary.scheduledFor,
@@ -1393,6 +1396,7 @@ export class SessionService {
               eq(agentSchedules.id, input.scheduleSummary.scheduleId),
               sql`${agentSchedules.lastDispatch} ->> 'scheduledFor' = ${input.scheduleSummary.scheduledFor}`,
               sql`${agentSchedules.lastDispatch} ->> 'messageId' = ${input.messageId}`,
+              keepsRunFailure,
             ),
           );
       } else if (input.outcome === "accepted" && updated.scheduledOrigin) {
@@ -1408,6 +1412,7 @@ export class SessionService {
               eq(agentSchedules.id, updated.scheduledOrigin.scheduleId),
               sql`${agentSchedules.lastDispatch} ->> 'scheduledFor' = ${updated.scheduledOrigin.scheduledFor}`,
               sql`${agentSchedules.lastDispatch} ->> 'messageId' = ${input.messageId}`,
+              keepsRunFailure,
             ),
           );
       }

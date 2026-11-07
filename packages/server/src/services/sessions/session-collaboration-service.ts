@@ -16,10 +16,11 @@ import {
   type SessionMessageDeliveryResult,
   type SessionMessageRunOutcome,
   type SessionMessageScheduledOrigin,
+  type SessionReconcileRequest,
   type SessionReconcileResult,
 } from "@opentag/shared";
 import type { ServiceLogger } from "../../observability/service-logger.js";
-import type { ConnectionRegistry } from "../../runtime/connection-registry.js";
+import { type ConnectionRegistry, RuntimeRegistrySendError } from "../../runtime/connection-registry.js";
 import {
   type RuntimeDispatchAdmission,
   type RuntimeDomainOwner,
@@ -262,6 +263,7 @@ export interface HeldScheduledMiss {
   occurrence: {
     agentId: string;
     name: string;
+    prompt: string;
     scheduleId: string;
     scheduledFor: string;
     targetSessionId: string;
@@ -293,6 +295,17 @@ interface LocalHandOffInput {
   sourceSessionId: string;
   content: string;
   creatorSessionId: string | null;
+  /** Offer the message inside the reconcile frame when the Client negotiated that. */
+  inlineMessage?: boolean;
+}
+
+const UNCONFIRMED_HAND_OFF: LocalHandOff = { kind: "temporary", code: "delivery_timeout" };
+
+function handOffOfDelivery(delivery: SessionMessageDeliveryResult): LocalHandOff {
+  const mapped = mapScheduledDelivery(delivery);
+  if (mapped.outcome === "accepted") return { kind: "accepted" };
+  if (mapped.outcome === "rejected") return { kind: "rejected", code: mapped.code ?? "target_unavailable" };
+  return { kind: "temporary", code: mapped.code ?? "runtime_not_ready" };
 }
 
 /**
@@ -884,7 +897,7 @@ export class SessionCollaborationService {
         targetSessionId: input.targetSessionId,
         content: input.message,
       });
-      return await this.#deliver(attempt, input.targetSessionId);
+      return await this.#deliver(attempt, input.targetSessionId, { inlineLocalMessage: true });
     } catch (error) {
       return this.#failure(input.messageId, error);
     }
@@ -1098,7 +1111,7 @@ export class SessionCollaborationService {
   ): Promise<RunOutcomeNoticeStatus> {
     try {
       return this.#runOutcomeNoticeStatus(
-        await this.#deliver(prepared.attempt, prepared.recipientSessionId, signal),
+        await this.#deliver(prepared.attempt, prepared.recipientSessionId, { signal }),
         input,
       );
     } catch (error) {
@@ -1126,7 +1139,7 @@ export class SessionCollaborationService {
   async #deliver(
     attempt: SessionMessageAttempt,
     sessionId: string,
-    signal?: AbortSignal,
+    { signal, inlineLocalMessage = false }: { signal?: AbortSignal; inlineLocalMessage?: boolean } = {},
   ): Promise<SessionCliCommandResponse> {
     if (attempt.attemptCount === null) {
       return response(
@@ -1166,7 +1179,14 @@ export class SessionCollaborationService {
     if (attempt.route.targetComputerKind === "cloud") {
       return this.#deliverCloud(attempt, sessionId, runtime, signal);
     }
-    return this.#deliverLocalWithinBudget(attempt, sessionId, runtime, attempt.attemptCount, signal);
+    return this.#deliverLocalWithinBudget(
+      attempt,
+      sessionId,
+      runtime,
+      attempt.attemptCount,
+      inlineLocalMessage,
+      signal,
+    );
   }
 
   /**
@@ -1179,12 +1199,21 @@ export class SessionCollaborationService {
     sessionId: string,
     runtime: EffectiveRuntimeSnapshot,
     attemptCount: number,
+    inlineLocalMessage: boolean,
     signal?: AbortSignal,
   ): Promise<SessionCliCommandResponse> {
     const custody: HandOffCustody = { heldByServer: false };
     const messageId = attempt.message.id;
     this.#inFlightHandOffs.add(messageId);
-    const work = this.#deliverLocal(attempt, sessionId, runtime, attemptCount, custody, signal).finally(() => {
+    const work = this.#deliverLocal(
+      attempt,
+      sessionId,
+      runtime,
+      attemptCount,
+      inlineLocalMessage,
+      custody,
+      signal,
+    ).finally(() => {
       this.#inFlightHandOffs.delete(messageId);
     });
     // A signal means background work with no waiting sender, whose owner must drain it before shutdown.
@@ -1242,6 +1271,7 @@ export class SessionCollaborationService {
     sessionId: string,
     runtime: EffectiveRuntimeSnapshot,
     attemptCount: number,
+    inlineLocalMessage: boolean,
     custody: HandOffCustody,
     signal?: AbortSignal,
   ): Promise<SessionCliCommandResponse> {
@@ -1252,6 +1282,7 @@ export class SessionCollaborationService {
         sourceSessionId: attempt.route.sourceSessionId,
         content: attempt.message.content,
         creatorSessionId: attempt.route.targetCreatorSessionId ?? attempt.route.sourceSessionId,
+        inlineMessage: inlineLocalMessage,
       },
       runtime,
       (operation) =>
@@ -1288,8 +1319,8 @@ export class SessionCollaborationService {
   ): Promise<LocalHandOff> {
     const gate = this.#localHandOffGate(input.route);
     if ("code" in gate) return { kind: "temporary", code: gate.code };
-    const notReady = await this.#reconcileForHandOff(input, gate.instanceId, runtime, admission, signal);
-    if (notReady) return notReady;
+    const answered = await this.#reconcileForHandOff(input, gate.instanceId, runtime, admission, signal);
+    if (answered) return answered;
     if (signal?.aborted) return { kind: "aborted" };
     return this.#offerLocal(input, gate.instanceId, runtime, admission, signal);
   }
@@ -1311,40 +1342,97 @@ export class SessionCollaborationService {
     return { instanceId };
   }
 
-  /** Answers undefined when the target is ready for the message. */
+  /** Answers undefined when the message still needs its own delivery frame. */
   async #reconcileForHandOff(
-    { route, creatorSessionId }: LocalHandOffInput,
+    input: LocalHandOffInput,
     instanceId: string,
     runtime: EffectiveRuntimeSnapshot,
     admission: DispatchAdmission,
     signal?: AbortSignal,
   ): Promise<LocalHandOff | undefined> {
-    try {
-      const reconciled = await this.#domain.requestReconcile(
+    const { route, creatorSessionId } = input;
+    const inline =
+      input.inlineMessage === true &&
+      this.#registry.capabilityVersion(
         route.targetComputerId,
         instanceId,
-        {
-          type: "session:reconcile",
-          requestId: randomUUID(),
-          installationId: route.targetInstallationId,
-          sessionId: route.targetSessionId,
-          agentId: route.agentId,
-          placementGeneration: route.targetPlacementGeneration,
-          ...(route.targetSessionKind === "internal" && creatorSessionId
-            ? { sessionKind: "internal" as const, creatorSessionId }
-            : {}),
-          desired: "ready",
-          runtime,
-        },
-        undefined,
-        admission,
-        signal,
-        { joinSettlement: Boolean(signal) },
-      );
-      if (new Set(["ready", "running", "reporting"]).has(reconciled.status)) return undefined;
+        RUNTIME_CAPABILITY.sessionMessageReconcile,
+      ) === 1;
+    const prepared = await this.#sendHandOffReconcile(
+      route,
+      instanceId,
+      {
+        type: "session:reconcile",
+        requestId: randomUUID(),
+        installationId: route.targetInstallationId,
+        sessionId: route.targetSessionId,
+        agentId: route.agentId,
+        placementGeneration: route.targetPlacementGeneration,
+        ...(route.targetSessionKind === "internal" && creatorSessionId
+          ? { sessionKind: "internal" as const, creatorSessionId }
+          : {}),
+        desired: "ready",
+        runtime,
+        ...(inline
+          ? {
+              sessionMessage: {
+                messageId: input.messageId,
+                sourceSessionId: input.sourceSessionId,
+                content: { kind: "text" as const, text: input.content },
+              },
+            }
+          : {}),
+      },
+      admission,
+      signal,
+    );
+    if ("handOff" in prepared) return prepared.handOff;
+    const { result } = prepared;
+    if (!["ready", "running", "reporting"].includes(result.status)) {
       return { kind: "temporary", code: "runtime_not_ready" };
+    }
+    if (result.sessionMessage && result.sessionMessage !== "deferred") return handOffOfDelivery(result.sessionMessage);
+    return undefined;
+  }
+
+  /**
+   * A combined frame the Client may have taken has no provable outcome. Held delivery can offer it again,
+   * because the Client deduplicates by message ID; without holding it stays `unknown`, and is not resent.
+   */
+  async #sendHandOffReconcile(
+    route: AuthorizedHeldMessageRoute,
+    instanceId: string,
+    request: SessionReconcileRequest,
+    admission: DispatchAdmission,
+    signal?: AbortSignal,
+  ): Promise<{ result: SessionReconcileResult } | { handOff: LocalHandOff }> {
+    const send = (frame: SessionReconcileRequest, onDispatched?: () => void) =>
+      this.#domain.requestReconcile(route.targetComputerId, instanceId, frame, onDispatched, admission, signal, {
+        joinSettlement: Boolean(signal),
+      });
+    let inline = request.sessionMessage !== undefined;
+    let dispatched = false;
+    const onDispatched = () => {
+      dispatched = true;
+    };
+    try {
+      const result = await send(request, inline ? onDispatched : undefined).catch((error: unknown) => {
+        if (!(inline && error instanceof RuntimeRegistrySendError && error.code === "frame_too_large")) throw error;
+        // The registry refused this frame before sending. Each of the original frames can still fit.
+        inline = false;
+        return send({ ...request, requestId: randomUUID(), sessionMessage: undefined });
+      });
+      if (inline && result.sessionMessage === undefined) return { handOff: UNCONFIRMED_HAND_OFF };
+      return { result };
     } catch (error) {
-      return { kind: isAdmissionRefusal(error) ? "refused" : "temporary", code: "runtime_not_ready" };
+      if (isAdmissionRefusal(error)) return { handOff: { kind: "refused", code: "runtime_not_ready" } };
+      const unconfirmed =
+        dispatched ||
+        deliveryOutcomeUnknown(error, signal) ||
+        (error instanceof RuntimeRegistrySendError && error.mayHaveSent) ||
+        (error instanceof RuntimeDomainRequestError && error.code === "delivery_unconfirmed");
+      if (inline && unconfirmed) return { handOff: UNCONFIRMED_HAND_OFF };
+      return { handOff: { kind: "temporary", code: "runtime_not_ready" } };
     }
   }
 
@@ -1368,7 +1456,7 @@ export class SessionCollaborationService {
       runtime,
     };
     try {
-      const mapped = mapScheduledDelivery(
+      return handOffOfDelivery(
         await this.#domain.requestSessionMessageDelivery(
           route.targetComputerId,
           instanceId,
@@ -1378,9 +1466,6 @@ export class SessionCollaborationService {
           ...(signal ? ([signal] as const) : []),
         ),
       );
-      if (mapped.outcome === "accepted") return { kind: "accepted" };
-      if (mapped.outcome === "rejected") return { kind: "rejected", code: mapped.code ?? "target_unavailable" };
-      return { kind: "temporary", code: mapped.code ?? "runtime_not_ready" };
     } catch (error) {
       if (isAdmissionRefusal(error)) return { kind: "refused", code: "runtime_unavailable" };
       return {
@@ -1599,6 +1684,7 @@ export class SessionCollaborationService {
       occurrence: {
         agentId: message.agentId ?? "",
         name: origin.name,
+        prompt: message.content,
         scheduleId: origin.scheduleId,
         scheduledFor: origin.scheduledFor,
         targetSessionId: message.targetSessionId,

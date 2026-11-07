@@ -158,6 +158,8 @@ export interface TurnRetryRecord {
   request: DirectImMessageDeliveryRequest;
   /** Messages steered into this Turn, re-included on retry. */
   steers: RuntimeImSteerRequest[];
+  /** Which provider conversation durably holds each steer, by delivery; a retry there does not repeat it. */
+  steerConversations?: Readonly<Record<string, string>>;
   /** Automatic retries in a row, for process interruptions and model 429 alike. */
   retries: number;
   /** Actual run time of every attempt so far, against the Run's duration limit. */
@@ -289,6 +291,13 @@ export class TurnRetryStore {
   }
 }
 
+/** Anything unreadable is dropped: without it the steers are replayed, which repeats but never loses them. */
+function parseSteerConversations(value: unknown): Pick<TurnRetryRecord, "steerConversations"> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const entries = Object.entries(value).filter(([, conversation]) => typeof conversation === "string");
+  return entries.length > 0 ? { steerConversations: Object.fromEntries(entries) as Record<string, string> } : {};
+}
+
 export function parseTurnRetryRecord(value: unknown): TurnRetryRecord {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new RuntimeStorageError("invalid", "Turn retry record is invalid");
@@ -325,6 +334,7 @@ export function parseTurnRetryRecord(value: unknown): TurnRetryRecord {
     turnId: candidate.turnId,
     request,
     steers,
+    ...parseSteerConversations(candidate.steerConversations),
     retries: candidate.retries as number,
     ...(candidate.retryNotStarted === true ? { retryNotStarted: true } : {}),
     ...(ranMs !== undefined ? { ranMs } : {}),

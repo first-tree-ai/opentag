@@ -150,6 +150,28 @@ beforeEach(() => {
 });
 afterEach(() => vi.useRealTimers());
 describe("native feedback transport", () => {
+  it("sends the offline notice outside the failure message identity", async () => {
+    const { messenger, cooldown } = harness();
+    cooldown.messageLanguage.mockResolvedValueOnce("zh");
+    const t = target("feishu");
+    mocks.feishu.im.v1.message.reply.mockResolvedValue({ code: 0, data: { message_id: "n", chat_id: t.channelId } });
+    await messenger.postOfflineNotice(t);
+    const data = mocks.feishu.im.v1.message.reply.mock.calls[0]?.[0].data;
+    expect(data).not.toHaveProperty("uuid");
+    expect(JSON.parse(data.content).text).toBe(
+      `运行这个 Agent 的电脑离线了，暂时处理不了这条消息。\n请确认电脑已开机、已联网，再到 Agent 页面恢复连接。 [恢复连接](https://app.example.test/agents/${t.agentId})\n如果这不是你管理的 Agent，请联系它的管理员。\n消息已保留，恢复后会自动处理；7 天内没恢复会过期。`,
+    );
+  });
+  it("sends the Slack offline notice in the thread with a Slack link", async () => {
+    const { messenger } = harness();
+    const t = target("slack");
+    mocks.slack.chat.postMessage.mockResolvedValue({ ok: true, channel: t.channelId, ts: "n" });
+    await messenger.postOfflineNotice(t);
+    const sent = mocks.slack.chat.postMessage.mock.calls[0]?.[0];
+    expect(sent).toMatchObject({ channel: t.channelId, thread_ts: t.threadKey ?? t.inputExternalId });
+    expect(sent.text).toContain(`<https://app.example.test/agents/${t.agentId}|Restore connection>`);
+    expect(sent.text).toContain("It expires after 7 days.");
+  });
   it("does not submit a send whose language cannot be read, and keeps it retryable", async () => {
     const { messenger, cooldown } = harness();
     cooldown.messageLanguage.mockRejectedValueOnce(new Error("storage"));

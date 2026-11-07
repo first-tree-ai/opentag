@@ -278,6 +278,122 @@ describe("ClaudeCodeProcess", () => {
       ).resolves.toEqual({ stderr: "", notice: undefined });
     });
 
+    const fired = (uuid: string, source: string, state = "started") => ({
+      type: "command_lifecycle",
+      command_uuid: uuid,
+      state,
+      wakeup_source: source,
+    });
+    const firedTurn = (uuid: string, source: string) => [fired(uuid, source), fired(uuid, source, "completed")];
+    const oneShot = (id: string, nextFireAt?: number) => [
+      toolUse(id, "CronCreate"),
+      toolResult(id, {}, { id, recurring: false, durable: false, ...(nextFireAt === undefined ? {} : { nextFireAt }) }),
+    ];
+
+    it("does not count a wakeup that fired", async () => {
+      await expect(
+        runWith([
+          toolUse("a", "ScheduleWakeup", { delaySeconds: 60 }),
+          toolResult("a"),
+          ...firedTurn("w", "loop_wakeup"),
+        ]),
+      ).resolves.toEqual({ stderr: "", notice: undefined });
+    });
+
+    it("counts a wakeup set again after one fired", async () => {
+      await expect(
+        runWith([
+          toolUse("a", "ScheduleWakeup", { delaySeconds: 60 }),
+          toolResult("a"),
+          ...firedTurn("w", "loop_wakeup"),
+          toolUse("b", "ScheduleWakeup", { delaySeconds: 60 }),
+          toolResult("b"),
+        ]),
+      ).resolves.toMatchObject({ abandonedBackgroundWork: ["ScheduleWakeup timer"] });
+    });
+
+    it("does not count a one-shot cron job that fired, taking the earliest due one", async () => {
+      await expect(
+        runWith([
+          ...oneShot("late", 2000),
+          ...oneShot("early", 1000),
+          fired("q", "schedule_wakeup", "queued"),
+          ...firedTurn("c", "schedule_wakeup"),
+        ]),
+      ).resolves.toMatchObject({ abandonedBackgroundWork: ["CronCreate job late"] });
+      await expect(runWith([...oneShot("job"), ...firedTurn("c", "schedule_wakeup")])).resolves.toEqual({
+        stderr: "",
+        notice: undefined,
+      });
+    });
+
+    it("keeps a recurring cron job and a one-shot job not due when a cron job fires", async () => {
+      await expect(
+        runWith([
+          toolUse("a", "CronCreate"),
+          toolResult("a", {}, { id: "recurring", recurring: true, durable: false, nextFireAt: 0 }),
+          ...oneShot("future", Date.now() + 3_600_000),
+          ...firedTurn("c", "schedule_wakeup"),
+        ]),
+      ).resolves.toMatchObject({ abandonedBackgroundWork: ["CronCreate job recurring", "CronCreate job future"] });
+    });
+
+    it("reports nothing when a one-shot timer fires during the notice turn, whose result still ends the Run", async () => {
+      const child = fakeChild();
+      const writes: string[] = [];
+      child.stdin.on("data", (line) => writes.push(line.toString()));
+      const process = fakeProcess(child);
+      const seen: (boolean | undefined)[] = [];
+      const run = process.execute(
+        { type: "user" },
+        (_message, terminal) => seen.push(terminal),
+        new AbortController().signal,
+      );
+      const before = [
+        toolUse("a", "ScheduleWakeup", { delaySeconds: 60 }),
+        toolResult("a"),
+        ...oneShot("job", 1000),
+        { type: "result", user_message_uuids: ["prompt"] },
+      ];
+      for (const frame of before) child.stdout.write(`${JSON.stringify(frame)}\n`);
+      await vi.waitFor(() => expect(writes).toHaveLength(2));
+      seen.length = 0;
+      const after = [
+        // Each fired timer gets its own turn and result. Neither is the notice's.
+        fired("w", "loop_wakeup"),
+        { type: "result", result: "WAKE-OK", num_turns: 1 },
+        fired("w", "loop_wakeup", "completed"),
+        fired("c", "schedule_wakeup"),
+        { type: "result", result: "CRON-OK", num_turns: 1 },
+        fired("c", "schedule_wakeup", "completed"),
+        { type: "result", result: "told them", user_message_uuids: [JSON.parse(writes[1] as string).uuid] },
+      ];
+      for (const frame of after) child.stdout.write(`${JSON.stringify(frame)}\n`);
+      expect(seen).toEqual([false, false, false, false, false, false, true]);
+      child.emit("exit", 143, null);
+      await expect(run).resolves.toEqual({ stderr: "" });
+    });
+
+    it("ends the Run at the notice's result even while a fired timer's turn is open", async () => {
+      const child = fakeChild();
+      const writes: string[] = [];
+      child.stdin.on("data", (line) => writes.push(line.toString()));
+      const process = fakeProcess(child);
+      const seen: (boolean | undefined)[] = [];
+      const run = process.execute(
+        { type: "user" },
+        (_message, terminal) => seen.push(terminal),
+        new AbortController().signal,
+      );
+      child.stdout.write(`${JSON.stringify(backgroundTasks({ task_id: "a" }))}\n{"type":"result"}\n`);
+      await vi.waitFor(() => expect(writes).toHaveLength(2));
+      const named = { type: "result", user_message_uuids: [JSON.parse(writes[1] as string).uuid] };
+      child.stdout.write(`${JSON.stringify(fired("w", "loop_wakeup"))}\n${JSON.stringify(named)}\n`);
+      expect(seen.at(-1)).toBe(true);
+      child.emit("exit", 143, null);
+      await run;
+    });
+
     it("reports nothing when the Session deletes its cron job in the notice turn", async () => {
       const child = fakeChild();
       const writes: string[] = [];

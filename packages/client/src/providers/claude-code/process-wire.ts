@@ -9,6 +9,8 @@ export const CLAUDE_CODE_MAX_STDERR_BYTES = 64 * 1024;
 /** Tools that change timers living inside the Claude Code process, which appear in no task list. */
 const IN_PROCESS_TIMER_TOOLS = new Set(["ScheduleWakeup", "CronCreate", "CronDelete"]);
 const WAKEUP_TIMER = "ScheduleWakeup timer";
+/** Claude Code may fire a one-shot cron job ahead of its `nextFireAt`, and names no job when it does. */
+const ONE_SHOT_EARLY_FIRE_MS = 120_000;
 
 export class ClaudeCodeProcessError extends Error {
   constructor(
@@ -330,7 +332,8 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
 
   #isSelfGeneratedResult(result: Record<string, unknown>): boolean {
     const inputs = result.user_message_uuids;
-    return isRecord(result.origin) && !(Array.isArray(inputs) && inputs.length > 0);
+    if (Array.isArray(inputs) && inputs.length > 0) return false;
+    return isRecord(result.origin) || this.#inProcessTimers.turnRunning;
   }
 
   /** Follows what will stop with this process. The list of tasks is replaced on every change. */
@@ -447,18 +450,32 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
   }
 }
 
+interface LiveTimer {
+  readonly label: string;
+  /** When a one-shot job is due; a recurring job or wakeup has none. */
+  readonly oneShotAt?: number;
+}
+
 /**
  * The timers confirmed live in this process. A tool call counts only once its `tool_result` succeeded:
- * an invalid cron expression creates nothing, and `CronDelete` and `ScheduleWakeup` with `stop` remove
- * what they name. A cron job with `durable: true` is written to disk, so it does not stop with the process.
+ * an invalid cron expression creates nothing, `CronDelete` and `ScheduleWakeup` with `stop` remove what
+ * they name, and a one-shot timer is gone once it fired. A cron job with `durable: true` is written to disk, so it does not stop with the process.
  */
 class InProcessTimers {
   /** Timer tool calls waiting for their `tool_result`, by tool call id. */
   readonly #calls = new Map<string, Record<string, unknown>>();
   /** Live timers by job id, with one entry for the Session's single pending wakeup. */
-  readonly #live = new Map<string, string>();
+  readonly #live = new Map<string, LiveTimer>();
+  /** Turns Claude Code started because a timer fired, by command uuid. */
+  readonly #firedTurns = new Set<string>();
+
+  /** A fired timer's turn reports its own `result`, which is not the result of any input. */
+  get turnRunning(): boolean {
+    return this.#firedTurns.size > 0;
+  }
 
   observe(frame: Record<string, unknown>): void {
+    if (frame.type === "command_lifecycle") this.#observeLifecycle(frame);
     if (!isRecord(frame.message) || !Array.isArray(frame.message.content)) return;
     for (const block of frame.message.content.filter(isRecord)) {
       if (frame.type === "assistant" && block.type === "tool_use") this.#recordCall(block);
@@ -466,8 +483,28 @@ class InProcessTimers {
     }
   }
 
+  /**
+   * Firing shows only here: `wakeup_source` is `loop_wakeup` for `ScheduleWakeup` and `schedule_wakeup`
+   * for a cron job. A recurring job stays live, and so does a one-shot job that is not due yet.
+   */
+  #observeLifecycle(frame: Record<string, unknown>): void {
+    const command = String(frame.command_uuid);
+    if (frame.state === "completed") this.#firedTurns.delete(command);
+    if (frame.state !== "started" || typeof frame.wakeup_source !== "string") return;
+    this.#firedTurns.add(command);
+    if (frame.wakeup_source === "loop_wakeup") this.#live.delete(WAKEUP_TIMER);
+    else this.#retireDueOneShot();
+  }
+
+  #retireDueOneShot(): void {
+    const due = [...this.#live]
+      .filter(([, timer]) => timer.oneShotAt !== undefined && timer.oneShotAt <= Date.now() + ONE_SHOT_EARLY_FIRE_MS)
+      .sort(([, a], [, b]) => Number(a.oneShotAt) - Number(b.oneShotAt));
+    if (due[0]) this.#live.delete(due[0][0]);
+  }
+
   labels(): string[] {
-    return [...this.#live.values()];
+    return [...this.#live.values()].map((timer) => timer.label);
   }
 
   #recordCall(block: Record<string, unknown>): void {
@@ -482,7 +519,7 @@ class InProcessTimers {
     const input = isRecord(call.input) ? call.input : {};
     if (call.name === "ScheduleWakeup") {
       if (input.stop === true) this.#live.delete(WAKEUP_TIMER);
-      else this.#live.set(WAKEUP_TIMER, WAKEUP_TIMER);
+      else this.#live.set(WAKEUP_TIMER, { label: WAKEUP_TIMER });
     } else if (call.name === "CronDelete") {
       this.#live.delete(String(input.id));
     } else {
@@ -493,7 +530,10 @@ class InProcessTimers {
   #addCronJob(toolCallId: string, result: Record<string, unknown>): void {
     if (result.durable === true) return;
     const jobId = typeof result.id === "string" ? result.id : toolCallId;
-    this.#live.set(jobId, `CronCreate job ${jobId}`);
+    this.#live.set(jobId, {
+      label: `CronCreate job ${jobId}`,
+      ...(result.recurring === false ? { oneShotAt: Number(result.nextFireAt ?? 0) } : {}),
+    });
   }
 }
 

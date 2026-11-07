@@ -21,12 +21,19 @@ test("the extension module and its source map land beside every CLI entry", asyn
   const { sourceDirectory, cliRoot } = await scratch(t);
   await writeFile(join(sourceDirectory, "web-tools.mjs"), "export {};\n//# sourceMappingURL=web-tools.mjs.map\n");
   await writeFile(join(sourceDirectory, "web-tools.mjs.map"), '{"version":3,"sources":[],"mappings":""}\n');
+  await writeFile(join(sourceDirectory, "background-work.mjs"), "export {};\n");
+  await writeFile(join(sourceDirectory, "background-work.mjs.map"), '{"version":3,"sources":[],"mappings":""}\n');
 
   const copied = copyWebToolsExtension({ sourceDirectory, cliRoot });
 
-  assert.deepEqual(WEB_TOOLS_EXTENSION_FILES, ["web-tools.mjs", "web-tools.mjs.map"]);
+  assert.deepEqual(WEB_TOOLS_EXTENSION_FILES, [
+    "web-tools.mjs",
+    "web-tools.mjs.map",
+    "background-work.mjs",
+    "background-work.mjs.map",
+  ]);
   assert.deepEqual(WEB_TOOLS_EXTENSION_DESTINATIONS, ["dist/pi-extensions", "dist/cli/pi-extensions"]);
-  assert.equal(copied.length, 4);
+  assert.equal(copied.length, 8);
   for (const destination of ["dist/pi-extensions", "dist/cli/pi-extensions"]) {
     const module = await readFile(join(cliRoot, destination, "web-tools.mjs"), "utf8");
     assert.match(module, /sourceMappingURL=web-tools\.mjs\.map/);
@@ -40,12 +47,15 @@ test("a missing map is as fatal as a missing module, and nothing is copied first
   const { sourceDirectory, cliRoot } = await scratch(t);
   await writeFile(join(sourceDirectory, "web-tools.mjs"), "export {};\n");
 
-  assert.throws(() => copyWebToolsExtension({ sourceDirectory, cliRoot }), /missing \(web-tools\.mjs\.map\)/);
+  assert.throws(
+    () => copyWebToolsExtension({ sourceDirectory, cliRoot }),
+    /missing \(web-tools\.mjs\.map, background-work\.mjs, background-work\.mjs\.map\)/,
+  );
   await assert.rejects(readFile(join(cliRoot, "dist", "pi-extensions", "web-tools.mjs")), { code: "ENOENT" });
 
   await rm(join(sourceDirectory, "web-tools.mjs"));
   assert.throws(
     () => copyWebToolsExtension({ sourceDirectory, cliRoot }),
-    /missing \(web-tools\.mjs, web-tools\.mjs\.map\); build @opentag\/client/,
+    /missing \(web-tools\.mjs, web-tools\.mjs\.map, background-work\.mjs, background-work\.mjs\.map\); build @opentag\/client/,
   );
 });

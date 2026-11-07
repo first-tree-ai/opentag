@@ -26,10 +26,20 @@ import { deriveRuntimeKey } from "./runtime-paths.js";
  *   power loss; a Session message steered into a Turn records nothing itself, so also a stop).
  * - `client_shutdown`: an orderly daemon stop (restart, upgrade) cancelled the Run.
  * - `provider_rate_limited`: the model API answered HTTP 429.
+ * - `provider_process_exited`: the Provider's process died under a live daemon (crash, out of memory).
  */
-export type InterruptionReason = "daemon_crash" | "client_shutdown" | "provider_rate_limited";
+export type InterruptionReason =
+  | "daemon_crash"
+  | "client_shutdown"
+  | "provider_rate_limited"
+  | "provider_process_exited";
 
-const REASONS = new Set<InterruptionReason>(["daemon_crash", "client_shutdown", "provider_rate_limited"]);
+const REASONS = new Set<InterruptionReason>([
+  "daemon_crash",
+  "client_shutdown",
+  "provider_rate_limited",
+  "provider_process_exited",
+]);
 
 /** At most this many automatic retries in a row. */
 export const MAX_AUTOMATIC_RETRIES = 2;
@@ -111,6 +121,8 @@ function describeInterruption(reason: InterruptionReason): string {
       return "the OpenTag daemon was restarted or upgraded";
     case "provider_rate_limited":
       return "the model API rate-limited the request (HTTP 429)";
+    case "provider_process_exited":
+      return "the Provider process exited unexpectedly";
   }
 }
 

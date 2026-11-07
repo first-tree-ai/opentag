@@ -501,76 +501,164 @@ describe("SessionMessageInbox", () => {
     inbox.stop();
   });
 
-  describe("a completed Run that abandoned background work", () => {
-    function abandoningInbox(persistence: MemoryRuntimeDurabilityStore, onRunOutcome: () => void) {
-      return new SessionMessageInbox({
+  it("still reports a succeeded record an older Client left pending", async () => {
+    const persistence = new MemoryRuntimeDurabilityStore();
+    const request = delivery();
+    await persistence.write({
+      acceptedAt: 1,
+      attempts: 0,
+      key: `${request.targetSessionId}:${request.messageId}`,
+      kind: "session-message",
+      lastError: {
+        code: "background_work_possibly_stopped",
+        category: "unavailable",
+        retryability: "never",
+        phase: "provider",
+        requestId: request.requestId,
+        message: "older Client",
+      },
+      outcomeReport: "pending",
+      payload: request,
+      status: "succeeded",
+      updatedAt: 1,
+    });
+    const onRunOutcome = vi.fn();
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      onRunOutcome,
+      persistence,
+      sessionCollaborationVersion: () => 4,
+      reconciler: inboxReconciler(),
+      runtimeManager: { ensureRuntime: vi.fn(), sessionKind: vi.fn(() => "internal" as const) },
+    });
+    await inbox.ready();
+    expect(onRunOutcome).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ outcome: "unknown", reason: "background_work_possibly_stopped" }),
+    );
+    inbox.stop();
+  });
+
+  it("puts what earlier Runs left in front of the input, and records a limit where the next Run will read it", async () => {
+    let fireTimeout: () => void = () => undefined;
+    const timeoutScheduler: RuntimeRetryScheduler = {
+      schedule(_delay, task) {
+        fireTimeout = task;
+        return { cancel: () => undefined };
+      },
+    };
+    const prefix = vi.fn(async (input: { items: unknown[] }) => ({
+      items: [{ type: "text", text: "LEDGER NOTICE" }, ...input.items],
+    }));
+    const recordRunLimit = vi.fn(async () => undefined);
+    const prompts: { input: { items: { text: string }[] } }[] = [];
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      backgroundWork: { forSession: () => ({ prefix, recordRunLimit }) as never },
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      now: () => Date.parse("2026-11-07T10:00:00.000Z"),
+      persistence: new MemoryRuntimeDurabilityStore(),
+      sessionCollaborationVersion: () => 4,
+      timeoutScheduler,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(
+          async () =>
+            ({
+              waitForIdle: vi.fn(async () => undefined),
+              prompt: vi.fn(async (request: { input: { items: { text: string }[] }; signal: AbortSignal }) => {
+                prompts.push(request);
+                await new Promise((_resolve, reject) =>
+                  request.signal.addEventListener("abort", () => reject(new Error("aborted"))),
+                );
+              }),
+            }) as never,
+        ),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+    });
+    await inbox.accept(delivery());
+    await vi.waitFor(() => expect(prompts).toHaveLength(1));
+    expect(prompts[0]?.input.items[0]?.text).toBe("LEDGER NOTICE");
+    fireTimeout();
+    await inbox.settled();
+    expect(recordRunLimit).toHaveBeenCalledExactlyOnceWith({ reason: "turn_timeout", at: "2026-11-07T10:00:00.000Z" });
+    inbox.stop();
+  });
+
+  describe("a Run answered its input and a later turn failed", () => {
+    const inboxWith = (prompt: () => Promise<unknown>, onRunOutcome: () => void) =>
+      new SessionMessageInbox({
         admission: new AdmissionController(),
         credentialEnvironment: credentialEnvironment(),
         imCredentialGrantVersion: () => 2,
         onRunOutcome,
-        persistence,
+        persistence: new MemoryRuntimeDurabilityStore(),
         sessionCollaborationVersion: () => 4,
         reconciler: inboxReconciler(),
         runtimeManager: {
-          ensureRuntime: vi.fn(
-            async () =>
-              ({
-                waitForIdle: vi.fn(async () => undefined),
-                prompt: vi.fn(async () => ({
-                  status: "completed",
-                  output: [],
-                  abandonedBackgroundWork: ["Run the suite (local_bash)"],
-                })),
-              }) as never,
-          ),
+          ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
           sessionKind: vi.fn(() => "internal" as const),
         },
       });
-    }
+    const answered = async () => ({
+      status: "completed",
+      output: [],
+      followUpFailure: { code: "provider_rate_limited", message: "429" },
+    });
 
-    it("succeeds, is not run again, and tells the creator", async () => {
+    it("does not run the message again, and tells its sender", async () => {
+      const prompt = vi.fn(answered);
       const onRunOutcome = vi.fn();
-      const inbox = abandoningInbox(new MemoryRuntimeDurabilityStore(), onRunOutcome);
+      const inbox = inboxWith(prompt, onRunOutcome);
       const request = delivery();
-
-      await expect(inbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
+      await inbox.accept(request);
       await inbox.settled();
+      expect(prompt).toHaveBeenCalledOnce();
       expect(inbox.getState(request.messageId)).toMatchObject({
         status: "succeeded",
         outcomeReport: "published",
-        lastError: { code: "background_work_possibly_stopped" },
+        lastError: { code: "provider_rate_limited" },
       });
       expect(onRunOutcome).toHaveBeenCalledExactlyOnceWith(
-        expect.objectContaining({
-          messageId: request.messageId,
-          outcome: "unknown",
-          reason: "background_work_possibly_stopped",
-        }),
+        expect.objectContaining({ outcome: "unknown", reason: "provider_rate_limited" }),
       );
-      await expect(inbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
       inbox.stop();
     });
+  });
 
-    it("hands the report over again after a crash before it was queued", async () => {
-      const persistence = new MemoryRuntimeDurabilityStore();
-      const failing = abandoningInbox(persistence, () => {
-        throw new Error("reporter unavailable");
-      });
-      const request = delivery();
-      await failing.accept(request);
-      await failing.settled();
-      expect(failing.getState(request.messageId)).toMatchObject({ status: "succeeded", outcomeReport: "pending" });
-      failing.stop();
-
-      const onRunOutcome = vi.fn();
-      const restarted = abandoningInbox(persistence, onRunOutcome);
-      await restarted.ready();
-      expect(onRunOutcome).toHaveBeenCalledExactlyOnceWith(
-        expect.objectContaining({ outcome: "unknown", reason: "background_work_possibly_stopped" }),
-      );
-      expect(restarted.getState(request.messageId)).toMatchObject({ status: "succeeded", outcomeReport: "published" });
-      restarted.stop();
+  it("retries a Run whose Provider process exited, and fails it when its retries run out", async () => {
+    const prompt = vi.fn(async () => ({
+      status: "failed",
+      output: [],
+      error: { code: "provider_process_exited", message: "Claude Code exited" },
+    }));
+    const onRunOutcome = vi.fn();
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      onRunOutcome,
+      persistence: new MemoryRuntimeDurabilityStore(),
+      scheduler: { schedule: (_delay, task) => (setImmediate(task), { cancel: () => undefined }) },
+      sessionCollaborationVersion: () => 4,
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
     });
+    await inbox.accept(delivery());
+    await vi.waitFor(() => expect(onRunOutcome).toHaveBeenCalled());
+    expect(prompt).toHaveBeenCalledTimes(3);
+    const second = (prompt.mock.calls[1] as unknown as [{ input: { items: { text: string }[] } }])[0];
+    expect(second.input.items[0]?.text).toContain("the Provider process exited unexpectedly");
+    expect(onRunOutcome).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ outcome: "failed", reason: "provider_process_exited" }),
+    );
+    inbox.stop();
   });
 
   it("reports a timed-out Run without a retry", async () => {

@@ -151,15 +151,23 @@ execution. These deterministic checks do not establish native provider latency o
    through the target's deduplication. Cloud-origin settlement acknowledgements
    retain their existing bounded, final-notification wait.
 
-## Background work at the end of a Run
+## Background work
 
-Needs a real Claude Code: the Lab's scripted Claude does not start background tasks.
+Needs a real Provider CLI: the Lab's scripted Claude does not start background tasks. Run steps 1 to 4 on Claude Code,
+Codex and Pi (on Pi with `background_bash`).
 
-1. Send an internal Session a message telling it to start a long background shell and end its Turn. It gets
-   `[openTag notice] This Run is about to end.` in the same Run. If it leaves the shell running, the record is `succeeded`
-   and the message's sender gets a notice with reason `background_work_possibly_stopped`.
-2. Send it another message. The transcript shows the Claude Code task notification and then the message, followed by an
-   assistant reply, not `No response requested.`, and the record `succeeded` only after that reply.
+1. Send an internal Session a message telling it to start a short background command and end its Turn. Expected: the Run
+   stays `running` after the Turn ends, the Session gets the result without another message, and the record is `succeeded`
+   only after that turn.
+2. Send it a message while it waits. Expected: the message joins the Run and is answered at once, and the Run still waits.
+3. Give it a short `maxDurationMs` and a background command that outlives it. Expected: the sender gets `timed_out`, the
+   command stops, and the next message's Run starts with `[openTag notice] Your previous Run reached its duration limit`,
+   naming the command.
+4. Kill the Provider process (only it, not the daemon) during the wait. Expected: the message is retried with the
+   continuation notice, and it names the command as possibly still running.
+5. On Claude Code, send a message after an orphaned background task. Expected: the transcript shows the task notification
+   and then the message, followed by an assistant reply, not `No response requested.`, and the record `succeeded` only
+   after that reply.
 
 ## Steered Session messages
 

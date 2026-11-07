@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
   AgentInput,
   AgentPromptRequest,
+  AgentRuntimeEvent,
   CreateAgentRuntimeRequest,
   ResumeAgentRuntimeRequest,
 } from "../agent-runtime/types.js";
@@ -81,6 +82,60 @@ it("continues the Turn and closes Pi when the optional steering socket cannot op
   expect(close).toHaveBeenCalledOnce();
   await expect.poll(() => child !== undefined && (child.exitCode !== null || child.signalCode !== null)).toBe(true);
   expect(diagnostics).toContainEqual(expect.objectContaining({ phase: "worker_preparation", event: "failure" }));
+});
+
+it("tells a Turn what the last one left, from a file that outlives the sandbox", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cloud-worker-ledger-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const executionDir = await fixtureExecution(root, "ledger");
+  const prompts: AgentPromptRequest[] = [];
+  const sinks: ((event: AgentRuntimeEvent) => Promise<void>)[] = [];
+  const results: Partial<Record<number, "aborted">> = { 0: "aborted" };
+  const prompt = async (input: AgentPromptRequest) => {
+    prompts.push(input);
+    const sink = sinks.at(-1) as (event: AgentRuntimeEvent) => Promise<void>;
+    if (results[prompts.length - 1] === "aborted") {
+      await sink({ type: "background_work_changed", runId: input.runId, items: [{ id: "job", label: "the suite" }] });
+      await new Promise((resolve) => input.signal?.addEventListener("abort", resolve, { once: true }));
+      return { runId: input.runId, output: [], status: "aborted" as const };
+    }
+    await sink({ type: "model_turn_started", runId: input.runId, modelTurnId: "m" });
+    return { runId: input.runId, output: [{ text: "done", type: "text" as const }], status: "completed" as const };
+  };
+  const createPiFactory = () => ({
+    create: async (request: CreateAgentRuntimeRequest) => {
+      sinks.push(async (event) => {
+        await request.eventSink(event);
+      });
+      return { close: async () => undefined, prompt } as never;
+    },
+    resume: async (request: CreateAgentRuntimeRequest) => {
+      sinks.push(async (event) => {
+        await request.eventSink(event);
+      });
+      return { close: async () => undefined, prompt } as never;
+    },
+  });
+  const options = {
+    executionMount: join(root, "mount"),
+    localProxyLoopbackSeam: true,
+    workspace: join(root, "workspace"),
+    prepareContextTree: async () => ({ status: { status: "unavailable" as const, reason: "TIMEOUT" as const } }),
+    createPiFactory,
+  };
+  const timedOut = turnRequest(executionDir);
+  timedOut.delivery = cloudDeliveryFixture({ deadlineAt: new Date(Date.now() + 500).toISOString() });
+  await expect(runCloudTurnWorker(timedOut, options as never)).resolves.toMatchObject({ errorReason: "turn_timeout" });
+  expect(JSON.stringify(prompts[0]?.input)).not.toContain("openTag notice");
+  await expect(runCloudTurnWorker(turnRequest(executionDir), options as never)).resolves.toMatchObject({
+    outcome: "completed",
+  });
+  expect(prompts[1]?.input.items[0]?.text).toContain("reached its duration limit");
+  expect(prompts[1]?.input.items[0]?.text).toContain("- the suite (status unknown");
+  await expect(runCloudTurnWorker(turnRequest(executionDir), options as never)).resolves.toMatchObject({
+    outcome: "completed",
+  });
+  expect(JSON.stringify(prompts[2]?.input)).not.toContain("openTag notice");
 });
 
 function turnRequest(executionDir: string, sessionDirectory?: string) {

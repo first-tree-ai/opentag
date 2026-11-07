@@ -33,6 +33,7 @@ import type {
 } from "../agent-runtime/types.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { AgentRuntimeProviderUnavailableError } from "./agent-runtime-provider-registry.js";
+import type { BackgroundWorkLedgers } from "./background-work-ledger.js";
 import { ImCredentialEnvironmentError } from "./im-credential-environment-manager.js";
 import type { ImResourceFetcher } from "./im-resource-fetcher.js";
 import {
@@ -90,6 +91,8 @@ export interface AgentTurnOutgoingReplyCollector {
 }
 
 export interface AgentTurnRunnerOptions {
+  /** What the Session's earlier Runs left to tell it; a Run reads it first and reports its limit there. */
+  backgroundWork?: Pick<BackgroundWorkLedgers, "forSession">;
   readonly bindingStore: SessionBindingStore;
   readonly connection: Pick<RuntimeConnection, "send"> & {
     capabilityVersion?(capability: string): number | undefined;
@@ -224,6 +227,7 @@ export class AgentTurnRunner {
   readonly #outgoingReplies: AgentTurnRunnerOptions["outgoingReplies"];
   readonly #agentErrorReporter: AgentTurnErrorReporter;
   readonly #retries: NonNullable<AgentTurnRunnerOptions["retries"]>;
+  readonly #backgroundWork: AgentTurnRunnerOptions["backgroundWork"];
   readonly #sessionMessages: NonNullable<AgentTurnRunnerOptions["sessionMessages"]>;
   readonly #restartRetryAvailable: () => boolean;
   readonly #turns = new Map<string, RunningTurn>();
@@ -251,6 +255,7 @@ export class AgentTurnRunner {
     // wants no tracker gets a runner that reports into nothing, not a second branch to get wrong.
     this.#agentErrorReporter = options.agentErrorReporter ?? (() => undefined);
     this.#retries = options.retries ?? NO_TURN_RETRIES;
+    this.#backgroundWork = options.backgroundWork;
     this.#sessionMessages = options.sessionMessages ?? NO_SESSION_MESSAGES;
     this.#restartRetryAvailable = options.restartRetryAvailable ?? (() => false);
   }
@@ -595,8 +600,14 @@ export class AgentTurnRunner {
       const attempt = await this.#attempt(turn, shutdownSignal, trace, interruption);
       planInput = attempt.turnPlanInput ?? planInput;
       const next = await this.#nextRetry(turn, attempt.completion, shutdownSignal);
-      // An in-place retry only follows a 429, which waits first; false when an orderly stop interrupts it.
-      const ready = next && next !== "deferred" && (await waitUnlessAborted(RATE_LIMIT_RETRY_DELAY_MS, shutdownSignal));
+      // A 429 waits before its in-place retry, a Provider exit does not; false when an orderly stop interrupts it.
+      const ready =
+        next &&
+        next !== "deferred" &&
+        (await waitUnlessAborted(
+          next.reason === "provider_rate_limited" ? RATE_LIMIT_RETRY_DELAY_MS : 0,
+          shutdownSignal,
+        ));
       if (next === "deferred" || ready === false) {
         this.#logger.info({ ...fields, reason: attempt.completion.errorReason }, "Turn left for retry after restart");
         await trace.finish();
@@ -667,6 +678,7 @@ export class AgentTurnRunner {
         terminalObserved = true;
       });
       const promptStartedAt = this.#now();
+      const input = await this.#turnInput(turn, interruption);
       const result = await runtime.prompt({
         runId: owner.turnId,
         ...(started.allowedUnixSockets ? { allowedUnixSockets: started.allowedUnixSockets } : {}),
@@ -675,15 +687,7 @@ export class AgentTurnRunner {
          * preparation, at the last moment before the Run dispatch — never
          * at delivery receipt. It is prompt input only and never enters a persistent hash.
          */
-        input: interruption
-          ? buildRetryAgentInput(
-              owner.request,
-              turn.steers,
-              interruption,
-              new Date(this.#now()),
-              this.#sessionMessages.input,
-            )
-          : buildAgentInput(owner.request, undefined, undefined, new Date(this.#now())),
+        input,
         signal: runSignal,
         /*
          * Provider-specific launch facts are resolved only when this execution actually carries
@@ -728,6 +732,7 @@ export class AgentTurnRunner {
       clearTimeout(timer);
       turn.unrecordedRunMs = await runTime.finish();
     }
+    await this.#recordRunLimit(owner.request.sessionId, completion);
     if (completion.outcome === "completed") {
       this.#logger.info(
         {
@@ -740,6 +745,22 @@ export class AgentTurnRunner {
       );
     }
     return { completion, ...(turnPlanInput ? { turnPlanInput } : {}) };
+  }
+
+  /** A Turn's input, after what the Session's earlier Runs left to tell it. */
+  async #turnInput(turn: RunningTurn, interruption: Interruption | undefined): Promise<AgentInput> {
+    const { request } = turn.owner;
+    const input = interruption
+      ? buildRetryAgentInput(request, turn.steers, interruption, new Date(this.#now()), this.#sessionMessages.input)
+      : buildAgentInput(request, undefined, undefined, new Date(this.#now()));
+    return (await this.#backgroundWork?.forSession(request.sessionId).prefix(input)) ?? input;
+  }
+
+  async #recordRunLimit(sessionId: string, completion: TurnCompletion): Promise<void> {
+    if (completion.errorReason !== "turn_timeout") return;
+    await this.#backgroundWork
+      ?.forSession(sessionId)
+      .recordRunLimit({ reason: "turn_timeout", at: new Date(this.#now()).toISOString() });
   }
 
   /**

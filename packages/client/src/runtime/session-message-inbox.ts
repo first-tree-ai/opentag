@@ -8,9 +8,16 @@ import {
   type SessionMessageDeliveryResult,
   SessionMessageRunOutcomeReasonSchema,
 } from "@opentag/shared";
-import type { AgentInput, AgentRuntime, AgentSteerOutcome, AgentSteerReceipt } from "../agent-runtime/types.js";
+import type {
+  AgentInput,
+  AgentRunError,
+  AgentRuntime,
+  AgentSteerOutcome,
+  AgentSteerReceipt,
+} from "../agent-runtime/types.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import type { AdmissionController } from "./admission-controller.js";
+import type { BackgroundWorkLedgers } from "./background-work-ledger.js";
 import { ImCredentialEnvironmentError } from "./im-credential-environment-manager.js";
 import {
   buildContinuationNotice,
@@ -73,6 +80,8 @@ export interface JoinableRuns {
 
 export interface SessionMessageInboxOptions {
   admission: AdmissionController;
+  /** What the Session's earlier Runs left to tell it; a Run reads it first and reports its limit there. */
+  backgroundWork?: Pick<BackgroundWorkLedgers, "forSession">;
   cliCommand?: string;
   credentialEnvironment: Pick<RuntimeCredentialEnvironmentManager, "cleanup" | "prepare"> &
     Partial<Pick<RuntimeCredentialEnvironmentManager, "mode" | "outboxContextForSession">>;
@@ -132,14 +141,9 @@ export interface SessionMessageRunOutcomeEvent {
 
 /** The stable code a Run outcome report carries for a timed-out Session message. */
 export const SESSION_MESSAGE_TURN_TIMEOUT_CODE = "turn_timeout";
-/**
- * The Run completed, but background work it may have left behind stops with it, so what the sender
- * is waiting for may never come. The message itself succeeded and is not run again.
- */
-export const SESSION_MESSAGE_BACKGROUND_WORK_POSSIBLY_STOPPED_CODE = "background_work_possibly_stopped";
-
 export class SessionMessageInbox {
   readonly #admission: AdmissionController;
+  readonly #backgroundWork: SessionMessageInboxOptions["backgroundWork"];
   readonly #cliCommand: string;
   readonly #credentialEnvironment: SessionMessageInboxOptions["credentialEnvironment"];
   readonly #turnPlan: SessionMessageInboxOptions["turnPlan"];
@@ -185,6 +189,7 @@ export class SessionMessageInbox {
 
   constructor(options: SessionMessageInboxOptions) {
     this.#admission = options.admission;
+    this.#backgroundWork = options.backgroundWork;
     this.#cliCommand = options.cliCommand ?? "opentag";
     this.#credentialEnvironment = options.credentialEnvironment;
     this.#turnPlan = options.turnPlan;
@@ -833,13 +838,16 @@ export class SessionMessageInbox {
          * time, never the claim or enqueue time. It is prompt input only: the durable record,
          * the semantic hash, and the runtime configuration never carry a current-time fact.
          */
-        input: withCarriedMessages(
-          withContinuation(
-            buildSessionMessageInput(next.request, this.#cliCommand, context, new Date(this.#now())),
-            continuation,
-          ),
-          run.carried.map((message) =>
-            buildSessionMessageInput(message, this.#cliCommand, context, new Date(this.#now())),
+        input: await this.#withBackgroundWorkNotice(
+          sessionId,
+          withCarriedMessages(
+            withContinuation(
+              buildSessionMessageInput(next.request, this.#cliCommand, context, new Date(this.#now())),
+              continuation,
+            ),
+            run.carried.map((message) =>
+              buildSessionMessageInput(message, this.#cliCommand, context, new Date(this.#now())),
+            ),
           ),
         ),
         signal: ensureRunSignal(),
@@ -848,7 +856,7 @@ export class SessionMessageInbox {
       await settleRunTime();
       if (result.status !== "completed") throw runFailure(result);
       if (current && !this.#abort.signal.aborted) {
-        await this.#settleCompleted(current, next.hash, result.abandonedBackgroundWork);
+        await this.#settleCompleted(current, next.hash, result.followUpFailure);
       }
       outcome = "completed";
     } catch (error) {
@@ -856,6 +864,7 @@ export class SessionMessageInbox {
       // existing recovery semantics.
       const timedOut = timeout.signal.aborted && !this.#abort.signal.aborted && executionSignal?.aborted !== true;
       await settleRunTime();
+      if (timedOut) await this.#recordRunLimit(sessionId);
       if (current) outcome = await this.#attemptFailed(current, next.hash, run, phase, error, timedOut);
     } finally {
       timer?.cancel();
@@ -884,22 +893,35 @@ export class SessionMessageInbox {
     return retry ? { retry } : "ended";
   }
 
+  /**
+   * The input was answered, so even a failed later turn never runs the message again. Whoever sent it may
+   * be waiting for that later work, so they hear of it.
+   */
   async #settleCompleted(
     record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
     hash: string,
-    abandonedBackgroundWork: readonly string[] | undefined,
+    followUpFailure: AgentRunError | undefined,
   ): Promise<void> {
-    const abandoned = (abandonedBackgroundWork?.length ?? 0) > 0;
     const terminal = await this.#transition(
       record,
       "succeeded",
-      abandoned
-        ? { lastError: backgroundWorkStoppedFailure(record.payload.requestId), ...this.#pendingOutcomeReport() }
+      followUpFailure
+        ? { lastError: followUpFailed(record.payload.requestId, followUpFailure), ...this.#pendingOutcomeReport() }
         : {},
     );
     this.#remember(record.key, { hash, status: "succeeded" });
-    if (abandoned)
-      await this.#publishRunOutcome(terminal, "unknown", SESSION_MESSAGE_BACKGROUND_WORK_POSSIBLY_STOPPED_CODE);
+    if (followUpFailure) await this.#publishRunOutcome(terminal, "unknown", followUpFailure.code);
+  }
+
+  async #withBackgroundWorkNotice(sessionId: string, input: AgentInput): Promise<AgentInput> {
+    return this.#backgroundWork?.forSession(sessionId).prefix(input) ?? input;
+  }
+
+  async #recordRunLimit(sessionId: string): Promise<void> {
+    await this.#backgroundWork?.forSession(sessionId).recordRunLimit({
+      reason: SESSION_MESSAGE_TURN_TIMEOUT_CODE,
+      at: new Date(this.#now()).toISOString(),
+    });
   }
 
   #requirePreparedOutbox(
@@ -1300,6 +1322,7 @@ function terminalRunOutcome(record: DurableWorkRecord<SessionMessageDeliveryRequ
   code: string;
 } {
   const code = record.lastError?.code ?? "retry_exhausted";
+  // A succeeded record is pending only if an older Client left background work behind it.
   if (record.status === "succeeded") return { outcome: "unknown", code };
   return { outcome: code === SESSION_MESSAGE_TURN_TIMEOUT_CODE ? "timed_out" : "failed", code };
 }
@@ -1369,14 +1392,14 @@ function withCarriedMessages(input: AgentInput, carried: readonly AgentInput[]):
   };
 }
 
-function backgroundWorkStoppedFailure(requestId: string): DurableFailure {
+function followUpFailed(requestId: string, failure: AgentRunError): DurableFailure {
   return {
-    code: SESSION_MESSAGE_BACKGROUND_WORK_POSSIBLY_STOPPED_CODE,
+    code: failure.code,
     category: "unavailable",
     retryability: "never",
     phase: "provider",
     requestId,
-    message: "Background work this Run may have left behind stops when the Run ends",
+    message: failure.message,
   };
 }
 

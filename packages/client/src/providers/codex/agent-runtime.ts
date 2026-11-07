@@ -19,7 +19,11 @@ import {
   isBinaryShapedProviderProbeFailure,
   isTransientProviderProbeFailure,
 } from "../../agent-runtime/probe-failure.js";
-import { providerFailureCode, providerProcessFailureCode } from "../../agent-runtime/provider-failure.js";
+import {
+  answeredWithFollowUpFailure,
+  providerFailureCode,
+  providerProcessFailureCode,
+} from "../../agent-runtime/provider-failure.js";
 import type { Deferred } from "../../agent-runtime/provider-utils.js";
 import {
   deferred,
@@ -39,6 +43,7 @@ import {
   type AgentHostedToolCall,
   type AgentHostedToolResult,
   type AgentHostedTools,
+  type AgentInput,
   type AgentInteractionRequest,
   type AgentInteractionResponse,
   type AgentPromptRequest,
@@ -56,6 +61,7 @@ import {
   type AgentRuntimeProbeResult,
   type AgentRuntimeWorkspace,
   type AgentSteerRequest,
+  type AgentUsage,
   type CreateAgentRuntimeRequest,
   type JsonValue,
   type ResumeAgentRuntimeRequest,
@@ -206,6 +212,16 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
    */
   #mcpThreadDirty = false;
   #socketThreadDirty = false;
+  /** Commands this turn started and has not seen end. At a completed turn's end they are background work. */
+  readonly #openCommands = new Map<string, string>();
+  /** Commands that outlived the turn that started them. They hold the Run open. */
+  readonly #backgroundCommands = new Map<string, string>();
+  /** What the next turn must carry: a finished command's result or input steered during a wait. */
+  #wakeInputs: WakeInput[] = [];
+  /** Present while the Run waits between turns for background work. */
+  #wait?: { resolve(): void };
+  /** Usage of this Run's finished turns; a wake is one more turn of the same Run. */
+  #finishedUsage?: AgentUsage;
   /** Present only between run admission and `turn/start`, when there is no provider turn to interrupt. */
   #preTurnAbort?: AbortController;
   readonly #unsubscribeNotifications: () => void;
@@ -265,12 +281,11 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     this.#activeMessages.clear();
     this.#activeTools.clear();
     this.#wireInteractions.clear();
-    this.#buffered = [];
-    this.#buffering = true;
-    this.#turnIdReady = deferred<string>();
-    this.#terminal = deferred<ParsedTurn>();
-    void this.#turnIdReady.promise.catch(() => undefined);
-    void this.#terminal.promise.catch(() => undefined);
+    this.#openCommands.clear();
+    this.#backgroundCommands.clear();
+    this.#wakeInputs = [];
+    this.#finishedUsage = undefined;
+    this.#resetTurn();
 
     const preTurnAbort = new AbortController();
     this.#preTurnAbort = preTurnAbort;
@@ -289,32 +304,34 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
         };
       }
       this.#preTurnAbort = undefined;
-      const response = await this.#client.request("turn/start", this.#turnStartParams(request));
-      this.#threadPersisted = true;
-      const started = parseTurnResponse(response, "turn/start");
-      if (started.status !== "inProgress") throw protocolError("turn/start returned a terminal turn");
-      this.#providerTurnId = started.id;
-      this.#turnIdReady.resolve(started.id);
-      this.#buffering = false;
-      const buffered = this.#buffered.splice(0);
-      for (const envelope of buffered) this.#enqueue(envelope);
-      await this.#eventTail;
-      if (this.#providerFailure) throw this.#providerFailure;
-      const terminal = await this.#terminal.promise;
-      await this.#eventTail;
-      if (this.#providerFailure) throw this.#providerFailure;
-      await this.#completeOpenLifecycles(terminal);
-      return this.#runResult(terminal);
+      let terminal = await this.#runTurn(this.#turnStartParams(request));
+      /** Whether the turn in progress carries nothing but background results, after the input was answered. */
+      let followUpOnly = false;
+      while (terminal.status === "completed" && this.#mustContinue()) {
+        const wake = await this.#waitForWake(context.signal);
+        if (!wake) return await this.#stopBackgroundWork({ ...terminal, status: "interrupted" });
+        followUpOnly = !wake.some((input) => input.accepted);
+        this.#completedMessages.clear();
+        this.#resetTurn();
+        terminal = await this.#runTurn(
+          { ...this.#turnStartParams(request), input: codexInput(wake.map((input) => input.item)) },
+          wake,
+        );
+      }
+      const result = await this.#stopBackgroundWork(terminal);
+      if (!followUpOnly || result.status !== "failed") return result;
+      return answeredWithFollowUpFailure(result);
     } catch (error) {
       const failure = error instanceof Error ? error : new Error("Codex run failed");
       logger.debug({ code: "provider_run_failed", error: failure.message }, "Codex provider run failed");
-      this.#turnIdReady.reject(failure);
+      this.#turnIdReady?.reject(failure);
       throw codexRunFailure(failure);
       /* v8 ignore next -- finally is mandatory cleanup; V8 reports a synthetic branch for its closing token. */
     } finally {
       this.#preTurnAbort = undefined;
       this.#buffering = false;
       this.#buffered = [];
+      this.#wait = undefined;
       this.providerContext = undefined;
       this.#providerTurnId = undefined;
       this.#turnIdReady = undefined;
@@ -324,12 +341,159 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     }
   }
 
+  #resetTurn(): void {
+    this.#buffered = [];
+    this.#buffering = true;
+    this.#providerTurnId = undefined;
+    this.#turnIdReady = deferred<string>();
+    this.#terminal = deferred<ParsedTurn>();
+    void this.#turnIdReady.promise.catch(() => undefined);
+    void this.#terminal.promise.catch(() => undefined);
+  }
+
+  /** Starts one provider turn and follows it to its end. Input in `carried` counts as accepted once it started. */
+  async #runTurn(params: Record<string, unknown>, carried: readonly WakeInput[] = []): Promise<ParsedTurn> {
+    const terminalReady = this.#terminal as Deferred<ParsedTurn>;
+    const turnIdReady = this.#turnIdReady as Deferred<string>;
+    let started: ParsedTurn;
+    try {
+      const response = await this.#client.request("turn/start", params);
+      this.#threadPersisted = true;
+      started = parseTurnResponse(response, "turn/start");
+      if (started.status !== "inProgress") throw protocolError("turn/start returned a terminal turn");
+    } catch (error) {
+      for (const input of carried) input.accepted?.reject(error as Error);
+      throw error;
+    }
+    this.#providerTurnId = started.id;
+    turnIdReady.resolve(started.id);
+    for (const input of carried) input.accepted?.resolve();
+    this.#buffering = false;
+    const buffered = this.#buffered.splice(0);
+    for (const envelope of buffered) this.#enqueue(envelope);
+    await this.#eventTail;
+    if (this.#providerFailure) throw this.#providerFailure;
+    const terminal = await terminalReady.promise;
+    await this.#eventTail;
+    if (this.#providerFailure) throw this.#providerFailure;
+    if (terminal.status === "completed") await this.#holdOpenCommands(terminal);
+    this.#openCommands.clear();
+    await this.#completeOpenLifecycles(terminal);
+    this.#finishedUsage = addUsage(this.#finishedUsage, this.#latestUsage);
+    this.#latestUsage = undefined;
+    return terminal;
+  }
+
+  /**
+   * A command still open at a completed turn's end is a background terminal: the App Server keeps it
+   * running and reports its end later, on the turn that started it. Its tool call is done for the model.
+   * One the turn's own items report as ended is not live, whatever its item events said.
+   */
+  async #holdOpenCommands(turn: ParsedTurn): Promise<void> {
+    const ended = new Set(turn.items.filter((item) => item.status !== "inProgress").map((item) => item.id));
+    const held = [...this.#openCommands].filter(([id]) => !ended.has(id));
+    if (held.length === 0) return;
+    const context = this.requireProviderContext();
+    for (const [id, label] of held) {
+      this.#backgroundCommands.set(id, label);
+      // Every item before `turn/completed` has been handled, and that opened the tool call.
+      const name = this.#activeTools.get(id) as string;
+      await context.emit({
+        type: "tool_completed",
+        toolCallId: id,
+        name,
+        status: "completed",
+        output: { background: true },
+      });
+      this.#activeTools.delete(id);
+    }
+    await this.#publishBackgroundWork();
+  }
+
+  async #publishBackgroundWork(): Promise<void> {
+    await this.requireProviderContext().emit({
+      type: "background_work_changed",
+      items: [...this.#backgroundCommands].map(([id, label]) => ({ id, label, reportsProgress: true })),
+    });
+  }
+
+  #mustContinue(): boolean {
+    return this.#backgroundCommands.size > 0 || this.#wakeInputs.length > 0;
+  }
+
+  /** Waits for a reason to start another turn. Undefined means the Run was aborted. */
+  async #waitForWake(signal: AbortSignal): Promise<WakeInput[] | undefined> {
+    while (this.#wakeInputs.length === 0) {
+      if (signal.aborted) return undefined;
+      await new Promise<void>((resolve) => {
+        this.#wait = { resolve };
+        signal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      this.#wait = undefined;
+    }
+    if (signal.aborted) return undefined;
+    return this.#wakeInputs.splice(0);
+  }
+
+  /**
+   * The App Server outlives the Run, and its background terminals with it, so a Run that ends with some
+   * live must stop them itself: nothing would ever report them. Closing it is what stops them.
+   */
+  async #stopBackgroundWork(terminal: ParsedTurn): Promise<AgentProviderRunResult> {
+    const stopped = [...this.#backgroundCommands.keys()];
+    if (stopped.length > 0) {
+      const context = this.requireProviderContext();
+      for (const id of stopped) await context.emit({ type: "background_work_finished", id, status: "stopped" });
+      this.#backgroundCommands.clear();
+      await this.#publishBackgroundWork();
+      this.closeForProviderFailure();
+    }
+    for (const input of this.#wakeInputs.splice(0)) {
+      input.accepted?.reject(new AgentRuntimeError("run_mismatch", "the Codex Run ended before steer was accepted"));
+    }
+    return this.#runResult(terminal);
+  }
+
+  /** The end of a background command: the model hears of it in the next turn, as native Claude Code's does. */
+  async #finishBackgroundCommand(item: Record<string, unknown>): Promise<void> {
+    const id = String(item.id);
+    const label = this.#backgroundCommands.get(id) as string;
+    const exitCode = typeof item.exitCode === "number" ? item.exitCode : undefined;
+    const detail = exitCode === undefined ? undefined : `exit code ${exitCode}`;
+    const output = typeof item.aggregatedOutput === "string" ? item.aggregatedOutput : "";
+    this.#backgroundCommands.delete(id);
+    await this.requireProviderContext().emit({
+      type: "background_work_finished",
+      id,
+      status: item.status === "failed" || (exitCode ?? 0) !== 0 ? "failed" : "completed",
+      ...(detail ? { detail } : {}),
+    });
+    await this.#publishBackgroundWork();
+    this.#wakeInputs.push({ item: { type: "text", text: backgroundCommandNotice(label, detail, output) } });
+    this.#wait?.resolve();
+  }
+
+  /** It reaches the model with the next turn, which starts now if the Run is waiting between turns. */
+  protected override async tellProviderAboutBackgroundWork(text: string): Promise<void> {
+    this.#wakeInputs.push({ item: { type: "text", text } });
+    this.#wait?.resolve();
+  }
+
   /**
    * `turn/steer` answers after the App Server appended the input to the expected native Turn. The
    * protocol exposes no per-input start signal, so no custody probe is returned: the acknowledged
    * input counts as possibly started, and a Run that does not complete reports it `interrupted`.
+   * While the Run waits between turns there is no Turn to steer, so the input starts the next one.
    */
   protected override async steerProvider(request: AgentSteerRequest): Promise<undefined> {
+    if (this.#wait) {
+      const accepted = deferred<void>();
+      void accepted.promise.catch(() => undefined);
+      this.#wakeInputs.push(...request.input.items.map((item, index) => (index === 0 ? { item, accepted } : { item })));
+      this.#wait.resolve();
+      await accepted.promise;
+      return;
+    }
     const turnId = await this.#activeTurnId();
     const response = requireRecord(
       await this.#client.request("turn/steer", {
@@ -361,6 +525,10 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     if (this.#preTurnAbort) {
       // No provider turn exists yet; cancelling the pending MCP attach is the whole interrupt.
       this.#preTurnAbort.abort();
+      return;
+    }
+    if (this.#wait) {
+      // No provider turn exists to interrupt; the signal ends the wait.
       return;
     }
     const turnId = await this.#activeTurnId();
@@ -605,6 +773,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
   }
 
   #enqueue(envelope: CodexEnvelope): void {
+    this.#trackOpenCommand(envelope);
     this.#claimTerminalAtIngress(envelope);
     const next = this.#eventTail.then(async () => {
       if (!this.providerContext) return;
@@ -612,13 +781,40 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
         this.#buffered.push(envelope);
         return;
       }
-      if (envelope.type === "notification") await this.#handleNotification(envelope.message);
-      else await this.#handleServerRequest(envelope.request);
+      if (envelope.type !== "notification") await this.#handleServerRequest(envelope.request);
+      else if (!(await this.#handleBackgroundCommand(envelope.message)))
+        await this.#handleNotification(envelope.message);
     });
     this.#eventTail = next.catch((error: unknown) => {
       logger.debug({ code: "event_processing_failed", error: String(error) }, "Codex event processing failed");
       this.#failProvider(error instanceof Error ? error : protocolError("Codex event processing failed"));
     });
+  }
+
+  /** At ingress, so `turn/completed` sees the commands that came before it however far the queue has got. */
+  #trackOpenCommand(envelope: CodexEnvelope): void {
+    if (envelope.type !== "notification" || !this.providerContext) return;
+    const { method, params: raw } = envelope.message;
+    if (method !== "item/started" && method !== "item/completed") return;
+    const item = record(record(raw)?.item);
+    if (item?.type !== "commandExecution" || typeof item.id !== "string") return;
+    if (method === "item/started") this.#openCommands.set(item.id, commandLabel(item));
+    else this.#openCommands.delete(item.id);
+  }
+
+  /** Reports on a command that outlived its turn name a finished turn, so they never reach the turn checks. */
+  async #handleBackgroundCommand({ method, params: raw }: CodexAppServerMessage): Promise<boolean> {
+    const params = record(raw);
+    if (method === "item/completed") {
+      const item = record(params?.item);
+      if (typeof item?.id !== "string" || !this.#backgroundCommands.has(item.id)) return false;
+      await this.#finishBackgroundCommand(item);
+      return true;
+    }
+    if (method !== "item/commandExecution/outputDelta" || !this.#backgroundCommands.has(String(params?.itemId)))
+      return false;
+    this.requireProviderContext().noteBackgroundProgress(String(params?.itemId));
+    return true;
   }
 
   async #handleNotification(message: CodexAppServerMessage): Promise<void> {
@@ -862,7 +1058,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       return {
         status: "completed",
         output,
-        ...(this.#latestUsage ? { usage: this.#latestUsage } : {}),
+        ...(this.#finishedUsage ? { usage: this.#finishedUsage } : {}),
         diagnostics,
       };
     }
@@ -870,7 +1066,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       return {
         status: "aborted",
         output,
-        ...(this.#latestUsage ? { usage: this.#latestUsage } : {}),
+        ...(this.#finishedUsage ? { usage: this.#finishedUsage } : {}),
         error: { code: "run_aborted", message: "Codex turn was interrupted" },
         diagnostics,
       };
@@ -878,7 +1074,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     return {
       status: "failed",
       output,
-      ...(this.#latestUsage ? { usage: this.#latestUsage } : {}),
+      ...(this.#finishedUsage ? { usage: this.#finishedUsage } : {}),
       error: { code: providerFailureCode(turn.errorCode), message: turn.error ?? "Codex turn failed" },
       diagnostics,
     };
@@ -906,12 +1102,16 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       envelope.type !== "notification" ||
       envelope.message.method !== "turn/completed" ||
       this.#buffering ||
-      !this.providerContext
+      !this.providerContext ||
+      this.#mustContinue()
     ) {
       return;
     }
     try {
-      this.#parseCompletedTurn(record(envelope.message.params));
+      const turn = this.#parseCompletedTurn(record(envelope.message.params));
+      // Commands still open will hold the Run, and nothing else may read this as its end.
+      const ended = new Set(turn.items.map((item) => item.id));
+      if ([...this.#openCommands.keys()].some((id) => !ended.has(id))) return;
       this.providerContext.claimTerminal();
     } catch (error) {
       logger.debug({ code: "terminal_message_invalid", error: String(error) }, "Codex terminal message was rejected");
@@ -1784,4 +1984,38 @@ function codexRunFailure(error: Error): Error {
   return error instanceof CodexAppServerError
     ? new AgentProviderError(providerProcessFailureCode(error.code), error.message, { cause: error })
     : error;
+}
+
+/** A background result the model reads is bounded: the full output stays with the App Server's history. */
+const BACKGROUND_OUTPUT_TAIL_CHARS = 4_000;
+
+interface WakeInput {
+  readonly item: AgentInput["items"][number];
+  readonly accepted?: Deferred<void>;
+}
+
+function commandLabel(item: Record<string, unknown>): string {
+  const actions = item.commandActions;
+  const action = Array.isArray(actions) ? record(actions[0]) : undefined;
+  if (typeof action?.command === "string" && action.command.length > 0) return action.command;
+  return typeof item.command === "string" && item.command.length > 0 ? item.command : "background command";
+}
+
+function backgroundCommandNotice(label: string, detail: string | undefined, output: string): string {
+  const tail = output.slice(-BACKGROUND_OUTPUT_TAIL_CHARS);
+  return [
+    `[openTag notice] A background command you started has finished: ${label}${detail ? ` (${detail})` : ""}.`,
+    tail ? `Output${tail.length < output.length ? " (tail)" : ""}:\n${tail}` : "It produced no output.",
+  ].join("\n");
+}
+
+function addUsage(total: AgentUsage | undefined, turn: AgentUsage | undefined): AgentUsage | undefined {
+  if (!total || !turn) return total ?? turn;
+  const sum = (key: "inputTokens" | "cachedInputTokens" | "outputTokens") => (total[key] ?? 0) + (turn[key] ?? 0);
+  return {
+    ...total,
+    inputTokens: sum("inputTokens"),
+    cachedInputTokens: sum("cachedInputTokens"),
+    outputTokens: sum("outputTokens"),
+  };
 }

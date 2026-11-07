@@ -309,6 +309,191 @@ function createFakeGcs() {
 
 type FakeGcs = ReturnType<typeof createFakeGcs>;
 
+describe("workspace metadata fencing and sealing", () => {
+  it("rejects malformed, missing, foreign and corrupt upload inspections", async () => {
+    const fake = createFakeGcs();
+    const store = createStore(fake);
+    const input = { id: "d45b0afb-a231-4ffa-b562-72acd250613a", generation: "1", metageneration: "1" };
+    await expect(store.inspectWrite(SCOPE, { ...input, id: "invalid" })).rejects.toMatchObject({
+      code: "invalid_input",
+    });
+    await expect(store.inspectWrite(SCOPE, input)).rejects.toMatchObject({ code: "missing" });
+    fake.plant(Buffer.from("archive"), { owner: 2, saved: true, sealed: false });
+    await expect(store.inspectWrite(SCOPE, input)).rejects.toMatchObject({ code: "stale" });
+    must(fake.stored()).metadata.write = "invalid";
+    await expect(store.head(SCOPE)).rejects.toMatchObject({ code: "corrupt" });
+  });
+
+  it("uses upload identity to distinguish a competing byte-identical write after a fence", async () => {
+    const fake = createFakeGcs();
+    const content = Buffer.from("identical complete archive");
+    fake.plant(content, { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const previous = await store.claim(SCOPE);
+    const oldId = "d45b0afb-a231-4ffa-b562-72acd250613a";
+    const newId = "e85b0afb-a231-4ffa-b562-72acd250613a";
+    expect(await store.inspectWrite(SCOPE, { ...previous, id: oldId })).toEqual(previous);
+    let raced = false;
+    fake.setInterceptor(async ({ call, proceed }) => {
+      if (raced || call.method !== "POST") return undefined;
+      raced = true;
+      await proceed();
+      const claimed = await store.claim(SCOPE, { fence: true });
+      await store.write(SCOPE, claimed, { ...archiveInput(content), writeId: newId });
+      throw new TypeError("response lost after a newer identical write");
+    });
+    await expect(store.write(SCOPE, previous, { ...archiveInput(content), writeId: oldId })).rejects.toMatchObject({
+      code: "unknown_result",
+    });
+    const current = must(await store.head(SCOPE));
+    expect(current.sha256).toBe(previous.sha256);
+    expect(current.metageneration).toBe("1");
+    await expect(store.inspectWrite(SCOPE, { ...previous, id: oldId })).rejects.toMatchObject({ code: "conflict" });
+    expect(await store.inspectWrite(SCOPE, { ...previous, id: newId })).toEqual(current);
+    const sealed = await store.seal(SCOPE, current);
+    expect(sealed.sealed).toBe(true);
+    expect(must(fake.stored()).metadata.write).toBe(newId);
+    await expect(store.inspectWrite(SCOPE, { ...previous, id: newId })).rejects.toMatchObject({ code: "conflict" });
+  });
+
+  it("does not adopt a new same-owner fence after a committed upload loses its response", async () => {
+    const fake = createFakeGcs();
+    fake.plant(Buffer.from("baseline"), { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const previous = await store.claim(SCOPE);
+    const content = Buffer.from("committed before the new process claimed");
+    fake.setInterceptor(async ({ call, proceed }) => {
+      if (call.method !== "POST") return undefined;
+      await proceed();
+      await store.claim(SCOPE, { fence: true });
+      throw new TypeError("upload response lost");
+    });
+    await expect(store.write(SCOPE, previous, archiveInput(content))).rejects.toMatchObject({ code: "unknown_result" });
+    const claimed = must(await store.head(SCOPE));
+    expect(claimed.metageneration).toBe("2");
+    expect(Buffer.from(await streamToBytes(await store.read(SCOPE, claimed)))).toEqual(content);
+    expect(fake.callsNamed("POST")).toHaveLength(1);
+  });
+
+  it("fences the same allocation without replacing bytes and rejects an older in-flight upload", async () => {
+    const fake = createFakeGcs();
+    const content = Buffer.from("unpublished baseline");
+    fake.plant(content, { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const original = await store.claim(SCOPE);
+    fake.setInterceptor(async ({ call, proceed }) => {
+      if (call.method !== "POST") return undefined;
+      await store.claim(SCOPE, { fence: true });
+      return proceed();
+    });
+    const stale = Buffer.from("late old-process bytes");
+    await expect(store.write(SCOPE, original, archiveInput(stale))).rejects.toMatchObject({ code: "conflict" });
+    const current = await store.head(SCOPE);
+    expect(current).toEqual({ ...original, metageneration: "2" });
+    expect(Buffer.from(await streamToBytes(await store.read(SCOPE, must(current))))).toEqual(content);
+    expect(fake.callsNamed("PATCH")).toHaveLength(1);
+  });
+
+  it("seals the exact saved object with pinned metadata only and restores all bytes afterwards", async () => {
+    const fake = createFakeGcs();
+    const content = Buffer.from("Git and unpublished work must survive");
+    fake.plant(content, { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const previous = await store.claim(SCOPE);
+    const sealed = await store.seal(SCOPE, previous);
+    expect(sealed).toEqual({ ...previous, sealed: true, metageneration: "2" });
+    expect(fake.callsNamed("POST")).toHaveLength(0);
+    expect(fake.callsNamed("PATCH")[0]?.url).toBe(
+      `${META_URL}?ifGenerationMatch=${previous.generation}&ifMetagenerationMatch=${previous.metageneration}`,
+    );
+    const nextScope = { ...SCOPE, environmentGeneration: 2 };
+    const restored = await store.claim(nextScope, { fence: true });
+    expect(restored).toEqual({ ...sealed, ownerGeneration: 2, metageneration: "3", sealed: false });
+    expect(Buffer.from(await streamToBytes(await store.read(nextScope, restored)))).toEqual(content);
+    await expect(store.seal(SCOPE, previous)).rejects.toMatchObject({ code: "conflict" });
+  });
+
+  it.each(["lost", "invalid-json", "503"])(
+    "verifies a committed seal after %s response without retrying",
+    async (kind) => {
+      const fake = createFakeGcs();
+      fake.plant(Buffer.from("complete archive"), { owner: 1, saved: true, sealed: false });
+      const store = createStore(fake);
+      const previous = await store.claim(SCOPE);
+      fake.setInterceptor(async ({ call, proceed }) => {
+        if (call.method !== "PATCH") return undefined;
+        await proceed();
+        if (kind === "lost") throw new TypeError("lost response");
+        return new Response(kind === "503" ? null : "invalid", { status: kind === "503" ? 503 : 200 });
+      });
+      expect(await store.seal(SCOPE, previous)).toEqual({ ...previous, metageneration: "2", sealed: true });
+      expect(fake.callsNamed("PATCH")).toHaveLength(1);
+    },
+  );
+
+  it.each(["timeout", "503"])("does not claim success or retry when an uncommitted seal returns %s", async (kind) => {
+    const fake = createFakeGcs();
+    fake.plant(Buffer.from("last good archive"), { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const previous = await store.claim(SCOPE);
+    fake.setInterceptor(async ({ call }) => {
+      if (call.method !== "PATCH") return undefined;
+      if (kind === "timeout") throw timeoutError();
+      return new Response(null, { status: 503 });
+    });
+    await expect(store.seal(SCOPE, previous)).rejects.toMatchObject({ code: "unknown_result" });
+    expect(await store.head(SCOPE)).toEqual(previous);
+    expect(fake.callsNamed("PATCH")).toHaveLength(1);
+  });
+
+  it("cannot seal over a concurrent new owner claim", async () => {
+    const fake = createFakeGcs();
+    const content = Buffer.from("latest complete archive");
+    fake.plant(content, { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const previous = await store.claim(SCOPE);
+    fake.setInterceptor(async ({ call, proceed }) => {
+      if (call.method !== "PATCH" || !Buffer.from(must(call.body)).toString().includes('"sealed":"true"'))
+        return undefined;
+      await store.claim({ ...SCOPE, environmentGeneration: 2 });
+      return proceed();
+    });
+    await expect(store.seal(SCOPE, previous)).rejects.toMatchObject({ code: "unknown_result" });
+    expect(await store.head(SCOPE)).toEqual({ ...previous, ownerGeneration: 2, metageneration: "2" });
+    expect(Buffer.from(must(fake.stored()).content)).toEqual(content);
+  });
+
+  it("does not reopen a seal that races with a same-allocation fencing claim", async () => {
+    const fake = createFakeGcs();
+    fake.plant(Buffer.from("complete archive"), { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const previous = await store.claim(SCOPE);
+    let raced = false;
+    fake.setInterceptor(async ({ call, proceed }) => {
+      if (raced || call.method !== "PATCH") return undefined;
+      raced = true;
+      await store.seal(SCOPE, previous);
+      return proceed();
+    });
+    expect(await store.claim(SCOPE, { fence: true })).toEqual({ ...previous, metageneration: "2", sealed: true });
+    expect(Buffer.from(must(fake.stored()).content).toString()).toBe("complete archive");
+  });
+
+  it("refuses missing, unsaved and corrupted objects without a metadata mutation", async () => {
+    const fake = createFakeGcs();
+    const store = createStore(fake);
+    const seed = await store.claim(SCOPE, { initialize: true });
+    await expect(store.seal(SCOPE, seed)).rejects.toMatchObject({ code: "sealed" });
+    fake.plant(Buffer.from("archive"), { owner: 1, saved: true, sealed: false });
+    const saved = await store.claim(SCOPE);
+    must(fake.stored()).metadata.sha256 = "invalid";
+    await expect(store.seal(SCOPE, saved)).rejects.toMatchObject({ code: "corrupt" });
+    fake.clearStored();
+    await expect(store.seal(SCOPE, saved)).rejects.toMatchObject({ code: "missing" });
+    expect(fake.callsNamed("PATCH")).toHaveLength(0);
+  });
+});
+
 function createStore(fake: FakeGcs, timeoutMs = 5_000): GcsWorkspaceObjectStore {
   return new GcsWorkspaceObjectStore({ tokenProvider: async () => TOKEN, fetchImpl: fake.fetchImpl, timeoutMs });
 }
@@ -776,7 +961,10 @@ describe("workspace object store write", () => {
       name: OBJECT,
       contentType: "application/octet-stream",
       md5Hash: md5b64(content),
-      metadata: metadataMap({ owner: 1, saved: true, sealed: false, sha256: sha256hex(content) }),
+      metadata: {
+        ...metadataMap({ owner: 1, saved: true, sealed: false, sha256: sha256hex(content) }),
+        write: expect.any(String),
+      },
     });
     expect(Buffer.from(streamed).equals(content)).toBe(true);
     // Atomic overwrite: the old generation is gone from the fake's single latest slot.

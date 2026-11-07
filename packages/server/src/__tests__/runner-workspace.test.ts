@@ -267,14 +267,22 @@ async function waitForLifecycle(
 
 /* ------------------------------- HTTP helpers ---------------------------- */
 
-function claimRequest(stack: WorkspaceStack, token: string | undefined) {
+function claimRequest(stack: WorkspaceStack, token: string | undefined, fence = false) {
   return fetch(`${stack.address}${RUNNER_WORKSPACE_PATH}/claim`, {
     method: "POST",
     headers: {
       ...(token ? { authorization: `Bearer ${token}` } : {}),
       "content-type": "application/json",
     },
-    body: "{}",
+    body: JSON.stringify(fence ? { fence: true } : {}),
+  });
+}
+
+function sealRequest(stack: WorkspaceStack, token: string | undefined, pins: unknown = {}) {
+  return fetch(`${stack.address}${RUNNER_WORKSPACE_PATH}/seal`, {
+    method: "POST",
+    headers: { ...(token ? { authorization: `Bearer ${token}` } : {}), "content-type": "application/json" },
+    body: JSON.stringify(pins),
   });
 }
 
@@ -296,6 +304,7 @@ function uploadRequest(
     bytes: number;
     sha256: string;
     md5: string;
+    writeId?: string;
   },
 ) {
   const init: RequestInit & { duplex: "half" } = {
@@ -309,6 +318,7 @@ function uploadRequest(
       "x-opentag-workspace-sha256": input.sha256,
       "content-md5": input.md5,
       "x-opentag-workspace-sealed": String(input.sealed),
+      ...(input.writeId ? { "x-opentag-workspace-write-id": input.writeId } : {}),
     },
     body: input.body,
     duplex: "half",
@@ -355,6 +365,8 @@ describe("workspace route authentication", () => {
     expect(download.status).toBe(401);
     const upload = await fetch(`${stack.address}${RUNNER_WORKSPACE_PATH}/archive`, { method: "PUT" });
     expect(upload.status).toBe(401);
+    expect((await sealRequest(stack, undefined)).status).toBe(401);
+    expect((await sealRequest(stack, "not-a-token")).status).toBe(401);
     runner.socket.close();
     await runner.closed;
   });
@@ -376,6 +388,7 @@ describe("workspace route authentication", () => {
     const foreign = await claimRequest(stack, foreignToken);
     expect(foreign.status).toBe(403);
     expect(await foreign.json()).toMatchObject({ error: { code: "RUNNER_WORKSPACE_SCOPE_STALE" } });
+    expect((await sealRequest(stack, foreignToken)).status).toBe(403);
 
     // The allocation moves on; the old generation's token is stale even though unexpired.
     await unit.database
@@ -384,6 +397,7 @@ describe("workspace route authentication", () => {
       .where(eq(sandboxes.id, started.sandbox.sandboxId));
     const stale = await claimRequest(stack, started.token);
     expect(stale.status).toBe(403);
+    expect((await sealRequest(stack, started.token)).status).toBe(403);
     runner.socket.close();
     await runner.closed;
   });
@@ -396,10 +410,30 @@ describe("workspace route authentication", () => {
     const noChannel = await claimRequest(stack, started.token);
     expect(noChannel.status).toBe(409);
     expect(await noChannel.json()).toMatchObject({ error: { code: "RUNNER_WORKSPACE_CHANNEL_REQUIRED" } });
+    expect((await sealRequest(stack, started.token)).status).toBe(409);
   });
 });
 
 describe("workspace claim", () => {
+  it("fences same-allocation writers without uploading and refuses fencing during release", async () => {
+    const accountId = await account();
+    const stack = await createWorkspaceApp(accountId);
+    const started = await startedSandbox(stack, accountId);
+    const runner = await authenticatedWorkspaceRunner(stack, started.token);
+    const previous = (await (await claimRequest(stack, started.token)).json()) as RunnerWorkspaceObject;
+    const fenced = await (await claimRequest(stack, started.token, true)).json();
+    expect(fenced).toEqual({ ...previous, metageneration: String(BigInt(previous.metageneration) + 1n) });
+    expect(stack.store.writes).toHaveLength(0);
+    await unit.database
+      .update(sandboxes)
+      .set({ lifecycle: "releasing" })
+      .where(eq(sandboxes.id, started.sandbox.sandboxId));
+    expect((await claimRequest(stack, started.token, true)).status).toBe(409);
+    expect(await (await claimRequest(stack, started.token)).json()).toEqual(fenced);
+    runner.socket.close();
+    await runner.closed;
+  });
+
   it("claims the empty seed for the first generation and stays idempotent", async () => {
     const accountId = await account();
     const stack = await createWorkspaceApp(accountId);
@@ -476,6 +510,91 @@ describe("workspace claim", () => {
 });
 
 describe("workspace archive transfer", () => {
+  it("verifies one upload identity without exposing it or accepting a newer byte-identical write", async () => {
+    const accountId = await account();
+    const stack = await createWorkspaceApp(accountId);
+    const started = await startedSandbox(stack, accountId);
+    const runner = await authenticatedWorkspaceRunner(stack, started.token);
+    const seed = (await (await claimRequest(stack, started.token)).json()) as RunnerWorkspaceObject;
+    const content = Buffer.from("same archive bytes");
+    const id = randomUUID();
+    const inspect = (writeId: string, previous = seed) =>
+      fetch(`${stack.address}${RUNNER_WORKSPACE_PATH}/claim`, {
+        method: "POST",
+        headers: { authorization: `Bearer ${started.token}`, "content-type": "application/json" },
+        body: JSON.stringify({
+          upload: { id: writeId, generation: previous.generation, metageneration: previous.metageneration },
+        }),
+      });
+    expect(await (await inspect(id)).json()).toEqual(seed);
+    const save = async (previous: RunnerWorkspaceObject, writeId: string) =>
+      uploadRequest(stack, started.token, {
+        body: content,
+        ...workspaceDigests(content),
+        generation: previous.generation,
+        metageneration: previous.metageneration,
+        sealed: false,
+        writeId,
+      });
+    const saved = (await (await save(seed, id)).json()) as RunnerWorkspaceObject;
+    expect(saved).not.toHaveProperty("writeId");
+    expect(await (await inspect(id)).json()).toEqual(saved);
+    expect((await inspect(randomUUID())).status).toBe(409);
+    expect((await inspect("invalid")).status).toBe(400);
+    const claimed = (await (await claimRequest(stack, started.token, true)).json()) as RunnerWorkspaceObject;
+    expect((await inspect(id)).status).toBe(409);
+    const newId = randomUUID();
+    const newer = (await (await save(claimed, newId)).json()) as RunnerWorkspaceObject;
+    expect(newer.sha256).toBe(saved.sha256);
+    expect(newer.generation).not.toBe(saved.generation);
+    expect((await inspect(id)).status).toBe(409);
+    expect(await (await inspect(newId)).json()).toEqual(newer);
+    await unit.database
+      .update(sandboxes)
+      .set({ lifecycle: "releasing" })
+      .where(eq(sandboxes.id, started.sandbox.sandboxId));
+    expect(await (await inspect(newId)).json()).toEqual(newer);
+    expect(Buffer.from(await (await downloadRequest(stack, started.token, newer)).arrayBuffer())).toEqual(content);
+    runner.socket.close();
+    await runner.closed;
+  });
+
+  it("seals only a saved current ready allocation with strict pins and preserves durable bytes", async () => {
+    const accountId = await account();
+    const stack = await createWorkspaceApp(accountId);
+    const started = await startedSandbox(stack, accountId);
+    const runner = await authenticatedWorkspaceRunner(stack, started.token);
+    const seed = (await (await claimRequest(stack, started.token)).json()) as RunnerWorkspaceObject;
+    const pinsOf = (o: RunnerWorkspaceObject) => ({ generation: o.generation, metageneration: o.metageneration });
+    expect((await sealRequest(stack, started.token, pinsOf(seed))).status).toBe(409);
+    const content = Buffer.from("unpublished work and context drafts");
+    const saved = (await (
+      await putArchive(stack, started.token, seed, content, false)
+    ).json()) as RunnerWorkspaceObject;
+    // The same pins cannot seal while the allocation is still preparing.
+    expect((await sealRequest(stack, started.token, pinsOf(saved))).status).toBe(409);
+    runner.send(readyFrame(started.claims.resourceName, true));
+    await waitForLifecycle(stack, accountId, started.sandbox.sandboxId, "ready");
+    for (const body of [
+      {},
+      { ...pinsOf(saved), storageUri: "gs://other/object" },
+      { ...pinsOf(saved), metageneration: 1 },
+    ]) {
+      expect((await sealRequest(stack, started.token, body)).status).toBe(400);
+    }
+    expect((await sealRequest(stack, started.token, pinsOf(seed))).status).toBe(409);
+    const result = await sealRequest(stack, started.token, pinsOf(saved));
+    expect(result.status).toBe(200);
+    const sealed = (await result.json()) as RunnerWorkspaceObject;
+    expect(sealed).toEqual({ ...saved, sealed: true, metageneration: String(BigInt(saved.metageneration) + 1n) });
+    expect(stack.store.writes).toHaveLength(1);
+    expect(Buffer.from(await (await downloadRequest(stack, started.token, sealed)).arrayBuffer())).toEqual(content);
+    expect(await (await claimRequest(stack, started.token, true)).json()).toEqual(sealed);
+    expect((await putArchive(stack, started.token, saved, Buffer.from("stale"), false)).status).toBe(409);
+    runner.socket.close();
+    await runner.closed;
+  });
+
   it("uploads a streamed body with exact bytes and digests, then downloads the pinned archive", async () => {
     const accountId = await account();
     const stack = await createWorkspaceApp(accountId);
@@ -603,6 +722,7 @@ describe("workspace archive transfer", () => {
       { "x-opentag-workspace-sha256": digests.sha256.toUpperCase() },
       { "content-md5": "not-base64!!" },
       { "x-opentag-workspace-sealed": "yes" },
+      { "x-opentag-workspace-write-id": "invalid" },
     ];
     for (const overrides of cases) {
       const headers = { ...baseHeaders, ...overrides };

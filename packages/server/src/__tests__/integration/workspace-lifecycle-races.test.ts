@@ -150,6 +150,12 @@ function persistence() {
   });
   const store: WorkspaceObjectStore = {
     claim,
+    inspectWrite: async () => {
+      throw new Error("unused upload inspection");
+    },
+    seal: async () => {
+      throw new Error("unused metadata seal");
+    },
     head: async () => object,
     read: async () => {
       throw new Error("unused archive read");

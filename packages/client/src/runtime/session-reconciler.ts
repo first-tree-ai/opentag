@@ -66,7 +66,7 @@ export interface InterruptedTurnResumer {
    * Called under the Agent lock once the Session is prepared. Starts the retry and returns true,
    * or returns false so the Turn falls back to an ordinary recovery report.
    */
-  resume(sessionId: string, turn: SessionTurnIdentity): boolean;
+  resume(sessionId: string, turn: SessionTurnIdentity): Promise<boolean>;
   /** The retry cannot run (preparation failed or was refused): fall back to recovery reporting. */
   abandon(sessionId: string, turn: SessionTurnIdentity, reason: string): void;
 }
@@ -89,6 +89,9 @@ export interface AgentRuntimeState extends RuntimeSnapshotHashes {
 
 export interface SessionRuntimeState extends RuntimeSnapshotHashes {
   agentId: string;
+  /** The Agent configuration this Session prepared on, which a newer one doesn't replace until it prepares again. */
+  agentRevisionId: string;
+  agentRevisionSequence: number;
   placementGeneration: number;
   provider: string;
   revisionId: string;
@@ -110,6 +113,11 @@ const noopPreparation: RuntimePreparation = {
   stopSession: async () => undefined,
 };
 
+/** Ends an internal Session's accepted work: its running Run, retries and queued messages. */
+export interface InternalSessionWorkStopper {
+  stopSessionWork(sessionId: string, placementGeneration: number): Promise<void>;
+}
+
 export class SessionReconciler {
   readonly #installationId: string;
   readonly #preparation: RuntimePreparation;
@@ -117,6 +125,7 @@ export class SessionReconciler {
   #resumer?: InterruptedTurnResumer;
   readonly #maxRememberedRequests: number;
   readonly #agents = new Map<string, AgentRuntimeState>();
+  #internalWorkStopper: InternalSessionWorkStopper | undefined;
   readonly #sessions = new Map<string, SessionRuntimeState>();
   readonly #activities = new Map<string, SessionActivity>();
   readonly #recoveries = new Map<string, SessionTurnIdentity>();
@@ -137,6 +146,11 @@ export class SessionReconciler {
   /** Late binding: the resumer and the reconciler depend on each other. */
   setResumer(resumer: InterruptedTurnResumer): void {
     this.#resumer = resumer;
+  }
+
+  /** Late binding: the inbox needs the reconciler before the reconciler can reach the inbox. */
+  setInternalWorkStopper(stopper: InternalSessionWorkStopper): void {
+    this.#internalWorkStopper = stopper;
   }
 
   getAgent(agentId: string): AgentRuntimeState | undefined {
@@ -206,7 +220,9 @@ export class SessionReconciler {
       return Promise.resolve(this.#result(request, "rejected", "request_conflict"));
     }
 
-    const result = this.withAgentLock(request.agentId, () => this.#reconcileLocked(request));
+    const result = this.#stopsInternalWork(request)
+      ? this.#stopInternalSession(request)
+      : this.withAgentLock(request.agentId, () => this.#reconcileLocked(request));
     this.#requests.set(request.requestId, { payloadHash, result });
     this.#trimRequests();
     return result;
@@ -247,22 +263,23 @@ export class SessionReconciler {
     ) {
       return "session_binding_conflict";
     }
+    // Against what this Session prepared: other Sessions may already run a newer Agent configuration.
     if (
-      runtime.revision.agent.sequence < agent.revisionSequence ||
+      runtime.revision.agent.sequence < session.agentRevisionSequence ||
       runtime.revision.session.sequence < session.revisionSequence
     ) {
       return "stale_configuration";
     }
     if (
-      runtime.revision.agent.sequence > agent.revisionSequence ||
+      runtime.revision.agent.sequence > session.agentRevisionSequence ||
       runtime.revision.session.sequence > session.revisionSequence
     ) {
       return "session_not_ready";
     }
     if (
-      runtime.revision.agent.id !== agent.revisionId ||
+      runtime.revision.agent.id !== session.agentRevisionId ||
       runtime.revision.session.id !== session.revisionId ||
-      hashes.agentConfigHash !== agent.agentConfigHash ||
+      hashes.agentConfigHash !== session.agentConfigHash ||
       hashes.sessionConfigHash !== session.sessionConfigHash ||
       hashes.effectiveSnapshotHash !== session.effectiveSnapshotHash
     ) {
@@ -316,11 +333,47 @@ export class SessionReconciler {
   }
 
   /** Under the Agent lock: hand a prepared interrupted Turn to the resumer for its automatic retry. */
-  #resumed(sessionId: string, unresolved: SessionTurnIdentity, resumeTurn: SessionTurnIdentity | undefined): boolean {
+  async #resumed(
+    sessionId: string,
+    unresolved: SessionTurnIdentity,
+    resumeTurn: SessionTurnIdentity | undefined,
+  ): Promise<boolean> {
     if (!resumeTurn || unresolved.turnId !== resumeTurn.turnId || unresolved.deliveryId !== resumeTurn.deliveryId) {
       return false;
     }
-    return this.#resumer?.resume(sessionId, unresolved) === true;
+    return (await this.#resumer?.resume(sessionId, unresolved)) === true;
+  }
+
+  /**
+   * A stop may interrupt an internal Session's work only when the frame could also win the reconcile:
+   * a frame for another installation, Agent or an older placement is refused below without side effects.
+   * The frame names the kind itself because a restarted daemon has not prepared the Session yet.
+   */
+  #stopsInternalWork(request: SessionReconcileRequest): boolean {
+    if (request.desired !== "stopped" || !this.#internalWorkStopper) return false;
+    if (request.installationId !== this.#installationId) return false;
+    const existing = this.#sessions.get(request.sessionId);
+    if (
+      existing &&
+      (request.placementGeneration < existing.placementGeneration || existing.agentId !== request.agentId)
+    ) {
+      return false;
+    }
+    return request.sessionKind === "internal" || existing?.sessionKind === "internal";
+  }
+
+  /**
+   * The Run's own cleanup clears its activity under the Agent lock, so the work stops before the lock is
+   * taken; the normal stop then finds the Session idle. A message authorized before the Server ended the
+   * Session can still arrive in between, so the work is withdrawn again once the stop has been decided.
+   */
+  async #stopInternalSession(request: SessionReconcileRequest): Promise<SessionReconcileResult> {
+    await this.#internalWorkStopper?.stopSessionWork(request.sessionId, request.placementGeneration);
+    const result = await this.withAgentLock(request.agentId, () => this.#reconcileLocked(request));
+    if (result.status === "stopped") {
+      await this.#internalWorkStopper?.stopSessionWork(request.sessionId, request.placementGeneration);
+    }
+    return result;
   }
 
   async #reconcileLocked(
@@ -353,16 +406,16 @@ export class SessionReconciler {
         return this.#result(request, "busy", "active_turn");
       }
       const snapshot = request.runtime;
-      const existingAgent = this.#agents.get(request.agentId);
-      if (!snapshot || !existingAgent) return this.#result(request, "busy", "active_turn");
+      if (!snapshot) return this.#result(request, "busy", "active_turn");
       const hashes = computeRuntimeSnapshotHashes(snapshot);
+      // A running Session finishes on the Agent configuration it started with.
       const agentComparison = compareRevision(
         snapshot.revision.agent.sequence,
         snapshot.revision.agent.id,
         hashes.agentConfigHash,
-        existingAgent.revisionSequence,
-        existingAgent.revisionId,
-        existingAgent.agentConfigHash,
+        existingSession.agentRevisionSequence,
+        existingSession.agentRevisionId,
+        existingSession.agentConfigHash,
       );
       if (agentComparison === "stale") return this.#result(request, "rejected", "stale_configuration");
       if (agentComparison === "conflict") return this.#result(request, "rejected", "configuration_conflict");
@@ -417,11 +470,10 @@ export class SessionReconciler {
         existingAgent.revisionId,
         existingAgent.agentConfigHash,
       );
-      if (comparison === "stale") return this.#result(request, "rejected", "stale_configuration");
+      // Other running Sessions don't hold back a newer configuration: they keep what they started with.
+      // A resumed Turn does the same, so its pinned configuration may be older than the Agent's latest.
+      if (comparison === "stale" && !resumeTurn) return this.#result(request, "rejected", "stale_configuration");
       if (comparison === "conflict") return this.#result(request, "rejected", "configuration_conflict");
-      if (comparison === "newer" && this.#agentIsActive(request.agentId)) {
-        return this.#result(request, "busy", "agent_configuration_busy");
-      }
     }
 
     if (existingSession && request.placementGeneration === existingSession.placementGeneration) {
@@ -470,6 +522,8 @@ export class SessionReconciler {
       ...hashes,
       agentId: request.agentId,
       placementGeneration: request.placementGeneration,
+      agentRevisionId: snapshot.revision.agent.id,
+      agentRevisionSequence: snapshot.revision.agent.sequence,
       provider: snapshot.provider,
       revisionId: snapshot.revision.session.id,
       revisionSequence: snapshot.revision.session.sequence,
@@ -483,7 +537,7 @@ export class SessionReconciler {
         deliveryId: preparedSession.unresolvedTurn.deliveryId,
         turnId: preparedSession.unresolvedTurn.turnId,
       };
-      if (this.#resumed(request.sessionId, recovery, resumeTurn)) {
+      if (await this.#resumed(request.sessionId, recovery, resumeTurn)) {
         return { ...this.#result(request, "running"), turn: recovery };
       }
       this.setRecovery(request.sessionId, recovery);
@@ -545,13 +599,6 @@ export class SessionReconciler {
       status,
       ...(reason ? { reason } : {}),
     };
-  }
-
-  #agentIsActive(agentId: string): boolean {
-    for (const sessionId of this.#activities.keys()) {
-      if (this.#sessions.get(sessionId)?.agentId === agentId) return true;
-    }
-    return false;
   }
 
   #trimRequests(): void {

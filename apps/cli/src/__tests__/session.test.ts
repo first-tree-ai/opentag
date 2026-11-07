@@ -11,10 +11,12 @@ import {
   formatSessionCommandError,
   formatSessionCommandResult,
   formatSessionList,
+  formatSessionStopResult,
   requestWithRetryKey,
   runSessionCreate,
   runSessionList,
   runSessionSend,
+  runSessionStop,
   SessionCommandRequestError,
 } from "../core/session/index.js";
 
@@ -29,9 +31,9 @@ vi.mock("@opentag/client", async (importOriginal) => {
 });
 
 describe("session CLI", () => {
-  it("exposes only create, send, and bounded list commands with implicit source identity", () => {
+  it("exposes only create, send, stop, and bounded list commands with implicit source identity", () => {
     const session = createProgram().commands.find((command) => command.name() === "session");
-    expect(session?.commands.map((command) => command.name())).toEqual(["create", "send", "list"]);
+    expect(session?.commands.map((command) => command.name())).toEqual(["create", "send", "stop", "list"]);
     expect(session?.commands.some((command) => command.name() === "end")).toBe(false);
     const help = session?.helpInformation() ?? "";
     expect(help).not.toContain("source-session");
@@ -202,6 +204,46 @@ describe("session CLI", () => {
     expect(error.cause).toBe(apiError);
   });
 
+  it("spells out a stop that did not fully reach its Run, and shows when listed Sessions stopped", () => {
+    expect(formatSessionStopResult({ status: "stopped", sessionId: "s1", execution: "stopped" })).toBe(
+      "status=stopped sessionId=s1 execution=stopped",
+    );
+    expect(
+      formatSessionStopResult({
+        status: "stopped",
+        sessionId: "s1",
+        execution: "pending",
+        alreadyStopped: true,
+        stoppedDescendantCount: 2,
+      }),
+    ).toBe(
+      "status=stopped sessionId=s1 execution=pending alreadyStopped=true\nIts Computer did not confirm the stop; it is sent again when the Computer reconnects.\n2 descendant Session(s) were stopped with it.",
+    );
+    expect(formatSessionStopResult({ status: "stopped", sessionId: "s1", execution: "not_interrupted" })).toContain(
+      "too old to interrupt",
+    );
+    expect(formatSessionStopResult({ status: "rejected", sessionId: "s1", code: "not_ancestor" })).toBe(
+      "status=rejected sessionId=s1 code=not_ancestor",
+    );
+    const item = {
+      sessionId: "s1",
+      parentSessionId: "p1",
+      createdAt: "2026-01-01T00:00:00.000Z",
+      lastMessageAt: "2026-01-01T00:00:00.000Z",
+      lastDeliveryOutcome: "accepted" as const,
+      taskPreview: "task",
+    };
+    const stopped = formatSessionList({
+      items: [
+        { ...item, stoppedAt: "2026-01-02T00:00:00.000Z" },
+        { ...item, sessionId: "s2" },
+      ],
+    });
+    expect(stopped).toContain("OUTCOME\tSTOPPED\tTASK");
+    expect(stopped).toContain("accepted\t2026-01-02T00:00:00.000Z\ttask");
+    expect(stopped).toContain("s2\tp1\t2026-01-01T00:00:00.000Z\t2026-01-01T00:00:00.000Z\taccepted\t-\ttask");
+  });
+
   it("runs create, send, and list inside the managed session context", async () => {
     const home = await mkdtemp(join(tmpdir(), "opentag-session-cli-"));
     const proofPath = join(home, "proof.json");
@@ -248,6 +290,16 @@ describe("session CLI", () => {
           messageId: "44444444-4444-4444-8444-444444444444",
         }),
       ).resolves.toMatchObject({ sessionId: "33333333-3333-4333-8333-333333333333" });
+      const stop = vi.spyOn(OpenTagApi.prototype, "stopSession").mockResolvedValue({
+        status: "stopped",
+        sessionId: "33333333-3333-4333-8333-333333333333",
+        execution: "stopped",
+      });
+      await expect(runSessionStop("33333333-3333-4333-8333-333333333333")).resolves.toMatchObject({
+        status: "stopped",
+      });
+      expect(stop).toHaveBeenCalledWith("p".repeat(40), { targetSessionId: "33333333-3333-4333-8333-333333333333" });
+      await expect(runSessionStop("not-a-uuid")).rejects.toThrow();
       await expect(
         runSessionList({ recursive: true, limit: 5, cursor: "c", since: "2026-01-01T00:00:00.000Z" }),
       ).resolves.toEqual({

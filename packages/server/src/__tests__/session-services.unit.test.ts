@@ -7,10 +7,11 @@ import {
   type SessionReconcileRequest,
   type SessionReconcileResult,
 } from "@opentag/shared";
-import { eq } from "drizzle-orm";
+import { eq, inArray } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapInitialAdmin as bootstrapTestAccount } from "../admin/bootstrap.js";
 import {
+  agentSchedules,
   agents,
   computers,
   imBindings,
@@ -22,7 +23,10 @@ import {
   sessions,
   users,
 } from "../db/schema/index.js";
-import { withAgentSessionStopAuthority } from "../runtime/agent-session-stop-authority.js";
+import {
+  withAgentSessionStopAuthority,
+  withEndedSessionStopAuthority,
+} from "../runtime/agent-session-stop-authority.js";
 import { RuntimeDomainRequestError } from "../runtime/runtime-domain-owner.js";
 import { AgentService, type AgentSessionStopTarget } from "../services/agents/index.js";
 import type { ExternalCallPolicy } from "../services/im/external-call-policy.js";
@@ -214,6 +218,219 @@ describe("SessionService with the unit database", () => {
     await expect(
       service.ensureChatSession({ imBindingId: fixture.bindingId, channelId: "C1", conversationKind: "dm" }, "channel"),
     ).rejects.toMatchObject({ code: "AGENT_NOT_ACTIVE" });
+  });
+
+  describe("stopping an internal Session", () => {
+    async function tree() {
+      const service = new SessionService(db.database);
+      const root = await service.ensureChatSession(
+        { imBindingId: fixture.bindingId, channelId: "C1", conversationKind: "dm" },
+        "channel",
+      );
+      const authority = (sessionId: string) => ({
+        sourceSessionId: sessionId,
+        sourceInstallationId: fixture.installationId,
+        sourceConnectionInstanceId: fixture.instanceId,
+        sourceComputerId: fixture.computerId,
+        sourcePlacementGeneration: 1,
+      });
+      const create = (creatorSessionId: string) =>
+        service.createInternalSessionWithMessage({
+          creatorSessionId,
+          creatorInstallationId: fixture.installationId,
+          creatorConnectionInstanceId: fixture.instanceId,
+          creatorComputerId: fixture.computerId,
+          creatorPlacementGeneration: 1,
+          messageId: randomUUID(),
+          initialMessage: "task",
+        });
+      const child = await create(root.session.id);
+      const grandchild = await create(child.session.id);
+      return {
+        service,
+        root: root.session.id,
+        child: child.session.id,
+        grandchild: grandchild.session.id,
+        authority,
+        create,
+      };
+    }
+
+    it("stops the schedules of the target and its whole tree with them, and nobody else's", async () => {
+      const { service, root, child, grandchild, authority, create } = await tree();
+      const greatGrandchild = (await create(grandchild)).session.id;
+      const sibling = (await create(root)).session.id;
+      const insert = (targetSessionId: string) =>
+        db.database
+          .insert(agentSchedules)
+          .values({
+            agentId: fixture.agentId,
+            targetSessionId,
+            name: "check",
+            prompt: "check",
+            schedule: { kind: "every", intervalSeconds: 3600, anchorAt: "2026-11-07T00:00:00.000Z" },
+            timezone: "UTC",
+            nextTriggerAt: new Date("2026-11-07T01:00:00.000Z"),
+          })
+          .returning({ id: agentSchedules.id })
+          .then(([row]) => row?.id as string);
+      const ofChild = await insert(child);
+      const ofGrandchild = await insert(grandchild);
+      const ofGreatGrandchild = await insert(greatGrandchild);
+      const ofRoot = await insert(root);
+      const ofSibling = await insert(sibling);
+      await service.stopInternalSession({ ...authority(root), targetSessionId: child });
+      const rows = await db.database.select().from(agentSchedules);
+      const row = (id: string) => rows.find((candidate) => candidate.id === id);
+      expect(row(ofChild)).toMatchObject({ enabled: false, nextTriggerAt: null, revision: 2 });
+      expect(row(ofGrandchild)).toMatchObject({ enabled: false, nextTriggerAt: null, revision: 2 });
+      expect(row(ofGreatGrandchild)).toMatchObject({ enabled: false, nextTriggerAt: null, revision: 2 });
+      expect(row(ofRoot)).toMatchObject({ enabled: true, revision: 1 });
+      expect(row(ofSibling)).toMatchObject({ enabled: true, revision: 1 });
+      // A repeated stop finds nothing left to change.
+      await service.stopInternalSession({ ...authority(root), targetSessionId: child });
+      const again = await db.database
+        .select()
+        .from(agentSchedules)
+        .where(inArray(agentSchedules.id, [ofChild, ofGrandchild, ofGreatGrandchild]));
+      expect(again.map(({ revision }) => revision)).toEqual([2, 2, 2]);
+    });
+
+    it("ends the target and its whole tree for good, leaves the rest alone, and repeats harmlessly", async () => {
+      const { service, root, child, grandchild, authority, create } = await tree();
+      const greatGrandchild = (await create(grandchild)).session.id;
+      const sibling = (await create(root)).session.id;
+      const nephew = (await create(sibling)).session.id;
+
+      const stopped = await service.stopInternalSession({ ...authority(root), targetSessionId: child });
+
+      expect(stopped).toMatchObject({
+        alreadyStopped: false,
+        descendantCount: 2,
+        stoppedDescendantCount: 2,
+        target: { sessionId: child, creatorSessionId: root, computerKind: "local", computerId: fixture.computerId },
+      });
+      const stoppedTree = [child, grandchild, greatGrandchild];
+      expect(stopped.targets.map(({ sessionId }) => sessionId).sort()).toEqual([...stoppedTree].sort());
+      const rows = await db.database
+        .select({ id: sessions.id, endedAt: sessions.endedAt })
+        .from(sessions)
+        .where(inArray(sessions.id, [...stoppedTree, root, sibling, nephew]));
+      const endedAt = new Map(rows.map(({ id, endedAt: at }) => [id, at]));
+      for (const id of stoppedTree) expect(endedAt.get(id)).toBeInstanceOf(Date);
+      for (const id of [root, sibling, nephew]) expect(endedAt.get(id)).toBeNull();
+
+      // The closure agrees for every row naming them, including rows of ancestors above the target.
+      const links = await db.database
+        .select({ descendant: sessionDescendants.descendantSessionId, active: sessionDescendants.descendantActive })
+        .from(sessionDescendants)
+        .where(inArray(sessionDescendants.descendantSessionId, [...stoppedTree, sibling, nephew]));
+      for (const { descendant, active } of links) expect(active).toBe(!stoppedTree.includes(descendant));
+      expect(links.filter(({ descendant }) => descendant === greatGrandchild)).toHaveLength(3);
+
+      const active = await service.listInternalSessions(root, { recursive: true, limit: 10 });
+      expect(active.items.map((item) => item.sessionId).sort()).toEqual([sibling, nephew].sort());
+      const all = await service.listInternalSessions(root, { recursive: true, limit: 10, includeStopped: true });
+      expect(all.items.find((item) => item.sessionId === greatGrandchild)?.stoppedAt).toBe(
+        endedAt.get(greatGrandchild)?.toISOString(),
+      );
+
+      await expect(service.stopInternalSession({ ...authority(root), targetSessionId: child })).resolves.toMatchObject({
+        alreadyStopped: true,
+        descendantCount: 2,
+        stoppedDescendantCount: 0,
+      });
+      const [unchanged] = await db.database.select().from(sessions).where(eq(sessions.id, greatGrandchild));
+      expect(unchanged?.endedAt).toEqual(endedAt.get(greatGrandchild));
+    });
+
+    it("finishes a tree whose target ended before the descendants did", async () => {
+      const { service, root, child, grandchild, authority } = await tree();
+      await db.database.update(sessions).set({ endedAt: new Date() }).where(eq(sessions.id, child));
+
+      const repeated = await service.stopInternalSession({ ...authority(root), targetSessionId: child });
+
+      expect(repeated).toMatchObject({ alreadyStopped: true, descendantCount: 1, stoppedDescendantCount: 1 });
+      const [row] = await db.database.select().from(sessions).where(eq(sessions.id, grandchild));
+      expect(row?.endedAt).toBeInstanceOf(Date);
+    });
+
+    it("stops only below the target when an inner Session stops its own child", async () => {
+      const { service, root, child, grandchild, authority } = await tree();
+      await expect(
+        service.stopInternalSession({ ...authority(child), targetSessionId: grandchild }),
+      ).resolves.toMatchObject({ descendantCount: 0, stoppedDescendantCount: 0 });
+      const rows = await db.database
+        .select()
+        .from(sessions)
+        .where(inArray(sessions.id, [root, child]));
+      expect(rows.map(({ endedAt }) => endedAt)).toEqual([null, null]);
+    });
+
+    it("does not stop children because their parent is idle or ended its Run", async () => {
+      const { service, root, child, grandchild } = await tree();
+      // Nothing about a Run reaches `sessions`: the only way a parent affects a child is a stop.
+      await service.listInternalSessions(root, { recursive: true, limit: 10 });
+      const rows = await db.database
+        .select()
+        .from(sessions)
+        .where(inArray(sessions.id, [root, child, grandchild]));
+      expect(rows.every(({ endedAt }) => endedAt === null)).toBe(true);
+      const links = await db.database
+        .select({ active: sessionDescendants.descendantActive })
+        .from(sessionDescendants)
+        .where(eq(sessionDescendants.ancestorSessionId, root));
+      expect(links.every(({ active }) => active)).toBe(true);
+    });
+
+    it("refuses anyone but an ancestor, and a source without authority", async () => {
+      const { service, root, child, grandchild, authority } = await tree();
+      for (const [source, targetSessionId] of [
+        [child, child],
+        [child, root],
+        [grandchild, child],
+        [root, root],
+        [root, randomUUID()],
+      ] as const) {
+        await expect(service.stopInternalSession({ ...authority(source), targetSessionId })).rejects.toMatchObject({
+          code: "SESSION_STOP_NOT_ANCESTOR",
+        });
+      }
+      await expect(
+        service.stopInternalSession({ ...authority(root), sourcePlacementGeneration: 9, targetSessionId: child }),
+      ).rejects.toMatchObject({ code: "SESSION_PLACEMENT_STALE" });
+      await service.stopInternalSession({ ...authority(root), targetSessionId: child });
+      await expect(
+        service.stopInternalSession({ ...authority(child), targetSessionId: grandchild }),
+      ).rejects.toMatchObject({ code: "SESSION_SOURCE_UNAVAILABLE" });
+    });
+
+    it("finds recently ended internal Sessions of one Computer only", async () => {
+      const { service, root, child, grandchild, authority } = await tree();
+      await service.stopInternalSession({ ...authority(root), targetSessionId: grandchild });
+      const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
+      await expect(service.recentlyEndedInternalSessions(fixture.computerId, hourAgo, 10)).resolves.toEqual([
+        expect.objectContaining({ sessionId: grandchild, creatorSessionId: child }),
+      ]);
+      await expect(service.recentlyEndedInternalSessions(randomUUID(), hourAgo, 10)).resolves.toEqual([]);
+      await expect(
+        service.recentlyEndedInternalSessions(fixture.computerId, new Date(Date.now() + 60_000), 10),
+      ).resolves.toEqual([]);
+    });
+
+    it("admits a stop frame only for an ended Session on its captured placement", async () => {
+      const { service, root, child, grandchild, authority } = await tree();
+      const { target } = await service.stopInternalSession({ ...authority(root), targetSessionId: grandchild });
+      const enqueue = vi.fn(async () => "enqueued");
+      await expect(withEndedSessionStopAuthority(db.database, target, enqueue)).resolves.toBe("enqueued");
+      await expect(
+        withEndedSessionStopAuthority(db.database, { ...target, sessionId: child }, enqueue),
+      ).resolves.toBeUndefined();
+      await expect(
+        withEndedSessionStopAuthority(db.database, { ...target, placementGeneration: 9 }, enqueue),
+      ).resolves.toBeUndefined();
+      expect(enqueue).toHaveBeenCalledOnce();
+    });
   });
 
   it("creates internal sessions, descendants, retries, and fences conflicting IDs", async () => {

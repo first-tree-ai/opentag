@@ -41,6 +41,7 @@ it.each(["claim", "abandoned"] as const)("joins actual IM %s work before pool di
     registry: {
       canReceiveSnapshot: () => true,
       currentInstanceId: () => fixture.dispatchContext.instanceId,
+      supportsCapability: () => false,
       capabilityVersion: () => 2,
     } as never,
     afterClaimRowLocked: async () => {

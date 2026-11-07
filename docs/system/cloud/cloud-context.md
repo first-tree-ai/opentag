@@ -81,6 +81,7 @@ The existing managed commands remain the Agent-facing interface:
 ```text
 opentag session create --message <task>
 opentag session send <target-session-id> --message <text>
+opentag session stop <internal-session-id>
 opentag session list
 ```
 

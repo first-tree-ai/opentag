@@ -146,6 +146,9 @@ it("carries the Session CLI execution marker through source capture to next-roun
       create: async () => {
         throw new Error("Not exercised");
       },
+      stop: async () => {
+        throw new Error("Not exercised");
+      },
       send: async (input, authenticated) => {
         const attempt = await sessions.authorizeAndRecordMessage({
           messageId: input.messageId,

@@ -21,6 +21,7 @@ import {
   type RunnerCloudSessionMessageVerifiedFrame,
   type RunnerCloudSteerAckFrame,
   type RunnerCloudSteerFrame,
+  type RuntimeImOutboxContext,
   type RuntimeImSteerResult,
   RuntimeImSteerResultSchema,
   RuntimeUsageSchema,
@@ -49,7 +50,7 @@ import { managedAgentSlug } from "../runtime/managed-instructions.js";
 import { truncateUtf8 } from "../runtime/provider-cli/outgoing-reply-process.js";
 import { RuntimeCredentialRelay, type RuntimeCredentialRelayOptions } from "../runtime/runtime-credential-relay.js";
 import { RuntimeProxyLoopbackAdapter } from "../runtime/runtime-proxy-loopback-adapter.js";
-import { providerRoutingEnvironment } from "../runtime/runtime-proxy-material.js";
+import { providerRoutingEnvironment, runtimeProxyOutboxContext } from "../runtime/runtime-proxy-material.js";
 import { TurnActivityReporter } from "../runtime/turn-activity-reporter.js";
 import { WebToolsServerClient } from "../runtime/web-tools-client.js";
 import { createExecutionWebDispatch } from "../runtime/web-tools-dispatch.js";
@@ -224,6 +225,8 @@ export interface CloudTurnExecutionHandle {
    * parent process and is deliberately absent here.
    */
   readonly webTools?: { readonly extensionPath: string; readonly socketPath: string };
+  /** Nonsecret outbox context of the execution's IM grant, naming the Session's own kind. */
+  readonly outboxContext?: RuntimeImOutboxContext;
   /**
    * E8 Session CLI proof received on the execution-open result. Ephemeral: forwarded to the worker
    * via stdin and cleared with the execution; never journaled, logged, or archived.
@@ -1650,6 +1653,7 @@ export class CloudTurnRunner {
       const stdin = serializeRunnerCloudTurnWorkerStdin({
         delivery,
         ...(steering ? { steering } : {}),
+        ...(execution.outboxContext ? { outboxContext: execution.outboxContext } : {}),
         executionDir: execution.executionDir,
         ...(execution.mcpGateway ? { mcpGateway: execution.mcpGateway } : {}),
         ...(execution.webTools ? { webTools: execution.webTools } : {}),
@@ -2068,6 +2072,7 @@ export class CloudTurnRunner {
       });
       return {
         executionDir: inSandboxExecutionDir,
+        ...executionOutboxContext(openRelay),
         ...(mcpGrant
           ? {
               mcpGateway: { url: new URL(MCP_GATEWAY_PATH, this.#options.serverUrl).toString(), token: mcpGrant.token },
@@ -2224,6 +2229,15 @@ export class CloudTurnRunner {
 
 function cancelledBeforeStart(): TurnCompletion {
   return { errorReason: "client_shutdown", executionEffects: "not_started", outcome: "cancelled" };
+}
+
+/** The Session's own kind reaches the worker through this, because a delivery does not carry it. */
+export function executionOutboxContext(relay: Pick<RuntimeCredentialRelay, "providers" | "cliMetadataFor">): {
+  outboxContext?: RuntimeImOutboxContext;
+} {
+  const im = relay.providers.find((entry) => entry.provider === "feishu" || entry.provider === "slack");
+  const outboxContext = im && runtimeProxyOutboxContext(relay.cliMetadataFor(im.provider));
+  return outboxContext ? { outboxContext } : {};
 }
 
 /**

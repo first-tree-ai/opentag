@@ -20,6 +20,30 @@ export function runOutcomeNoticeMessageId(childSessionId: string, messageId: str
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+/** One stopped child yields one notice id; a repeated stop converges on the same message. */
+export function sessionStoppedNoticeMessageId(childSessionId: string): string {
+  return runOutcomeNoticeMessageId(childSessionId, "stopped");
+}
+
+/**
+ * Told to the creator when someone else stopped its child. It keeps the outcome notice header the creator
+ * already recognizes, but unlike a failed Run the child has ended, so it cannot be continued.
+ */
+export function renderSessionStoppedNotice(childSessionId: string, descendantCount: number): string {
+  return [
+    SESSION_RUN_OUTCOME_NOTICE_HEADER,
+    `Session: ${childSessionId}`,
+    "Outcome: cancelled (reason: session_stopped)",
+    "",
+    "The internal Session you created was stopped by the Session that sent this notice.",
+    "Its running Run was cancelled and its queued messages were withdrawn; work it did before stopping may be partial.",
+    ...(descendantCount > 0 ? [`The ${descendantCount} descendant Session(s) below it were stopped with it.`] : []),
+    "This notice was written by openTag, not by the child Session.",
+    "The child Session has ended and cannot receive messages. To continue its work, create a new Session.",
+    "Decide what to do next; tell the user only what is useful.",
+  ].join("\n");
+}
+
 const NOTICE_IDENTITY = /^Session: ([0-9a-f-]{36})\nMessage: ([0-9a-f-]{36})\n/;
 
 /**

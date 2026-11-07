@@ -10,6 +10,7 @@ openTag Agents delegate work through the CLI available inside every managed Sess
 ```text
 opentag session create --message <task>
 opentag session send <target-session-id> --message <text>
+opentag session stop <internal-session-id>
 opentag session list
 ```
 
@@ -87,6 +88,9 @@ are capped at 100; `--cursor` continues a page, `--recursive` includes descendan
 and `--json` returns `{ items, nextCursor }`. There is no unbounded `--all` mode. The page returns active children
 only: the closure row carries `descendant_active`, which mirrors the descendant's `ended_at`, and the activity indexes
 are partial on it, so a page never reads the ordering index to discover ended descendants and discard them.
+`--include-stopped` also returns ended descendants, each with its `stoppedAt`. That page does not use the partial
+indexes: it sorts this ancestor's closure rows, read through the primary key, so its cost is bounded by the ancestor's
+own descendants. Only such a page carries `stoppedAt`, so an older CLI's strict parsing never sees the field.
 
 Recent activity is the latest message in which the listed Session is the source or target. Creating
 an internal child therefore also updates the creator's activity projection. It does not raise the
@@ -171,7 +175,7 @@ kind of Session the target is. A scheduled message has no sender: its notice goe
   After a restart, accepted messages wait without failing until the Server prepares their Session; if the Server
   refuses (for example the Session ended), they fail with that reason. The daemon then reports the outcome with
   `session:message:outcome`. Reports are kept in a local durable file and resent until the Server gives a final
-  answer or one day passes. The terminal inbox record and an `outcomeReport: pending` marker are written in one
+  answer or one day passes; a report that aged past that while the Computer was off still gets one attempt. The terminal inbox record and an `outcomeReport: pending` marker are written in one
   record write; the marker becomes `published` once the report is durable in the reporter's file. On startup a
   terminal record still marked `pending` (for example after a crash between the two writes) hands its report over
   again, and the child is never rerun. Terminal records written before the marker existed carry no marker and are
@@ -250,9 +254,10 @@ No schema change is involved: notices reuse `session_messages` and the existing 
 The Server stores authorized logical messages and their latest observed delivery outcome for idempotency and conflict
 detection. The managed Local Runtime uses its existing bounded inbox and durable-work store, including its recovery and
 retry policy; acceptance does not mean completion or exactly-once external side effects. Cloud uses the allocation and
-execution boundaries described in [Cloud Context](../cloud/cloud-context.md). Agent-facing Session operations intentionally
-provide no `end`; administrative lifecycle invalidation may still set the existing `sessions.ended_at` field, and it
-marks the matching closure rows inactive in the same transaction through `services/sessions/session-closure.ts`.
+execution boundaries described in [Cloud Context](../cloud/cloud-context.md). Agent-facing Session operations provide no
+`end` for a Session's own use; `session stop` and administrative lifecycle invalidation set the existing
+`sessions.ended_at` field, and each marks the matching closure rows inactive in the same transaction through
+`services/sessions/session-closure.ts`.
 
 The Local CLI transport requires `runtime.sessionCollaboration` capability version 2. Version 3 adds scheduled
 origins. Version 4 adds the Client Run outcome report. The Client sends `session:message:outcome` only on a connection
@@ -280,14 +285,81 @@ Session message is steered yet; it waits for the active Turn to end.
 The existing steer outcome rules (`processed`, `not_started`, `interrupted`) apply unchanged. The child still reports
 completion, failure, or timeout to the parent, and the parent decides what to do next.
 
-## Stopping a parent stops its children
+## Stopping an internal Session
 
-> **Planned — not yet implemented.** Tracking: #1304
+`opentag session stop <id>` ends an internal Session and every Session below it, recursively, without their cooperation:
+their running Runs are cancelled, their pending retries are cancelled and their queued messages are withdrawn. Only a stop
+does this. A parent that is merely idle between Turns, or whose Run failed or finished, does not affect its children. Agent
+suspend, delete, and transfer stop every live Session of the Agent, as described in
+[Agent, Session, and Computer model](../agent-session-computer-model.md#configuration-identity).
 
-When a parent Session is stopped or cancelled for good — not merely idle between Turns — every internal Session it
-created, recursively, is stopped as well. Today there is no Session-level stop entry point, so nothing cascades from a
-parent Session. Agent suspend, delete, and transfer already stop every live Session of the Agent, internal Sessions
-included; see [Agent, Session, and Computer model](../agent-session-computer-model.md#configuration-identity).
+- **A stop is final.** It sets `sessions.ended_at`, and nothing clears that field, so a later `session send` is rejected
+  with `target_unavailable` and no stale message can wake the Session. The Session's files stay on disk; continuing its
+  work takes a new Session.
+- **Who may stop.** Only an ancestor in the target's creation chain, proved by a `session_descendants` row. Everyone
+  else, including the target itself, a sibling, and a target that does not exist or is not internal, gets `not_ancestor`.
+- **Order.** The Session and its descendants, read from the `session_descendants` closure, end in one transaction under
+  the same lock order as `session send`, which is what takes away their authority: their proofs stop authenticating, so
+  they can no longer send or create Sessions, and no message reaches them. The Agent lock keeps the tree from growing until
+  the commit. Their execution side is told after commit. A stop that is repeated answers `alreadyStopped` and tells the whole
+  tree again, which also finishes a tree stopped before this cascade existed.
+- **What the caller learns.** `execution` says how far the stop reached: `stopped` (the Client confirmed the Run and
+  queue are gone), `requested` (the Cloud Runner was sent the cancellation), `pending` (the Computer or Runner could not
+  be reached, or did not answer within 15 seconds, which stays below the CLI's 30-second request timeout) or `not_interrupted` (a Client older than this behavior answered `busy`, so its Run continues without
+  Session authority until it ends). `execution` covers the whole tree and reports the Session reached least. `stoppedDescendantCount` says how many
+  descendants this stop ended.
+- **Notice.** A stop produces at most one notice, for the whole tree, to the target's creator. Every other creator in the
+  tree has ended too, so it cannot be told and nothing is sent to it; their aborted Runs report no outcome either. A creator
+  that called `session stop` has its answer and is not woken. When another ancestor stopped the child, the creator gets one
+  SessionMessage from that ancestor, starting with the Run outcome notice header, saying the child cannot be continued and
+  how many descendants stopped with it. Its ID is a Server-derived UUIDv5 over the child, so repeats converge. It is recorded before
+  the stop answers and delivered in the background; a delivery lost to a Server crash is sent again only if the stop is
+  repeated. Other senders whose queued
+  messages were withdrawn are not told; their next `session send` is rejected.
+
+Local uses the existing `session:reconcile` frame with `desired: "stopped"`; there is no new frame or capability. The
+frame names the internal kind so that a daemon that restarted and has not prepared the Session can still withdraw its
+work. The Client aborts the Run before taking the Agent lock, because the Run's cleanup needs that lock, then runs the
+normal stop. It waits only for the stopped placement's Run, read at the moment the placement is fenced, and that Run settles
+only after the messages steered into it. It never waits for the inbox drain, so an older stop cannot wait for a newer placement's work. A Run waiting out a retry's backoff
+ends at once, and a message steered into the stopped Run ends the same way. The Client fences the stopped placement synchronously before any of its writes, so a retry or delivery whose
+write was already in flight neither starts a Run nor answers `accepted`. A provider that ignores the abort for 5 seconds has its runtime closed, which ends its process tree. The withdrawn messages reach a terminal `session_stopped` record with no retry and no Run outcome report.
+The same Client behavior applies to an Agent lifecycle stop of an internal Session, which previously answered `busy`
+while a Run was active; a visible Session's Turn still answers `busy`.
+
+Past the 15 seconds the stop goes on in the background: a late Client answer is ignored apart from retiring the proof, and
+another ancestor's notice to the creator is still sent. A Computer that cannot be reached misses the frame and nothing durable records that. When a Computer registers, the
+Server sends a stop for up to 64 of its internal Sessions that ended in the last 24 hours, because repeating a stop is
+harmless. A daemon that restarted in the meantime also has its waiting messages refused with `session_ended`. A Server
+restart loses nothing, since this read is against the database. A Cloud Runner re-announces its journal when it
+reconnects, and the Server answers an ended Session's entries with a cancellation.
+
+There is no Web entry point yet.
+
+## Schedules on an internal Session
+
+An internal Session can create a schedule with `opentag agent self schedule create`. Every schedule pins the Session that
+created it as its fixed target, and nothing in the request can name another one, so a Session can only schedule itself. A
+schedule created from an internal Session before this rule keeps its visible target.
+
+- **Delivery.** An occurrence reaches the Session as a scheduled message, through the same path as a visible target. It has no
+  IM outbox: a scheduled Run reports with `opentag session send`, like any other Run of that Session.
+- **Stopping.** `session stop` turns off the schedules of the target and every descendant in the transaction that ends them,
+  and they can't be resumed.
+  Any other end of a Session, such as a disabled binding, is found at the next occurrence, which turns the schedule off.
+  The Agent's schedule commands are unchanged, so any of its Sessions can list, pause or delete a schedule, and each
+  schedule shows its target Session.
+- **A failed Run** notifies the target's creator, the [Run outcome notice](#run-outcome-notices) rule for a message with no
+  sender. The creator can be told again on every failed occurrence, as the conversation is for a visible target.
+- **A missed occurrence** that never reached the Session, including one whose target has ended, notifies nobody and logs no
+  warning. It stays in the schedule's last run summary, and the Web shows it. The reason: there is no message for an
+  outcome notice to name, and a child offline overnight should not wake its creator.
+
+No schema change is involved: `agent_schedules.target_session_id` already references any Session. The API response adds
+`target.internal: true` and keeps `target.sessionKind` as the Session's conversation scope, so released CLIs and open Web
+tabs drop the unknown key and still read the whole list, following
+[Response compatibility](../server-client-boundary.md#response-compatibility). Until they upgrade or reload, they show
+such a schedule as that channel or thread.
 
 ## Automatic retry before a notice
 
@@ -315,21 +387,25 @@ shares the count of the Turn it joined, so they retry together and fail together
 - **Crash or restart.** The Turn is resumed with the continuation notice, without its Session messages. Messages already
   steered before the interruption, then queued messages, are steered into the resumed Turn in order once it is running. A
   message that was already steered carries the continuation notice, without a specific cause, so the Agent knows it may
-  have handled it already. Until then they wait in the FIFO, re-checking about once per second. If the Turn ends first, they
+  have handled it already. A message the resumed conversation already holds is not injected again; see
+  [Messages the conversation already holds](#messages-the-conversation-already-holds). Until then they wait in the FIFO, re-checking about once per second. If the Turn ends first, they
   run as their own Runs, in order and with a fresh count, as they do when the runtime cannot steer. If the Turn cannot be
   resumed, the existing fallback applies: the waiting messages fail.
 - **Running out of retries, `turn_timeout`, or any other failure** ends the Turn, and the messages in it fail with it. When
   the count runs out at a restart, the messages steered into that Turn fail rather than run again; a message whose failure
-  cannot be written yet stays queued and does not run. Queued messages run on their own.
+  cannot be written yet stays queued and does not run. Queued messages run on their own. So does a message confirmed in a
+  Provider conversation the Turn no longer had when it ended, with the notice; see
+  [Messages the conversation already holds](#messages-the-conversation-already-holds).
 
 A message stays queued and waits for the Turn to end when the runtime cannot steer or refuses the steer, when the Turn
 already carries 16 Session messages, or when a visible Session has no IM outbox context.
 
 The accepted cost is extra delivery and repeated handling around a process interruption: each retry can replay the Turn and
-its messages, and work that runs at least 5 minutes between crashes is never stopped by the count. After a crash the resumed Turn may already have the steered message
-in its history, and the message is delivered again; the continuation notice tells the Agent, but cannot prevent every
-repeat. A message steered just before a crash, whose `running` state was not yet written, is delivered again without the
-notice. Cloud is not covered ([#1303](https://github.com/first-tree-ai/opentag/issues/1303)).
+its messages, and work that runs at least 5 minutes between crashes is never stopped by the count. After a crash the resumed Turn may already have an unconfirmed
+steered message in its history, and the message is delivered again; the continuation notice tells the Agent, but cannot prevent every
+repeat. A message the conversation is confirmed to hold is not delivered again; see
+[Messages the conversation already holds](#messages-the-conversation-already-holds). A message steered just before a crash, whose
+`running` state was not yet written, is delivered again without the notice. Cloud is not covered ([#1303](https://github.com/first-tree-ai/opentag/issues/1303)).
 
 ### Session messages steered into a Session message Run
 
@@ -342,11 +418,33 @@ Local Computer.
   next retry carries it as well. A message the provider never began goes back to its place in the FIFO instead.
 - **Crash or restart.** The Run's own message is counted and runs again with the continuation notice. Messages already steered
   into it, then queued messages, steer into it in order once it is running. A message that was already steered carries the
-  notice, so the Agent knows it may have handled it. If the Run ends first, they run as their own Runs, in order, and each
+  notice, so the Agent knows it may have handled it. A message the resumed conversation already holds is not injected again; see
+  [Messages the conversation already holds](#messages-the-conversation-already-holds). If the Run ends first, they run as their own Runs, in order, and each
   one's count starts from 0.
 - **Running out of retries, `turn_timeout`, or any other failure** ends the Run, and the messages steered into it fail with it.
   Each sender gets a notice, with reason `session_message_steer_interrupted`. When the count runs out at a restart, the messages
-  steered into that Run fail with `run_interrupted`; queued messages run on their own.
+  steered into that Run fail with `run_interrupted`; queued messages run on their own. So does a message confirmed in a Provider
+  conversation other than the one the Run ended in, or when the Run recorded none, with the notice; see
+  [Messages the conversation already holds](#messages-the-conversation-already-holds).
 
-A crash can land between the Run's terminal write and those of its messages. If the Run failed, they fail at the restart. If
-it succeeded, they run again on their own with the notice: this is the same accepted cost of repeated handling.
+A crash can land between the Run's terminal write and those of its messages. If the Run failed, they fail at the restart, unless
+they are confirmed in another conversation. If it succeeded, a message its conversation already holds succeeds with it, and any
+other runs again on its own with the notice: this is the same accepted cost of repeated handling.
+
+### Messages the conversation already holds
+
+Injecting a steered message again after a restart costs tokens, and the Agent may act on an instruction that a later message
+replaced. So once the Provider confirms a steered message is durably in its conversation, the record says so
+(`steerInConversation`, naming the Provider conversation), and a Run that resumes that conversation does not inject it again. The
+message rejoins the Run without input and still shares its count, its retries, and its failure.
+
+The signal differs by Provider, and each was measured by killing the process at that moment and resuming:
+
+- **Claude Code:** the first top-level assistant message after `command_lifecycle` `started`. `started` alone is too early: the
+  transcript is flushed about 100 ms later, and a process killed right after `started` resumes without the message.
+- **Codex:** the `turn/steer` answer. The rollout already holds the input.
+- **Pi:** no signal, so the message is injected again with the notice, as before.
+
+A message without a confirmation is injected again with the notice, so a crash before it, or a failed write of the record, costs a
+repeat and never a loss. So does a Run that resumes a different Provider conversation, including one that ends before the message could rejoin it: a Run's record names the conversation it ran in, and a confirmed message takes that Run's outcome, success or failure, only if it is the conversation holding the message. Otherwise it runs on its own with the notice, and the same goes for a Turn whose retries ran out at startup. A message without a confirmation still fails with a Run found failed at a restart. A retry after a model HTTP 429 still carries
+every message in the Run, confirmed or not. A failed attempt may not have recorded them, and that path is unchanged.

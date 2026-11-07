@@ -101,6 +101,9 @@ import {
   type SessionCliListResponse,
   SessionCliListResponseSchema,
   type SessionCliSendRequest,
+  type SessionCliStopRequest,
+  type SessionCliStopResponse,
+  SessionCliStopResponseSchema,
   type SetMCPAuthorizationRequest,
   SKILL_FORMAT_HEADER,
   SKILL_REPLACE_HEADER,
@@ -636,6 +639,27 @@ export class OpenTagApi {
     );
   }
 
+  stopSession(
+    proof: string,
+    input: SessionCliStopRequest,
+    options?: RequestOptions & { executionId?: string },
+  ): Promise<SessionCliStopResponse> {
+    return this.#request(
+      HTTP_PATHS.runtimeSessionStop,
+      SessionCliStopResponseSchema,
+      {
+        method: "POST",
+        body: JSON.stringify(input),
+        headers: {
+          "content-type": "application/json",
+          [SESSION_CLI_PROOF_HEADER]: proof,
+          ...(options?.executionId ? { "x-opentag-execution-id": options.executionId } : {}),
+        },
+      },
+      options,
+    );
+  }
+
   listInternalSessions(
     proof: string,
     input: SessionCliListQuery,
@@ -646,6 +670,7 @@ export class OpenTagApi {
       limit: String(input.limit),
       ...(input.cursor ? { cursor: input.cursor } : {}),
       ...(input.since ? { since: input.since } : {}),
+      ...(input.includeStopped ? { includeStopped: "true" } : {}),
     });
     return this.#request(
       `${HTTP_PATHS.runtimeSessions}?${query.toString()}`,

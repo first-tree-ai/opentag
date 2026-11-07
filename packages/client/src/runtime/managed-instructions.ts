@@ -165,6 +165,7 @@ function renderSession(context: ManagedSessionContext): readonly string[] {
       ? [
           `You are an internal Session. Focus on the delegated task and do not publish directly to IM. Report to the creating or coordinating Session with \`${context.cliCommand} session send\`: milestones only when useful (such as a key finding or being blocked), questions, and the final result.`,
           "You may create further internal Sessions when platform-level Session collaboration is useful.",
+          `A schedule you create with \`${context.cliCommand} agent self schedule create\` fires back into this Session, and can't target any other Session. It has no IM outlet: a scheduled Run reports with \`${context.cliCommand} session send\` like any other Run. Your schedules stop when this Session is stopped or ends.`,
         ]
       : [
           ...renderVisibleDelegation(context),
@@ -230,6 +231,7 @@ function renderSessionCollaboration(context: ManagedSessionContext): readonly st
     "Session collaboration is available through these commands:",
     `- ${context.cliCommand} session create --message <task>`,
     `- ${context.cliCommand} session send <target-session-id> --message <text>`,
+    `- ${context.cliCommand} session stop <internal-session-id>`,
     `- ${context.cliCommand} session list`,
     "A result of `unreachable` with code `client_busy` means the target Client is briefly not admitting new work, for example during an upgrade. The message was not delivered and nothing retries it for you: send it again shortly with `--message-id` set to the returned message ID.",
     `Each Run of an internal Session is stopped when its time budget runs out; the child keeps its conversation, but the interrupted work does not finish on its own. When you create one, estimate how long the task needs and pass \`--max-duration-ms\` with headroom: for example 4 hours (14400000) for coding, debugging, or test runs, up to the 24-hour maximum (86400000) for very long work. Without it, the Session gets the larger of 2 hours and this Agent's configured budget.`,
@@ -244,6 +246,7 @@ function renderSessionCollaboration(context: ManagedSessionContext): readonly st
     "An accepted result means the target accepted the message for processing; it does not mean the delegated task is complete.",
     "If a command result is uncertain, retry with the same messageId and exactly the same semantic input.",
     `A message that begins with "${SESSION_RUN_OUTCOME_NOTICE_HEADER}" is written by openTag, not by the Session it names: that Session, which you sent a message to or created, stopped before finishing (for example \`timed_out\` after reaching its maximum Run duration), so its final result will not arrive on its own. openTag does not rerun it. The child keeps its conversation context; to continue, send it a follow-up with \`${context.cliCommand} session send <child-session-id> --message <text>\`, or choose another approach. Decide what, if anything, the user needs to hear.`,
+    `\`session stop\` ends an internal Session you created, directly or through your children, without its cooperation: its running Run is cancelled and its queued messages are withdrawn. A stopped Session cannot be messaged or resumed, so to continue that work create a new Session. Use it when work is no longer wanted or is being replaced, instead of asking the child to stop. It also stops every Session below it, the same way. \`session list --include-stopped\` also shows stopped Sessions. A notice saying the child was stopped means another Session stopped it; do not try to continue it.`,
     ...(context.environment === "cloud"
       ? [
           `A child Session reports through \`${context.cliCommand} session send\`; its final text is not automatically returned to its parent.`,

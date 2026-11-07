@@ -8,6 +8,8 @@ import {
   SessionCliListQuerySchema,
   type SessionCliListResponse,
   SessionCliSendRequestSchema,
+  SessionCliStopRequestSchema,
+  type SessionCliStopResponse,
 } from "@opentag/shared";
 import { resolveCommandContext } from "../command/context.js";
 import { redactSecrets } from "../command/policy.js";
@@ -118,14 +120,24 @@ export async function requestWithRetryKey<T>(messageId: string, request: () => P
   }
 }
 
+export async function runSessionStop(targetSessionId: string): Promise<SessionCliStopResponse> {
+  const input = SessionCliStopRequestSchema.parse({ targetSessionId });
+  const runtime = await resolveSessionProofContext();
+  return runtime.executionId
+    ? runtime.api.stopSession(runtime.proof, input, { executionId: runtime.executionId })
+    : runtime.api.stopSession(runtime.proof, input);
+}
+
 export async function runSessionList(options: {
   recursive?: boolean;
+  includeStopped?: boolean;
   limit?: number;
   cursor?: string;
   since?: string;
 }): Promise<SessionCliListResponse> {
   const input = SessionCliListQuerySchema.parse({
     recursive: options.recursive ?? false,
+    includeStopped: options.includeStopped,
     limit: options.limit ?? SESSION_CLI_DEFAULT_LIMIT,
     cursor: options.cursor,
     since: options.since,
@@ -143,6 +155,29 @@ export function formatSessionCommandResult(result: SessionCliCommandResponse): s
   ].join(" ");
 }
 
+/** The one thing a reader must act on is spelled out; the fields carry the rest. */
+export function formatSessionStopResult(result: SessionCliStopResponse): string {
+  const fields = [
+    `status=${result.status}`,
+    `sessionId=${result.sessionId}`,
+    ...(result.execution ? [`execution=${result.execution}`] : []),
+    ...(result.alreadyStopped ? ["alreadyStopped=true"] : []),
+    ...(result.code ? [`code=${result.code}`] : []),
+  ].join(" ");
+  const notes = [
+    ...(result.execution === "pending"
+      ? ["Its Computer did not confirm the stop; it is sent again when the Computer reconnects."]
+      : []),
+    ...(result.execution === "not_interrupted"
+      ? ["Its Client is too old to interrupt a Run: the running Run continues until it ends."]
+      : []),
+    ...(result.stoppedDescendantCount
+      ? [`${result.stoppedDescendantCount} descendant Session(s) were stopped with it.`]
+      : []),
+  ];
+  return [fields, ...notes].join("\n");
+}
+
 export function formatSessionCommandError(error: SessionCommandRequestError, json: boolean): string {
   const result = {
     status: error.status,
@@ -156,7 +191,8 @@ export function formatSessionCommandError(error: SessionCommandRequestError, jso
 }
 
 export function formatSessionList(result: SessionCliListResponse): string {
-  const header = "SESSION ID\tPARENT SESSION\tCREATED\tLAST MESSAGE\tOUTCOME\tTASK";
+  const showStopped = result.items.some((item) => item.stoppedAt);
+  const header = `SESSION ID\tPARENT SESSION\tCREATED\tLAST MESSAGE\tOUTCOME\t${showStopped ? "STOPPED\t" : ""}TASK`;
   const rows = result.items.map((item) =>
     [
       item.sessionId,
@@ -164,6 +200,7 @@ export function formatSessionList(result: SessionCliListResponse): string {
       item.createdAt,
       item.lastMessageAt,
       item.lastDeliveryOutcome,
+      ...(showStopped ? [item.stoppedAt ?? "-"] : []),
       item.taskPreview.replaceAll("\t", " ").replaceAll("\n", " "),
     ].join("\t"),
   );

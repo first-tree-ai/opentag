@@ -67,6 +67,7 @@ export const RUNTIME_CAPABILITY = {
   sessionCollaboration: "runtime.sessionCollaboration",
   sessionReconcile: "runtime.sessionReconcile",
   sessionRecovery: "runtime.sessionRecovery",
+  sessionConfiguration: "runtime.sessionConfiguration",
   turnReport: "runtime.turnReport",
   turnActivity: "runtime.turnActivity",
   webTools: "runtime.webTools",
@@ -100,6 +101,8 @@ export const RUNTIME_SERVER_CAPABILITY_OFFERS = {
   [RUNTIME_CAPABILITY.sessionReconcile]: { min: 1, max: 1 },
   // v1: the Client asks the Server to re-prepare a Session whose accepted work was interrupted.
   [RUNTIME_CAPABILITY.sessionRecovery]: { min: 1, max: 1 },
+  // v1: the Client compares Agent configuration per Session, so the Server may run its Sessions concurrently.
+  [RUNTIME_CAPABILITY.sessionConfiguration]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.turnReport]: { min: 1, max: 3 },
   [RUNTIME_CAPABILITY.turnActivity]: { min: 1, max: 1 },
   [RUNTIME_CAPABILITY.webTools]: { min: 1, max: 1 },

@@ -52,11 +52,11 @@ import {
 } from "./im-delivery-content.js";
 import {
   type ClaimLease,
-  deliveryOccupancyScope,
+  deliveryLaneKey,
   fitDeliveryFrame,
   hasOtherCustody,
   loadDirectHistory,
-  occupancyScopeKey,
+  localSessionScoped,
 } from "./im-delivery-custody.js";
 import { isOperationCancellation, withOperationDeadline } from "./im-delivery-deadline.js";
 import {
@@ -171,6 +171,7 @@ export class ImDeliveryWorker {
   readonly #database: DatabaseClient;
   readonly #domain: RuntimeDomainOwner;
   readonly #assembler: Pick<EffectiveRuntimeSnapshotAssembler, "assembleForSession">;
+  readonly #localSessionScoped = (computerId: string) => localSessionScoped(this.#registry, computerId);
   readonly #registry: ConnectionRegistry;
   readonly #cloudDelivery?: CloudDeliveryOwner;
   readonly #cloudAllocation?: CloudSessionAllocationPort;
@@ -201,7 +202,7 @@ export class ImDeliveryWorker {
 
   constructor(input: ImDeliveryWorkerInput) {
     this.#database = input.database;
-    this.#selector = new ImDeliverySelector(input.database);
+    this.#selector = new ImDeliverySelector(input.database, this.#localSessionScoped);
     this.#domain = input.domain;
     this.#assembler = input.assembler;
     this.#registry = input.registry;
@@ -572,7 +573,14 @@ export class ImDeliveryWorker {
     let uncertainAgentId: string | undefined;
     const claim = await this.#database.transaction(async (transaction) => {
       const now = this.#clock();
-      const locked = await lockEligibleDelivery(transaction, deliveryId, expectedAgentId, now, sessionId);
+      const locked = await lockEligibleDelivery(
+        transaction,
+        deliveryId,
+        expectedAgentId,
+        now,
+        sessionId,
+        (computerId) => this.#localSessionScoped(computerId),
+      );
       if (!locked) return undefined;
       const { row, custody } = locked;
       const subject = {
@@ -580,9 +588,10 @@ export class ImDeliveryWorker {
         agentId: row.agentId,
         sessionId: row.sessionId,
         computerKind: row.computerKind,
+        localSessionScoped: this.#localSessionScoped(row.computerId),
       };
       const otherCustody = row.state === "accepted" ? undefined : custody.other(subject);
-      const laneKey = occupancyScopeKey(deliveryOccupancyScope(subject));
+      const laneKey = deliveryLaneKey(subject);
       let steerTarget: { id: string; turnId: string } | undefined;
       if (otherCustody) {
         const instanceId =
@@ -1076,14 +1085,13 @@ export class ImDeliveryWorker {
     signal.throwIfAborted();
     // A late acceptance may commit after this delivery was claimed. Recheck at
     // the last boundary before any reconcile or delivery frame reaches runtime.
-    // The subject is Local here (the Cloud branch returned above), so this is the
-    // unchanged Agent-wide fence.
     if (
       await hasOtherCustody(this.#database, {
         deliveryId,
         agentId: row.agent.id,
         sessionId: row.session.id,
         computerKind: row.computer.kind,
+        localSessionScoped: this.#localSessionScoped(row.computer.id),
       })
     ) {
       await this.#recordFailure(attempt, "IM_DELIVERY_AGENT_CUSTODY_FENCED");

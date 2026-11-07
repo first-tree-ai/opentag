@@ -542,6 +542,37 @@ describe("SessionBindingStore", () => {
     );
   });
 
+  it("resumes an interrupted Turn on its pinned configuration when a new chat reaches a newer one first", async () => {
+    const fixture = await bindingFixture();
+    const request = delivery(fixture.runtime, 81);
+    await fixture.store.recordAccepted(request, computeDirectInputHash(request), "turn-81");
+    await fixture.store.updateUnresolved("agent-1", "session-1", "turn-81", "running");
+    const turn = { deliveryId: request.deliveryId, turnId: "turn-81" };
+    const resumer = { pending: vi.fn(() => true), resume: vi.fn(async () => true), abandon: vi.fn() };
+    const restarted = new SessionReconciler({
+      installationId: fixture.computerId,
+      preparation: fixture.workspace,
+      resumer,
+    });
+    restarted.setRecovery("session-1", turn);
+    const newer: EffectiveRuntimeSnapshot = {
+      ...fixture.runtime,
+      revision: {
+        agent: { sequence: fixture.runtime.revision.agent.sequence + 1, id: "agent-revision-newer" },
+        session: { sequence: fixture.runtime.revision.session.sequence + 1, id: "session-revision-newer" },
+      },
+    };
+    await expect(
+      restarted.reconcile({ ...fixture.reconcile, requestId: randomUUID(), sessionId: "session-new", runtime: newer }),
+    ).resolves.toMatchObject({ status: "ready" });
+    await expect(restarted.reconcile({ ...fixture.reconcile, requestId: randomUUID() })).resolves.toMatchObject({
+      status: "running",
+      turn,
+    });
+    expect(resumer.resume).toHaveBeenCalledExactlyOnceWith("session-1", turn);
+    expect(resumer.abandon).not.toHaveBeenCalled();
+  });
+
   it("prepares a restarted Session around its interrupted Turn only for that Turn's automatic retry", async () => {
     const fixture = await bindingFixture();
     const request = delivery(fixture.runtime, 80);

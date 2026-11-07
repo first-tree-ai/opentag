@@ -1036,7 +1036,6 @@ export class SessionMessageInbox {
       // existing recovery semantics.
       const timedOut = timeout.signal.aborted && !this.#abort.signal.aborted && executionSignal?.aborted !== true;
       await settleRunTime();
-      if (timedOut) await this.#recordRunLimit(sessionId);
       if (current) outcome = await this.#settleFailedAttempt(current, next.hash, run, phase, error, { stop, timedOut });
     } finally {
       this.#runStops.delete(sessionId);
@@ -1060,6 +1059,7 @@ export class SessionMessageInbox {
     error: unknown,
     attempt: { stop: AbortController; timedOut: boolean },
   ): Promise<"ended" | { retry: DurableWorkRecord<SessionMessageDeliveryRequestV3> }> {
+    if (attempt.timedOut) await this.#recordRunLimit(record.payload.targetSessionId);
     // A daemon stop wins: the restarted daemon asks the Server, which refuses the ended Session.
     if (!attempt.stop.signal.aborted || this.#abort.signal.aborted) {
       return this.#attemptFailed(record, hash, run, phase, error, attempt.timedOut);

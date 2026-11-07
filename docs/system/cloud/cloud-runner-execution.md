@@ -278,6 +278,11 @@ Assistant history preserves Pi's `reasoning_content`, `reasoning`, and `reasonin
 plus bounded encrypted `reasoning_details` for signed tool calls. These history fields do not
 relax the top-level routing or credential allowlist.
 
+### Provider process exit
+
+If the Pi process exits during a Turn, the worker retries it in place, up to the shared limit for interruptions; see
+[Background work](../runtime/background-work.md). This is separate from model retries below, and needs no Server involvement.
+
 ### Model retry ownership
 
 The model proxy is the sole automatic retry owner for each managed Cloud model call, including

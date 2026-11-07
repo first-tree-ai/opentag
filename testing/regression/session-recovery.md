@@ -184,7 +184,9 @@ Codex and Pi (on Pi with `background_bash`).
    naming the command.
 4. Kill the Provider process (only it, not the daemon) during the wait. Expected: the message is retried with the
    continuation notice, and it names the command as possibly still running.
-5. On Claude Code, send a message after an orphaned background task. Expected: the transcript shows the task notification
+5. On Cloud, kill the Pi process inside the Sandbox during a Turn. Expected: the Turn continues in the same
+   Sandbox with the continuation notice, and reports one result.
+6. On Claude Code, send a message after an orphaned background task. Expected: the transcript shows the task notification
    and then the message, followed by an assistant reply, not `No response requested.`, and the record `succeeded` only
    after that reply.
 

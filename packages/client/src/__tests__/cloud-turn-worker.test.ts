@@ -138,6 +138,158 @@ it("tells a Turn what the last one left, from a file that outlives the sandbox",
   expect(JSON.stringify(prompts[2]?.input)).not.toContain("openTag notice");
 });
 
+describe("a Pi process that exits during a Cloud Run", () => {
+  const exited = (runId: string) => ({
+    runId,
+    output: [],
+    status: "failed" as const,
+    error: { code: "provider_process_exited" as const, message: "Pi RPC exited" },
+  });
+  const answered = (runId: string) => ({
+    runId,
+    output: [{ text: "done", type: "text" as const }],
+    status: "completed" as const,
+  });
+
+  async function run(
+    results: ((input: AgentPromptRequest) => Promise<unknown>)[],
+    extra: { steering?: boolean; failReopen?: boolean } = {},
+  ) {
+    const root = await mkdtemp(join(tmpdir(), "cloud-worker-retry-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const request = turnRequest(await fixtureExecution(root, "retry"));
+    const prompts: AgentPromptRequest[] = [];
+    const closes = vi.fn(async () => undefined);
+    let opened = 0;
+    const open = async () => {
+      opened += 1;
+      if (extra.failReopen && opened > 1) throw new Error("reopen failed");
+      return {
+        close: closes,
+        prompt: async (input: AgentPromptRequest) => {
+          prompts.push(input);
+          return (results.shift() as (input: AgentPromptRequest) => Promise<unknown>)(input);
+        },
+      } as never;
+    };
+    const completion = await runCloudTurnWorker(request, {
+      executionMount: join(root, "mount"),
+      localProxyLoopbackSeam: true,
+      workspace: join(root, "workspace"),
+      prepareContextTree: async () => ({ status: { status: "unavailable" as const, reason: "TIMEOUT" as const } }),
+      createPiFactory: () => ({ create: open, resume: open }),
+    } as never);
+    return { completion, prompts, closes, opened: () => opened };
+  }
+
+  it("retries in place, telling the retry what happened, and reports only the final result", async () => {
+    const { completion, prompts, closes, opened } = await run([
+      async (input) => exited(input.runId),
+      async (input) => answered(input.runId),
+    ]);
+    expect(completion).toMatchObject({ outcome: "completed", finalText: "done" });
+    expect(prompts).toHaveLength(2);
+    expect(prompts[0]?.input.items[0]?.text).not.toContain("exited unexpectedly");
+    expect(prompts[1]?.input.items[0]?.text).toContain("the Provider process exited unexpectedly");
+    expect(prompts[1]?.input.items.length).toBeGreaterThan(1);
+    expect(opened()).toBe(2);
+    expect(closes).toHaveBeenCalledTimes(2);
+  });
+
+  it("gives up after the shared two retries and reports the exit", async () => {
+    const { completion, prompts } = await run([
+      async (input) => exited(input.runId),
+      async (input) => exited(input.runId),
+      async (input) => exited(input.runId),
+    ]);
+    expect(completion).toMatchObject({ outcome: "failed", errorReason: "provider_process_exited" });
+    expect(prompts).toHaveLength(3);
+  });
+
+  it("does not retry any other failure", async () => {
+    const { completion, prompts } = await run([
+      async (input) => ({
+        runId: input.runId,
+        output: [],
+        status: "failed" as const,
+        error: { code: "provider_context_limit" as const, message: "too long" },
+      }),
+    ]);
+    expect(completion).toMatchObject({ outcome: "failed", errorReason: "provider_context_limit" });
+    expect(prompts).toHaveLength(1);
+  });
+
+  it("reports a failure when the runtime cannot be reopened", async () => {
+    const { completion, prompts } = await run([async (input) => exited(input.runId)], { failReopen: true });
+    expect(completion.outcome).not.toBe("completed");
+    expect(prompts).toHaveLength(1);
+  });
+
+  it("carries steered input into the retry, and leaves a steer with the Server between attempts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "cloud-worker-retry-steer-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const request = turnRequest(await fixtureExecution(root, "retry-steer"));
+    const steering = { turnId: randomUUID(), token: randomUUID() };
+    request.steering = steering;
+    const { CLOUD_STEER_RELAY_SOURCE, cloudSteerSocketPath } = await import("../runner/cloud-steer-control.js");
+    const steer = (text: string) => {
+      const { runtime: _runtime, ...delivery } = request.delivery as typeof request.delivery & { runtime: unknown };
+      const message = {
+        ...delivery,
+        type: "im:steer",
+        deliveryId: randomUUID(),
+        imMessageId: randomUUID(),
+        rootDeliveryId: request.delivery.deliveryId,
+        expectedTurnId: steering.turnId,
+        content: { ...request.delivery.content, text },
+      };
+      return new Promise<{ status: string }>((resolve, reject) => {
+        const child = spawn(process.execPath, [
+          "-e",
+          CLOUD_STEER_RELAY_SOURCE,
+          cloudSteerSocketPath(request.delivery.deliveryId),
+        ]);
+        let output = "";
+        child.stdout.on("data", (chunk) => {
+          output += chunk;
+        });
+        child.on("error", reject).on("close", () => resolve(JSON.parse(output)));
+        child.stdin.end(JSON.stringify({ token: steering.token, request: message }));
+      });
+    };
+    const prompts: AgentPromptRequest[] = [];
+    let opened = 0;
+    const results: { status: string }[] = [];
+    const open = async () => {
+      opened += 1;
+      // The second open is the gap between attempts: no runtime can take input.
+      if (opened === 2) results.push(await steer("sent in the gap"));
+      return {
+        close: async () => undefined,
+        steer: async () => undefined,
+        prompt: async (input: AgentPromptRequest) => {
+          prompts.push(input);
+          if (prompts.length > 1) return answered(input.runId);
+          results.push(await steer("steered first"));
+          return exited(input.runId);
+        },
+      } as never;
+    };
+    const completion = await runCloudTurnWorker(request, {
+      executionMount: join(root, "mount"),
+      localProxyLoopbackSeam: true,
+      workspace: join(root, "workspace"),
+      prepareContextTree: async () => ({ status: { status: "unavailable" as const, reason: "TIMEOUT" as const } }),
+      createPiFactory: () => ({ create: open, resume: open }),
+    } as never);
+    expect(completion).toMatchObject({ outcome: "completed" });
+    expect(results.map((result) => result.status)).toEqual(["steered", "deferred"]);
+    const retried = JSON.stringify(prompts[1]?.input);
+    expect(retried).toContain("steered first");
+    expect(retried).not.toContain("sent in the gap");
+  });
+});
+
 function turnRequest(executionDir: string, sessionDirectory?: string) {
   const delivery = cloudDeliveryFixture();
   const request: RunnerCloudTurnWorkerRequest = {

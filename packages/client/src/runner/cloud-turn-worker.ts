@@ -7,6 +7,7 @@ import { performance } from "node:perf_hooks";
 import { connect as connectTls } from "node:tls";
 import type { RunnerCloudWorkerRequest } from "@opentag/shared";
 import type {
+  AgentInput,
   AgentPromptRequest,
   AgentRunResult,
   AgentRuntimeBinding,
@@ -37,6 +38,12 @@ import {
 } from "../runtime/agent-turn-runner.js";
 import { BackgroundWorkLedger, type BackgroundWorkLedgerStorage } from "../runtime/background-work-ledger.js";
 import { serializeEnvironment } from "../runtime/im-credential-environment-manager.js";
+import {
+  buildContinuationNotice,
+  type Interruption,
+  nextRetry,
+  type RetryCount,
+} from "../runtime/interruption-retry.js";
 import {
   type ManagedSessionContext,
   managedAgentSlug,
@@ -598,11 +605,12 @@ export async function runCloudTurnWorker(
       ),
       workspace: { cwd: options.workspace, environment: runtimeEnvironment },
     };
-    const persisted = await readPersistedBinding(bindingFile);
-    const activeRuntime = persisted
-      ? await factory.resume({ ...common, binding: persisted })
-      : await factory.create(common);
-    runtime = activeRuntime;
+    const openRuntime = async () => {
+      const persisted = await readPersistedBinding(bindingFile);
+      runtime = persisted ? await factory.resume({ ...common, binding: persisted }) : await factory.create(common);
+      return runtime;
+    };
+    const firstRuntime = await openRuntime();
     emitPiDiagnostic(options.onDiagnostic, {
       phase: "worker_preparation",
       event: "end",
@@ -614,32 +622,56 @@ export async function runCloudTurnWorker(
 
     const onAbort = () => terminateTrackedProcesses(pids);
     execution.signal.addEventListener("abort", onAbort, { once: true });
+    const attempts: CloudRunAttempts = { steered: [], live: firstRuntime };
+    const steering = await openWorkerSteering(request, attempts, options).catch((error: unknown) => {
+      diagnostics.failure(error);
+      return undefined;
+    });
     let completion: TurnCompletion;
-    let steering: Awaited<ReturnType<typeof openWorkerSteering>>;
     try {
-      steering = await openWorkerSteering(request, activeRuntime, options).catch((error: unknown) => {
-        diagnostics.failure(error);
-        return undefined;
-      });
-      const result = await activeRuntime.prompt({
-        runId: randomTurnRunId(request),
-        configuration,
-        input: await backgroundWork.prefix(cloudWorkerInput(request, new Date(options.now?.() ?? Date.now()))),
-        signal: execution.signal,
-      });
-      // A completed result is preserved; a stop/timeout that raced a failed result maps true.
-      completion =
-        result.status === "completed"
-          ? completionForResult(result, undefined)
-          : completionForResult(result, execution.stopReason());
+      completion = await runAttempts(
+        attempts,
+        firstRuntime,
+        openRuntime,
+        async (activeRuntime, interruption) => {
+          let attempt: TurnCompletion;
+          try {
+            const result = await activeRuntime.prompt({
+              runId: randomTurnRunId(request),
+              configuration,
+              input: await backgroundWork.prefix(
+                withInterruption(
+                  cloudWorkerInput(request, new Date(options.now?.() ?? Date.now())),
+                  interruption,
+                  attempts.steered,
+                ),
+              ),
+              signal: execution.signal,
+            });
+            // A completed result is preserved; a stop/timeout that raced a failed result maps true.
+            attempt =
+              result.status === "completed"
+                ? completionForResult(result, undefined)
+                : completionForResult(result, execution.stopReason());
+          } catch (error) {
+            diagnostics.failure(error);
+            attempt = completionForError(error, execution.stopReason());
+          } finally {
+            attempts.live = undefined;
+            await activeRuntime.close().catch(() => undefined);
+            terminateTrackedProcesses(pids);
+          }
+          return attempt;
+        },
+        options.now ?? Date.now,
+      );
     } catch (error) {
+      // Only reopening the runtime for a retry can get here; the attempt that led to it is already over.
       diagnostics.failure(error);
       completion = completionForError(error, execution.stopReason());
     } finally {
       execution.signal.removeEventListener("abort", onAbort);
       await steering?.close().catch((error: unknown) => diagnostics.failure(error));
-      await activeRuntime.close().catch(() => undefined);
-      terminateTrackedProcesses(pids);
     }
     await recordRunLimit(backgroundWork, completion, options);
     return completion;
@@ -778,6 +810,65 @@ async function readPersistedBinding(path: string): Promise<AgentRuntimeBinding |
   return PersistedBindingSchema.parse(JSON.parse(raw));
 }
 
+/** What outlives one attempt of a Run: its input may be steered in any of them. */
+interface CloudRunAttempts {
+  /** Steered input the Server settled with this Run, so a retry must carry it. */
+  readonly steered: AgentInput[];
+  /** Undefined between attempts, when a steer is left with the Server. */
+  live: CloudTurnPiRuntime | undefined;
+}
+
+/**
+ * A Provider process that exits is retried in place, under the shared rule: the same Turn, the same
+ * deadline and the same Session on disk, so the Server sees one Run and needs no change. A crash of the
+ * worker itself is not covered: its parent reports that as unknown.
+ */
+async function runAttempts(
+  attempts: CloudRunAttempts,
+  firstRuntime: CloudTurnPiRuntime,
+  openRuntime: () => Promise<CloudTurnPiRuntime>,
+  attempt: (runtime: CloudTurnPiRuntime, interruption: Interruption | undefined) => Promise<TurnCompletion>,
+  now: () => number,
+): Promise<TurnCompletion> {
+  let retry: RetryCount = { count: 0, ranMs: 0 };
+  let activeRuntime = firstRuntime;
+  let interruption: Interruption | undefined;
+  while (true) {
+    const startedAt = now();
+    const completion = await attempt(activeRuntime, interruption);
+    if (completion.errorReason !== "provider_process_exited") return completion;
+    const next = nextRetry({ count: retry.count, ranMs: retry.ranMs });
+    if (next.exhausted) return completion;
+    retry = { count: next.count, ranMs: Math.max(0, now() - startedAt) };
+    interruption = { reason: "provider_process_exited", at: new Date(now()).toISOString() };
+    activeRuntime = await openRuntime();
+    attempts.live = activeRuntime;
+  }
+}
+
+function withInterruption(
+  input: AgentInput,
+  interruption: Interruption | undefined,
+  steered: readonly AgentInput[],
+): AgentInput {
+  if (!interruption) return input;
+  return {
+    items: [
+      { type: "text", text: buildContinuationNotice(interruption) },
+      ...input.items,
+      ...(steered.length > 0
+        ? [
+            {
+              type: "text" as const,
+              text: "Messages that arrived during the interrupted turn, in order (they may also be in your history):",
+            },
+            ...steered.flatMap((message) => message.items),
+          ]
+        : []),
+    ],
+  };
+}
+
 async function recordRunLimit(
   ledger: BackgroundWorkLedger,
   completion: TurnCompletion,
@@ -853,7 +944,7 @@ async function prepareCliDirectories(environment: Record<string, string>, scratc
 
 async function openWorkerSteering(
   request: RunnerCloudWorkerRequest,
-  activeRuntime: CloudTurnPiRuntime,
+  attempts: CloudRunAttempts,
   options: CloudTurnWorkerRunOptions,
 ) {
   return request.kind === "turn" && request.steering
@@ -871,17 +962,18 @@ async function openWorkerSteering(
             input.placementGeneration !== request.delivery.placementGeneration
           )
             return cloudSteerResult(input, "rejected", "target_mismatch");
+          const activeRuntime = attempts.live;
+          if (!activeRuntime) return cloudSteerResult(input, "deferred", "steer_state_unknown");
           if (!activeRuntime.steer) return cloudSteerResult(input, "deferred", "steer_unsupported");
           try {
-            await activeRuntime.steer({
-              expectedRunId: randomTurnRunId(request),
-              input: buildAgentInput(
-                input,
-                undefined,
-                request.delivery.runtime,
-                new Date(options.now?.() ?? Date.now()),
-              ),
-            });
+            const steered = buildAgentInput(
+              input,
+              undefined,
+              request.delivery.runtime,
+              new Date(options.now?.() ?? Date.now()),
+            );
+            await activeRuntime.steer({ expectedRunId: randomTurnRunId(request), input: steered });
+            attempts.steered.push(steered);
             return cloudSteerResult(input, "steered");
           } catch {
             return cloudSteerResult(input, "deferred", "steer_state_unknown");

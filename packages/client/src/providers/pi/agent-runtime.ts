@@ -321,7 +321,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       await this.#restoreSessionState(state, context);
       this.#diagnostics.end();
       this.#diagnostics.start("prompt_acceptance", this.#promptAcceptanceTimeoutMs);
-      const accepted = await this.#requestPrompt(client, piInput(request), context.signal);
+      const accepted = await this.#compactThenPrompt(client, request, context.signal);
       if (accepted) {
         await this.#checkNativePrompt(client, context.signal);
         this.#promptAccepted?.resolve();
@@ -354,6 +354,35 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       this.#diagnostics.completeCleanup(cleanupFailure, client?.exitStatus);
     }
     return piResultAfterCleanup(result, cleanupFailure);
+  }
+
+  async #compactThenPrompt(client: PiRpcClient, request: AgentPromptRequest, signal: AbortSignal): Promise<boolean> {
+    if (request.compactContext && !(await this.#compactContext(client, signal))) return false;
+    return this.#requestPrompt(client, piInput(request), signal);
+  }
+
+  /**
+   * Pi compacts through its `compact` RPC, on the same Session file. Its `compaction_end` already
+   * carries the warning for a failure, such as a Session too small to compact, and the summary's
+   * usage, so a refused command only moves on to the prompt. The summary call has no timeout of
+   * its own; it stays bounded by the Run signal, and an interrupt closes the process as it does for
+   * threshold compaction. Returns false when that close already owns the aborted terminal.
+   */
+  async #compactContext(client: PiRpcClient, signal: AbortSignal): Promise<boolean> {
+    this.#promptPhase = "awaiting-ack";
+    try {
+      await client.request({ type: "compact" }, signal, { timeoutMs: null });
+      return true;
+    } catch (error) {
+      if (!(error instanceof PiRpcError)) throw error;
+      if (error.code === "command") return true;
+      if (this.#closingForAbort && error.code === "aborted") {
+        this.#promptAccepted?.reject(error);
+        this.#diagnostics.failure(error, client.exitStatus, true);
+        return false;
+      }
+      throw error;
+    }
   }
 
   /**

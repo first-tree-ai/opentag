@@ -21,6 +21,7 @@ import { CodexAgentRuntimeFactory } from "../providers/codex/agent-runtime.js";
 import { AgentRuntimeProviderUnavailableError } from "../runtime/agent-runtime-provider-registry.js";
 import {
   AgentTurnRunner,
+  type AgentTurnRunnerOptions,
   buildAgentInput,
   completionForError,
   completionForResult,
@@ -1929,7 +1930,7 @@ describe("AgentTurnRunner", () => {
   });
 });
 
-function outgoingHarness() {
+function outgoingHarness(options: { channelActivity?: AgentTurnRunnerOptions["channelActivity"] } = {}) {
   const request = delivery();
   request.content.providerRef = {
     provider: "feishu",
@@ -1974,6 +1975,7 @@ function outgoingHarness() {
   const send = vi.fn(async (_frame: { type: string; phase?: string }) => undefined);
   const runner = new AgentTurnRunner({
     now: Date.now,
+    ...(options.channelActivity ? { channelActivity: options.channelActivity } : {}),
     bindingStore: { updateUnresolved: vi.fn(async () => undefined) } as unknown as SessionBindingStore,
     connection: { send, capabilityVersion },
     custody: { markReporting, recordResult: vi.fn() } as unknown as TurnCustodyOwner,
@@ -2013,6 +2015,56 @@ function outgoingHarness() {
     logs,
   };
 }
+
+describe("Channel Session idle compaction", () => {
+  function compactionHarness(idle: boolean) {
+    const beginTurn = vi.fn(async () => idle);
+    const recordActivity = vi.fn(async () => undefined);
+    return { ...outgoingHarness({ channelActivity: { beginTurn, recordActivity } }), beginTurn, recordActivity };
+  }
+  const promptOf = (prompt: ReturnType<typeof outgoingHarness>["prompt"]) =>
+    (prompt.mock.calls[0] as unknown as [{ compactContext?: boolean }])[0];
+
+  it("asks the Provider to compact when the Channel Session has been idle", async () => {
+    const { runner, request, prompt, beginTurn, recordActivity } = compactionHarness(true);
+    runner.start(liveOwner(request));
+    await vi.waitFor(() => expect(recordActivity).toHaveBeenCalledWith(request.sessionId, expect.any(Number)));
+    expect(beginTurn).toHaveBeenCalledWith(request.sessionId, expect.any(Number));
+    expect(promptOf(prompt).compactContext).toBe(true);
+  });
+
+  it("does not compact a Channel Session that was active recently", async () => {
+    const { runner, request, prompt, recordActivity } = compactionHarness(false);
+    runner.start(liveOwner(request));
+    await vi.waitFor(() => expect(recordActivity).toHaveBeenCalled());
+    expect(promptOf(prompt).compactContext).toBeUndefined();
+  });
+
+  it("leaves a Thread Session alone", async () => {
+    const { runner, request, prompt, beginTurn, recordActivity, submit } = compactionHarness(true);
+    request.content.providerRef = {
+      ...request.content.providerRef,
+      threadId: "omt_1",
+    } as typeof request.content.providerRef;
+    runner.start(liveOwner(request));
+    await vi.waitFor(() => expect(submit).toHaveBeenCalled());
+    expect(beginTurn).not.toHaveBeenCalled();
+    expect(recordActivity).not.toHaveBeenCalled();
+    expect(promptOf(prompt).compactContext).toBeUndefined();
+  });
+
+  it("compacts the Channel Session on an observer copy of a thread message", async () => {
+    const { runner, request, prompt, recordActivity } = compactionHarness(true);
+    request.content.providerRef = {
+      ...request.content.providerRef,
+      threadId: "omt_1",
+    } as typeof request.content.providerRef;
+    request.replyRole = "observer";
+    runner.start(liveOwner(request));
+    await vi.waitFor(() => expect(recordActivity).toHaveBeenCalled());
+    expect(promptOf(prompt).compactContext).toBe(true);
+  });
+});
 
 function liveOwner(request: DirectImMessageDeliveryRequest): LiveTurnOwner {
   return {

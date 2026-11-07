@@ -33,6 +33,12 @@ import type {
 } from "../agent-runtime/types.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import { AgentRuntimeProviderUnavailableError } from "./agent-runtime-provider-registry.js";
+import {
+  beginChannelTurn,
+  type ChannelActivityStore,
+  endChannelTurn,
+  isChannelDelivery,
+} from "./channel-idle-compaction.js";
 import { ImCredentialEnvironmentError } from "./im-credential-environment-manager.js";
 import type { ImResourceFetcher } from "./im-resource-fetcher.js";
 import {
@@ -95,6 +101,8 @@ export interface AgentTurnRunnerOptions {
     capabilityVersion?(capability: string): number | undefined;
   };
   readonly custody: Pick<TurnCustodyOwner, "markReporting" | "recordResult">;
+  /** Without one, Channel Sessions never compact on idle. */
+  readonly channelActivity?: Pick<ChannelActivityStore, "beginTurn" | "recordActivity">;
   readonly logger?: ClientLogger;
   readonly now?: () => number;
   readonly onRuntimeEvent?: (event: AgentRuntimeEvent) => Promise<void> | void;
@@ -224,6 +232,7 @@ export class AgentTurnRunner {
   readonly #outgoingReplies: AgentTurnRunnerOptions["outgoingReplies"];
   readonly #agentErrorReporter: AgentTurnErrorReporter;
   readonly #retries: NonNullable<AgentTurnRunnerOptions["retries"]>;
+  readonly #channelActivity: AgentTurnRunnerOptions["channelActivity"];
   readonly #sessionMessages: NonNullable<AgentTurnRunnerOptions["sessionMessages"]>;
   readonly #restartRetryAvailable: () => boolean;
   readonly #turns = new Map<string, RunningTurn>();
@@ -251,6 +260,7 @@ export class AgentTurnRunner {
     // wants no tracker gets a runner that reports into nothing, not a second branch to get wrong.
     this.#agentErrorReporter = options.agentErrorReporter ?? (() => undefined);
     this.#retries = options.retries ?? NO_TURN_RETRIES;
+    this.#channelActivity = options.channelActivity;
     this.#sessionMessages = options.sessionMessages ?? NO_SESSION_MESSAGES;
     this.#restartRetryAvailable = options.restartRetryAvailable ?? (() => false);
   }
@@ -647,6 +657,7 @@ export class AgentTurnRunner {
     let turnPlanInput: ProviderCliTurnPlanPrepareInput | undefined;
     let preparedExecutionId: string | undefined;
     let credentialPrepared = false;
+    const channelTurn = { sessionId: owner.request.sessionId, channel: isChannelDelivery(owner.request) };
     const phaseTimings: TurnPhaseTimings = {};
     try {
       signal.throwIfAborted();
@@ -669,6 +680,11 @@ export class AgentTurnRunner {
       const promptStartedAt = this.#now();
       const result = await runtime.prompt({
         runId: owner.turnId,
+        ...(await beginChannelTurn(
+          this.#channelActivity,
+          { ...channelTurn, retry: interruption !== undefined },
+          this.#now(),
+        )),
         ...(started.allowedUnixSockets ? { allowedUnixSockets: started.allowedUnixSockets } : {}),
         /*
          * The processing clock is sampled at actual input construction — after credential
@@ -717,6 +733,7 @@ export class AgentTurnRunner {
     } finally {
       this.#activity.end(owner.turnId);
       releaseObserver();
+      await endChannelTurn(this.#channelActivity, channelTurn, this.#now());
       if (turnPlanInput) {
         /* v8 ignore next -- turn-plan teardown is best-effort. */
         await this.#turnPlan?.cleanup(turnPlanInput).catch(() => undefined);

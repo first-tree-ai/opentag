@@ -455,6 +455,86 @@ describe("PiAgentRuntime", () => {
     await runtime.close();
   });
 
+  describe("compactContext", () => {
+    function compacting(outcome: "complete" | "refused") {
+      const client = new ScriptedPiClient("complete");
+      client.messageCount = 2;
+      client.compactOutcome = outcome;
+      const events: AgentRuntimeEvent[] = [];
+      const open = piFactory(client).resume({
+        ...createRequest((event) => {
+          events.push(event);
+        }),
+        binding: materializedBinding(),
+      });
+      return { client, events, open };
+    }
+
+    it("compacts the same Session before the prompt and counts the summary's usage", async () => {
+      const { client, events, open } = compacting("complete");
+      const runtime = await open;
+      await expect(runtime.prompt({ runId: "run", input: input("work"), compactContext: true })).resolves.toMatchObject(
+        { status: "completed" },
+      );
+      const types = client.commands.map((command) => command.type);
+      expect(types.filter((type) => type === "compact")).toHaveLength(1);
+      expect(types.indexOf("compact")).toBeLessThan(types.indexOf("prompt"));
+      expect(client.args[client.args.indexOf("--session-id") + 1]).toBe(SESSION_ID);
+      expect(events.some((event) => event.type === "provider_warning")).toBe(false);
+      expect(events).toContainEqual(
+        expect.objectContaining({ type: "usage_updated", usage: expect.objectContaining({ inputTokens: 500 }) }),
+      );
+      await runtime.close();
+    });
+
+    it("does not compact without the request", async () => {
+      const { client, open } = compacting("complete");
+      const runtime = await open;
+      await runtime.prompt({ runId: "run", input: input("work") });
+      expect(client.commands.some((command) => command.type === "compact")).toBe(false);
+      await runtime.close();
+    });
+
+    it("warns through compaction_end and still prompts when Pi refuses to compact", async () => {
+      const { client, events, open } = compacting("refused");
+      const runtime = await open;
+      await expect(runtime.prompt({ runId: "run", input: input("work"), compactContext: true })).resolves.toMatchObject(
+        { status: "completed" },
+      );
+      expect(client.commands.some((command) => command.type === "prompt")).toBe(true);
+      expect(events).toContainEqual(
+        expect.objectContaining({ code: "pi_compaction_failed", message: "Nothing to compact (session too small)" }),
+      );
+      await runtime.close();
+    });
+
+    it("surfaces a dead process instead of prompting", async () => {
+      const { client, open } = compacting("complete");
+      client.compactError = new PiRpcError("exited", "Pi exited");
+      const runtime = await open;
+      await expect(runtime.prompt({ runId: "run", input: input("work"), compactContext: true })).resolves.toMatchObject(
+        { status: "failed" },
+      );
+      expect(client.commands.some((command) => command.type === "prompt")).toBe(false);
+      await runtime.close();
+    });
+
+    it("settles as aborted when an interrupt closes Pi during compaction", async () => {
+      const { client, open } = compacting("complete");
+      client.compactHold = true;
+      const runtime = await open;
+      const run = runtime.prompt({ runId: "run", input: input("work"), compactContext: true });
+      await vi.waitFor(() => expect(client.commands.some((command) => command.type === "compact")).toBe(true));
+      client.emit({ type: "compaction_start", reason: "manual" });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await runtime.abort({ expectedRunId: "run" });
+      await expect(run).resolves.toMatchObject({ status: "aborted" });
+      expect(client.closed).toBe(true);
+      expect(client.commands.some((command) => command.type === "prompt")).toBe(false);
+      await runtime.close();
+    });
+  });
+
   it("resumes the exact binding in a new process and preserves non-prompt overrides", async () => {
     const client = new ScriptedPiClient("complete");
     client.messageCount = 2;
@@ -1335,6 +1415,10 @@ class ScriptedPiClient implements PiRpcClient {
   historyBeforeError?: string;
   promptError?: Error;
   sessionFile = SESSION_FILE;
+  compactError?: Error;
+  compactHold = false;
+  compactOutcome: "complete" | "refused" = "complete";
+  #compactHeld?: (error: Error) => void;
 
   constructor(scenario: Scenario, sessionId = SESSION_ID) {
     this.#scenario = scenario;
@@ -1357,6 +1441,7 @@ class ScriptedPiClient implements PiRpcClient {
       };
     }
     if (command.type === "steer") return undefined;
+    if (command.type === "compact") return this.#compact();
     if (command.type === "abort") {
       this.#emitRun("aborted");
       return undefined;
@@ -1386,6 +1471,7 @@ class ScriptedPiClient implements PiRpcClient {
 
   async close(): Promise<void> {
     this.closed = true;
+    this.#compactHeld?.(new PiRpcError("aborted", "Pi RPC is closing"));
   }
 
   complete(): void {
@@ -1395,6 +1481,30 @@ class ScriptedPiClient implements PiRpcClient {
   /** Emit one raw Pi event, for scenarios the canned sequences do not cover (e.g. compaction). */
   emit(message: Readonly<Record<string, unknown>>): void {
     this.#emit(message);
+  }
+
+  #compact(): Promise<unknown> {
+    return (async () => {
+      if (this.compactError) throw this.compactError;
+      if (this.compactHold) {
+        return new Promise((_resolve, reject) => {
+          this.#compactHeld = reject;
+        });
+      }
+      this.#emit({ type: "compaction_start", reason: "manual" });
+      if (this.compactOutcome === "refused") {
+        const errorMessage = "Nothing to compact (session too small)";
+        this.#emit({ type: "compaction_end", reason: "manual", aborted: false, errorMessage });
+        throw new PiRpcError("command", errorMessage);
+      }
+      this.#emit({
+        type: "compaction_end",
+        reason: "manual",
+        aborted: false,
+        result: { summary: "summary", usage: { input: 500, output: 10 } },
+      });
+      return { summary: "summary" };
+    })();
   }
 
   #emitRun(stopReason: "aborted" | "error" | "stop", includeTool = false): void {

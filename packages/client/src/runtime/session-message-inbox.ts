@@ -11,6 +11,12 @@ import {
 import type { AgentInput, AgentRuntime, AgentSteerOutcome, AgentSteerReceipt } from "../agent-runtime/types.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import type { AdmissionController } from "./admission-controller.js";
+import {
+  beginChannelTurn,
+  type ChannelActivityStore,
+  endChannelTurn,
+  isChannelOutbox,
+} from "./channel-idle-compaction.js";
 import { ImCredentialEnvironmentError } from "./im-credential-environment-manager.js";
 import {
   buildContinuationNotice,
@@ -72,6 +78,8 @@ export interface JoinableRuns {
 
 export interface SessionMessageInboxOptions {
   admission: AdmissionController;
+  /** Without one, Channel Sessions never compact on idle. */
+  channelActivity?: Pick<ChannelActivityStore, "beginTurn" | "recordActivity">;
   cliCommand?: string;
   credentialEnvironment: Pick<RuntimeCredentialEnvironmentManager, "cleanup" | "prepare"> &
     Partial<Pick<RuntimeCredentialEnvironmentManager, "mode" | "outboxContextForSession">>;
@@ -134,6 +142,7 @@ export const SESSION_MESSAGE_TURN_TIMEOUT_CODE = "turn_timeout";
 
 export class SessionMessageInbox {
   readonly #admission: AdmissionController;
+  readonly #channelActivity: SessionMessageInboxOptions["channelActivity"];
   readonly #cliCommand: string;
   readonly #credentialEnvironment: SessionMessageInboxOptions["credentialEnvironment"];
   readonly #turnPlan: SessionMessageInboxOptions["turnPlan"];
@@ -174,6 +183,7 @@ export class SessionMessageInbox {
 
   constructor(options: SessionMessageInboxOptions) {
     this.#admission = options.admission;
+    this.#channelActivity = options.channelActivity;
     this.#cliCommand = options.cliCommand ?? "opentag";
     this.#credentialEnvironment = options.credentialEnvironment;
     this.#turnPlan = options.turnPlan;
@@ -670,6 +680,7 @@ export class SessionMessageInbox {
     const key = `${next.request.targetSessionId}:${next.request.messageId}`;
     let current = this.#records.get(key);
     let credentialPrepared = false;
+    const channelTurn = { sessionId, channel: false };
     let preparedExecutionId: string | undefined;
     let turnPlanInput: ProviderCliTurnPlanPrepareInput | undefined;
     let phase = "runtime";
@@ -736,9 +747,15 @@ export class SessionMessageInbox {
       await runtime.waitForIdle();
       phase = "prompt";
       ensureRunSignal().throwIfAborted();
+      channelTurn.channel = isChannelOutbox(outboxContext);
       const result = await runtime.prompt({
         runId,
         allowedUnixSockets,
+        ...(await beginChannelTurn(
+          this.#channelActivity,
+          { ...channelTurn, retry: Boolean(continuation) },
+          this.#now(),
+        )),
         /*
          * The processing clock is sampled HERE — after the queue drain, admission reservation,
          * credential preparation, and `waitForIdle()` — so the Agent sees the actual processing
@@ -771,6 +788,7 @@ export class SessionMessageInbox {
       if (current) await this.#handleFailure(current, next.hash, phase, error, timedOut);
     } finally {
       timer?.cancel();
+      await endChannelTurn(this.#channelActivity, channelTurn, this.#now());
       await this.#cleanupTurnPlan(turnPlanInput);
       if (credentialPrepared) {
         await this.#credentialEnvironment.cleanup(sessionId, preparedExecutionId).catch(() => undefined);

@@ -47,6 +47,15 @@ verify all admitted projections settle before the worker stops and a claim retur
 Cancel an in-flight working task and verify its working reaction is removed without creating a failure card or replaying
 execution. These deterministic checks do not establish native provider latency or deployment acceptance.
 
+## Channel Session idle compaction
+
+Run once per Provider the release supports on a Local Computer. Send a Channel Session a message containing a codeword
+and let it reply. Stop the daemon, set `lastActivityAt` in the Session's file under `runtime/channel-activity/` in the
+OpenTag home to more than 8 hours ago, start the daemon, and ask for the codeword. The Turn compacts first (Claude Code
+transcript `compact_boundary`, Codex `contextCompaction` item, Pi `compaction_end`), the Session and native conversation
+IDs are unchanged, and the reply has the codeword. Repeat with the file set just under 8 hours ago: no compaction. A
+Thread Session never compacts.
+
 ## Daemon crash (power loss)
 
 1. Start a long Run in a DM or thread, then kill the daemon process group (`kill -9` of the daemon and its children).

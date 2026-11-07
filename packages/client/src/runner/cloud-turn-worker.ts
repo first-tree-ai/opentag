@@ -35,6 +35,13 @@ import {
   completionForResult,
   type TurnCompletion,
 } from "../runtime/agent-turn-runner.js";
+import {
+  beginChannelTurn,
+  ChannelActivityStore,
+  endChannelTurn,
+  isChannelDelivery,
+  isChannelOutbox,
+} from "../runtime/channel-idle-compaction.js";
 import { serializeEnvironment } from "../runtime/im-credential-environment-manager.js";
 import {
   type ManagedSessionContext,
@@ -434,6 +441,19 @@ function cloudPiDiagnostics(
   };
 }
 
+/** Its activity time lives beside the Pi history it describes, and survives a native rootfs reset with it. */
+function cloudChannelTurn(request: RunnerCloudWorkerRequest, continuityDirectory: string, now = Date.now) {
+  const activity = new ChannelActivityStore(continuityDirectory);
+  const turn =
+    request.kind === "turn"
+      ? { sessionId: request.delivery.sessionId, channel: isChannelDelivery(request.delivery) }
+      : { sessionId: request.message.targetSessionId, channel: isChannelOutbox(request.outboxContext) };
+  return {
+    begin: () => beginChannelTurn(activity, turn, now()),
+    end: () => endChannelTurn(activity, turn, now()),
+  };
+}
+
 export async function runCloudTurnWorker(
   request: RunnerCloudWorkerRequest,
   options: CloudTurnWorkerRunOptions,
@@ -610,6 +630,7 @@ export async function runCloudTurnWorker(
     execution.signal.addEventListener("abort", onAbort, { once: true });
     let completion: TurnCompletion;
     let steering: Awaited<ReturnType<typeof openWorkerSteering>>;
+    const channelTurn = cloudChannelTurn(request, continuityDirectory, options.now);
     try {
       steering = await openWorkerSteering(request, activeRuntime, options).catch((error: unknown) => {
         diagnostics.failure(error);
@@ -618,6 +639,7 @@ export async function runCloudTurnWorker(
       const result = await activeRuntime.prompt({
         runId: randomTurnRunId(request),
         configuration,
+        ...(await channelTurn.begin()),
         input: cloudWorkerInput(request, new Date(options.now?.() ?? Date.now())),
         signal: execution.signal,
       });
@@ -631,6 +653,7 @@ export async function runCloudTurnWorker(
       completion = completionForError(error, execution.stopReason());
     } finally {
       execution.signal.removeEventListener("abort", onAbort);
+      await channelTurn.end();
       await steering?.close().catch((error: unknown) => diagnostics.failure(error));
       await activeRuntime.close().catch(() => undefined);
       terminateTrackedProcesses(pids);

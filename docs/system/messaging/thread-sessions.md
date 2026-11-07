@@ -11,10 +11,11 @@ The Agent receives the provider-native message reference and per-target `direct`
 
 ## Channel Session idle compaction
 
-> **Planned — not yet implemented.** Tracking: #1302
+When a Channel Session has been idle for more than 8 hours, its next Turn compacts the provider context first. The Session identity, workspace, history, and native conversation stay the same; only the context the model carries forward is summarized, and no new conversation starts because of idle time.
 
-When a Channel Session has been idle for more than 8 hours, its provider context is compacted automatically instead of a
-new conversation being started. The Session identity, workspace, and native conversation stay the same.
+Idle time runs from the end of the Session's latest Turn on the current Computer, or its start if that Turn never ended. Exactly 8 hours is not yet idle. Every Turn counts: an ambient delivery, an observer copy, and a Session message each end the idle period, and each compacts when it is the first Turn after one. Compaction happens only when a Turn arrives, so an idle Session spends nothing. Thread and internal Sessions never compact on idle.
+
+The time is recorded on the Computer that holds the native conversation, not on the Server. A Session with no recorded time, including its first Turn after a move to another Computer, does not compact. A failed compaction is logged as a provider warning and the Turn runs on the uncompacted conversation. An interrupted Turn's retry does not compact again. See the [Agent runtime contract](../runtime/agent-runtime-contract.md#idle-compaction) for each Provider's mechanism.
 
 ## Lazy Thread continuity
 

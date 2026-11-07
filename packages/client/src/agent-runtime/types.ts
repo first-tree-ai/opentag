@@ -59,6 +59,11 @@ export interface AgentPromptRequest {
   readonly input: AgentInput;
   readonly configuration?: AgentRunConfiguration;
   readonly signal?: AbortSignal;
+  /**
+   * Compact the existing native conversation before this input, keeping its identity. A failed
+   * compaction is a `provider_warning` and the input still runs; a new conversation compacts nothing.
+   */
+  readonly compactContext?: boolean;
 }
 
 export interface AgentSteerRequest {

@@ -12,7 +12,8 @@ import type { DatabaseClient } from "../../db/client.js";
 import { imMessageDeliveries } from "../../db/schema/index.js";
 import { markExternalCallTimedOut, traceExternalCall } from "../../observability/external-call-logger.js";
 import { type PerformanceLogger, updateCurrentPerformanceContext } from "../../observability/performance-logger.js";
-import type { RuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
+import type { RuntimeCustodyStore, SteerDispatchStatus } from "../../runtime/runtime-custody-store.js";
+import { RuntimeDispatchDeferredError } from "../../runtime/runtime-domain-owner.js";
 import type { RuntimeBusinessContext } from "../../runtime/runtime-session.js";
 import { InboundReceiptPendingError } from "../im/inbound-admission.js";
 import type { CloudConnectionRecord } from "./cloud-runtime-fence.js";
@@ -104,8 +105,7 @@ export class CloudImSteering {
     const hash = computeRuntimeImSteerInputHash(request);
     const status = await this.options.custody.beginSteerDispatch(request, hash, connection.context);
     signal?.throwIfAborted();
-    if (status === "inbound_pending") throw new InboundReceiptPendingError();
-    if (status !== "dispatched" && status !== "already_dispatched") throw new Error("CLOUD_STEER_DISPATCH_CONFLICT");
+    assertSteerDispatchStatus(status);
     const current = await this.options.connection(request.sessionId);
     signal?.throwIfAborted();
     if (current?.record.connectionId !== connection.record.connectionId) {
@@ -234,6 +234,13 @@ export class CloudImSteering {
     this.#pending.delete(id);
     pending.reject(error);
   }
+}
+
+function assertSteerDispatchStatus(status: SteerDispatchStatus): void {
+  if (status === "dispatched" || status === "already_dispatched") return;
+  if (status === "inbound_pending") throw new InboundReceiptPendingError();
+  if (status === "target_ended" || status === "batch_changed") throw new RuntimeDispatchDeferredError(status);
+  throw new Error("CLOUD_STEER_DISPATCH_CONFLICT");
 }
 
 function matchesSteerResult(

@@ -17,7 +17,7 @@ const mocks = vi.hoisted(() => ({
     im: {
       v1: {
         messageReaction: { list: vi.fn(), create: vi.fn(), delete: vi.fn() },
-        message: { reply: vi.fn(), patch: vi.fn(), update: vi.fn(), list: vi.fn() },
+        message: { create: vi.fn(), reply: vi.fn(), patch: vi.fn(), update: vi.fn(), list: vi.fn() },
       },
     },
   },
@@ -135,6 +135,7 @@ beforeEach(() => {
     mocks.feishu.im.v1.messageReaction.list,
     mocks.feishu.im.v1.messageReaction.create,
     mocks.feishu.im.v1.messageReaction.delete,
+    mocks.feishu.im.v1.message.create,
     mocks.feishu.im.v1.message.reply,
     mocks.feishu.im.v1.message.patch,
     mocks.feishu.im.v1.message.update,
@@ -643,4 +644,68 @@ it("gates private callback acknowledgements at the verified installation generat
     { provider: "slack", installationId: input.installationId, bindingGeneration: 2 },
     7_000,
   );
+});
+
+describe("postConversationText", () => {
+  const scope = {
+    bindingGeneration: 2,
+    bindingId: randomUUID(),
+    channelId: "channel",
+    installationId: "11111111-1111-4111-8111-111111111111",
+    threadKey: null,
+  };
+
+  it("posts unparsed Slack text to the channel, or to the Session's thread", async () => {
+    const h = harness();
+    mocks.slack.chat.postMessage.mockResolvedValue({ ok: true, ts: "1.2", channel: "channel" });
+    await expect(h.messenger.postConversationText({ ...scope, provider: "slack" }, "failed", "req")).resolves.toBe(
+      "1.2",
+    );
+    expect(mocks.slack.chat.postMessage).toHaveBeenCalledWith({
+      channel: "channel",
+      text: "failed",
+      parse: "none",
+      unfurl_links: false,
+      unfurl_media: false,
+    });
+    await h.messenger.postConversationText({ ...scope, provider: "slack", threadKey: "9.9" }, "failed", "req");
+    expect(mocks.slack.chat.postMessage).toHaveBeenLastCalledWith(expect.objectContaining({ thread_ts: "9.9" }));
+    expect(h.cooldown.slackCooldownRemaining).toHaveBeenCalled();
+  });
+
+  it("creates a Feishu chat message, or replies in the thread, under the request id", async () => {
+    const h = harness();
+    const ok = { code: 0, data: { message_id: "om_1", chat_id: "channel" } };
+    mocks.feishu.im.v1.message.create.mockResolvedValue(ok);
+    mocks.feishu.im.v1.message.reply.mockResolvedValue(ok);
+    const text = JSON.stringify({ text: "failed" });
+
+    await h.messenger.postConversationText({ ...scope, provider: "feishu", installationId: null }, "failed", "req");
+    expect(mocks.feishu.im.v1.message.create).toHaveBeenCalledWith({
+      params: { receive_id_type: "chat_id" },
+      data: { msg_type: "text", content: text, uuid: "req", receive_id: "channel" },
+    });
+
+    await h.messenger.postConversationText(
+      { ...scope, provider: "feishu", installationId: null, threadKey: "omt", replyToExternalId: "om_anchor" },
+      "failed",
+      "req",
+    );
+    expect(mocks.feishu.im.v1.message.reply).toHaveBeenCalledWith({
+      path: { message_id: "om_anchor" },
+      data: { msg_type: "text", content: text, uuid: "req", reply_in_thread: true },
+    });
+  });
+
+  it("classifies a send that returned no message as unknown", async () => {
+    const h = harness();
+    mocks.feishu.im.v1.message.create.mockResolvedValue({ code: 500 });
+    await expect(
+      h.messenger.postConversationText({ ...scope, provider: "feishu", installationId: null }, "failed", "req"),
+    ).rejects.toMatchObject({ code: "IM_FEEDBACK_SEND_UNKNOWN", knownNotApplied: false });
+    mocks.slack.chat.postMessage.mockResolvedValue({ ok: false });
+    await expect(
+      h.messenger.postConversationText({ ...scope, provider: "slack" }, "failed", "req"),
+    ).rejects.toMatchObject({ code: "IM_FEEDBACK_SEND_UNKNOWN" });
+  });
 });

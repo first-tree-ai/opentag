@@ -106,6 +106,8 @@ and propagates it to associated bindings. It does not customize avatars per Agen
 Profile-fetch failure is nonfatal; cached metadata is retained only for the same provider identity.
 Existing installations acquire an avatar on reconnection. Later Slack-side changes remain cached
 until the next reconnection, and missing or failed images fall back to initials in openTag.
+The authenticated avatar endpoint uses the same bounded, per-service image-byte cache and
+per-request authorization described in [Bot avatars](feishu-connection-lifecycle.md#bot-avatars).
 
 ## Working feedback and native status cleanup
 

@@ -25,9 +25,11 @@ import type {
   DeliveryDispatchStatus,
   RecordedTurnRecord,
   RuntimeCustodyStore,
+  SteerDispatchStatus,
 } from "../runtime/runtime-custody-store.js";
 import {
   type PreparedSessionReconcile,
+  RuntimeDispatchDeferredError,
   RuntimeDomainConflictError,
   RuntimeDomainOwner,
   type RuntimeDomainOwnerOptions,
@@ -498,6 +500,68 @@ describe("RuntimeDomainOwner", () => {
       expect(release).not.toHaveBeenCalled();
     },
   );
+
+  it.each([
+    { kind: "delivery", status: "batch_changed", code: "IM_DELIVERY_BATCH_CHANGED" },
+    { kind: "steer", status: "batch_changed", code: "IM_DELIVERY_BATCH_CHANGED" },
+    { kind: "steer", status: "target_ended", code: "IM_DELIVERY_STEER_TARGET_ENDED" },
+  ] as const)("defers $kind/$status only before sending", async ({ kind, status, code }) => {
+    const f = await ownerFixture();
+    const custody = new MemoryRuntimeCustodyStore();
+    vi.spyOn(custody, "beginDeliveryDispatch").mockResolvedValue("batch_changed");
+    vi.spyOn(custody, "beginSteerDispatch").mockResolvedValue(status);
+    const releaseDelivery = vi.spyOn(custody, "releaseDeliveryDispatch");
+    const releaseSteer = vi.spyOn(custody, "releaseSteerDispatch");
+    const owner = new RuntimeDomainOwner(f.registry, custody);
+    const dispatched = vi.fn();
+    try {
+      const operation =
+        kind === "delivery"
+          ? owner.requestDelivery(f.computerId, f.instanceId, deliveryRequest(), dispatched)
+          : owner.requestSteer(f.computerId, f.instanceId, steerRequest(deliveryRequest()), dispatched);
+      await expect(operation).rejects.toBeInstanceOf(RuntimeDispatchDeferredError);
+      await expect(operation).rejects.toMatchObject({ code });
+      expect(f.frames).toEqual([]);
+      expect(dispatched).not.toHaveBeenCalled();
+      expect(releaseDelivery).not.toHaveBeenCalled();
+      expect(releaseSteer).not.toHaveBeenCalled();
+    } finally {
+      await owner.close();
+      await f.owner.close();
+    }
+  });
+
+  it.each(["delivery", "steer"] as const)("keeps cancellation ahead of a late %s deferral", async (kind) => {
+    const f = await ownerFixture();
+    const custody = new MemoryRuntimeCustodyStore();
+    const entered = deferred();
+    const resume = deferred();
+    vi.spyOn(custody, kind === "delivery" ? "beginDeliveryDispatch" : "beginSteerDispatch").mockImplementation(
+      async () => {
+        entered.resolve();
+        await resume.promise;
+        return "batch_changed" as const;
+      },
+    );
+    const owner = new RuntimeDomainOwner(f.registry, custody);
+    const controller = new AbortController();
+    const cancelled = new Error("operation cancelled");
+    const operation =
+      kind === "delivery"
+        ? owner.requestDelivery(f.computerId, f.instanceId, deliveryRequest(), undefined, controller.signal)
+        : owner.requestSteer(f.computerId, f.instanceId, steerRequest(deliveryRequest()), undefined, controller.signal);
+    try {
+      await entered.promise;
+      controller.abort(cancelled);
+      resume.resolve();
+      await expect(operation).rejects.toBe(cancelled);
+      expect(f.frames).toEqual([]);
+    } finally {
+      resume.resolve();
+      await owner.close();
+      await f.owner.close();
+    }
+  });
 
   it("maps custody and resend failures to request errors", async () => {
     const fixture = await ownerFixture();
@@ -1911,7 +1975,7 @@ class MemoryRuntimeCustodyStore implements RuntimeCustodyStore {
     return "dispatched";
   }
 
-  async beginSteerDispatch(request: RuntimeImSteerRequest, inputHash: string): Promise<DeliveryDispatchStatus> {
+  async beginSteerDispatch(request: RuntimeImSteerRequest, inputHash: string): Promise<SteerDispatchStatus> {
     const current = this.#dispatches.get(request.deliveryId);
     if (current) {
       return current.requestId === request.requestId && current.inputHash === inputHash

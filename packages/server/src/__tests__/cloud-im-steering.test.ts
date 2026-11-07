@@ -166,7 +166,11 @@ it.each([
   },
 );
 
-it("defers Cloud steering behind pending receipt work without sending or releasing custody", async () => {
+it.each([
+  { status: "inbound_pending", code: "IM_DELIVERY_INBOUND_PENDING" },
+  { status: "target_ended", code: "IM_DELIVERY_STEER_TARGET_ENDED" },
+  { status: "batch_changed", code: "IM_DELIVERY_BATCH_CHANGED" },
+] as const)("defers Cloud steering for $status without sending or releasing custody", async ({ status, code }) => {
   const send = vi.fn(() => true);
   const release = vi.fn();
   const sessionId = randomUUID();
@@ -195,7 +199,7 @@ it("defers Cloud steering behind pending receipt work without sending or releasi
   const steering = new CloudImSteering({
     database: {} as never,
     custody: {
-      beginSteerDispatch: vi.fn(async () => "inbound_pending"),
+      beginSteerDispatch: vi.fn(async () => status),
       releaseSteerDispatch: release,
     } as unknown as RuntimeCustodyStore,
     performanceLogger: perfLogger,
@@ -230,14 +234,14 @@ it("defers Cloud steering behind pending receipt work without sending or releasi
     },
   };
   const dispatched = vi.fn();
-  await expect(steering.request(request, dispatched)).rejects.toMatchObject({ code: "IM_DELIVERY_INBOUND_PENDING" });
+  await expect(steering.request(request, dispatched)).rejects.toMatchObject({ code });
   expect(send).not.toHaveBeenCalled();
   expect(dispatched).not.toHaveBeenCalled();
   expect(release).not.toHaveBeenCalled();
   expect(records.at(-1)).toMatchObject({
     operation: "external.sandbox-runner.deliverySteer",
     outcome: "failed",
-    code: "IM_DELIVERY_INBOUND_PENDING",
+    code,
     sandboxId,
     attemptCount: 0,
     retryCount: 0,

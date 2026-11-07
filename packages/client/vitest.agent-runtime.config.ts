@@ -51,6 +51,7 @@ export default defineConfig({
       "src/__tests__/session-runtime-manager.test.ts",
       "src/__tests__/interruption-retry.test.ts",
       "src/__tests__/session-message-joined-retry.test.ts",
+      "src/__tests__/session-message-run-steer.test.ts",
     ],
     maxWorkers: 1,
     coverage: {

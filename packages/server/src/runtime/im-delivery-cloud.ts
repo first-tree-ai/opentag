@@ -43,6 +43,7 @@ import type {
   DeliveryAttempt,
   ImDeliveryDiagnosticReporter,
 } from "./im-delivery-worker.types.js";
+import { RuntimeDispatchDeferredError } from "./runtime-domain-owner.js";
 
 /**
  * Cohesive E4 Cloud admission/allocation/recovery for the IM delivery worker. Kept out of the
@@ -357,6 +358,10 @@ export class CloudDeliveryCoordinator {
 
   async #recordDispatchError(attempt: DeliveryAttempt, error: unknown, signal: AbortSignal): Promise<void> {
     if (signal.aborted) return;
+    if (error instanceof RuntimeDispatchDeferredError) {
+      await this.#options.recordFailure(attempt, error.code, { expectedDeferral: true });
+      return;
+    }
     if (error instanceof ImDeliveryInputError) throw error;
     if (error instanceof InboundReceiptPendingError) {
       await this.#options.recordFailure(attempt, error.code, {

@@ -361,7 +361,39 @@ export class ComputerService {
   }
 
   async assertActiveCredential(context: ComputerAuthContext): Promise<void> {
-    await this.#database.transaction((transaction) => this.#lockActiveCredential(transaction, context));
+    if (context.kind === "cloud") {
+      const [computer] = await this.#database
+        .select({ id: computers.id })
+        .from(computers)
+        .where(
+          and(
+            eq(computers.id, context.computerId),
+            eq(computers.kind, "cloud"),
+            eq(computers.currentInstallationId, context.installationId),
+            isNull(computers.deletedAt),
+          ),
+        )
+        .limit(1);
+      if (!computer || !this.#assertCloudControlCredential) throw unavailableComputer();
+      await this.#assertCloudControlCredential(context);
+      return;
+    }
+    const [active] = await this.#database
+      .select({ id: computerCredentials.id })
+      .from(computerCredentials)
+      .innerJoin(computers, eq(computers.id, computerCredentials.computerId))
+      .where(
+        and(
+          eq(computerCredentials.id, context.credentialId),
+          eq(computers.id, context.computerId),
+          eq(computers.kind, "local"),
+          eq(computers.currentInstallationId, context.installationId),
+          isNull(computers.deletedAt),
+          isNull(computerCredentials.revokedAt),
+        ),
+      )
+      .limit(1);
+    if (!active) throw unavailableComputer();
   }
 
   async disconnect(computerId: string, instanceId: string, connectionId?: string): Promise<boolean> {

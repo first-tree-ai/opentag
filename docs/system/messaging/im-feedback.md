@@ -164,8 +164,9 @@ Delivery is best effort:
 - A Client that never returns never reports a message it accepted; its next occurrence reports the miss instead.
 
 The message links to the schedule, whose last run shows the reason. A Run that failed after delivery writes its code to
-the summary's existing `last_dispatch.code` with the outcome still `accepted`, and the page reads as failed. The summary
-only describes the latest occurrence: once the next one is claimed, the link shows that one, and an older report writes
+the summary's existing `last_dispatch.code` with the outcome still `accepted`, and the page reads as failed. A slower
+hand-off result for the same occurrence does not replace it, since the Run's report may be gone by then. The summary only
+describes the latest occurrence: once the next one is claimed, the link shows that one, and an older report writes
 nothing. A cancelled Run leaves the summary alone.
 
 ## Account operations

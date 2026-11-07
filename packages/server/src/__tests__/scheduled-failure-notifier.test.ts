@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agentSchedules,
@@ -22,6 +22,7 @@ import {
   type ScheduledOccurrence,
   scheduledMissKind,
 } from "../services/schedules/scheduled-failure-notifier.js";
+import { SessionService } from "../services/sessions/index.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 /*
@@ -377,19 +378,77 @@ describe("the failure reason behind the details link", () => {
     },
   );
 
-  it("restores the reason when a late receipt cleared it, and settles an unconfirmed hand-off", async () => {
+  it("settles an unconfirmed hand-off, because a Run proves it landed", async () => {
     const value = await seed();
     const { messageId, scheduleId } = await delivered(value, { outcome: "unknown", code: "delivery_uncertain" });
     const h = harness();
     await h.notifier.notifyRunOutcome(report(value, messageId));
     expect(await summary(scheduleId)).toMatchObject({ outcome: "accepted", code: "provider_unavailable" });
+  });
 
-    await db.database
-      .update(agentSchedules)
-      .set({ lastDispatch: sql`${agentSchedules.lastDispatch} || jsonb_build_object('code', null)` })
-      .where(eq(agentSchedules.id, scheduleId));
+  describe.each(["notifyRunOutcome", "notifyRunOutcomeInBackground"] as const)(
+    "when the hand-off's result arrives after the final answer from %s",
+    (entry) => {
+      /** Reports until the reporter would delete its durable copy, so no later report can repair anything. */
+      async function failed(value: Seed, messageId: string): Promise<void> {
+        const h = harness();
+        await vi.waitFor(async () => expect(await h.notifier[entry](report(value, messageId))).toBe("notified"));
+      }
+
+      it("keeps the reason through the scheduled receipt", async () => {
+        const value = await seed();
+        const { messageId, scheduleId } = await delivered(value, { outcome: "unknown", code: null });
+        await failed(value, messageId);
+        const scheduledFor = T0.toISOString();
+        await expect(
+          new SessionService(db.database).recordMessageOutcome({
+            messageId,
+            attemptCount: 0,
+            outcome: "accepted",
+            scheduleSummary: { scheduleId, scheduledFor, attemptedAt: scheduledFor },
+          }),
+        ).resolves.toBe(true);
+        expect(await summary(scheduleId)).toMatchObject({ outcome: "accepted", code: "provider_unavailable" });
+      });
+
+      it("keeps the reason through Cloud's accepted custody write", async () => {
+        const value = await seed();
+        const { messageId, scheduleId } = await delivered(value, { outcome: "unknown", code: null });
+        await failed(value, messageId);
+        await new SessionService(db.database).recordMessageOutcome({ messageId, attemptCount: 0, outcome: "accepted" });
+        expect(await summary(scheduleId)).toMatchObject({ outcome: "accepted", code: "provider_unavailable" });
+      });
+
+      it("isn't replaced by a late timeout", async () => {
+        const value = await seed();
+        const { messageId, scheduleId } = await delivered(value, { outcome: "unknown", code: null });
+        await db.database
+          .update(sessionMessages)
+          .set({ lastOutcome: "unknown" })
+          .where(eq(sessionMessages.id, messageId));
+        await failed(value, messageId);
+        const scheduledFor = T0.toISOString();
+        await new SessionService(db.database).recordMessageOutcome({
+          messageId,
+          attemptCount: 0,
+          outcome: "unreachable",
+          errorCode: "delivery_timeout",
+          scheduleSummary: { scheduleId, scheduledFor, attemptedAt: scheduledFor },
+        });
+        expect(await summary(scheduleId)).toMatchObject({ outcome: "accepted", code: "provider_unavailable" });
+      });
+    },
+  );
+
+  it("still lets a receipt write an occurrence that has no Run failure", async () => {
+    const value = await seed();
+    const { messageId, scheduleId } = await delivered(value, { outcome: "unknown", code: "delivery_uncertain" });
+    await new SessionService(db.database).recordMessageOutcome({ messageId, attemptCount: 0, outcome: "accepted" });
+    expect(await summary(scheduleId)).toMatchObject({ outcome: "accepted", code: null });
+    // A later receipt on a healthy summary, and the failure arriving after it, both still apply.
+    const h = harness();
     await h.notifier.notifyRunOutcome(report(value, messageId));
-    expect(await summary(scheduleId)).toMatchObject({ code: "provider_unavailable" });
+    expect(await summary(scheduleId)).toMatchObject({ outcome: "accepted", code: "provider_unavailable" });
   });
 
   it("leaves a later occurrence's summary, a cancelled Run, and a foreign report alone", async () => {

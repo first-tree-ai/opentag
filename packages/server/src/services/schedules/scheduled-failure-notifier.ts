@@ -362,7 +362,7 @@ export class ScheduledFailureNotifier implements RunOutcomeNotifier, ScheduledMi
   /**
    * Keep the reason the message leaves out reachable from its details link: the schedule summary, while it
    * still describes this occurrence. A Run proves the hand-off landed, so this also settles an `unknown`
-   * one. Repeated reports write again only if the delivery receipt arrived afterwards and cleared the code.
+   * one. The hand-off's own result can arrive later, and `recordMessageOutcome` leaves this in place.
    */
   async #recordRunFailure(occurrence: ScheduledOccurrence, reason: string): Promise<void> {
     await this.#options.database

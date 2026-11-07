@@ -1009,6 +1009,40 @@ describe("dispatch outcomes and the conditional summary (D09, D10, D16)", () => 
       expect(missed()).toEqual([]);
     });
 
+    it("carries the creator when a held occurrence is redelivered to an internal Session", async () => {
+      const seed = await seedStack();
+      const stack = makeStack(seed);
+      const creatorId = randomUUID();
+      await db.database.insert(sessions).values({
+        id: creatorId,
+        imBindingId: seed.bindingId,
+        channelId: "oc_creator",
+        conversationKind: "dm",
+        kind: "channel",
+      });
+      await db.database
+        .update(sessions)
+        .set({ kind: "internal", createdBySessionId: creatorId })
+        .where(eq(sessions.id, seed.targetSessionId));
+      stack.registry.supportsCapability.mockReturnValue(true);
+      stack.registry.currentInstanceId.mockReturnValue(undefined);
+      const row = await insertSchedule(seed, { schedule: EVERY_MINUTE, nextTriggerAt: T0 });
+      currentTime = T0;
+      const claim = await claimOf(stack, row.id);
+      if (claim.kind !== "claimed") throw new Error("expected a claim");
+      await stack.collaboration.dispatchScheduledMessage(claim.snapshot);
+      stack.registry.currentInstanceId.mockReturnValue(seed.instanceId);
+      const [held] = await stack.sessions.listHeldMessagesForTarget(seed.targetSessionId, new Date(0), 10);
+      if (!held) throw new Error("expected a held message");
+
+      await stack.collaboration.redeliverHeld(held);
+
+      expect(stack.domain.requestReconcile.mock.calls.at(-1)?.[2]).toMatchObject({
+        sessionKind: "internal",
+        creatorSessionId: creatorId,
+      });
+    });
+
     it("posts nothing while the occurrence is still held", async () => {
       const { claimHeld, missed, worker } = await offlineStack();
       const first = await claimHeld(0);

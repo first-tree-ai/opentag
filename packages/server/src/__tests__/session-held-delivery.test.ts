@@ -7,6 +7,7 @@ import {
 import { asc, eq } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  agentSchedules,
   agents,
   computers,
   imBindings,
@@ -653,6 +654,48 @@ describe("Server-held Session message delivery", () => {
       await new Promise((resolve) => setTimeout(resolve, 100));
       expect(s.frames.filter((frame) => frame.messageId === sent.messageId)).toEqual([]);
       expect(await s.row(sent.messageId)).toMatchObject({ lastOutcome: "rejected", lastErrorCode: "target_stopped" });
+    });
+
+    it("turns off the Session's schedule and settles its held occurrence in one stop", async () => {
+      const s = await stoppable();
+      const scheduleId = randomUUID();
+      const messageId = randomUUID();
+      const scheduledFor = new Date().toISOString();
+      const [target] = await db.database.select().from(sessions).where(eq(sessions.id, s.targetSessionId));
+      if (!target?.imBindingId) throw new Error("expected a bound target");
+      const [binding] = await db.database.select().from(imBindings).where(eq(imBindings.id, target.imBindingId));
+      await db.database.insert(agentSchedules).values({
+        id: scheduleId,
+        agentId: binding?.agentId as string,
+        targetSessionId: s.targetSessionId,
+        name: "self check",
+        prompt: "check",
+        schedule: { kind: "every", intervalSeconds: 3600, anchorAt: scheduledFor },
+        timezone: "UTC",
+        enabled: true,
+        nextTriggerAt: new Date(Date.now() + 3_600_000),
+        revision: 1,
+        lastDispatch: { scheduledFor, attemptedAt: scheduledFor, messageId, outcome: "unknown", code: "delivery_held" },
+      });
+      await db.database.insert(sessionMessages).values({
+        id: messageId,
+        scheduledOrigin: { scheduleId, scheduledFor, timezone: "UTC", name: "self check" },
+        targetSessionId: s.targetSessionId,
+        content: "check",
+        contentHash: "a".repeat(64),
+        lastOutcome: "unknown",
+        lastErrorCode: "delivery_held",
+        attemptCount: 1,
+        lastAttemptAt: new Date(),
+      });
+
+      await s.collaboration.stop({ targetSessionId: s.targetSessionId }, s.source);
+
+      expect(await s.row(messageId)).toMatchObject({ lastOutcome: "rejected", lastErrorCode: "target_stopped" });
+      const [schedule] = await db.database.select().from(agentSchedules).where(eq(agentSchedules.id, scheduleId));
+      expect(schedule).toMatchObject({ enabled: false, nextTriggerAt: null });
+      expect(schedule?.lastDispatch).toMatchObject({ messageId, outcome: "rejected", code: "target_stopped" });
+      await expect(s.row(deliveryFailureNoticeMessageId(messageId))).resolves.toBeUndefined();
     });
 
     it("sweeps a held message whose target ended without a stop", async () => {

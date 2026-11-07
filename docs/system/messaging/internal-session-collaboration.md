@@ -405,6 +405,10 @@ tabs drop the unknown key and still read the whole list, following
 [Response compatibility](../server-client-boundary.md#response-compatibility). Until they upgrade or reload, they show
 such a schedule as that channel or thread.
 
+An occurrence for a Local internal Session can be [held](#held-delivery) like any other. If it is given up, it is a missed
+occurrence, so nobody is messaged and only the schedule's summary shows it. `session stop` turns the Session's schedules off
+and settles its held occurrences as `target_stopped` in one commit, including their summary.
+
 ## Stopping a parent stops its children
 
 > **Planned — not yet implemented.** Tracking: #1304

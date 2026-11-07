@@ -60,6 +60,7 @@ const SELF_INFLICTED_CODES: ReadonlySet<string> = new Set([
   "schedule_changed",
   "schedule_deleted",
   "schedule_disabled",
+  "target_stopped",
 ]);
 
 /** Server-held delivery (#1353) answers with this while it may still deliver the occurrence. */

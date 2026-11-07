@@ -282,7 +282,8 @@ Two terminal outcomes bound the paths, and neither needs a schema change:
   A live report owner of the delivery's own placement is reconciled first and is never settled by
   the cutoff: it can still describe the Turn, so settling it there would discard a genuine result.
   The cutoff therefore only covers custody that cannot report through the work path — a Computer
-  with no live runtime, or a placement generation that was superseded. The superseded case is the one
+  with no live runtime, a placement generation that was superseded, or a different live instance whose
+  reconcile answered `ready` or `stopped` without claiming the report (it lost it, for example with a reset home). The superseded case is the one
   the delivery worker cannot write at all; the expiry sweep settles it and records
   `reason = placement_superseded` (see the expiry-sweep paragraph above).
 

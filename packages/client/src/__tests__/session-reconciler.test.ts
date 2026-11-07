@@ -386,6 +386,70 @@ describe("SessionReconciler", () => {
     expect(reconciler.checkDelivery(directDelivery(request))).toBeUndefined();
     expect(validateDelivery).toHaveBeenCalledWith(request.runtime);
   });
+
+  describe("stopping an internal Session", () => {
+    function setUp() {
+      const computerId = randomUUID();
+      const stopSessionWork = vi.fn(async () => undefined);
+      const reconciler = new SessionReconciler({ installationId: computerId });
+      reconciler.setInternalWorkStopper({ stopSessionWork });
+      const runtime = snapshot("agent-1", "workspace-1");
+      const ready = reconcileRequest(computerId, "session-1", runtime, 2);
+      return { computerId, reconciler, ready, stopSessionWork };
+    }
+    const stopped = (ready: SessionReconcileRequest) => ({
+      ...ready,
+      requestId: randomUUID(),
+      desired: "stopped" as const,
+      runtime: undefined,
+    });
+    const internal = { sessionKind: "internal" as const, creatorSessionId: randomUUID() };
+
+    it("keeps a visible Session's running Turn: a stop stays busy and interrupts nothing", async () => {
+      const { reconciler, ready, stopSessionWork } = setUp();
+      await reconciler.reconcile(ready);
+      reconciler.setActivity("session-1", { phase: "running", deliveryId: "delivery-1", turnId: "turn-1" });
+
+      await expect(reconciler.reconcile(stopped(ready))).resolves.toMatchObject({
+        status: "busy",
+        reason: "active_turn",
+      });
+      expect(stopSessionWork).not.toHaveBeenCalled();
+    });
+
+    it("does not interrupt work for a stale placement or another installation", async () => {
+      const { reconciler, ready, stopSessionWork } = setUp();
+      await reconciler.reconcile({ ...ready, ...internal });
+
+      await expect(
+        reconciler.reconcile({ ...stopped(ready), ...internal, placementGeneration: 1 }),
+      ).resolves.toMatchObject({ status: "rejected", reason: "stale_generation" });
+      await expect(
+        reconciler.reconcile({ ...stopped(ready), ...internal, installationId: randomUUID() }),
+      ).resolves.toMatchObject({ status: "rejected", reason: "target_mismatch" });
+      expect(stopSessionWork).not.toHaveBeenCalled();
+    });
+
+    it("stops the work of a Session this daemon has not prepared since it restarted", async () => {
+      const { reconciler, ready, stopSessionWork } = setUp();
+
+      await expect(reconciler.reconcile({ ...stopped(ready), ...internal })).resolves.toMatchObject({
+        status: "stopped",
+      });
+      expect(stopSessionWork).toHaveBeenCalledWith("session-1", 2);
+    });
+
+    it("answers busy when the work did not stop", async () => {
+      const { reconciler, ready } = setUp();
+      await reconciler.reconcile({ ...ready, ...internal });
+      reconciler.setActivity("session-1", { phase: "running", deliveryId: "delivery-1", turnId: "turn-1" });
+
+      await expect(reconciler.reconcile({ ...stopped(ready), ...internal })).resolves.toMatchObject({
+        status: "busy",
+        reason: "active_turn",
+      });
+    });
+  });
 });
 
 function snapshot(agentId: string, workspaceId: string): EffectiveRuntimeSnapshot {

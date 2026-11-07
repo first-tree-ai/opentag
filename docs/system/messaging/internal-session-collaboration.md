@@ -10,6 +10,7 @@ openTag Agents delegate work through the CLI available inside every managed Sess
 ```text
 opentag session create --message <task>
 opentag session send <target-session-id> --message <text>
+opentag session stop <internal-session-id>
 opentag session list
 ```
 
@@ -87,6 +88,9 @@ are capped at 100; `--cursor` continues a page, `--recursive` includes descendan
 and `--json` returns `{ items, nextCursor }`. There is no unbounded `--all` mode. The page returns active children
 only: the closure row carries `descendant_active`, which mirrors the descendant's `ended_at`, and the activity indexes
 are partial on it, so a page never reads the ordering index to discover ended descendants and discard them.
+`--include-stopped` also returns ended descendants, each with its `stoppedAt`. That page does not use the partial
+indexes: it sorts this ancestor's closure rows, read through the primary key, so its cost is bounded by the ancestor's
+own descendants. Only such a page carries `stoppedAt`, so an older CLI's strict parsing never sees the field.
 
 Recent activity is the latest message in which the listed Session is the source or target. Creating
 an internal child therefore also updates the creator's activity projection. It does not raise the
@@ -250,9 +254,10 @@ No schema change is involved: notices reuse `session_messages` and the existing 
 The Server stores authorized logical messages and their latest observed delivery outcome for idempotency and conflict
 detection. The managed Local Runtime uses its existing bounded inbox and durable-work store, including its recovery and
 retry policy; acceptance does not mean completion or exactly-once external side effects. Cloud uses the allocation and
-execution boundaries described in [Cloud Context](../cloud/cloud-context.md). Agent-facing Session operations intentionally
-provide no `end`; administrative lifecycle invalidation may still set the existing `sessions.ended_at` field, and it
-marks the matching closure rows inactive in the same transaction through `services/sessions/session-closure.ts`.
+execution boundaries described in [Cloud Context](../cloud/cloud-context.md). Agent-facing Session operations provide no
+`end` for a Session's own use; `session stop` and administrative lifecycle invalidation set the existing
+`sessions.ended_at` field, and each marks the matching closure rows inactive in the same transaction through
+`services/sessions/session-closure.ts`.
 
 The Local CLI transport requires `runtime.sessionCollaboration` capability version 2. Version 3 adds scheduled
 origins. Version 4 adds the Client Run outcome report. The Client sends `session:message:outcome` only on a connection
@@ -280,13 +285,80 @@ Session message is steered yet; it waits for the active Turn to end.
 The existing steer outcome rules (`processed`, `not_started`, `interrupted`) apply unchanged. The child still reports
 completion, failure, or timeout to the parent, and the parent decides what to do next.
 
+## Stopping an internal Session
+
+`opentag session stop <id>` ends an internal Session without its cooperation: its running Run is cancelled, its pending
+retries are cancelled and its queued messages are withdrawn.
+
+- **A stop is final.** It sets `sessions.ended_at`, and nothing clears that field, so a later `session send` is rejected
+  with `target_unavailable` and no stale message can wake the Session. The Session's files stay on disk; continuing its
+  work takes a new Session.
+- **Who may stop.** Only an ancestor in the target's creation chain, proved by a `session_descendants` row. Everyone
+  else, including the target itself, a sibling, and a target that does not exist or is not internal, gets `not_ancestor`.
+- **Order.** The Session ends in one transaction under the same lock order as `session send`, which is what takes away
+  its authority: its proof stops authenticating, so it can no longer send or create Sessions, and no message reaches it.
+  Its execution side is told after commit. A stop that is repeated answers `alreadyStopped` and tells it again.
+- **What the caller learns.** `execution` says how far the stop reached: `stopped` (the Client confirmed the Run and
+  queue are gone), `requested` (the Cloud Runner was sent the cancellation), `pending` (the Computer or Runner could not
+  be reached, or did not answer within 15 seconds, which stays below the CLI's 30-second request timeout) or `not_interrupted` (a Client older than this behavior answered `busy`, so its Run continues without
+  Session authority until it ends). `activeDescendantCount` says how many descendants keep running.
+- **Notice.** A creator that called `session stop` has its answer and is not woken. When another ancestor stopped the
+  child, the creator gets one SessionMessage from that ancestor, starting with the Run outcome notice header and saying
+  the child cannot be continued. Its ID is a Server-derived UUIDv5 over the child, so repeats converge. It is recorded before
+  the stop answers and delivered in the background; a delivery lost to a Server crash is sent again only if the stop is
+  repeated. Other senders whose queued
+  messages were withdrawn are not told; their next `session send` is rejected.
+
+Local uses the existing `session:reconcile` frame with `desired: "stopped"`; there is no new frame or capability. The
+frame names the internal kind so that a daemon that restarted and has not prepared the Session can still withdraw its
+work. The Client aborts the Run before taking the Agent lock, because the Run's cleanup needs that lock, then runs the
+normal stop. It waits only for the stopped placement's Run, read at the moment the placement is fenced, and that Run settles
+only after the messages steered into it. It never waits for the inbox drain, so an older stop cannot wait for a newer placement's work. A Run waiting out a retry's backoff
+ends at once, and a message steered into the stopped Run ends the same way. The Client fences the stopped placement synchronously before any of its writes, so a retry or delivery whose
+write was already in flight neither starts a Run nor answers `accepted`. A provider that ignores the abort for 5 seconds has its runtime closed, which ends its process tree. The withdrawn messages reach a terminal `session_stopped` record with no retry and no Run outcome report.
+The same Client behavior applies to an Agent lifecycle stop of an internal Session, which previously answered `busy`
+while a Run was active; a visible Session's Turn still answers `busy`.
+
+Past the 15 seconds the stop goes on in the background: a late Client answer is ignored apart from retiring the proof, and
+another ancestor's notice to the creator is still sent. A Computer that cannot be reached misses the frame and nothing durable records that. When a Computer registers, the
+Server sends a stop for up to 64 of its internal Sessions that ended in the last 24 hours, because repeating a stop is
+harmless. A daemon that restarted in the meantime also has its waiting messages refused with `session_ended`. A Server
+restart loses nothing, since this read is against the database. A Cloud Runner re-announces its journal when it
+reconnects, and the Server answers an ended Session's entries with a cancellation.
+
+There is no Web entry point yet.
+
+## Schedules on an internal Session
+
+An internal Session can create a schedule with `opentag agent self schedule create`. Every schedule pins the Session that
+created it as its fixed target, and nothing in the request can name another one, so a Session can only schedule itself. A
+schedule created from an internal Session before this rule keeps its visible target.
+
+- **Delivery.** An occurrence reaches the Session as a scheduled message, through the same path as a visible target. It has no
+  IM outbox: a scheduled Run reports with `opentag session send`, like any other Run of that Session.
+- **Stopping.** `session stop` turns off the target's schedules in the transaction that ends it, and they can't be resumed.
+  Any other end of a Session, such as a disabled binding, is found at the next occurrence, which turns the schedule off.
+  The Agent's schedule commands are unchanged, so any of its Sessions can list, pause or delete a schedule, and each
+  schedule shows its target Session.
+- **A failed Run** notifies the target's creator, the [Run outcome notice](#run-outcome-notices) rule for a message with no
+  sender. The creator can be told again on every failed occurrence, as the conversation is for a visible target.
+- **A missed occurrence** that never reached the Session, including one whose target has ended, notifies nobody and logs no
+  warning. It stays in the schedule's last run summary, and the Web shows it. The reason: there is no message for an
+  outcome notice to name, and a child offline overnight should not wake its creator.
+
+No schema change is involved: `agent_schedules.target_session_id` already references any Session. The API response adds
+`target.internal: true` and keeps `target.sessionKind` as the Session's conversation scope, so released CLIs and open Web
+tabs drop the unknown key and still read the whole list, following
+[Response compatibility](../server-client-boundary.md#response-compatibility). Until they upgrade or reload, they show
+such a schedule as that channel or thread.
+
 ## Stopping a parent stops its children
 
 > **Planned — not yet implemented.** Tracking: #1304
 
 When a parent Session is stopped or cancelled for good — not merely idle between Turns — every internal Session it
-created, recursively, is stopped as well. Today there is no Session-level stop entry point, so nothing cascades from a
-parent Session. Agent suspend, delete, and transfer already stop every live Session of the Agent, internal Sessions
+created, recursively, is stopped as well. Today `session stop` ends only its target, so nothing cascades from a parent
+Session and a stopped parent's descendants keep running. Agent suspend, delete, and transfer already stop every live Session of the Agent, internal Sessions
 included; see [Agent, Session, and Computer model](../agent-session-computer-model.md#configuration-identity).
 
 ## Automatic retry before a notice

@@ -1097,13 +1097,21 @@ export class SessionMessageInbox {
     hash: string,
     followUpFailure: AgentRunError | undefined,
   ): Promise<void> {
-    const terminal = await this.#transition(
-      record,
-      "succeeded",
-      followUpFailure
-        ? { lastError: followUpFailed(record.payload.requestId, followUpFailure), ...this.#pendingOutcomeReport() }
-        : {},
-    );
+    const fields = followUpFailure
+      ? { lastError: followUpFailed(record.payload.requestId, followUpFailure), ...this.#pendingOutcomeReport() }
+      : {};
+    const terminal = await this.#transition(record, "succeeded", fields).catch(() => {
+      // The Run did complete, so this is no failure to report, and it must not stay in flight here, where it
+      // would hold up an upgrade. The record stays `running` on disk and the next start treats it as
+      // interrupted: it may run again, with the notice that it may already have been handled.
+      this.#logger.warn(
+        { code: "SESSION_MESSAGE_PERSISTENCE_FAILED", messageId: record.payload.messageId, status: "succeeded" },
+        "Session message success could not be recorded",
+      );
+      const local = { ...record, ...fields, status: "succeeded" as const, updatedAt: this.#now() };
+      this.#setRecord(local);
+      return local;
+    });
     this.#remember(record.key, { hash, status: "succeeded" });
     if (followUpFailure) await this.#publishRunOutcome(terminal, "unknown", followUpFailure.code);
   }
@@ -1829,7 +1837,9 @@ function buildScheduledTaskMetadataItem(
       "Post to this Session's IM conversation only if this task produces something the conversation should see; a run with nothing to report stays silent. Send no schedule lifecycle notice: no start, completion, failure, or skip message. openTag reports a failed Run to the conversation itself.",
     );
   } else {
-    lines.push("No IM outbox is attached to this target Session.");
+    lines.push(
+      "No IM outbox is attached to this target Session: this task can't post to IM. Report anything worth reporting with session send to the Session that needs it; a run with nothing to report stays silent.",
+    );
   }
   lines.push("</opentag-scheduled-task-metadata>");
   return lines.join("\n");

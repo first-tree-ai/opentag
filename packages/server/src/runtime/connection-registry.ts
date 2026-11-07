@@ -35,6 +35,7 @@ export class RuntimeRegistrySendError extends Error {
   constructor(
     readonly code: "frame_too_large" | "instance_replaced" | "unavailable",
     message: string,
+    readonly mayHaveSent = false,
   ) {
     super(message);
     this.name = "RuntimeRegistrySendError";
@@ -694,11 +695,13 @@ export class ConnectionRegistry {
     await new Promise<void>((resolve, reject) => {
       socket.send(serialized, (error) => {
         if (error) {
-          reject(new RuntimeRegistrySendError("unavailable", "The runtime frame could not be sent"));
+          reject(new RuntimeRegistrySendError("unavailable", "The runtime frame could not be sent", true));
           return;
         }
         if (!this.isCurrent(computerId, instanceId, socket)) {
-          reject(new RuntimeRegistrySendError("instance_replaced", "The Computer instance was replaced during send"));
+          reject(
+            new RuntimeRegistrySendError("instance_replaced", "The Computer instance was replaced during send", true),
+          );
           return;
         }
         resolve();

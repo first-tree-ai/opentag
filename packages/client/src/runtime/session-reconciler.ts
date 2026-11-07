@@ -102,9 +102,11 @@ export interface SessionRuntimeState extends RuntimeSnapshotHashes {
   workspaceId: string;
 }
 
+type LocalReconcileResult = SessionReconcileResult & { inlineMessageReady?: true };
+
 interface RememberedReconcile {
   payloadHash: string;
-  result: Promise<SessionReconcileResult>;
+  result: Promise<LocalReconcileResult>;
 }
 
 const noopPreparation: RuntimePreparation = {
@@ -211,7 +213,7 @@ export class SessionReconciler {
     return true;
   }
 
-  reconcile(input: SessionReconcileRequest): Promise<SessionReconcileResult> {
+  reconcile(input: SessionReconcileRequest): Promise<LocalReconcileResult> {
     const request = SessionReconcileRequestSchema.parse(input);
     const payloadHash = computeReconcilePayloadHash(request);
     const remembered = this.#requests.get(request.requestId);
@@ -379,7 +381,7 @@ export class SessionReconciler {
   async #reconcileLocked(
     request: SessionReconcileRequest,
     resumeTurn?: SessionTurnIdentity,
-  ): Promise<SessionReconcileResult> {
+  ): Promise<LocalReconcileResult> {
     if (request.installationId !== this.#installationId) return this.#result(request, "rejected", "target_mismatch");
 
     const existingSession = this.#sessions.get(request.sessionId);
@@ -432,7 +434,11 @@ export class SessionReconciler {
       if (sessionComparison === "conflict") return this.#result(request, "rejected", "configuration_conflict");
       if (sessionComparison === "newer") return this.#result(request, "busy", "active_turn");
       const status = activity.phase === "running" ? "running" : "reporting";
-      return { ...this.#result(request, status), turn: { turnId: activity.turnId, deliveryId: activity.deliveryId } };
+      return {
+        ...this.#result(request, status),
+        turn: { turnId: activity.turnId, deliveryId: activity.deliveryId },
+        ...this.#inlineMessageReadiness(request, hashes, existingSession),
+      };
     }
     const recovered = await this.#recoveryResult(request, resumeTurn);
     if (recovered) return recovered;
@@ -546,7 +552,29 @@ export class SessionReconciler {
         turn: recovery,
       };
     }
-    return this.#result(request, "ready");
+    return {
+      ...this.#result(request, "ready"),
+      ...this.#inlineMessageReadiness(request, hashes, existingSession, shouldPrepareAgent || shouldPrepareSession),
+    };
+  }
+
+  #inlineMessageReadiness(
+    request: SessionReconcileRequest,
+    hashes: RuntimeSnapshotHashes,
+    session: SessionRuntimeState | undefined,
+    neededPreparation = false,
+  ): Pick<LocalReconcileResult, "inlineMessageReady"> {
+    if (
+      !request.sessionMessage ||
+      !request.sessionCliProof ||
+      neededPreparation ||
+      session?.status !== "ready" ||
+      hashes.effectiveSnapshotHash !== session.effectiveSnapshotHash ||
+      this.#preparation.requiresSessionPreparation?.(request, hashes)
+    ) {
+      return {};
+    }
+    return { inlineMessageReady: true };
   }
 
   async #prepareOrReject(

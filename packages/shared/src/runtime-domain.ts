@@ -249,6 +249,13 @@ export function requiredTurnReportVersion(report: object): 1 | 2 | 3 {
   return 1;
 }
 
+const SessionMessageContentSchema = z
+  .object({
+    kind: z.literal("text"),
+    text: byteString(RUNTIME_DIRECT_TEXT_MAX_BYTES, "Session message text exceeds the 16 KiB limit", 1),
+  })
+  .strict();
+
 export const SessionReconcileRequestSchema = z
   .object({
     type: z.literal("session:reconcile"),
@@ -267,6 +274,15 @@ export const SessionReconcileRequestSchema = z
       .strict()
       .optional(),
     desired: z.enum(["ready", "stopped"]),
+    // Only sent to a Local Client that negotiated runtime.sessionMessageReconcile.
+    sessionMessage: z
+      .object({
+        messageId: z.string().uuid(),
+        sourceSessionId: z.string().uuid(),
+        content: SessionMessageContentSchema,
+      })
+      .strict()
+      .optional(),
     runtime: EffectiveRuntimeSnapshotSchema.optional(),
   })
   .strict()
@@ -293,6 +309,18 @@ export const SessionReconcileRequestSchema = z
     }
     if (frame.sessionKind !== "internal" && frame.creatorSessionId) {
       context.addIssue({ code: "custom", path: ["creatorSessionId"], message: "A visible Session forbids a creator" });
+    }
+    if (
+      frame.sessionMessage &&
+      (frame.desired !== "ready" ||
+        !z.uuid().safeParse(frame.sessionId).success ||
+        !z.uuid().safeParse(frame.agentId).success)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["sessionMessage"],
+        message: "A Session message requires a ready reconcile with Session and Agent UUIDs",
+      });
     }
     if (frame.desired === "stopped" && frame.sessionCliProof) {
       context.addIssue({
@@ -392,6 +420,26 @@ export const RetainedTurnReportClaimSchema = z
   })
   .strict();
 
+export const SessionMessageDeliveryResultSchema = z
+  .object({
+    type: z.literal("session:message:deliver:result"),
+    requestId: RuntimeRequestIdSchema,
+    messageId: z.string().uuid(),
+    targetSessionId: z.string().uuid(),
+    placementGeneration: RuntimeSequenceSchema,
+    status: z.enum(["accepted", "rejected"]),
+    reason: InputRejectReasonSchema.optional(),
+  })
+  .strict()
+  .superRefine((frame, context) => {
+    if (frame.status === "accepted" && frame.reason) {
+      context.addIssue({ code: "custom", path: ["reason"], message: "Accepted deliveries forbid a reason" });
+    }
+    if (frame.status === "rejected" && !frame.reason) {
+      context.addIssue({ code: "custom", path: ["reason"], message: "Rejected deliveries require a reason" });
+    }
+  });
+
 export const SessionReconcileResultSchema = z
   .object({
     type: z.literal("session:reconcile:result"),
@@ -401,6 +449,7 @@ export const SessionReconcileResultSchema = z
     status: z.enum(["ready", "stopped", "running", "reporting", "busy", "recovery_required", "rejected"]),
     reason: byteString(256, "Reconcile reason exceeds the 256-byte limit", 1).optional(),
     turn: ReconcileTurnSchema.optional(),
+    sessionMessage: z.union([z.literal("deferred"), SessionMessageDeliveryResultSchema]).optional(),
     // MVP-only recovery manifest. Durable Server-side Turn ownership replaces it after MVP.
     retainedReports: z.array(RetainedTurnReportClaimSchema).max(RUNTIME_MVP_RETAINED_REPORT_LIMIT).optional(),
   })
@@ -454,7 +503,18 @@ export const SessionReconcileResultSchema = z
         });
       }
     }
-  });
+  })
+  .refine(
+    ({ sessionMessage: message, requestId, sessionId, placementGeneration, status, retainedReports }) =>
+      !message ||
+      message === "deferred" ||
+      (message.requestId === requestId &&
+        message.targetSessionId === sessionId &&
+        message.placementGeneration === placementGeneration &&
+        ["ready", "running", "reporting"].includes(status) &&
+        !retainedReports?.length),
+    { path: ["sessionMessage"], message: "The delivery result does not match a ready reconcile" },
+  );
 
 export const RUNTIME_IM_BATCH_MAX_COUNT = 32;
 export const RuntimeImBatchMemberSchema = z
@@ -678,13 +738,6 @@ export const InternalSessionRuntimeOverridesSchema = z
   })
   .strict();
 
-const SessionMessageContentSchema = z
-  .object({
-    kind: z.literal("text"),
-    text: byteString(RUNTIME_DIRECT_TEXT_MAX_BYTES, "Session message text exceeds the 16 KiB limit", 1),
-  })
-  .strict();
-
 export const SessionMessageDeliveryRequestSchema = z
   .object({
     type: z.literal("session:message:deliver"),
@@ -704,25 +757,6 @@ export const SessionMessageDeliveryRequestSchema = z
     }
   });
 
-export const SessionMessageDeliveryResultSchema = z
-  .object({
-    type: z.literal("session:message:deliver:result"),
-    requestId: RuntimeRequestIdSchema,
-    messageId: z.string().uuid(),
-    targetSessionId: z.string().uuid(),
-    placementGeneration: RuntimeSequenceSchema,
-    status: z.enum(["accepted", "rejected"]),
-    reason: InputRejectReasonSchema.optional(),
-  })
-  .strict()
-  .superRefine((frame, context) => {
-    if (frame.status === "accepted" && frame.reason) {
-      context.addIssue({ code: "custom", path: ["reason"], message: "Accepted deliveries forbid a reason" });
-    }
-    if (frame.status === "rejected" && !frame.reason) {
-      context.addIssue({ code: "custom", path: ["reason"], message: "Rejected deliveries require a reason" });
-    }
-  });
 /*
  * Session-collaboration v3: the scheduled-origin branch. The v2
  * `SessionMessageDeliveryRequestSchema` above is frozen forever; ordinary messages keep flowing
@@ -1628,6 +1662,9 @@ export function computeReconcilePayloadHash(input: SessionReconcileRequest): str
     frame.sessionCliProof?.proofId ?? null,
     frame.desired,
     frame.runtime ? computeRuntimeSnapshotHashes(frame.runtime).effectiveSnapshotHash : null,
+    ...(frame.sessionMessage
+      ? [frame.sessionMessage.messageId, frame.sessionMessage.sourceSessionId, frame.sessionMessage.content.text]
+      : []),
   ]);
 }
 

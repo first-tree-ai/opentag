@@ -10,8 +10,12 @@ import type {
 } from "@opentag/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
+import { AdmissionController } from "../runtime/admission-controller.js";
 import { ClientRuntime } from "../runtime/client-runtime.js";
 import { RuntimeConnection } from "../runtime/runtime-connection.js";
+import { MemoryRuntimeDurabilityStore } from "../runtime/runtime-durability.js";
+import { SessionMessageInbox } from "../runtime/session-message-inbox.js";
+import { SessionReconciler } from "../runtime/session-reconciler.js";
 import { type RecordedLog, recordingLogger } from "./recording-logger.js";
 import { completeAuth, heartbeatResult, registrationResult } from "./support/runtime-server.js";
 
@@ -159,6 +163,161 @@ describe("ClientRuntime domain dispatch", () => {
       expect.objectContaining({ type: "session:message:deliver:result", messageId: delivery.messageId }),
     );
   });
+
+  it("waits for the real inbox write and deduplicates a retry after the combined ACK is lost", async () => {
+    const frame = messageReconcile();
+    const reconciler = new SessionReconciler({ installationId: frame.installationId });
+    const { sessionMessage, ...prepare } = frame;
+    await reconciler.reconcile({ ...prepare, requestId: randomUUID() });
+    const store = new MemoryRuntimeDurabilityStore();
+    let failWrite = true;
+    const writeStarted = deferred();
+    const finishWrite = deferred();
+    const write = vi.fn(async (record: Parameters<typeof store.write>[0]) => {
+      if (failWrite) throw new Error("disk full");
+      writeStarted.resolve();
+      await finishWrite.promise;
+      await store.write(record);
+    });
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: { cleanup: vi.fn(), prepare: vi.fn() },
+      imCredentialGrantVersion: () => 2,
+      sessionCollaborationVersion: () => 4,
+      logger: { warn: vi.fn() },
+      persistence: { list: store.list.bind(store), write },
+      reconciler,
+      runtimeManager: {
+        ensureRuntime: vi.fn(),
+        isPrepared: () => false,
+        sessionKind: () => "internal",
+      },
+    });
+    const options = { reconciler, handleSessionMessageDelivery: inbox.accept.bind(inbox) };
+    const failed = new FrameConnection([frame], 1);
+    try {
+      await new ClientRuntime(failed as unknown as RuntimeConnection, options).run();
+      expect(failed.sent).toEqual([
+        expect.objectContaining({
+          sessionMessage: expect.objectContaining({ status: "rejected", reason: "client_busy" }),
+        }),
+      ]);
+      expect(inbox.getState(sessionMessage.messageId)).toBeUndefined();
+
+      failWrite = false;
+      const lost = new FrameConnection([{ ...frame, requestId: randomUUID() }], 1);
+      const sendFailure = new Error("connection lost before ACK");
+      vi.spyOn(lost, "send").mockRejectedValue(sendFailure);
+      const attempt = new ClientRuntime(lost as unknown as RuntimeConnection, options).run();
+      const lostAck = expect(attempt).rejects.toBe(sendFailure);
+      await writeStarted.promise;
+      expect(lost.send).not.toHaveBeenCalled();
+      finishWrite.resolve();
+      await lostAck;
+      expect(inbox.getState(sessionMessage.messageId)).toMatchObject({ status: "accepted" });
+
+      const retry = new FrameConnection([{ ...frame, requestId: randomUUID() }], 1);
+      await new ClientRuntime(retry as unknown as RuntimeConnection, options).run();
+      expect(retry.sent).toEqual([
+        expect.objectContaining({
+          sessionMessage: expect.objectContaining({ status: "accepted", messageId: sessionMessage.messageId }),
+        }),
+      ]);
+      expect(write).toHaveBeenCalledTimes(2);
+      expect(inbox.pendingCount).toBe(1);
+    } finally {
+      finishWrite.resolve();
+      inbox.stop();
+      await inbox.settled();
+    }
+  });
+
+  it("rechecks a target that changes placement after the warm reconcile", async () => {
+    const frame = messageReconcile();
+    const reconciler = new SessionReconciler({ installationId: frame.installationId });
+    const { sessionMessage: _message, ...prepare } = frame;
+    await reconciler.reconcile({ ...prepare, requestId: randomUUID() });
+    const connection = new FrameConnection([frame], 1);
+    const handleSessionMessageDelivery = vi.fn((request: SessionMessageDeliveryRequest) => ({
+      type: "session:message:deliver:result" as const,
+      requestId: request.requestId,
+      messageId: request.messageId,
+      targetSessionId: request.targetSessionId,
+      placementGeneration: request.placementGeneration,
+      status: "rejected" as const,
+      reason: reconciler.checkSessionMessageDelivery(request),
+    }));
+    await new ClientRuntime(connection as unknown as RuntimeConnection, {
+      handleSessionMessageDelivery,
+      prepareReconcileResult: async (_request, result) => {
+        await reconciler.reconcile({ ...prepare, requestId: randomUUID(), placementGeneration: 2 });
+        return result;
+      },
+      reconciler,
+    }).run();
+    expect(connection.sent).toEqual([
+      expect.objectContaining({
+        sessionMessage: expect.objectContaining({ status: "rejected", reason: "stale_generation" }),
+      }),
+    ]);
+  });
+
+  it.each(["cold", "new placement", "new snapshot", "new proof", "retained report", "older Server"] as const)(
+    "leaves the inbox to the ordinary delivery frame for %s",
+    async (scenario) => {
+      const frame = messageReconcile();
+      const reconciler = new SessionReconciler({
+        installationId: frame.installationId,
+        preparation: {
+          prepareAgent: vi.fn(),
+          prepareSession: vi.fn(),
+          requiresSessionPreparation: (request) => request.sessionCliProof?.proofId !== frame.sessionCliProof?.proofId,
+          stopSession: vi.fn(),
+        },
+      });
+      const { sessionMessage: _message, ...prepare } = frame;
+      if (scenario !== "cold") await reconciler.reconcile({ ...prepare, requestId: randomUUID() });
+      const request = { ...frame };
+      if (scenario === "new placement") request.placementGeneration += 1;
+      if (scenario === "new snapshot") {
+        request.runtime = {
+          ...request.runtime,
+          revision: { ...request.runtime.revision, session: { sequence: 2, id: "session-revision-2" } },
+        };
+      }
+      if (scenario === "new proof") request.sessionCliProof = { ...request.sessionCliProof, proofId: randomUUID() };
+
+      const connection = new FrameConnection(
+        [scenario === "older Server" ? prepare : request],
+        scenario === "older Server" ? undefined : 1,
+      );
+      const handleSessionMessageDelivery = vi.fn();
+      await new ClientRuntime(connection as unknown as RuntimeConnection, {
+        handleSessionMessageDelivery,
+        prepareReconcileResult: (_request, result) =>
+          scenario !== "retained report"
+            ? result
+            : {
+                ...result,
+                retainedReports: [
+                  {
+                    dispatchRequestId: randomUUID(),
+                    deliveryId: "delivery-1",
+                    inputHash: "a".repeat(64),
+                    turnId: "turn-1",
+                    placementGeneration: 1,
+                    resultHash: "b".repeat(64),
+                  },
+                ],
+              },
+        reconciler,
+      }).run();
+      expect(handleSessionMessageDelivery).not.toHaveBeenCalled();
+      expect(connection.sent).toEqual([expect.objectContaining({ status: "ready" })]);
+      if (scenario === "older Server") expect(connection.sent[0]).not.toHaveProperty("sessionMessage");
+      else expect(connection.sent[0]).toHaveProperty("sessionMessage", "deferred");
+    },
+  );
 
   it("logs a refused Session message with its reason and no content", async () => {
     const agentId = randomUUID();
@@ -483,8 +642,15 @@ class FrameConnection {
   readonly #frames: readonly Record<string, unknown>[];
   #listener?: (frame: Record<string, unknown>) => Promise<void> | void;
 
-  constructor(frames: readonly Record<string, unknown>[]) {
+  constructor(
+    frames: readonly Record<string, unknown>[],
+    readonly inlineMessageVersion?: number,
+  ) {
     this.#frames = frames;
+  }
+
+  capabilityVersion(): number | undefined {
+    return this.inlineMessageVersion;
   }
 
   subscribeBusinessFrames(listener: (frame: Record<string, unknown>) => Promise<void> | void): () => void {
@@ -533,6 +699,35 @@ class FailingResultConnection {
   }
 
   stop(): void {}
+}
+
+function deferred() {
+  let resolve = () => {};
+  const promise = new Promise<void>((finish) => {
+    resolve = finish;
+  });
+  return { promise, resolve };
+}
+
+function messageReconcile() {
+  const creatorSessionId = randomUUID();
+  const agentId = randomUUID();
+  return {
+    ...reconcile(randomUUID(), randomUUID()),
+    type: "session:reconcile" as const,
+    desired: "ready" as const,
+    agentId,
+    sessionId: randomUUID(),
+    sessionKind: "internal" as const,
+    creatorSessionId,
+    sessionCliProof: { proofId: randomUUID(), token: "p".repeat(32) },
+    runtime: { ...snapshot(), agentId },
+    sessionMessage: {
+      messageId: randomUUID(),
+      sourceSessionId: creatorSessionId,
+      content: { kind: "text" as const, text: "work" },
+    },
+  };
 }
 
 function reconcile(installationId: string, requestId: string) {

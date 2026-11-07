@@ -31,7 +31,9 @@ Multiple internal Sessions may coexist within the same conversation scope.
 Every Session has an immutable conversation scope containing its Agent,
 Integration, channel, and optional thread. An internal Session inherits that
 scope from its creator. A creator Session reference is provenance only; it does
-not determine permission, lifecycle, routing, or physical placement.
+not determine permission, lifecycle, routing, or physical placement. The scope
+decides where a Session replies and what it remembers, not who it can message:
+[Sessions of one Agent message each other across conversations](messaging/internal-session-collaboration.md#messages-between-conversations).
 
 Channel and thread Sessions are long-lived. Idle time, Turn completion, Provider
 Runtime suspension, and Computer disconnect do not end them. Only an explicit

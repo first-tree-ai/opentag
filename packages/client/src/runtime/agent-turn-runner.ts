@@ -74,6 +74,7 @@ import type {
   RuntimeCredentialEnvironmentManager,
 } from "./runtime-credential-environment-manager.js";
 import type { SessionBindingStore } from "./session-binding-store.js";
+import type { SessionRunInputTracker } from "./session-cli-proof-manager.js";
 import { conversationIdentity } from "./session-message-run.js";
 import {
   ClientRuntimeProviderStartError,
@@ -131,6 +132,8 @@ export interface AgentTurnRunnerOptions {
   readonly retries?: Pick<TurnRetryStore, "appendSteer" | "removeSteer" | "update">;
   /** Whether a Turn interrupted by shutdown can be retried after restart (`runtime.sessionRecovery`). */
   readonly restartRetryAvailable?: () => boolean;
+  /** Tells the Session's CLI what this Turn is working on, for a message's initiator. */
+  readonly runInputs?: SessionRunInputTracker;
   /** The owner of Session messages steered into a Turn; an in-place retry carries them along. */
   readonly sessionMessages?: {
     /** The message's input for a retry, built once the retry's credentials are prepared. */
@@ -238,6 +241,7 @@ export class AgentTurnRunner {
   readonly #outgoingReplies: AgentTurnRunnerOptions["outgoingReplies"];
   readonly #agentErrorReporter: AgentTurnErrorReporter;
   readonly #retries: NonNullable<AgentTurnRunnerOptions["retries"]>;
+  readonly #runInputs: SessionRunInputTracker | undefined;
   readonly #channelActivity: AgentTurnRunnerOptions["channelActivity"];
   readonly #sessionMessages: NonNullable<AgentTurnRunnerOptions["sessionMessages"]>;
   readonly #restartRetryAvailable: () => boolean;
@@ -266,6 +270,7 @@ export class AgentTurnRunner {
     // wants no tracker gets a runner that reports into nothing, not a second branch to get wrong.
     this.#agentErrorReporter = options.agentErrorReporter ?? (() => undefined);
     this.#retries = options.retries ?? NO_TURN_RETRIES;
+    this.#runInputs = options.runInputs;
     this.#channelActivity = options.channelActivity;
     this.#sessionMessages = options.sessionMessages ?? NO_SESSION_MESSAGES;
     this.#restartRetryAvailable = options.restartRetryAvailable ?? (() => false);
@@ -364,6 +369,8 @@ export class AgentTurnRunner {
     // Only a steer with a durable receipt transfers to this Turn; a retry replays exactly those, so a
     // capture whose steer or receipt failed (answered `deferred`) is dropped and stays with the Server.
     try {
+      // A list that cannot be kept true stops the steer; the message stays with the Server.
+      await this.#runInputs?.addRunInput(request.sessionId, { kind: "delivery", deliveryId: request.deliveryId });
       const receipt = await runtime.steer({
         expectedRunId: request.expectedTurnId,
         // Steer input assembles at the moment of the steer, so it carries its own UTC sample.
@@ -636,6 +643,19 @@ export class AgentTurnRunner {
     shutdownSignal: AbortSignal,
     trace: TurnTraceBuffer,
   ): Promise<TurnAttempt | undefined> {
+    try {
+      return await this.#runAttempts(turn, shutdownSignal, trace);
+    } finally {
+      // After every attempt, so a retry still knows what was steered into the earlier ones.
+      await this.#runInputs?.endRun(turn.owner.request.sessionId, turn.owner.turnId);
+    }
+  }
+
+  async #runAttempts(
+    turn: RunningTurn,
+    shutdownSignal: AbortSignal,
+    trace: TurnTraceBuffer,
+  ): Promise<TurnAttempt | undefined> {
     const fields = { sessionId: turn.owner.request.sessionId, turnId: turn.owner.turnId };
     let interruption = turn.continuation;
     // Outgoing-reply receipts of every attempt share the Turn's run id; collect them once at the end.
@@ -717,6 +737,9 @@ export class AgentTurnRunner {
       releaseObserver = this.#observeTurn(turn, runtime, trace, () => {
         terminalObserved = true;
       });
+      await this.#runInputs?.beginRun(owner.request.sessionId, owner.turnId, [
+        { kind: "delivery", deliveryId: owner.request.deliveryId },
+      ]);
       const promptStartedAt = this.#now();
       const result = await runtime.prompt({
         runId: owner.turnId,

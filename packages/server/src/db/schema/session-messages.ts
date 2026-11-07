@@ -1,6 +1,6 @@
 import type { RuntimeUserTaskSource, SessionMessageScheduledOrigin } from "@opentag/shared";
 import { sql } from "drizzle-orm";
-import { check, index, integer, jsonb, pgEnum, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { boolean, check, index, integer, jsonb, pgEnum, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { sessions } from "./sessions.js";
 
 export const sessionMessageOutcome = pgEnum("session_message_outcome", [
@@ -22,6 +22,20 @@ export const sessionMessages = pgTable(
      */
     sourceSessionId: uuid("source_session_id").references(() => sessions.id, { onDelete: "restrict" }),
     userTaskSource: jsonb("user_task_source").$type<RuntimeUserTaskSource>(),
+    /*
+     * The Session where this message's chain started, fixed when the message is recorded and never
+     * rewritten. Null when it could not be proved, which a receiver treats as non-owner. Traceability
+     * like `scheduleId`: deliberately no FK, so it never holds a Session back from deletion.
+     */
+    initiatorSessionId: uuid("initiator_session_id"),
+    /** How many Session messages came before this one in its chain, fixed with the initiator. */
+    forwardCount: integer("forward_count").notNull().default(0),
+    /**
+     * Set when this message has no known initiator but its chain provably stayed in its conversation: a Client
+     * too old to name its Run's inputs sent it, and such a Client is never given anything from elsewhere. Only
+     * this lets an unknown-origin message reach a peer too old to show where it came from. Fixed with the rest.
+     */
+    legacyLocalSend: boolean("legacy_local_send").notNull().default(false),
     scheduledOrigin: jsonb("scheduled_origin").$type<SessionMessageScheduledOrigin>(),
     targetSessionId: uuid("target_session_id")
       .notNull()

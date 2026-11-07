@@ -687,76 +687,73 @@ describe("Session write authority lock order", () => {
     });
   });
 
-  it.each(["binding", "channel", "conversation kind", "thread"] as const)(
-    "rejects a foreign %s scope while the target Session and placement are locked elsewhere",
-    async (difference) => {
-      const value = await fixture();
-      const gate = createDatabaseClient(testDatabase.databaseUrl, { max: 1 });
-      const request = createDatabaseClient(testDatabase.databaseUrl, { max: 1 });
-      const locked = deferred();
-      const release = deferred();
-      let holding: Promise<unknown> | undefined;
-      try {
-        let bindingId = value.binding.id;
-        if (difference === "binding") {
-          const otherAgent = await new AgentService(value.database).createForAccount(value.accountId, {
-            name: "other-agent",
-            displayName: "Other",
-            runtimeProvider: "codex",
-            computerId: value.computer.id,
-          });
-          const [binding] = await value.database
-            .insert(imBindings)
-            .values({
-              agentId: otherAgent.id,
-              provider: "feishu",
-              status: "active",
-              externalAppId: "other-app",
-              externalBotId: "other-bot",
-              credentialSchemaVersion: 1,
-              credentialGeneration: 1,
-              encryptedCredential: "test-only",
-              activatedAt: new Date(),
-            })
-            .returning();
-          assert(binding);
-          bindingId = binding.id;
-        }
-        const [target] = await value.database
-          .insert(sessions)
+  it("rejects another Agent's Session while the target Session and placement are locked elsewhere", async () => {
+    const value = await fixture();
+    const gate = createDatabaseClient(testDatabase.databaseUrl, { max: 1 });
+    const request = createDatabaseClient(testDatabase.databaseUrl, { max: 1 });
+    const locked = deferred();
+    const release = deferred();
+    let holding: Promise<unknown> | undefined;
+    try {
+      let bindingId = value.binding.id;
+      {
+        const otherAgent = await new AgentService(value.database).createForAccount(value.accountId, {
+          name: "other-agent",
+          displayName: "Other",
+          runtimeProvider: "codex",
+          computerId: value.computer.id,
+        });
+        const [binding] = await value.database
+          .insert(imBindings)
           .values({
-            imBindingId: bindingId,
-            channelId: difference === "channel" ? "foreign-channel" : value.root.session.channelId,
-            conversationKind: difference === "conversation kind" ? "dm" : "channel",
-            kind: "internal",
-            createdBySessionId: value.root.session.id,
-            threadKey: difference === "thread" ? "foreign-thread" : null,
+            agentId: otherAgent.id,
+            provider: "feishu",
+            status: "active",
+            externalAppId: "other-app",
+            externalBotId: "other-bot",
+            credentialSchemaVersion: 1,
+            credentialGeneration: 1,
+            encryptedCredential: "test-only",
+            activatedAt: new Date(),
           })
           .returning();
-        assert(target);
-        await value.database
-          .insert(sessionPlacements)
-          .values({ sessionId: target.id, computerId: value.computer.id, generation: 1 });
-        holding = gate.sql.begin(async (transaction) => {
-          await transaction`select id from sessions where id = ${target.id} for update`;
-          await transaction`select session_id from session_placements where session_id = ${target.id} for update`;
-          locked.resolve();
-          await release.promise;
-        });
-        await locked.promise;
-        await request.sql`set statement_timeout = '2s'`;
-        await expect(
-          new SessionService(request.database).authorizeAndRecordMessage(
-            value.sendInput(value.root.session.id, target.id),
-          ),
-        ).rejects.toMatchObject({ code: "SESSION_SCOPE_MISMATCH" });
-      } finally {
-        release.resolve();
-        await holding;
-        await Promise.all([request.sql.end(), gate.sql.end(), value.sql.end()]);
+        assert(binding);
+        bindingId = binding.id;
       }
-    },
-  );
+      const [target] = await value.database
+        .insert(sessions)
+        .values({
+          imBindingId: bindingId,
+          channelId: value.root.session.channelId,
+          conversationKind: "channel",
+          kind: "internal",
+          createdBySessionId: value.root.session.id,
+          threadKey: null,
+        })
+        .returning();
+      assert(target);
+      await value.database
+        .insert(sessionPlacements)
+        .values({ sessionId: target.id, computerId: value.computer.id, generation: 1 });
+      holding = gate.sql.begin(async (transaction) => {
+        await transaction`select id from sessions where id = ${target.id} for update`;
+        await transaction`select session_id from session_placements where session_id = ${target.id} for update`;
+        locked.resolve();
+        await release.promise;
+      });
+      await locked.promise;
+      await request.sql`set statement_timeout = '2s'`;
+      await expect(
+        new SessionService(request.database).authorizeAndRecordMessage(
+          value.sendInput(value.root.session.id, target.id),
+        ),
+      ).rejects.toMatchObject({ code: "SESSION_SCOPE_MISMATCH" });
+    } finally {
+      release.resolve();
+      await holding;
+      await Promise.all([request.sql.end(), gate.sql.end(), value.sql.end()]);
+    }
+  });
 
   it("keeps source, target and message-conflict error precedence for send and create retry", async () => {
     const value = await fixture();

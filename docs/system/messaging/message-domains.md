@@ -21,7 +21,7 @@ openTag has two message domains with different audiences and reliability:
   IM-specific delivery records. Clients deduplicate by stable message and
   delivery identity.
 - A Session message is an Agent collaboration message between existing,
-  unended Sessions of the same Agent and conversation scope. It is best-effort
+  unended Sessions of the same Agent, in any conversation. It is best-effort
   and real-time, with no offline queue or exactly-once guarantee. See
   [Internal Session collaboration](internal-session-collaboration.md).
 

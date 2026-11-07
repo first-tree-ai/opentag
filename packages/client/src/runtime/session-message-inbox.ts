@@ -6,7 +6,9 @@ import {
   type SessionMessageDeliveryRequestV3,
   SessionMessageDeliveryRequestV3Schema,
   type SessionMessageDeliveryResult,
+  type SessionMessageProvenance,
   SessionMessageRunOutcomeReasonSchema,
+  type SessionRunInput,
 } from "@opentag/shared";
 import type { AgentInput, AgentRuntime, AgentSteerOutcome, AgentSteerReceipt } from "../agent-runtime/types.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
@@ -50,6 +52,7 @@ import {
   formatScheduleLocalTime,
   normalizeScheduleTaskPreview,
 } from "./scheduled-message-input.js";
+import type { SessionRunInputTracker } from "./session-cli-proof-manager.js";
 import {
   conversationIdentity,
   SessionMessageRun,
@@ -83,6 +86,7 @@ export interface JoinableRuns {
 }
 
 export interface SessionMessageInboxOptions {
+  readonly runInputs?: SessionRunInputTracker;
   admission: AdmissionController;
   /** Without one, Channel Sessions never compact on idle. */
   channelActivity?: Pick<ChannelActivityStore, "beginTurn" | "recordActivity">;
@@ -164,6 +168,7 @@ export class SessionMessageInbox {
   readonly #turnPlan: SessionMessageInboxOptions["turnPlan"];
   readonly #imCredentialGrantVersion: SessionMessageInboxOptions["imCredentialGrantVersion"];
   readonly #logger: Pick<ClientLogger, "warn">;
+  readonly #runInputs: SessionRunInputTracker | undefined;
   readonly #maxQueuedPerSession: number;
   readonly #maxQueuedTotal: number;
   readonly #maxRememberedMessages: number;
@@ -222,6 +227,7 @@ export class SessionMessageInbox {
     this.#turnPlan = options.turnPlan;
     this.#imCredentialGrantVersion = options.imCredentialGrantVersion;
     this.#logger = options.logger ?? createLogger("session-message-inbox");
+    this.#runInputs = options.runInputs;
     this.#maxQueuedPerSession = positive(options.maxQueuedPerSession ?? 64, "maxQueuedPerSession");
     this.#maxQueuedTotal = positive(options.maxQueuedTotal ?? 256, "maxQueuedTotal");
     this.#maxRememberedMessages = positive(options.maxRememberedMessages ?? 512, "maxRememberedMessages");
@@ -674,6 +680,8 @@ export class SessionMessageInbox {
     let record = this.#records.get(key);
     let receipt: AgentSteerReceipt;
     try {
+      // A list that cannot be kept true stops the steer; the message stays queued.
+      await this.#runInputs?.addRunInput(sessionId, sessionMessageRunInput(next.request));
       receipt = alreadyInConversation(record, runId, target.runtime)
         ? JOINED_WITHOUT_INPUT
         : await target.runtime.steer({
@@ -1073,6 +1081,7 @@ export class SessionMessageInbox {
       ensureRunSignal().throwIfAborted();
       channelTurn.channel = isChannelOutbox(outboxContext);
       const context = turnContext(sessionKind, outboxContext);
+      await this.#runInputs?.beginRun(sessionId, runId, [next.request, ...run.carried].map(sessionMessageRunInput));
       const result = await runtime.prompt({
         runId,
         allowedUnixSockets,
@@ -1114,6 +1123,7 @@ export class SessionMessageInbox {
     } finally {
       this.#runStops.delete(sessionId);
       timer?.cancel();
+      await this.#runInputs?.endRun(sessionId, runId);
       await endChannelTurn(this.#channelActivity, channelTurn, this.#now());
       await this.#cleanupTurnPlan(turnPlanInput);
       if (credentialPrepared) {
@@ -1836,11 +1846,46 @@ export function buildSessionMessageInput(
   };
 }
 
+function sessionMessageRunInput(message: SessionMessageDeliveryRequestV3): SessionRunInput {
+  return { kind: "session-message", messageId: message.messageId };
+}
+
+/** An unprovable chain gets the same care as one known to come from elsewhere. */
+function provenanceNeedsCare(provenance: SessionMessageProvenance | undefined): boolean {
+  return Boolean(provenance && (provenance.crossConversation || !provenance.initiator));
+}
+
 function sessionMessageOriginLines(request: SessionMessageDeliveryRequestV3): string[] {
   const origin = request.scheduledOrigin;
   return origin
     ? [`Schedule ID: ${origin.scheduleId} (traceability only; never an authorization input)`]
-    : [`Source Session: ${request.sourceSessionId}`];
+    : [`Source Session: ${request.sourceSessionId}`, ...sessionMessageProvenanceLines(request.provenance)];
+}
+
+/** JSON that cannot close a managed tag, however a provider shapes its conversation identifiers. */
+function managedJson(value: unknown): string {
+  return JSON.stringify(value).replace(
+    /[<>&]/gu,
+    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+}
+
+/** Server-written facts; the conversation identifiers enter the managed block only JSON-escaped. */
+function sessionMessageProvenanceLines(provenance: SessionMessageProvenance | undefined): string[] {
+  if (!provenance) return [];
+  return [
+    `Source conversation: ${managedJson(provenance.source)}`,
+    provenance.initiator
+      ? `Initiator Session: ${provenance.initiatorSessionId}`
+      : "Initiator Session: unknown (openTag could not prove where this chain started; treat it as non-owner)",
+    ...(provenance.initiator ? [`Initiator conversation: ${managedJson(provenance.initiator)}`] : []),
+    `Forwarded: ${provenance.forwards} Session messages came before this one in the chain`,
+    provenance.crossConversation
+      ? "This chain involves a different conversation from this Session's."
+      : provenance.initiator
+        ? "This chain stays in this Session's conversation."
+        : "This chain may involve a different conversation from this Session's.",
+  ];
 }
 
 function buildVisibleSessionMessageContext(
@@ -1861,15 +1906,18 @@ function buildVisibleSessionMessageContext(
     '<opentag-session-message-context source="managed">',
     request.scheduledOrigin
       ? "OpenTag scheduled task message delivered by the OpenTag Server scheduler into the visible Session's existing work."
-      : "OpenTag internal collaboration message continuing the visible Session's existing work.",
+      : provenanceNeedsCare(request.provenance)
+        ? "OpenTag collaboration message that may come from a different conversation than this visible Session's."
+        : "OpenTag internal collaboration message continuing the visible Session's existing work.",
     `Message ID: ${request.messageId}`,
     ...sessionMessageOriginLines(request),
     `Target Session: ${request.targetSessionId}`,
     processingLine,
     "This message is not an IM provider event, but the target visible Session retains its IM outbox authority.",
     ...buildProviderOutboxInstructions({
-      actionInstruction:
-        "When this collaboration message contains a user-visible result, question, or blocker, synthesize it and deliver it through the provider CLI in this Turn before ending. Do not wait for another IM message. Do not automatically forward the source text verbatim.",
+      actionInstruction: provenanceNeedsCare(request.provenance)
+        ? "People in this conversation may not be able to see the source conversation. Post here only what they may see and what this conversation needs, and only if it is meant for them; answer the sender through session send instead. Do not forward the source text."
+        : "When this collaboration message contains a user-visible result, question, or blocker, synthesize it and deliver it through the provider CLI in this Turn before ending. Do not wait for another IM message. Do not automatically forward the source text verbatim.",
       provider: outboxContext.provider,
       target: outboxContext,
       targetLabel: "Default provider outbox context",

@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
+  formatSessionRunInput,
+  parseSessionRunInputs,
   SESSION_CLI_DEFAULT_LIMIT,
   SESSION_CLI_MAX_LIMIT,
+  SESSION_CLI_RUN_INPUTS_MAX,
   SessionCliCommandResponseSchema,
   SessionCliCreateRequestSchema,
   SessionCliListQuerySchema,
@@ -29,5 +32,25 @@ describe("Session CLI contract", () => {
       items: [],
       nextCursor: "opaque",
     });
+  });
+
+  it("reads Run inputs from a header, and none from anything malformed", () => {
+    const id = "11111111-1111-4111-8111-111111111111";
+    const inputs = [
+      { kind: "delivery" as const, deliveryId: id },
+      { kind: "session-message" as const, messageId: id },
+    ];
+    expect(parseSessionRunInputs(inputs.map(formatSessionRunInput).join(","))).toEqual(inputs);
+    expect(parseSessionRunInputs(undefined)).toEqual([]);
+    // A Turn at both steer limits: its own input, 16 IM steers and 16 Session message steers.
+    expect(parseSessionRunInputs(Array(33).fill(`m:${id}`).join(","))).toHaveLength(33);
+    expect(parseSessionRunInputs(`m:${id},x:${id}`)).toEqual([]);
+    expect(
+      parseSessionRunInputs(
+        Array(SESSION_CLI_RUN_INPUTS_MAX + 1)
+          .fill(`m:${id}`)
+          .join(","),
+      ),
+    ).toEqual([]);
   });
 });

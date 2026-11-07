@@ -3,6 +3,7 @@ import {
   RUNNER_REUSE_VERSION,
   RUNNER_SESSION_COLLABORATION_V2,
   RUNNER_SESSION_COLLABORATION_V3,
+  RUNNER_SESSION_COLLABORATION_V4,
   RUNNER_SESSION_COLLABORATION_VERSION,
   RUNNER_WORKSPACE_VERSION,
   RUNNER_WS_CLOSE,
@@ -288,7 +289,7 @@ export class RunnerConnection {
     renewExpired: boolean,
     controlToken: string | undefined,
     reuseVersion: number | undefined,
-    requestedSessionCollaborationVersion: 1 | 2 | 3 | undefined,
+    requestedSessionCollaborationVersion: 1 | 2 | 3 | 4 | undefined,
   ): Promise<void> {
     if (this.#scope) {
       this.#closeWith(RUNNER_WS_CLOSE.protocolError, "duplicate authentication frame");
@@ -335,7 +336,7 @@ export class RunnerConnection {
     wantsCloudDelivery: boolean,
     wantsWorkspace: boolean,
     renewExpired: boolean,
-    requestedSessionCollaborationVersion: 1 | 2 | 3 | undefined,
+    requestedSessionCollaborationVersion: 1 | 2 | 3 | 4 | undefined,
   ): Promise<void> {
     let controlClaims: RunnerBootstrapClaims;
     try {
@@ -486,7 +487,7 @@ export class RunnerConnection {
     wantsWorkspace: boolean,
     reportOnly: boolean,
     control: { reuseCapable: boolean } | undefined,
-    requestedSessionCollaborationVersion: 1 | 2 | 3 | undefined,
+    requestedSessionCollaborationVersion: 1 | 2 | 3 | 4 | undefined,
   ): Promise<void> {
     const cloudNegotiated = wantsCloudDelivery && this.#options.cloudDelivery !== undefined;
     // E5 capability negotiation is independent of delivery: echo only when the Runner requested
@@ -583,11 +584,12 @@ export class RunnerConnection {
   /** Negotiate E8 only when the Runner asks for it, the E4 Cloud channel exists, and this Server
    * actually composed a collaboration owner. */
   #negotiateSessionCollaboration(
-    requestedVersion: 1 | 2 | 3 | undefined,
+    requestedVersion: 1 | 2 | 3 | 4 | undefined,
     cloudNegotiated: boolean,
     ownerPresent: boolean,
-  ): 0 | 1 | 2 | 3 {
+  ): 0 | 1 | 2 | 3 | 4 {
     if (!cloudNegotiated || !ownerPresent) return 0;
+    if (requestedVersion === RUNNER_SESSION_COLLABORATION_V4) return RUNNER_SESSION_COLLABORATION_V4;
     if (requestedVersion === RUNNER_SESSION_COLLABORATION_V3) return RUNNER_SESSION_COLLABORATION_V3;
     if (requestedVersion === RUNNER_SESSION_COLLABORATION_V2) return RUNNER_SESSION_COLLABORATION_V2;
     if (requestedVersion === RUNNER_SESSION_COLLABORATION_VERSION) return RUNNER_SESSION_COLLABORATION_VERSION;
@@ -610,7 +612,7 @@ export class RunnerConnection {
     cloudNegotiated: boolean;
     control: { reuseCapable: boolean } | undefined;
     fence: { resourceUid: string | null } | undefined;
-    sessionCollaborationVersion: 0 | 1 | 2 | 3;
+    sessionCollaborationVersion: 0 | 1 | 2 | 3 | 4;
     githubUserTaskVersion?: 1;
     contextTreeExecutionVersion?: 1;
     validated: RunnerScope;

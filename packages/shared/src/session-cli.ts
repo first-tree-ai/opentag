@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ImConversationKindSchema } from "./im-message.js";
 import { runtimeByteString } from "./runtime-config.js";
 import {
   RUNTIME_DIRECT_TEXT_MAX_BYTES,
@@ -11,6 +12,33 @@ export const SESSION_CLI_DEFAULT_LIMIT = 20;
 export const SESSION_CLI_MAX_LIMIT = 100;
 export const SESSION_CLI_TASK_PREVIEW_MAX_BYTES = 256;
 export const SESSION_CLI_PROOF_HEADER = "x-opentag-session-proof";
+export const SESSION_CLI_RUN_INPUTS_HEADER = "x-opentag-run-inputs";
+/** Above a Turn's most: its own input, 16 IM steers and 16 independently counted Session message steers. */
+export const SESSION_CLI_RUN_INPUTS_MAX = 64;
+
+/** What a Run is working on, as `d:<deliveryId>` for an IM delivery and `m:<messageId>` for a Session message. */
+export type SessionRunInput = { kind: "delivery"; deliveryId: string } | { kind: "session-message"; messageId: string };
+
+const SESSION_RUN_INPUT_TOKEN = /^(d|m):([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+
+export function formatSessionRunInput(input: SessionRunInput): string {
+  return input.kind === "delivery" ? `d:${input.deliveryId}` : `m:${input.messageId}`;
+}
+
+/** The inputs a header names. Anything malformed or over the limit names none, which reads as unprovable. */
+export function parseSessionRunInputs(header: string | undefined): SessionRunInput[] {
+  if (!header) return [];
+  const tokens = header.split(",");
+  if (tokens.length > SESSION_CLI_RUN_INPUTS_MAX) return [];
+  const inputs: SessionRunInput[] = [];
+  for (const token of tokens) {
+    const match = SESSION_RUN_INPUT_TOKEN.exec(token.trim());
+    const id = match?.[2];
+    if (!id) return [];
+    inputs.push(match?.[1] === "d" ? { kind: "delivery", deliveryId: id } : { kind: "session-message", messageId: id });
+  }
+  return inputs;
+}
 
 const SessionCliTextSchema = z
   .string()
@@ -111,6 +139,41 @@ export const SessionCliListResponseSchema = z
   })
   .strict();
 
+/** `session list --agent`: the live Sessions of the source's Agent, in every conversation. */
+export const SessionCliAgentListQuerySchema = z
+  .object({
+    /** Leaves out internal Sessions, which usually outnumber the conversations they work for. */
+    visibleOnly: z.boolean().optional(),
+    limit: z.number().int().min(1).max(SESSION_CLI_MAX_LIMIT).default(SESSION_CLI_DEFAULT_LIMIT),
+    cursor: z.string().min(1).max(2048).optional(),
+  })
+  .strict();
+
+export const SessionCliAgentListItemSchema = z
+  .object({
+    sessionId: z.string().uuid(),
+    sessionKind: z.enum(["channel", "thread", "internal"]),
+    conversationKind: ImConversationKindSchema,
+    channelId: z.string(),
+    threadKey: z.string().optional(),
+    createdAt: z.string().datetime({ offset: true }),
+    /** The Session's Task title, when it has one. */
+    title: z.string().optional(),
+    /** An internal Session's creator and first task. */
+    parentSessionId: z.string().uuid().optional(),
+    taskPreview: z.string().optional(),
+    /** The Session asking. */
+    current: z.boolean().optional(),
+  })
+  .strict();
+
+export const SessionCliAgentListResponseSchema = z
+  .object({
+    items: z.array(SessionCliAgentListItemSchema).max(SESSION_CLI_MAX_LIMIT),
+    nextCursor: z.string().min(1).max(2048).optional(),
+  })
+  .strict();
+
 /**
  * The Server-minted proof a managed Runtime hands to the in-Session CLI. The token is a bearer
  * credential bound to the exact Session/placement/execution connection; it is delivered only over
@@ -133,3 +196,6 @@ export type SessionCliStopResponse = z.infer<typeof SessionCliStopResponseSchema
 export type SessionCliListQuery = z.infer<typeof SessionCliListQuerySchema>;
 export type SessionCliListItem = z.infer<typeof SessionCliListItemSchema>;
 export type SessionCliListResponse = z.infer<typeof SessionCliListResponseSchema>;
+export type SessionCliAgentListQuery = z.infer<typeof SessionCliAgentListQuerySchema>;
+export type SessionCliAgentListItem = z.infer<typeof SessionCliAgentListItemSchema>;
+export type SessionCliAgentListResponse = z.infer<typeof SessionCliAgentListResponseSchema>;

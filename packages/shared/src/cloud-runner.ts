@@ -85,10 +85,16 @@ export const RUNNER_SESSION_COLLABORATION_V2 = 2 as const;
  * never sees it; the Server uses it to tell an internal Session's creator why its Run ended.
  */
 export const RUNNER_SESSION_COLLABORATION_V3 = 3 as const;
+/**
+ * E8 version 4: everything in version 3, plus an ordinary `session:message:run` may carry the
+ * Server-derived `provenance`. A connection below it never receives the field.
+ */
+export const RUNNER_SESSION_COLLABORATION_V4 = 4 as const;
 export const RunnerSessionCollaborationVersionSchema = z.union([
   z.literal(RUNNER_SESSION_COLLABORATION_VERSION),
   z.literal(RUNNER_SESSION_COLLABORATION_V2),
   z.literal(RUNNER_SESSION_COLLABORATION_V3),
+  z.literal(RUNNER_SESSION_COLLABORATION_V4),
 ]);
 export type RunnerSessionCollaborationVersion = z.infer<typeof RunnerSessionCollaborationVersionSchema>;
 

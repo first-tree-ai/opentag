@@ -1611,6 +1611,11 @@ describe("AgentTurnRunner", () => {
   });
 
   it("steers only a matching running root and reuses the durable receipt", async () => {
+    const runInputs = {
+      addRunInput: vi.fn(async () => undefined),
+      beginRun: vi.fn(async () => undefined),
+      endRun: vi.fn(async () => undefined),
+    };
     let resolvePrompt!: (result: AgentRunResult) => void;
     let resolveReporting!: () => void;
     let observer: AgentRuntimeEventSink | undefined;
@@ -1647,6 +1652,7 @@ describe("AgentTurnRunner", () => {
       }),
     };
     const runner = new AgentTurnRunner({
+      runInputs,
       bindingStore: bindingStore as unknown as SessionBindingStore,
       connection: { send: vi.fn(async () => undefined) },
       custody: { markReporting, recordResult: vi.fn() } as unknown as TurnCustodyOwner,
@@ -1716,7 +1722,17 @@ describe("AgentTurnRunner", () => {
     await expect(runner.steer({ ...successfulRequest, requestId: randomUUID() })).resolves.toMatchObject({
       status: "steered",
     });
+    // A list that cannot be kept true stops the steer before the provider sees it.
+    runInputs.addRunInput.mockRejectedValueOnce(new Error("the list can neither be replaced nor removed"));
+    await expect(
+      runner.steer({ ...request, requestId: randomUUID(), deliveryId: "delivery-unlisted" }),
+    ).resolves.toMatchObject({ status: "deferred", reason: "steer_state_unknown" });
     expect(steer).toHaveBeenCalledTimes(3);
+    expect(runInputs.beginRun).toHaveBeenCalledWith(expect.any(String), "turn-1", [
+      { kind: "delivery", deliveryId: expect.any(String) },
+    ]);
+    // The first steer threw, the provider may still have taken it, and its input stays listed.
+    expect(runInputs.addRunInput).toHaveBeenCalledTimes(steer.mock.calls.length + 1);
     expect(steer).toHaveBeenCalledWith(expect.objectContaining({ expectedRunId: "turn-1" }));
     expect(bindingStore.recordSteer).toHaveBeenCalledTimes(2);
     await expect(
@@ -1735,6 +1751,7 @@ describe("AgentTurnRunner", () => {
     });
     resolveReporting();
     await runner.settled();
+    expect(runInputs.endRun).toHaveBeenCalledWith(expect.any(String), "turn-1");
   });
 
   it("retains the negotiated report contract across a mid-Turn disconnect", async () => {

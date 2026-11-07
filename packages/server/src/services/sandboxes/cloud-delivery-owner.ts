@@ -1560,7 +1560,7 @@ export class CloudDeliveryOwner {
     /** E8: only when the Runner negotiated the collaboration capability at the same handshake. */
     sessionCollaborationEligible?: boolean;
     /** Exact E8 collaboration version; required to authorize a scheduled-origin frame. */
-    sessionCollaborationVersion?: 1 | 2 | 3;
+    sessionCollaborationVersion?: 1 | 2 | 3 | 4;
   }): CloudConnectionRecord {
     // A same-Sandbox replacement (reconnect or newer generation) must tear down the superseded
     // connection's privileges even when the fence entry is replaced inside attach.

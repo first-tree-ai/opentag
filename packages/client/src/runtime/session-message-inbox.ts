@@ -1013,16 +1013,7 @@ export class SessionMessageInbox {
       // existing recovery semantics.
       const timedOut = timeout.signal.aborted && !this.#abort.signal.aborted && executionSignal?.aborted !== true;
       await settleRunTime();
-      if (current) {
-        // A daemon stop wins: the restarted daemon asks the Server, which refuses the ended Session.
-        if (stop.signal.aborted && !this.#abort.signal.aborted) {
-          this.#emitFailure(durableFailureFromUnknown(next.request.requestId, phase, error, "runtime_failed"));
-          await run.endAttempt();
-          await this.#recordStopped(this.#records.get(key) ?? current, phase);
-        } else {
-          outcome = await this.#attemptFailed(current, next.hash, run, phase, error, timedOut);
-        }
-      }
+      if (current) outcome = await this.#settleFailedAttempt(current, next.hash, run, phase, error, { stop, timedOut });
     } finally {
       this.#runStops.delete(sessionId);
       timer?.cancel();
@@ -1035,6 +1026,24 @@ export class SessionMessageInbox {
       });
     }
     return outcome;
+  }
+
+  async #settleFailedAttempt(
+    record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
+    hash: string,
+    run: SessionMessageRun,
+    phase: string,
+    error: unknown,
+    attempt: { stop: AbortController; timedOut: boolean },
+  ): Promise<"ended" | { retry: DurableWorkRecord<SessionMessageDeliveryRequestV3> }> {
+    // A daemon stop wins: the restarted daemon asks the Server, which refuses the ended Session.
+    if (!attempt.stop.signal.aborted || this.#abort.signal.aborted) {
+      return this.#attemptFailed(record, hash, run, phase, error, attempt.timedOut);
+    }
+    this.#emitFailure(durableFailureFromUnknown(record.payload.requestId, phase, error, "runtime_failed"));
+    await run.endAttempt();
+    await this.#recordStopped(this.#records.get(record.key) ?? record, phase);
+    return "ended";
   }
 
   async #attemptFailed(

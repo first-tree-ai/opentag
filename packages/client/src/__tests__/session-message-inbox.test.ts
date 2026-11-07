@@ -3609,7 +3609,10 @@ describe("SessionMessageInbox steer custody with Claude Code", () => {
     const h = await harness();
     try {
       const inbox = h.inbox(() => h.host);
-      await h.steerInto(inbox);
+      const uuid = await h.steerInto(inbox);
+      // Started, so the Turn's end interrupts it rather than leaving it never started.
+      send(h.hostChild, { type: "command_lifecycle", command_uuid: uuid, state: "started" });
+      await new Promise((resolve) => setTimeout(resolve, 20));
 
       const stopping = inbox.stopSessionWork(h.message.targetSessionId, h.message.placementGeneration);
       h.hostChild.emit("exit", 1, null);

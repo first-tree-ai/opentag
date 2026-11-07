@@ -304,13 +304,16 @@ retries are cancelled and its queued messages are withdrawn.
   Session authority until it ends). `activeDescendantCount` says how many descendants keep running.
 - **Notice.** A creator that called `session stop` has its answer and is not woken. When another ancestor stopped the
   child, the creator gets one SessionMessage from that ancestor, starting with the Run outcome notice header and saying
-  the child cannot be continued. Its ID is UUIDv5 over the child, so repeats converge. Other senders whose queued
+  the child cannot be continued. Its ID is a Server-derived UUIDv5 over the child, so repeats converge. It is recorded before
+  the stop answers and delivered in the background; a delivery lost to a Server crash is sent again only if the stop is
+  repeated. Other senders whose queued
   messages were withdrawn are not told; their next `session send` is rejected.
 
 Local uses the existing `session:reconcile` frame with `desired: "stopped"`; there is no new frame or capability. The
 frame names the internal kind so that a daemon that restarted and has not prepared the Session can still withdraw its
 work. The Client aborts the Run before taking the Agent lock, because the Run's cleanup needs that lock, then runs the
-normal stop. The Client fences the stopped placement synchronously before any of its writes, so a retry or delivery whose
+normal stop. It waits for the Run itself, which the inbox drain does not wait for; a Run waiting out a retry's backoff ends at
+once, and a message steered into the stopped Run ends the same way. The Client fences the stopped placement synchronously before any of its writes, so a retry or delivery whose
 write was already in flight neither starts a Run nor answers `accepted`. A provider that ignores the abort for 5 seconds has its runtime closed, which ends its process tree. The withdrawn messages reach a terminal `session_stopped` record with no retry and no Run outcome report.
 The same Client behavior applies to an Agent lifecycle stop of an internal Session, which previously answered `busy`
 while a Run was active; a visible Session's Turn still answers `busy`.

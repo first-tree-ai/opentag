@@ -208,6 +208,42 @@ describe("SessionMessageInbox", () => {
     },
   );
 
+  it("reports no failure when a completed Run's success cannot be written", async () => {
+    const store = new MemoryRuntimeDurabilityStore();
+    const logger = { warn: vi.fn() };
+    const onRunOutcome = vi.fn();
+    const prompt = vi.fn(async () => ({ runId: "run", status: "completed" as const, output: [] }));
+    const inbox = new SessionMessageInbox({
+      admission: new AdmissionController(),
+      credentialEnvironment: credentialEnvironment(),
+      imCredentialGrantVersion: () => 2,
+      sessionCollaborationVersion: () => 4,
+      logger,
+      onRunOutcome,
+      persistence: {
+        list: store.list.bind(store),
+        write: async (record) => {
+          if (record.status === "succeeded") throw new Error("disk full");
+          await store.write(record);
+        },
+      },
+      reconciler: inboxReconciler(),
+      runtimeManager: {
+        ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+        sessionKind: vi.fn(() => "internal" as const),
+      },
+    });
+    await inbox.accept(delivery());
+    await inbox.settled();
+    expect(prompt).toHaveBeenCalledOnce();
+    expect(onRunOutcome).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "SESSION_MESSAGE_PERSISTENCE_FAILED", status: "succeeded" }),
+      expect.any(String),
+    );
+    inbox.stop();
+  });
+
   it("rejects a remembered scheduled delivery when the channel no longer has v3 capability", async () => {
     let version = 3;
     const prompt = vi.fn(async () => ({ runId: "run", status: "completed" as const, output: [] }));

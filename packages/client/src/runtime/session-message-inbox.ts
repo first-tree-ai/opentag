@@ -1080,14 +1080,23 @@ export class SessionMessageInbox {
     abandonedBackgroundWork: readonly string[] | undefined,
   ): Promise<void> {
     const abandoned = (abandonedBackgroundWork?.length ?? 0) > 0;
+    this.#remember(record.key, { hash, status: "succeeded" });
     const terminal = await this.#transition(
       record,
       "succeeded",
       abandoned
         ? { lastError: backgroundWorkStoppedFailure(record.payload.requestId), ...this.#pendingOutcomeReport() }
         : {},
-    );
-    this.#remember(record.key, { hash, status: "succeeded" });
+    ).catch(() => {
+      // The Run did complete, so this is no failure to report. The record stays `running` on disk and the next
+      // start treats it as interrupted: it may run again, with the notice that it may already have been handled.
+      this.#logger.warn(
+        { code: "SESSION_MESSAGE_PERSISTENCE_FAILED", messageId: record.payload.messageId, status: "succeeded" },
+        "Session message success could not be recorded",
+      );
+      return undefined;
+    });
+    if (!terminal) return;
     if (abandoned)
       await this.#publishRunOutcome(terminal, "unknown", SESSION_MESSAGE_BACKGROUND_WORK_POSSIBLY_STOPPED_CODE);
   }

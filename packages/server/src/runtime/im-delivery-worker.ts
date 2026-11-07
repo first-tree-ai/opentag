@@ -70,6 +70,7 @@ import {
   rejectInvalidDeliveryInput,
   releaseDeliveryDispatch,
   settleExhaustedTimeoutRun,
+  settleLostReportOrDefer,
   settleUnreportableTurn,
 } from "./im-delivery-failure.js";
 import {
@@ -82,7 +83,7 @@ import {
 } from "./im-delivery-janitor.js";
 import { validateRecoveryPayload } from "./im-delivery-pinned-hash.js";
 import { ImDeliveryReadyWakeup } from "./im-delivery-ready-wakeup.js";
-import { acceptedReportClosed, recoveryRetryCode } from "./im-delivery-retry.js";
+import { acceptedReportClosed } from "./im-delivery-retry.js";
 import { ImDeliverySelector, lockEligibleDelivery } from "./im-delivery-selector.js";
 import { advanceParkedRetries } from "./im-delivery-work-query.js";
 import type {
@@ -1359,7 +1360,7 @@ export class ImDeliveryWorker {
     }
     await lease.stop();
     if (!signal.aborted)
-      await this.#deferRecovery(attempt, claim.attemptCount, recoveryRetryCode(result, row.delivery));
+      await settleLostReportOrDefer(this.#failures, row, attempt, claim.attemptCount, result, instanceId, this.#now());
   }
 
   /** A reconcile response is not a report; preserve custody until the actual report settles it. */

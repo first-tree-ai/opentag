@@ -312,30 +312,72 @@ describe("ClaudeCodeProcess", () => {
       ).resolves.toMatchObject({ abandonedBackgroundWork: ["ScheduleWakeup timer"] });
     });
 
-    it("does not count a one-shot cron job that fired, taking the earliest due one", async () => {
+    const recurring = (id: string) => [
+      toolUse(id, "CronCreate"),
+      toolResult(id, {}, { id, recurring: true, durable: false, nextFireAt: 0 }),
+    ];
+
+    it("does not count the only cron job once it fired and is one-shot and due", async () => {
+      await expect(
+        runWith([...oneShot("job"), fired("q", "schedule_wakeup", "queued"), ...firedTurn("c", "schedule_wakeup")]),
+      ).resolves.toEqual({ stderr: "", notice: undefined });
+    });
+
+    it("keeps a one-shot job when a recurring job fired and was then deleted", async () => {
       await expect(
         runWith([
-          ...oneShot("late", 2000),
-          ...oneShot("early", 1000),
-          fired("q", "schedule_wakeup", "queued"),
+          ...recurring("every"),
+          ...oneShot("nearby", Date.now() + 90_000),
           ...firedTurn("c", "schedule_wakeup"),
+          toolUse("d", "CronDelete", { id: "every" }),
+          toolResult("d", {}, { id: "every" }),
         ]),
-      ).resolves.toMatchObject({ abandonedBackgroundWork: ["CronCreate job late"] });
-      await expect(runWith([...oneShot("job"), ...firedTurn("c", "schedule_wakeup")])).resolves.toEqual({
-        stderr: "",
-        notice: undefined,
+      ).resolves.toMatchObject({
+        abandonedBackgroundWork: ["CronCreate job nearby"],
+        notice: expect.stringContaining("may still be running or pending"),
       });
     });
 
-    it("keeps a recurring cron job and a one-shot job not due when a cron job fires", async () => {
+    it("keeps every job when a cron frame cannot name one, even if they are due", async () => {
+      await expect(
+        runWith([...recurring("every"), ...oneShot("due", 1000), ...firedTurn("c", "schedule_wakeup")]),
+      ).resolves.toMatchObject({ abandonedBackgroundWork: ["CronCreate job every", "CronCreate job due"] });
+      await expect(
+        runWith([...oneShot("first", 1000), ...oneShot("second", 2000), ...firedTurn("c", "schedule_wakeup")]),
+      ).resolves.toMatchObject({ abandonedBackgroundWork: ["CronCreate job first", "CronCreate job second"] });
+    });
+
+    it("keeps a one-shot job when a durable job could have fired instead", async () => {
       await expect(
         runWith([
           toolUse("a", "CronCreate"),
-          toolResult("a", {}, { id: "recurring", recurring: true, durable: false, nextFireAt: 0 }),
-          ...oneShot("future", Date.now() + 3_600_000),
+          toolResult("a", {}, { id: "disk", durable: true }),
+          ...oneShot("job", 1000),
           ...firedTurn("c", "schedule_wakeup"),
         ]),
-      ).resolves.toMatchObject({ abandonedBackgroundWork: ["CronCreate job recurring", "CronCreate job future"] });
+      ).resolves.toMatchObject({ abandonedBackgroundWork: ["CronCreate job job"] });
+    });
+
+    it("keeps the only cron job when it is recurring or not due", async () => {
+      await expect(runWith([...recurring("every"), ...firedTurn("c", "schedule_wakeup")])).resolves.toMatchObject({
+        abandonedBackgroundWork: ["CronCreate job every"],
+      });
+      await expect(
+        runWith([...oneShot("future", Date.now() + 90_000), ...firedTurn("c", "schedule_wakeup")]),
+      ).resolves.toMatchObject({ abandonedBackgroundWork: ["CronCreate job future"] });
+    });
+
+    it("keeps timers on a firing it does not recognize, and a cron frame leaves a wakeup alone", async () => {
+      await expect(runWith([...oneShot("job", 1000), ...firedTurn("c", "something_new")])).resolves.toMatchObject({
+        abandonedBackgroundWork: ["CronCreate job job"],
+      });
+      await expect(
+        runWith([
+          toolUse("a", "ScheduleWakeup", { delaySeconds: 60 }),
+          toolResult("a"),
+          ...firedTurn("c", "schedule_wakeup"),
+        ]),
+      ).resolves.toMatchObject({ abandonedBackgroundWork: ["ScheduleWakeup timer"] });
     });
 
     it("reports nothing when a one-shot timer fires during the notice turn, whose result still ends the Run", async () => {

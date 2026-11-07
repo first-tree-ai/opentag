@@ -157,7 +157,7 @@ Needs a real Claude Code: the Lab's scripted Claude does not start background ta
 
 1. Send an internal Session a message telling it to start a long background shell and end its Turn. It gets
    `[openTag notice] This Run is about to end.` in the same Run. If it leaves the shell running, the record is `succeeded`
-   and the creator gets a notice with reason `background_work_stopped`.
+   and the creator gets a notice with reason `background_work_possibly_stopped`.
 2. Send it another message. The transcript shows the Claude Code task notification and then the message, followed by an
    assistant reply, not `No response requested.`, and the record `succeeded` only after that reply.
 

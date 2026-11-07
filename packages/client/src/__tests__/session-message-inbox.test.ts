@@ -538,13 +538,13 @@ describe("SessionMessageInbox", () => {
       expect(inbox.getState(request.messageId)).toMatchObject({
         status: "succeeded",
         outcomeReport: "published",
-        lastError: { code: "background_work_stopped" },
+        lastError: { code: "background_work_possibly_stopped" },
       });
       expect(onRunOutcome).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({
           messageId: request.messageId,
           outcome: "unknown",
-          reason: "background_work_stopped",
+          reason: "background_work_possibly_stopped",
         }),
       );
       await expect(inbox.accept(request)).resolves.toMatchObject({ status: "accepted" });
@@ -566,7 +566,7 @@ describe("SessionMessageInbox", () => {
       const restarted = abandoningInbox(persistence, onRunOutcome);
       await restarted.ready();
       expect(onRunOutcome).toHaveBeenCalledExactlyOnceWith(
-        expect.objectContaining({ outcome: "unknown", reason: "background_work_stopped" }),
+        expect.objectContaining({ outcome: "unknown", reason: "background_work_possibly_stopped" }),
       );
       expect(restarted.getState(request.messageId)).toMatchObject({ status: "succeeded", outcomeReport: "published" });
       restarted.stop();

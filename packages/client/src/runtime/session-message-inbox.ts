@@ -133,10 +133,10 @@ export interface SessionMessageRunOutcomeEvent {
 /** The stable code a Run outcome report carries for a timed-out Session message. */
 export const SESSION_MESSAGE_TURN_TIMEOUT_CODE = "turn_timeout";
 /**
- * The Run completed, but background work it left behind stopped with it, so what the sender is
- * waiting for may never come. The message itself succeeded and is not run again.
+ * The Run completed, but background work it may have left behind stops with it, so what the sender
+ * is waiting for may never come. The message itself succeeded and is not run again.
  */
-export const SESSION_MESSAGE_BACKGROUND_WORK_STOPPED_CODE = "background_work_stopped";
+export const SESSION_MESSAGE_BACKGROUND_WORK_POSSIBLY_STOPPED_CODE = "background_work_possibly_stopped";
 
 export class SessionMessageInbox {
   readonly #admission: AdmissionController;
@@ -801,7 +801,8 @@ export class SessionMessageInbox {
         : {},
     );
     this.#remember(record.key, { hash, status: "succeeded" });
-    if (abandoned) await this.#publishRunOutcome(terminal, "unknown", SESSION_MESSAGE_BACKGROUND_WORK_STOPPED_CODE);
+    if (abandoned)
+      await this.#publishRunOutcome(terminal, "unknown", SESSION_MESSAGE_BACKGROUND_WORK_POSSIBLY_STOPPED_CODE);
   }
 
   #requirePreparedOutbox(
@@ -1218,12 +1219,12 @@ function withContinuation(input: AgentInput, interruption: DurableWorkRecord["in
 
 function backgroundWorkStoppedFailure(requestId: string): DurableFailure {
   return {
-    code: SESSION_MESSAGE_BACKGROUND_WORK_STOPPED_CODE,
+    code: SESSION_MESSAGE_BACKGROUND_WORK_POSSIBLY_STOPPED_CODE,
     category: "unavailable",
     retryability: "never",
     phase: "provider",
     requestId,
-    message: "Background work this Run left behind stopped when the Run ended",
+    message: "Background work this Run may have left behind stops when the Run ends",
   };
 }
 

@@ -9,8 +9,6 @@ export const CLAUDE_CODE_MAX_STDERR_BYTES = 64 * 1024;
 /** Tools that change timers living inside the Claude Code process, which appear in no task list. */
 const IN_PROCESS_TIMER_TOOLS = new Set(["ScheduleWakeup", "CronCreate", "CronDelete"]);
 const WAKEUP_TIMER = "ScheduleWakeup timer";
-/** Claude Code may fire a one-shot cron job ahead of its `nextFireAt`, and names no job when it does. */
-const ONE_SHOT_EARLY_FIRE_MS = 120_000;
 
 export class ClaudeCodeProcessError extends Error {
   constructor(
@@ -45,7 +43,7 @@ export interface ClaudeCodeSpawnOptions {
 
 export interface ClaudeCodeProcessResult {
   readonly stderr: string;
-  /** What was still live in the process when its Run ended; it stops when the process exits. */
+  /** What may still have been live in the process when its Run ended; if so, it stops when the process exits. */
   readonly abandonedBackgroundWork?: readonly string[];
 }
 
@@ -451,7 +449,8 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
 }
 
 interface LiveTimer {
-  readonly label: string;
+  /** How a report names it. A durable job has none: it is on disk, but it can still fire here. */
+  readonly label?: string;
   /** When a one-shot job is due; a recurring job or wakeup has none. */
   readonly oneShotAt?: number;
 }
@@ -485,7 +484,8 @@ class InProcessTimers {
 
   /**
    * Firing shows only here: `wakeup_source` is `loop_wakeup` for `ScheduleWakeup` and `schedule_wakeup`
-   * for a cron job. A recurring job stays live, and so does a one-shot job that is not due yet.
+   * for a cron job. A wakeup is removed outright. The cron frame names no job, so a job is removed only
+   * when nothing else can have fired; otherwise it is kept, and the report may name a job that already ran.
    */
   #observeLifecycle(frame: Record<string, unknown>): void {
     const command = String(frame.command_uuid);
@@ -493,18 +493,19 @@ class InProcessTimers {
     if (frame.state !== "started" || typeof frame.wakeup_source !== "string") return;
     this.#firedTurns.add(command);
     if (frame.wakeup_source === "loop_wakeup") this.#live.delete(WAKEUP_TIMER);
-    else this.#retireDueOneShot();
+    if (frame.wakeup_source === "schedule_wakeup") this.#retireOnlyCronJob();
   }
 
-  #retireDueOneShot(): void {
-    const due = [...this.#live]
-      .filter(([, timer]) => timer.oneShotAt !== undefined && timer.oneShotAt <= Date.now() + ONE_SHOT_EARLY_FIRE_MS)
-      .sort(([, a], [, b]) => Number(a.oneShotAt) - Number(b.oneShotAt));
-    if (due[0]) this.#live.delete(due[0][0]);
+  #retireOnlyCronJob(): void {
+    const jobs = [...this.#live].filter(([key]) => key !== WAKEUP_TIMER);
+    const [only] = jobs;
+    if (jobs.length !== 1 || !only) return;
+    const [jobId, { oneShotAt }] = only;
+    if (oneShotAt !== undefined && oneShotAt <= Date.now()) this.#live.delete(jobId);
   }
 
   labels(): string[] {
-    return [...this.#live.values()].map((timer) => timer.label);
+    return [...this.#live.values()].flatMap((timer) => (timer.label ? [timer.label] : []));
   }
 
   #recordCall(block: Record<string, unknown>): void {
@@ -528,10 +529,9 @@ class InProcessTimers {
   }
 
   #addCronJob(toolCallId: string, result: Record<string, unknown>): void {
-    if (result.durable === true) return;
     const jobId = typeof result.id === "string" ? result.id : toolCallId;
     this.#live.set(jobId, {
-      label: `CronCreate job ${jobId}`,
+      ...(result.durable === true ? {} : { label: `CronCreate job ${jobId}` }),
       ...(result.recurring === false ? { oneShotAt: Number(result.nextFireAt ?? 0) } : {}),
     });
   }
@@ -557,7 +557,7 @@ function backgroundTaskEntry(task: Record<string, unknown>): [string, string] {
 /** What the Session reads at the end of a Run that leaves background work behind. */
 function buildBackgroundWorkNotice(work: readonly string[]): string {
   return [
-    "[openTag notice] This Run is about to end. Claude Code exits with it, and this background work stops then, with no result:",
+    "[openTag notice] This Run is about to end. Claude Code exits with it. This background work may still be running or pending, and if so it stops then, with no result:",
     ...work.map((item) => `- ${item}`),
     "Nothing wakes this Session afterwards. If the result matters, wait for it now in this Run or run the work in the foreground.",
     "If you leave it unfinished, tell whoever is waiting for it before you end this Run.",

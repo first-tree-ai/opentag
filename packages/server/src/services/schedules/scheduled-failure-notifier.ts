@@ -110,12 +110,24 @@ const RUN_OUTCOME_TEXT: Record<Exclude<RunOutcomeNoticeInput["outcome"], "cancel
   unknown: "was interrupted and its result is unknown",
 };
 
+/** The Client's report for a Run that completed and may have left background work behind. */
+const BACKGROUND_WORK_POSSIBLY_STOPPED_CODE = "background_work_possibly_stopped";
+
 export function renderRunFailure(
   occurrence: ScheduledOccurrence,
   outcome: Exclude<RunOutcomeNoticeInput["outcome"], "cancelled">,
   code: string,
   publicUrl: string,
 ): string {
+  // The Run itself succeeded; only what it left running is in doubt.
+  if (code === BACKGROUND_WORK_POSSIBLY_STOPPED_CODE) {
+    return occurrenceLines(
+      occurrence,
+      publicUrl,
+      code,
+      `Scheduled task "${plainName(occurrence.name)}" finished, but background work it started may have stopped when its Run ended.`,
+    );
+  }
   return occurrenceLines(
     occurrence,
     publicUrl,

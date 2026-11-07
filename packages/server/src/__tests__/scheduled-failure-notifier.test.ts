@@ -16,7 +16,7 @@ import {
 import { FeedbackProviderError } from "../services/im/im-feedback-messenger.js";
 import type { ScheduleClock } from "../services/schedules/index.js";
 import { ScheduledFailureNotifier, ScheduleScheduler } from "../services/schedules/index.js";
-import { scheduledMissKind } from "../services/schedules/scheduled-failure-notifier.js";
+import { renderRunFailure, scheduledMissKind } from "../services/schedules/scheduled-failure-notifier.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 /*
@@ -735,6 +735,31 @@ describe("a scheduled occurrence that never ran", () => {
     aborted.abort();
     await h.notifier.notifyMissed(input, aborted.signal);
     expect(h.post).toHaveBeenCalledOnce();
+  });
+});
+
+describe("renderRunFailure", () => {
+  const occurrence = {
+    agentId: "agent",
+    name: "nightly",
+    scheduleId: "schedule",
+    scheduledFor: T0.toISOString(),
+    targetSessionId: "session",
+    timezone: "UTC",
+  };
+
+  it("says a Run that left background work finished, not that it was interrupted", () => {
+    const text = renderRunFailure(occurrence, "unknown", "background_work_possibly_stopped", "https://example.test");
+    expect(text).toContain('Scheduled task "nightly" finished');
+    expect(text).toContain("background work it started may have stopped");
+    expect(text).not.toContain("interrupted");
+    expect(text).not.toContain("will not rerun");
+  });
+
+  it("keeps the interrupted wording for a Run with an unknown result", () => {
+    expect(renderRunFailure(occurrence, "unknown", "run_interrupted", "https://example.test")).toContain(
+      "was interrupted and its result is unknown",
+    );
   });
 });
 

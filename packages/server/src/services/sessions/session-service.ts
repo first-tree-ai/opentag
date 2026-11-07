@@ -26,6 +26,7 @@ import {
 } from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import type { CloudModelCatalog } from "../sandboxes/cloud-model-catalog.js";
+import { isRunOutcomeNotice } from "./session-run-outcome-notice.js";
 
 type SessionRow = typeof sessions.$inferSelect;
 type PlacementRow = typeof sessionPlacements.$inferSelect;
@@ -115,6 +116,8 @@ export interface AuthorizeAndRecordSessionMessageInput {
   sourcePlacementGeneration: number;
   targetSessionId: string;
   content: string;
+  /** The Server derived this ID itself, so it may record a new row in the reserved version 5 space. */
+  serverDerivedId?: boolean;
 }
 
 export interface AuthorizedSessionMessageRoute {
@@ -211,6 +214,19 @@ function toPlacement(row: PlacementRow): SessionPlacement {
     generation: row.generation,
     updatedAt: row.updatedAt.toISOString(),
   };
+}
+
+/**
+ * Version 5 UUIDs are the Server's own: it derives them for the messages it writes (Run outcome notices,
+ * schedule occurrences), and `session_messages.id` is global, so a caller who computes one could otherwise
+ * occupy the ID and suppress the real message. This applies to new rows only. A row already under such an ID
+ * goes through the normal identity check, so a caller can still resolve an uncertain write from before this
+ * rule with its original ID.
+ */
+function assertOrdinaryMessageIdFree(messageId: string): void {
+  if (messageId[14] === "5") {
+    throw new SessionServiceError("SESSION_MESSAGE_ID_RESERVED", "Version 5 message IDs are reserved for the Server");
+  }
 }
 
 export class SessionServiceError extends Error {
@@ -373,6 +389,7 @@ export class SessionService {
           attemptCount: attempt.attemptCount,
         };
       }
+      assertOrdinaryMessageIdFree(input.messageId);
       // Model admission runs only on the create path: a deduplicated replay returns its recorded
       // Session without re-validating, so a model the Router stopped offering (or a Router outage)
       // never breaks the idempotent retry of an already-created internal Session.
@@ -511,6 +528,7 @@ export class SessionService {
       if (message) {
         this.#assertMessageIdentity(message, input.sourceSessionId, input.targetSessionId, input.content);
       } else {
+        if (!input.serverDerivedId) assertOrdinaryMessageIdFree(input.messageId);
         const now = this.#now();
         [message] = await transaction
           .insert(sessionMessages)
@@ -551,20 +569,26 @@ export class SessionService {
   }
 
   /**
-   * Unlocked eligibility read for an internal Session's Run outcome notice. The reported message
-   * must be a stored SessionMessage addressed to that Session, and the Session must be an active
-   * internal child with a creator. The facts only select the notice route; the subsequent
-   * `authorizeAndRecordMessage` re-proves every authority under the normal lock order.
+   * Who hears that a message's Run did not complete: its sender, whatever kind of Session the target
+   * is. A message with no other sender (scheduled, or sent to itself) and a notice that itself failed
+   * go to an internal target's creator instead, so notices can only climb the creation tree from
+   * there and never bounce between two Sessions.
+   *
+   * An unlocked eligibility read: the reported message must be stored and addressed to that active
+   * Session. The facts only select the notice route; the subsequent `authorizeAndRecordMessage`
+   * re-proves every authority under the normal lock order.
    */
   async resolveRunOutcomeNotice(input: {
     childSessionId: string;
     messageId: string;
-  }): Promise<{ creatorSessionId: string; installationId: string } | undefined> {
+  }): Promise<{ recipientSessionId: string; installationId: string } | undefined> {
     const [row] = await this.#database
       .select({
         creatorSessionId: sessions.createdBySessionId,
         installationId: computers.currentInstallationId,
+        content: sessionMessages.content,
         kind: sessions.kind,
+        sourceSessionId: sessionMessages.sourceSessionId,
       })
       .from(sessionMessages)
       .innerJoin(sessions, eq(sessions.id, sessionMessages.targetSessionId))
@@ -578,8 +602,15 @@ export class SessionService {
         ),
       )
       .limit(1);
-    if (row?.kind !== "internal" || !row.creatorSessionId) return undefined;
-    return { creatorSessionId: row.creatorSessionId, installationId: row.installationId };
+    if (!row) return undefined;
+    const isNotice = isRunOutcomeNotice({
+      id: input.messageId,
+      sourceSessionId: row.sourceSessionId,
+      content: row.content,
+    });
+    const sender = !isNotice && row.sourceSessionId !== input.childSessionId ? row.sourceSessionId : null;
+    const recipientSessionId = sender ?? (row.kind === "internal" ? row.creatorSessionId : null);
+    return recipientSessionId ? { recipientSessionId, installationId: row.installationId } : undefined;
   }
 
   async withCollaborationDispatchAdmission<T>(

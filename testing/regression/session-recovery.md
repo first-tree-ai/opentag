@@ -166,7 +166,7 @@ Needs a real Claude Code: the Lab's scripted Claude does not start background ta
 
 1. Send an internal Session a message telling it to start a long background shell and end its Turn. It gets
    `[openTag notice] This Run is about to end.` in the same Run. If it leaves the shell running, the record is `succeeded`
-   and the creator gets a notice with reason `background_work_possibly_stopped`.
+   and the message's sender gets a notice with reason `background_work_possibly_stopped`.
 2. Send it another message. The transcript shows the Claude Code task notification and then the message, followed by an
    assistant reply, not `No response requested.`, and the record `succeeded` only after that reply.
 
@@ -178,14 +178,37 @@ Needs a real Claude Code: the Lab's scripted Claude does not start background ta
    thread Sessions with Feishu and Slack.
 2. Kill and restart the daemon while the steered message is in the Turn.
 3. Expected: the Turn continues, and the message is steered into it again with the notice that it may already have been
-   handled. If that Turn fails, the message fails with it and does not run again; no creator notice follows, because the
-   target is a visible Session.
+   handled. If that Turn fails, the message fails with it and does not run again: the person gets the error card, and the
+   message's sender gets a notice.
 4. Repeat with explicit `proxy` credential mode and verify the same steer and outbox target. A Server that does not
    negotiate credential grant v2 must refuse visible callback delivery; missing context never invents a target.
+
+## Parent message steered into a running child
+
+Use a steer-capable Provider (Claude Code on a current version). A child's long task is its parent's Session message Run.
+
+1. While the child is working, have the parent run `opentag session send <child-id>` twice with short follow-ups.
+2. Expected: the follow-ups reach the running child at its next tool boundary, in order, with no new Provider Run for them;
+   all messages succeed together when the Run completes.
+3. Repeat, then kill and restart the daemon after the follow-ups were steered. Expected: the child resumes with the crash
+   notice, the follow-ups arrive again in order, each with the notice, and the parent gets no failure notice.
+4. Repeat the crash until the retries run out. Expected: the child's message fails, and the steered follow-ups fail with it:
+   one notice per message to its sender, no further Run. A message queued but not yet steered runs on its own.
+5. Make the child's task fail without a retry while a follow-up is steered into it. Expected: both fail with one notice each to
+   the sender, and no further Run.
+
+## Failure notice to the sender
+
+1. Have a child send a Session message to its visible parent, and make that Run fail. Expected: the child, as the sender, gets
+   one notice naming the parent's Session, and the parent's IM conversation gets no error card.
+2. Have one child send a message to a sibling, and make that Run fail. Expected: the sending child gets one notice; their parent
+   gets none.
+3. Make a parent's task fail in its child. Expected: the parent gets exactly one notice, though it is both sender and creator.
+4. Make a scheduled message fail in an internal Session. Expected: its creator gets one notice. In a visible Session: no notice.
 
 ## Not retried
 
 - A non-recoverable failure (for example revoked provider credentials) shows its error immediately, with no retry.
 - A Computer connected to an older Server that does not negotiate `runtime.sessionRecovery` keeps the previous
   behaviour after a restart: the interrupted Turn reports `turn_state_unknown`, and waiting internal Session messages
-  fail with a creator notice instead of waiting indefinitely.
+  fail with a notice to their sender instead of waiting indefinitely.

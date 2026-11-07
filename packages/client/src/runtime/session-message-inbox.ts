@@ -337,14 +337,17 @@ export class SessionMessageInbox {
     } catch {
       this.#queuedTotal -= 1;
       this.#records.delete(key);
-      // A stop during this write already refuses the message for good; a disk failure is the lesser news.
-      const reason = this.#isStopped(request) ? "session_not_ready" : "provider_unavailable";
-      this.#remember(key, { hash, status: "rejected", reason });
       this.#logger.warn(
         { code: "SESSION_MESSAGE_PERSISTENCE_FAILED", messageId: request.messageId },
         "Session message persistence failed",
       );
-      return deliveryResult(request, "rejected", reason);
+      // A stop during this write already refuses the message for good; a disk failure is the lesser news.
+      if (this.#isStopped(request)) {
+        this.#remember(key, { hash, status: "rejected", reason: "session_not_ready" });
+        return deliveryResult(request, "rejected", "session_not_ready");
+      }
+      // A failed write says nothing about the message: not remembered, and a replay may succeed.
+      return deliveryResult(request, "rejected", "client_busy");
     }
     // A stop that began during this write must not queue it, and it never saw the capacity held here.
     if (this.#isStopped(request)) {

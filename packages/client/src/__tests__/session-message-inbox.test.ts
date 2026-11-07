@@ -1408,7 +1408,12 @@ describe("SessionMessageInbox", () => {
       inbox,
       logger: { info: vi.fn(), warn: vi.fn() },
       reconciler: { setRecovery: vi.fn(), clearRecovery: vi.fn(() => true) },
-      retries: { list: async () => [imRequest], write: async () => undefined, remove: async () => undefined },
+      retries: {
+        list: async () => [imRequest],
+        write: async () => undefined,
+        update: async () => imRequest,
+        remove: async () => undefined,
+      },
     });
     await recovery.start();
     const handlers = createClientRuntimeHandlers(
@@ -1419,7 +1424,7 @@ describe("SessionMessageInbox", () => {
     );
     // The ready reconcile prepares the Session and resumes the Turn: the reconciler answers `running`.
     prepared = true;
-    expect(recovery.resume(sessionId, { deliveryId: imRequest.deliveryId, turnId: "turn-1" })).toBe(true);
+    expect(await recovery.resume(sessionId, { deliveryId: imRequest.deliveryId, turnId: "turn-1" })).toBe(true);
     await handlers.onReconciled({ desired: "ready", sessionId } as never, { status: "running" } as never);
     await vi.waitFor(() => expect(steer).toHaveBeenCalledOnce());
     expect(prompt).not.toHaveBeenCalled();

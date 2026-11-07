@@ -550,7 +550,7 @@ describe("SessionBindingStore", () => {
     const turn = { deliveryId: request.deliveryId, turnId: "turn-80" };
 
     // A restarted daemon: fresh in-memory reconciler, the same durable binding.
-    const resumer = { pending: vi.fn(() => true), resume: vi.fn(() => true), abandon: vi.fn() };
+    const resumer = { pending: vi.fn(() => true), resume: vi.fn(async () => true), abandon: vi.fn() };
     const restarted = new SessionReconciler({
       installationId: fixture.computerId,
       preparation: fixture.workspace,
@@ -584,7 +584,7 @@ describe("SessionBindingStore", () => {
     const turn = { deliveryId: request.deliveryId, turnId: "turn-81" };
 
     // The resumer refuses to start for now (for example admission is saturated): no abandon.
-    const busy = { pending: vi.fn(() => true), resume: vi.fn(() => false), abandon: vi.fn() };
+    const busy = { pending: vi.fn(() => true), resume: vi.fn(async () => false), abandon: vi.fn() };
     const first = new SessionReconciler({
       installationId: fixture.computerId,
       preparation: fixture.workspace,
@@ -606,7 +606,7 @@ describe("SessionBindingStore", () => {
     let abandoned = false;
     const fenced = {
       pending: vi.fn(() => !abandoned),
-      resume: vi.fn(() => true),
+      resume: vi.fn(async () => true),
       abandon: vi.fn(() => {
         abandoned = true;
       }),

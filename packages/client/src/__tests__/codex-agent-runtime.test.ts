@@ -164,6 +164,8 @@ describe("CodexAgentRuntime", () => {
     it.each([
       ["a failed compaction Turn", "failed" as const, "compaction broke"],
       ["a refused request", "refused" as const, "compaction refused"],
+      ["a request that rejects with a non-Error", "refused-raw" as const, "Codex compaction failed"],
+      ["an interrupted compaction Turn", "interrupted" as const, "Codex compaction ended as interrupted"],
     ])("warns and still runs after %s", async (_name, compaction, message) => {
       const client = new ScriptedCodexClient("complete");
       client.compaction = compaction;
@@ -185,6 +187,65 @@ describe("CodexAgentRuntime", () => {
       await runtime.abort({ expectedRunId: "run" });
       await expect(run).resolves.toMatchObject({ status: "aborted" });
       expect(client.interrupts).toEqual([{ threadId: "thread-1", turnId: "compact-turn" }]);
+      expect(client.call("turn/start")).toBeUndefined();
+      await runtime.close();
+    });
+
+    it("warns and fails the Run when the App Server stops during compaction", async () => {
+      const client = new ScriptedCodexClient("complete");
+      client.compaction = "process-error";
+      const { events, open } = compactedThread(client);
+      const runtime = await open;
+      await expect(runtime.prompt({ runId: "run", input: input("work"), compactContext: true })).resolves.toMatchObject(
+        { status: "failed" },
+      );
+      expect(events).toContainEqual(
+        expect.objectContaining({ code: "codex_compaction_failed", message: "Codex stopped during compaction" }),
+      );
+      await runtime.close();
+    });
+
+    it("aborts while the compaction request is unanswered, with no Turn to interrupt", async () => {
+      const client = new ScriptedCodexClient("complete");
+      client.compaction = "hold";
+      let answer = () => undefined as void;
+      client.compactAck = new Promise<void>((resolve) => {
+        answer = resolve;
+      });
+      const runtime = await compactedThread(client).open;
+      const run = runtime.prompt({ runId: "run", input: input("work"), compactContext: true });
+      await vi.waitFor(() => expect(client.call("thread/compact/start")).toBeDefined());
+      await runtime.abort({ expectedRunId: "run" });
+      client.finishCompaction();
+      answer();
+      await expect(run).resolves.toMatchObject({ status: "aborted" });
+      expect(client.interrupts).toEqual([]);
+      expect(client.call("turn/start")).toBeUndefined();
+      await runtime.close();
+    });
+
+    it("still aborts when the compaction Turn cannot be interrupted", async () => {
+      const client = new ScriptedCodexClient("complete");
+      client.compaction = "hold";
+      client.interruptError = new Error("interrupt failed");
+      const runtime = await compactedThread(client).open;
+      const run = runtime.prompt({ runId: "run", input: input("work"), compactContext: true });
+      await vi.waitFor(() => expect(client.call("thread/compact/start")).toBeDefined());
+      await runtime.abort({ expectedRunId: "run" });
+      await expect(run).resolves.toMatchObject({ status: "aborted" });
+      expect(client.call("turn/start")).toBeUndefined();
+      await runtime.close();
+    });
+
+    it("fails the Run when the Run deadline ends during compaction", async () => {
+      const client = new ScriptedCodexClient("complete");
+      client.compaction = "hold";
+      const runtime = await compactedThread(client).open;
+      const deadline = new AbortController();
+      const run = runtime.prompt({ runId: "run", input: input("work"), compactContext: true, signal: deadline.signal });
+      await vi.waitFor(() => expect(client.call("thread/compact/start")).toBeDefined());
+      deadline.abort("turn_timeout");
+      await expect(run).resolves.toMatchObject({ status: "aborted" });
       expect(client.call("turn/start")).toBeUndefined();
       await runtime.close();
     });
@@ -333,7 +394,9 @@ class ScriptedCodexClient implements InteractiveCodexAppServerClient {
   readonly #scenario: Scenario;
   readonly #resumeThreadId?: string;
   closed = false;
-  compaction?: "complete" | "failed" | "hold" | "refused";
+  compaction?: "complete" | "failed" | "hold" | "interrupted" | "process-error" | "refused" | "refused-raw";
+  interruptError?: Error;
+  compactAck?: Promise<void>;
 
   constructor(scenario: Scenario, options: { resumeThreadId?: string } = {}) {
     this.#scenario = scenario;
@@ -354,6 +417,11 @@ class ScriptedCodexClient implements InteractiveCodexAppServerClient {
     if (method === "turn/steer") return { turnId: "turn-1" };
     if (method === "thread/compact/start") {
       if (this.compaction === "refused") throw new Error("compaction refused");
+      if (this.compaction === "refused-raw") throw "refused";
+      if (this.compactAck) {
+        await this.compactAck;
+        return {};
+      }
       this.#emitCompaction();
       return {};
     }
@@ -416,6 +484,7 @@ class ScriptedCodexClient implements InteractiveCodexAppServerClient {
 
   async interrupt(threadId: string, turnId: string): Promise<void> {
     this.interrupts.push({ threadId, turnId });
+    if (this.interruptError) throw this.interruptError;
     if (turnId === "compact-turn") {
       this.#emit({
         method: "turn/completed",
@@ -479,6 +548,13 @@ class ScriptedCodexClient implements InteractiveCodexAppServerClient {
     this.complete();
   }
 
+  finishCompaction(): void {
+    this.#emit({
+      method: "turn/completed",
+      params: { threadId: "thread-1", turn: { id: "compact-turn", items: [], status: "interrupted" } },
+    });
+  }
+
   #emitCompaction(): void {
     const scope = { threadId: "thread-1", turnId: "compact-turn" };
     const turn = { id: "compact-turn", items: [] };
@@ -488,6 +564,10 @@ class ScriptedCodexClient implements InteractiveCodexAppServerClient {
     });
     this.#emit({ method: "item/started", params: { ...scope, item: { id: "c1", type: "contextCompaction" } } });
     if (this.compaction === "hold") return;
+    if (this.compaction === "process-error") {
+      this.#emit({ method: "opentag/processError", params: { error: new Error("process exited") } });
+      return;
+    }
     this.#emit({ method: "thread/tokenUsage/updated", params: { ...scope, tokenUsage: { last: { inputTokens: 9 } } } });
     this.#emit({ method: "item/completed", params: { ...scope, item: { id: "c1", type: "contextCompaction" } } });
     this.#emit({
@@ -497,7 +577,7 @@ class ScriptedCodexClient implements InteractiveCodexAppServerClient {
         turn:
           this.compaction === "failed"
             ? { ...turn, status: "failed", error: { message: "compaction broke" } }
-            : { ...turn, status: "completed" },
+            : { ...turn, status: this.compaction === "interrupted" ? "interrupted" : "completed" },
       },
     });
   }

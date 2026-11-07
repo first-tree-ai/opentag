@@ -284,12 +284,11 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     this.#preTurnAbort = preTurnAbort;
     try {
       try {
-        await this.#attachRunConfiguration(request, context, AbortSignal.any([context.signal, preTurnAbort.signal]));
+        const preTurnSignal = AbortSignal.any([context.signal, preTurnAbort.signal]);
+        await this.#attachRunConfiguration(request, context, preTurnSignal);
+        if (request.compactContext && this.#threadPersisted) await this.#compactContext(context, preTurnSignal);
       } catch (error) {
         if (!preTurnAbort.signal.aborted) throw error;
-      }
-      if (request.compactContext && this.#threadPersisted && !preTurnAbort.signal.aborted) {
-        await this.#compactContext(context, AbortSignal.any([context.signal, preTurnAbort.signal]));
       }
       // Checked after the attach settles: an abort that raced its completion must still win.
       if (preTurnAbort.signal.aborted) {
@@ -413,8 +412,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     } catch (error) {
       if (signal.aborted) {
         await this.#stopCompaction(compaction);
-        if (context.signal.aborted) throw error;
-        return;
+        throw error;
       }
       failure = error instanceof Error ? error.message : "Codex compaction failed";
     } finally {

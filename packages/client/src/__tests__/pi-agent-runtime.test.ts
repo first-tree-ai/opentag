@@ -519,6 +519,17 @@ describe("PiAgentRuntime", () => {
       await runtime.close();
     });
 
+    it("fails on an error that is not a Pi RPC error", async () => {
+      const { client, open } = compacting("complete");
+      client.compactError = new Error("unexpected");
+      const runtime = await open;
+      await expect(runtime.prompt({ runId: "run", input: input("work"), compactContext: true })).resolves.toMatchObject(
+        { status: "failed", error: { message: "unexpected" } },
+      );
+      expect(client.commands.some((command) => command.type === "prompt")).toBe(false);
+      await runtime.close();
+    });
+
     it("settles as aborted when an interrupt closes Pi during compaction", async () => {
       const { client, open } = compacting("complete");
       client.compactHold = true;

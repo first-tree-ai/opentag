@@ -183,7 +183,7 @@ Needs a real Claude Code: the Lab's scripted Claude does not start background ta
 ## Schedules on an internal Session
 
 1. Have an internal Session run `opentag agent self schedule create`. The result's `target` is that Session, with
-   `sessionKind: internal`. Web lists it as "Internal Session" with a short ID.
+   `internal: true`. Web lists it as "Internal Session" with a short ID.
 2. When it fires, the message runs in that Session and nothing is posted to IM.
 3. Make a scheduled Run fail. Its creator gets one Run outcome notice, and IM gets nothing.
 4. Run `opentag session stop` from its creator. The schedule is off, and nothing fires afterwards.

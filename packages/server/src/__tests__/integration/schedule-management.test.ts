@@ -10,8 +10,12 @@ import { randomUUID } from "node:crypto";
 import {
   AGENT_SCHEDULE_LIST_LIMIT_MAX,
   type AgentSchedule,
+  AgentScheduleListItemSchema,
+  AgentScheduleSchema,
+  AgentScheduleTargetSchema,
   agentSchedulePath,
   agentSchedulesPath,
+  parseResponseIgnoringUnknownKeys,
   RUNTIME_AGENT_SCHEDULE_PREVIEW_PATH,
   RUNTIME_AGENT_SCHEDULES_PATH,
   runtimeAgentSchedulePath,
@@ -21,6 +25,7 @@ import {
 } from "@opentag/shared";
 import { eq, sql as sqlTag } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import { createApp } from "../../app.js";
 import { createDatabaseClient } from "../../db/client.js";
 import { agentSchedules, sessions } from "../../db/schema/index.js";
@@ -211,16 +216,38 @@ describe("ScheduleService fixed-target resolution (P02)", () => {
     const seed = await seedConversation("a@example.com", "agent-a");
     registerProof("proof-internal-channel", seed, seed.internalChannelSessionId, "internal");
     registerProof("proof-internal-thread", seed, seed.internalThreadSessionId, "internal");
+    registerProof("proof-channel", seed, seed.channelSessionId, "channel");
     try {
       const channelScope = await service.createForAgent(await authenticate("proof-internal-channel"), CREATE_EVERY);
-      expect(channelScope.target).toMatchObject({ sessionId: seed.internalChannelSessionId, sessionKind: "internal" });
+      expect(channelScope.target).toMatchObject({
+        sessionId: seed.internalChannelSessionId,
+        sessionKind: "channel",
+        internal: true,
+      });
       const threadScope = await service.createForAgent(await authenticate("proof-internal-thread"), CREATE_EVERY);
-      expect(threadScope.target).toMatchObject({ sessionId: seed.internalThreadSessionId, sessionKind: "internal" });
+      expect(threadScope.target).toMatchObject({
+        sessionId: seed.internalThreadSessionId,
+        sessionKind: "thread",
+        internal: true,
+      });
+      // A client older than `internal` still reads the whole list, and a detail, with the schemas it shipped.
+      const released = AgentScheduleTargetSchema.omit({ internal: true });
+      const releasedDetail = AgentScheduleSchema.extend({ target: released });
+      const releasedList = z
+        .object({
+          items: z.array(AgentScheduleListItemSchema.extend({ target: released })),
+          nextCursor: z.string().nullable(),
+        })
+        .strict();
+      const visible = await service.createForAgent(await authenticate("proof-channel"), CREATE_EVERY);
+      expect(visible.target).not.toHaveProperty("internal");
+      expect(parseResponseIgnoringUnknownKeys(releasedDetail, channelScope).success).toBe(true);
       // Every read names the Session it belongs to.
       const listed = await service.listForAgent(await authenticate("proof-internal-channel"), { limit: 10 });
       expect(listed.items.map((item) => item.target.sessionId).sort()).toEqual(
-        [seed.internalChannelSessionId, seed.internalThreadSessionId].sort(),
+        [seed.channelSessionId, seed.internalChannelSessionId, seed.internalThreadSessionId].sort(),
       );
+      expect(parseResponseIgnoringUnknownKeys(releasedList, listed).success).toBe(true);
     } finally {
       await closeClient();
     }

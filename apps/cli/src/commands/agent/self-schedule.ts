@@ -41,7 +41,9 @@ function addPromptOptions(command: Command): Command {
 }
 
 export function registerAgentSelfScheduleCommands(self: Command): void {
-  const schedule = self.command("schedule").description("Manage this Agent's schedules for a fixed IM Chat or thread");
+  const schedule = self
+    .command("schedule")
+    .description("Manage this Agent's schedules, each fixed to the Session that created it");
 
   addRuleOptions(
     addPromptOptions(schedule.command("create").description("Create a schedule that fires back into this Session")),

@@ -214,7 +214,9 @@ export function formatAgentSchedule(schedule: AgentSchedule): string {
     `Name: ${schedule.name}`,
     `ID: ${schedule.id}`,
     `Target Session: ${schedule.target.sessionId}`,
-    `Target: ${schedule.target.provider} ${schedule.target.channelId}${schedule.target.threadKey ? ` / ${schedule.target.threadKey}` : ""}`,
+    schedule.target.internal
+      ? "Target: this internal Session (no IM outlet)"
+      : `Target: ${schedule.target.provider} ${schedule.target.channelId}${schedule.target.threadKey ? ` / ${schedule.target.threadKey}` : ""}`,
     `Rule: ${JSON.stringify(schedule.schedule)}`,
     `Timezone: ${schedule.timezone}`,
     `Enabled: ${schedule.enabled}`,

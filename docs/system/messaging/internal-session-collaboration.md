@@ -347,7 +347,10 @@ schedule created from an internal Session before this rule keeps its visible tar
   outcome notice to name, and a child offline overnight should not wake its creator.
 
 No schema change is involved: `agent_schedules.target_session_id` already references any Session. The API response adds
-`internal` to `target.sessionKind`.
+`target.internal: true` and keeps `target.sessionKind` as the Session's conversation scope, so released CLIs and open Web
+tabs drop the unknown key and still read the whole list, following
+[Response compatibility](../server-client-boundary.md#response-compatibility). Until they upgrade or reload, they show
+such a schedule as that channel or thread.
 
 ## Stopping a parent stops its children
 

@@ -734,11 +734,13 @@ function targetFactsColumns() {
 }
 
 function toScheduleTarget(row: TargetFactsRow): AgentScheduleTarget {
+  const internal = row.sessionKind === "internal";
   return {
     sessionId: row.sessionId,
     provider: row.provider,
-    sessionKind: row.sessionKind,
+    sessionKind: row.threadKey === null ? "channel" : "thread",
     channelId: row.channelId,
     threadKey: row.threadKey,
+    ...(internal ? { internal } : {}),
   };
 }

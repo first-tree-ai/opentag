@@ -169,11 +169,21 @@ Session, Agent, Computer, connection instance, or placement never authorize it.
 The controlled acceptance race is also covered by
 `runtime-credentials-db.test.ts` and `runtime-execution-authority.test.ts`.
 
-For self-configuration, finish any pre-save notice before saving. The old Turn's
-provider access must fail after its Agent revision changes. Send a new DM and
-verify that its fresh Turn can read the saved configuration and send one marked
-reply. Confirm delivery by provider receipt and message readback, without
-replaying the old Turn's uncertain send. Run this sequence separately for Slack
+For self-configuration, have the Turn save a harmless change and then send one
+marked reply from that same Turn. The reply must arrive, because a configuration
+save does not end a running Turn's provider access. Send a new DM and verify that
+its fresh Turn can read the saved configuration and send one marked reply. Confirm
+each delivery by provider receipt and message readback.
+
+Withdrawing access is a separate case, each with a Turn that is still running and
+sends one marked message after the change:
+
+- Rotate the binding's credential. The next send succeeds with the new credential.
+- Disable the binding. The next send is refused and no message arrives.
+- Suspend and reactivate the Agent. If the Turn survives the suspension, its next
+  send is refused and no message arrives. Only a new Turn can send.
+
+Don't replay a refused or uncertain send. Run these sequences separately for Slack
 and Feishu when both authorized test bindings are available.
 
 ## Cloud Agent `/slackauthticket` automatic setup

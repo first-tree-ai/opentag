@@ -53,6 +53,8 @@ describe("Runtime revision repair upgrade against PostgreSQL", () => {
     const { sql, database } = client;
     const account = await bootstrapInitialAdmin(database, { displayName: "Admin", email: "upgrade@example.invalid" });
     const service = new AgentService(database);
+    // AgentService writes today's columns; this column only arrives in a migration after the repair under test.
+    await sql`alter table agents add column access_generation integer not null default 1`;
     for (const name of ["enabled", "disabled", "unchanged"]) {
       const agent = await service.createForAccount(account.userId, {
         name,
@@ -63,6 +65,7 @@ describe("Runtime revision repair upgrade against PostgreSQL", () => {
         await sql`update agents set self_configuration_enabled = ${name === "enabled"}, revision = revision + 1 where id = ${agent.id}`;
       }
     }
+    await sql`alter table agents drop column access_generation`;
     const previousConfigs = await sql`select * from agent_runtime_configs order by agent_id`;
     const previousAgents = await sql`select * from agents order by id`;
     const migration = await readFile(join(migrationsFolder, `${migrationTag}.sql`), "utf8");

@@ -550,7 +550,9 @@ describe("Session write authority lock order", () => {
     const BOUND_MS = 15_000;
     async function scheduled(value: Awaited<ReturnType<typeof fixture>>) {
       const child = await value.create(value.root.session.id);
-      const [{ at }] = await value.sql<{ at: Date }[]>`select clock_timestamp() as at`;
+      const [clock] = await value.sql<{ at: Date }[]>`select clock_timestamp() as at`;
+      assert(clock);
+      const { at } = clock;
       const [schedule] = await value.database
         .insert(agentSchedules)
         .values({

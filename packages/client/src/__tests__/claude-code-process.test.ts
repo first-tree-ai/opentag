@@ -169,6 +169,50 @@ describe("ClaudeCodeProcess", () => {
     });
   });
 
+  it("keeps a completed Run completed when the turn after the background notice fails", async () => {
+    const child = fakeChild();
+    const writes: Record<string, never>[] = [];
+    child.stdin.on("data", (line) => writes.push(JSON.parse(line.toString())));
+    const process = fakeProcess(child);
+    const terminals: Record<string, unknown>[] = [];
+    const run = process.execute(
+      { type: "user", uuid: "prompt" },
+      (message, terminal) => {
+        if (terminal) terminals.push({ ...message });
+      },
+      new AbortController().signal,
+    );
+    child.stdout.write(`${JSON.stringify(backgroundTasks({ task_id: "a", description: "Run the suite" }))}\n`);
+    child.stdout.write('{"type":"result","subtype":"success","is_error":false,"result":"all done"}\n');
+    await vi.waitFor(() => expect(writes).toHaveLength(2));
+    child.stdout.write(
+      '{"type":"result","subtype":"error_during_execution","is_error":true,"api_error_status":429,"errors":["429"],"result":"429"}\n',
+    );
+    await vi.waitFor(() => expect(terminals).toHaveLength(1));
+    expect(terminals[0]).toMatchObject({ is_error: false, subtype: "success", result: "all done" });
+    child.emit("exit", 143, null);
+    await expect(run).resolves.toMatchObject({ abandonedBackgroundWork: ["Run the suite (local_bash)"] });
+  });
+
+  it("still fails a Run whose own turn failed, with or without background work", async () => {
+    const child = fakeChild();
+    const process = fakeProcess(child);
+    const terminals: Record<string, unknown>[] = [];
+    const run = process.execute(
+      { type: "user", uuid: "prompt" },
+      (message, terminal) => {
+        if (terminal) terminals.push({ ...message });
+      },
+      new AbortController().signal,
+    );
+    child.stdout.write(`${JSON.stringify(backgroundTasks({ task_id: "a" }))}\n`);
+    child.stdout.write('{"type":"result","subtype":"error_during_execution","is_error":true,"result":"429"}\n');
+    await vi.waitFor(() => expect(terminals).toHaveLength(1));
+    expect(terminals[0]).toMatchObject({ is_error: true });
+    child.emit("exit", 143, null);
+    await run;
+  });
+
   it("reports nothing when the Session finished its background work after the notice", async () => {
     const child = fakeChild();
     const writes: { uuid?: string }[] = [];

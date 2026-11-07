@@ -20,9 +20,11 @@ import {
   parseTurnRetryRecord,
   RATE_LIMIT_RETRY_DELAY_MS,
   RETRY_RESET_AFTER_MS,
+  RUN_TIME_RECORD_INTERVAL_MS,
   recoverableFailure,
   type TurnRetryRecord,
   TurnRetryStore,
+  trackRunTime,
   turnRetryRecord,
 } from "../runtime/interruption-retry.js";
 import type { RuntimeConnectionState } from "../runtime/runtime-connection.js";
@@ -95,6 +97,30 @@ describe("interruption classification and continuation", () => {
     expect(texts).toContain("hello");
     expect(texts.at(-2)).toContain("Messages that arrived during the interrupted turn");
     expect(texts.at(-1)).toContain("and also this");
+  });
+});
+
+describe("trackRunTime", () => {
+  it("records actual running time, and does not count the Computer sleeping", async () => {
+    vi.useFakeTimers();
+    let clock = 1_000_000;
+    const recorded: number[] = [];
+    const tracker = trackRunTime(
+      () => clock,
+      async (ranMs) => {
+        recorded.push(ranMs);
+      },
+    );
+    clock += RUN_TIME_RECORD_INTERVAL_MS;
+    await vi.advanceTimersByTimeAsync(RUN_TIME_RECORD_INTERVAL_MS);
+    expect(recorded).toEqual([RUN_TIME_RECORD_INTERVAL_MS]);
+    // Eight hours with the lid closed: the next tick arrives that late.
+    clock += 8 * 60 * 60_000;
+    await vi.advanceTimersByTimeAsync(RUN_TIME_RECORD_INTERVAL_MS);
+    expect(recorded[1]).toBeLessThanOrEqual(2 * RUN_TIME_RECORD_INTERVAL_MS);
+    // A clock moved backwards adds nothing.
+    clock -= 60 * 60_000;
+    expect(await tracker.finish()).toBe(0);
   });
 });
 

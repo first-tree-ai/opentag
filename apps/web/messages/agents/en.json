@@ -106,7 +106,7 @@
   "agents_schedules_reason_rejected": "the Agent didn't accept it",
   "agents_schedules_reason_skipped": "it was skipped",
   "agents_schedules_resume": "Resume",
-  "agents_schedules_run_failed_note": "This Run failed with code {code}.",
+  "agents_schedules_run_failed_note": "This Run failed with code {code}. {next}",
   "agents_schedules_target": "Posts to",
   "agents_schedules_target_channel": "{provider} · channel",
   "agents_schedules_target_internal": "Internal Session {sessionId}",

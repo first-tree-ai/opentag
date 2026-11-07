@@ -60,6 +60,7 @@ const SELF_INFLICTED_CODES: ReadonlySet<string> = new Set([
   "schedule_changed",
   "schedule_deleted",
   "schedule_disabled",
+  "target_stopped",
 ]);
 
 /** Server-held delivery (#1353) answers with this while it may still deliver the occurrence. */
@@ -69,7 +70,7 @@ const STILL_DELIVERING_CODE = "delivery_held";
 export function scheduledMissKind(input: {
   outcome: AgentScheduleLastDispatch["outcome"];
   code: string | null;
-  previous: AgentScheduleLastDispatch | null;
+  previous: Pick<AgentScheduleLastDispatch, "code" | "outcome"> | null;
   disabled?: boolean;
 }): ScheduledMissKind | undefined {
   // A null code on `unknown` is a duplicate dispatcher or a stop, neither of which is a failure.

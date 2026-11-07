@@ -394,6 +394,7 @@ describe("SessionCollaborationService", () => {
         alreadyStopped: false,
         descendantCount: 2,
         stoppedDescendantCount: 2,
+        heldNoticeComputerIds: [],
       });
       return childSessionId;
     }
@@ -870,6 +871,7 @@ function serviceFixture(
         placement: { sessionId: targetSessionId },
         message: { ...attempt.message, id: input.messageId, content: input.initialMessage },
       })),
+    hasOlderHeldMessage: vi.fn().mockResolvedValue(false),
     recentlyEndedInternalSessions: vi.fn().mockResolvedValue([]),
     recordMessageOutcome: vi.fn().mockResolvedValue(true),
     stopInternalSession: vi.fn(),
@@ -901,7 +903,9 @@ function serviceFixture(
   const registry = {
     capabilityVersion: vi.fn().mockReturnValue(2),
     currentInstanceId: vi.fn().mockReturnValue(instanceId),
-    supportsCapability: vi.fn().mockReturnValue(true),
+    supportsCapability: vi.fn(
+      (_computerId: string, _instanceId: string, capability: string) => capability !== "runtime.sessionRecovery",
+    ),
   };
   const assembler = { assembleForSession: vi.fn().mockResolvedValue(snapshot(agentId)) };
   const stopEnded = vi.fn(

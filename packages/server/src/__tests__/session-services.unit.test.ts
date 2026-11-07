@@ -2119,6 +2119,7 @@ describe("SessionCollaborationService response mapping", () => {
     const sessions = {
       createInternalSessionWithMessage: vi.fn().mockResolvedValue({ ...attempt, session: { id: "target" } }),
       authorizeAndRecordMessage: vi.fn().mockResolvedValue(attempt),
+      hasOlderHeldMessage: vi.fn().mockResolvedValue(false),
       recordMessageOutcome: vi.fn().mockResolvedValue(true),
       withCollaborationDispatchAdmission: vi.fn(),
     };
@@ -2141,7 +2142,9 @@ describe("SessionCollaborationService response mapping", () => {
     };
     const registry = {
       currentInstanceId: vi.fn().mockReturnValue("instance"),
-      supportsCapability: vi.fn().mockReturnValue(true),
+      supportsCapability: vi.fn(
+        (_computerId: string, _instanceId: string, capability: string) => capability !== "runtime.sessionRecovery",
+      ),
       capabilityVersion: vi.fn().mockReturnValue(2),
     };
     const assembler = { assembleForSession: vi.fn().mockResolvedValue({}) };
@@ -2162,16 +2165,21 @@ describe("SessionCollaborationService response mapping", () => {
       value.service.send({ messageId: "message-0", targetSessionId: "target", message: "hello" }, source),
     ).resolves.toMatchObject({ code: "runtime_not_ready" });
     value.assembler.assembleForSession.mockResolvedValue({});
-    value.registry.currentInstanceId.mockReturnValueOnce(null);
+    value.registry.currentInstanceId.mockReturnValue(null);
     await expect(
       value.service.send({ messageId: "message", targetSessionId: "target", message: "hello" }, source),
-    ).resolves.toMatchObject({ code: "runtime_unavailable" });
+    ).resolves.toMatchObject({ status: "accepted" });
+    expect(value.sessions.recordMessageOutcome).toHaveBeenLastCalledWith(
+      expect.objectContaining({ outcome: "unknown", errorCode: "delivery_held" }),
+    );
     value.registry.currentInstanceId.mockReturnValue("instance");
     value.registry.supportsCapability.mockReturnValue(false);
     await expect(
       value.service.send({ messageId: "message-2", targetSessionId: "target", message: "hello" }, source),
     ).resolves.toMatchObject({ code: "runtime_unavailable" });
-    value.registry.supportsCapability.mockReturnValue(true);
+    value.registry.supportsCapability.mockImplementation(
+      (_computerId: string, _instanceId: string, capability: string) => capability !== "runtime.sessionRecovery",
+    );
     value.attempt.route.targetSessionKind = "channel";
     await expect(
       value.service.send({ messageId: "message-channel", targetSessionId: "target", message: "hello" }, source),

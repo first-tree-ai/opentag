@@ -259,3 +259,10 @@ Use a steer-capable Provider (Claude Code on a current version). A child's long 
 - A Computer connected to an older Server that does not negotiate `runtime.sessionRecovery` keeps the previous
   behaviour after a restart: the interrupted Turn reports `turn_state_unknown`, and waiting internal Session messages
   fail with a notice to their sender instead of waiting indefinitely.
+
+## Held Session message delivery
+
+1. Stop the daemon of a Computer that has an idle internal Session, and from a Session on another Computer run `opentag session send <target> --message "first"`, then the same with "second". If the Agent has only one Computer, use a schedule that targets a Session on the stopped Computer.
+2. Expected: each send returns `accepted`, or the schedule shows its latest run as unconfirmed, and neither reports an error.
+3. Start the daemon again.
+4. Expected: within about a minute the target runs "first" and then "second", once each, or the scheduled message runs once. The sender receives no notice.

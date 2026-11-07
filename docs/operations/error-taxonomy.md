@@ -12,7 +12,7 @@ existing `ErrorEnvelope` for client-facing HTTP responses.
 
 ## Shape
 
-`StructuredErrorSchema` requires these fields:
+`StructuredErrorSchema` defines the following fields; `requestId` and `cause` are optional:
 
 | Field | Meaning |
 | --- | --- |
@@ -73,7 +73,8 @@ only the derived structured error is observable.
 
 Operational logs use one fixed Pino key per concept. Use `module`, `operation`, `requestId`, `accountId`, `agentId`,
 `computerId`, `sessionId`, `deliveryId`, `provider`, `outcome`, `errorCode`, `attempt`, `durationMs`, and `status` for
-their corresponding values. In particular, `errorCode` is the only field for a structured failure identity; do not use
+their corresponding values. Use `errorCode` for a structured failure identity; Server diagnostics also dual-write
+`code` for compatibility, as defined in the [logging contract](observability.md#logging-contract). Do not use
 `reason`, `errorReason`, `failureReason`, `dropReason`, or `detail` as synonyms. `error` means terminal or unrecoverable,
 `warn` means handled or degraded, `info` means a state transition, and `debug` means per-request detail.
 
@@ -109,20 +110,7 @@ redacted message to the user and a request or operation ID for support. Do not p
 event as an unbounded stack trace. A non-zero exit status is a presentation decision and does not
 change the event's retryability.
 
-## Current integration points
-
-The initial survey found several places that need call-site adoption in a later integration pass:
-
-- `ImDeliveryWorker.#schedule()` currently converts a rejected detached run into a diagnostic code;
-  it should call `track` with `phase: "worker"` and the delivery code.
-- `KeyedTaskScheduler` currently consumes task rejections in its pump; it should report the task
-  key and scheduler phase without exposing task input.
-- Runtime socket business frames catch failures and return a protocol failure frame. The frame
-  boundary should also use `supervise` or `track` so the cause and request ID reach diagnostics.
-- Feishu connection/setup timers and lifecycle callbacks classify failures locally. They should
-  emit the shared event while preserving their existing persisted diagnostic code contracts.
-- Process-signal cleanup in `packages/server/src/index.ts` starts an unawaited `app.close()`; it
-  should be tracked with `phase: "shutdown"`.
-
-These are adoption notes only. This definition lane does not change runtime, service, API, client,
-or application call sites.
+Successful command results pass through the same redaction before they are printed. A command whose
+answer is itself a redacted field name restores that one field explicitly: the `self schedule`
+commands that return a full Schedule print `prompt` exactly as stored, because a caller reads it and
+writes it back, and a redacted copy would overwrite the original.

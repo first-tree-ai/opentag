@@ -7,6 +7,11 @@ import type { McpServerService } from "./mcp-server-service.js";
 
 export const MCP_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 export const MCP_REFRESH_BATCH_SIZE = 100;
+/**
+ * Stays one slot below `MCP_DEFAULT_MAX_CONCURRENT_PER_ACCOUNT` (4) so interactive OAuth flows and
+ * manual probes still have a free per-Account outbound slot while a refresh pass is running.
+ */
+export const MCP_REFRESH_CONCURRENCY = 3;
 /** Missing `expires_in` is treated as this lifetime, matching the general default. */
 const DEFAULT_EXPIRES_IN_SECONDS = 300;
 const MAX_LEAD_MS = 5 * 60 * 1000;
@@ -31,12 +36,15 @@ export interface McpRefreshWorkerOptions {
   onError?: (error: unknown) => void;
   intervalMs?: number;
   batchSize?: number;
+  /** Maximum number of probes or token refreshes to run concurrently within one pass. */
+  concurrency?: number;
   servers: McpServerService;
 }
 
 export class McpRefreshWorker {
   readonly #authorization: McpAuthorizationService;
   readonly #batchSize: number;
+  readonly #concurrency: number;
   readonly #database: DatabaseClient;
   readonly #flows: McpOAuthFlowService;
   readonly #intervalMs: number;
@@ -49,6 +57,7 @@ export class McpRefreshWorker {
   constructor(options: McpRefreshWorkerOptions) {
     this.#authorization = options.authorization;
     this.#batchSize = options.batchSize ?? MCP_REFRESH_BATCH_SIZE;
+    this.#concurrency = Math.max(1, Math.trunc(options.concurrency ?? MCP_REFRESH_CONCURRENCY));
     this.#database = options.database;
     this.#flows = options.flows;
     this.#intervalMs = options.intervalMs ?? MCP_REFRESH_INTERVAL_MS;
@@ -107,15 +116,14 @@ export class McpRefreshWorker {
       .orderBy(asc(mcpServerAuthorizations.accessTokenExpiresAt))
       .limit(this.#batchSize);
     let refreshed = 0;
-    for (const row of due) {
-      if (this.#stopped) break;
+    await this.#runWithConcurrency(due, async (row) => {
       refreshed += 1;
       try {
         await this.#flows.refreshAuthorization(row.id);
       } catch (error) {
         this.#onError(error);
       }
-    }
+    });
     return refreshed;
   }
 
@@ -152,19 +160,45 @@ export class McpRefreshWorker {
       )
       .orderBy(asc(mcpServerAuthorizations.updatedAt))
       .limit(this.#batchSize);
-    for (const row of pending) {
-      if (this.#stopped) break;
+    await this.#runWithConcurrency(pending, async (row) => {
       try {
-        await this.#authorization.probe(row.accountId, row.agentId, row.mcpServerId);
+        await this.#authorization.probe(row.accountId, row.agentId, row.mcpServerId, {
+          rethrowConcurrencyLimit: true,
+        });
       } catch (error) {
         // Rotate only failures whose probe did not persist its own outcome.
         this.#onError(error);
-        if (this.#stopped) break;
+        if (this.#stopped) return;
         await this.#database
           .update(mcpServerAuthorizations)
           .set({ updatedAt: this.#now() })
           .where(eq(mcpServerAuthorizations.id, row.id));
       }
-    }
+    });
+  }
+
+  async #runWithConcurrency<T>(items: readonly T[], worker: (item: T) => Promise<void>): Promise<void> {
+    if (items.length === 0 || this.#stopped) return;
+    let nextIndex = 0;
+    let aborted = false;
+    const workerCount = Math.min(this.#concurrency, items.length);
+    const outcomes = await Promise.allSettled(
+      Array.from({ length: workerCount }, async () => {
+        while (!this.#stopped && !aborted) {
+          const index = nextIndex;
+          nextIndex += 1;
+          const item = items[index];
+          if (item === undefined) return;
+          try {
+            await worker(item);
+          } catch (error) {
+            aborted = true;
+            throw error;
+          }
+        }
+      }),
+    );
+    const rejected = outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
+    if (rejected) throw rejected.reason;
   }
 }

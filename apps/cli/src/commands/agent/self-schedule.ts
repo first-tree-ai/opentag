@@ -1,6 +1,6 @@
 import { type Command, Option } from "commander";
 import {
-  formatAgentSchedule,
+  FULL_SCHEDULE_PRESENTATION,
   formatAgentScheduleList,
   formatAgentSchedulePreview,
   runAgentSelfScheduleCreate,
@@ -57,7 +57,7 @@ export function registerAgentSelfScheduleCommands(self: Command): void {
           }
           return runAgentSelfScheduleCreate({ ...options, name: options.name, timezone: options.timezone });
         },
-        { json: options.json === true, formatValue: formatAgentSchedule, phase: "request" },
+        { json: options.json === true, ...FULL_SCHEDULE_PRESENTATION },
       );
     });
 
@@ -82,8 +82,7 @@ export function registerAgentSelfScheduleCommands(self: Command): void {
     .action(async (id: string, options: ScheduleOptions) => {
       process.exitCode = await executeCommand(() => runAgentSelfScheduleShow(id), {
         json: options.json === true,
-        formatValue: formatAgentSchedule,
-        phase: "request",
+        ...FULL_SCHEDULE_PRESENTATION,
       });
     });
 
@@ -96,8 +95,7 @@ export function registerAgentSelfScheduleCommands(self: Command): void {
     .action(async (id: string, options: ScheduleOptions) => {
       process.exitCode = await executeCommand(() => runAgentSelfScheduleUpdate(id, options), {
         json: options.json === true,
-        formatValue: formatAgentSchedule,
-        phase: "request",
+        ...FULL_SCHEDULE_PRESENTATION,
       });
     });
 
@@ -112,8 +110,7 @@ export function registerAgentSelfScheduleCommands(self: Command): void {
       .action(async (id: string, options: ScheduleOptions) => {
         process.exitCode = await executeCommand(() => action(id), {
           json: options.json === true,
-          formatValue: formatAgentSchedule,
-          phase: "request",
+          ...FULL_SCHEDULE_PRESENTATION,
         });
       });
   }

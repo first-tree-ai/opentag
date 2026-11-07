@@ -488,10 +488,15 @@ export class McpAuthorizationService {
   }
 
   /** Probe this Agent's credential and write the snapshot onto its own authorization row. */
-  probe(accountId: string, agentId: string, mcpServerId: string): Promise<McpProbeOutcome> {
+  probe(
+    accountId: string,
+    agentId: string,
+    mcpServerId: string,
+    options?: { rethrowConcurrencyLimit?: boolean },
+  ): Promise<McpProbeOutcome> {
     if (this.#probingClosed)
       return Promise.reject(new McpServiceError(MCP_ERROR_CODES.PROBE_FAILED, "MCP probing stopped"));
-    const operation = this.#runProbe(accountId, agentId, mcpServerId);
+    const operation = this.#runProbe(accountId, agentId, mcpServerId, options);
     this.#probeTasks.add(operation);
     void operation.then(
       () => this.#probeTasks.delete(operation),
@@ -500,7 +505,12 @@ export class McpAuthorizationService {
     return operation;
   }
 
-  async #runProbe(accountId: string, agentId: string, mcpServerId: string): Promise<McpProbeOutcome> {
+  async #runProbe(
+    accountId: string,
+    agentId: string,
+    mcpServerId: string,
+    options?: { rethrowConcurrencyLimit?: boolean },
+  ): Promise<McpProbeOutcome> {
     const context = await this.#servers.readProbeContext(accountId, agentId, mcpServerId);
     const authorization = context.authorization;
     if (authorization?.status !== "active") {
@@ -535,6 +545,17 @@ export class McpAuthorizationService {
         cachedVersion: authorization.protocolVersion,
       });
     } catch (error) {
+      if (error instanceof McpServiceError && error.detail?.cause === "concurrency_limit") {
+        if (options?.rethrowConcurrencyLimit) throw error;
+        return {
+          probeState: authorization.probeState,
+          probeError: authorization.probeError,
+          toolsCount: authorization.toolsCount,
+          toolsTruncated: authorization.toolsTruncated,
+          protocolEra: authorization.protocolEra,
+          protocolVersion: authorization.protocolVersion,
+        };
+      }
       return await this.#persistProbeFailure(mcpServerId, agentId, error, false, expected);
     }
     if (result.probeState === "failed") {

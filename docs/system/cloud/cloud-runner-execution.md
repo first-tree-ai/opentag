@@ -26,11 +26,31 @@ CLI release version. E3 adds no database migration or table.
 
 ## Lifecycle and control
 
+`SandboxRunnerService` remains the allocation and Account-operation facade. Its token authority
+validates and renews Runner scopes; the workspace sealer proves the exact saved archive before
+release; the idle-reclaim collaborator owns automatic claims and same-account reuse. Allocation
+operations retain their original transaction boundaries and provider calls remain outside transactions.
+The Cloud delivery and Session collaboration owners share exact-connection helpers while retaining
+their own custody and terminal protocols.
+
+The Runner uses one work-kind descriptor for delivery and Session-message FIFO admission,
+synchronous active-slot reservation, execution and interrupted-namespace cleanup. Delivery reports
+and Session settlements retain their separate durable formats. Deadline construction, steering and
+activity reporting remain specific to each kind of work.
+
 The existing lifecycle is `unallocated → preparing → ready → releasing → unallocated`.
 The Server reserves the allocation name before cloud I/O. Competing callers reconcile the same
 allocation. An uncertain create or delete retains the row's resource reference and an actionable
 error code; a 404 while a create may still arrive is not proof of cleanup. The provider UID and
 etag protect deletion against name reuse.
+
+Cloud Admin Instance and operation GETs make at most three attempts for HTTP 502/503/504
+or transport failures, with 150 ms then 300 ms backoff. Credential acquisition, requests,
+response reads and backoff share one deadline, capped by the caller's read budget and the
+configured API timeout; cancellation stops the read without another attempt. A missing
+Instance still returns absence immediately; other HTTP errors, invalid responses and ownership
+failures are not retried. This read policy does not retry create or delete requests. Image
+prewarming uses its own separate deadline-bound read loop.
 
 The Instance runs `opentag-runner serve`. It declares the single container port `8080`, and after
 native readiness is verified the Runner listens on that **declared port by default** (an injected
@@ -382,9 +402,9 @@ heartbeat cannot precede the authentication result.
 
 Boundary: E3 remains the native-execution acceptance path. The E4 acceptance path does not cover
 GCS workspace restore (E5), concurrent multi-Turn placement (E6), idle reuse/recycling (E7), or
-Context Tree synchronization (E8). Real native Cloud Run execution, real GCP acceptance, and real IM
-provider ingress/reply acceptance remain pending; current evidence is local composition and
-external local probes only. Do not claim E4 accepted from local results.
+Context Tree synchronization (E8). Local composition and external local probes do not establish
+native Cloud Run execution, GCP acceptance, or real IM ingress and reply delivery; verify those
+boundaries separately before claiming Cloud delivery acceptance.
 
 ## Required configuration
 

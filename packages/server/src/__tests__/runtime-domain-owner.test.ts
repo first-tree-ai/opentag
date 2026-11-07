@@ -18,6 +18,7 @@ import {
 } from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
+import { createApp } from "../app.js";
 import { ConnectionRegistry } from "../runtime/connection-registry.js";
 import type {
   AcceptedDeliveryRecord,
@@ -32,9 +33,108 @@ import {
   type RuntimeDomainOwnerOptions,
 } from "../runtime/runtime-domain-owner.js";
 import type { RuntimeBusinessContext } from "../runtime/runtime-session.js";
+import { SessionCollaborationService } from "../services/sessions/session-collaboration-service.js";
 import { deferred } from "./support/deferred.js";
 
 describe("RuntimeDomainOwner", () => {
+  it("records an unconfirmed outcome notice before real application shutdown releases shared resources", async () => {
+    const h = await ownerFixture(30_000);
+    const write = deferred();
+    const childSessionId = randomUUID();
+    const targetSessionId = randomUUID();
+    const messageId = randomUUID();
+    const recordMessageOutcome = vi.fn(async () => {
+      await write.promise;
+      return true;
+    });
+    const sessions = {
+      resolveRunOutcomeNotice: vi.fn(async () => ({ creatorSessionId: targetSessionId, installationId: h.computerId })),
+      authorizeAndRecordMessage: vi.fn(async (input: { messageId: string; content: string }) => ({
+        attemptCount: 1,
+        message: { id: input.messageId, content: input.content },
+        route: {
+          sourceSessionId: childSessionId,
+          targetSessionId,
+          targetComputerId: h.computerId,
+          targetInstallationId: h.computerId,
+          targetPlacementGeneration: 1,
+          targetSessionKind: "internal",
+          targetComputerKind: "local",
+          agentId: "agent-1",
+        },
+      })),
+      recordMessageOutcome,
+      withCollaborationDispatchAdmission: async (
+        _route: unknown,
+        operation: (mark: () => void) => Promise<unknown>,
+      ) => ({ admitted: true, result: operation(() => undefined) }),
+    };
+    const collaboration = new SessionCollaborationService({
+      assembler: { assembleForSession: async () => snapshot() },
+      domain: h.owner,
+      registry: h.registry,
+      sessions: sessions as never,
+    });
+    let resourcesClosed = false;
+    const app = createApp({
+      authService: {} as never,
+      machineAuthService: {} as never,
+      computerService: {} as never,
+      runtime: { domainOwner: h.owner, registry: h.registry },
+      beginShutdown: () => collaboration.close(),
+      closeResources: () => {
+        resourcesClosed = true;
+      },
+    });
+    let closing: Promise<void> | undefined;
+    try {
+      await app.ready();
+      await expect(
+        collaboration.notifyRunOutcomeInBackground({
+          childSessionId,
+          messageId,
+          outcome: "timed_out",
+          reason: "turn_timeout",
+          source: { computerId: h.computerId, connectionInstanceId: h.instanceId, placementGeneration: 1 },
+        }),
+      ).resolves.toBe("retry");
+      await expect.poll(() => h.frames.length).toBe(1);
+      const reconcile = h.frames[0] as SessionReconcileRequest;
+      await h.owner.handle(
+        {
+          type: "session:reconcile:result",
+          requestId: reconcile.requestId,
+          sessionId: targetSessionId,
+          placementGeneration: 1,
+          status: "ready",
+        },
+        h.context,
+      );
+      await expect.poll(() => h.frames.length).toBe(2);
+      expect(h.frames[1]).toMatchObject({ type: "session:message:deliver" });
+      closing = app.close();
+      await expect.poll(() => recordMessageOutcome.mock.calls.length).toBe(1);
+      expect(recordMessageOutcome).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: "unknown", errorCode: "delivery_timeout" }),
+      );
+      expect(resourcesClosed).toBe(false);
+      write.resolve();
+      await closing;
+      expect(resourcesClosed).toBe(true);
+      expect(h.frames).toHaveLength(2);
+      await expect(h.owner.requestReconcile(h.computerId, h.instanceId, reconcile)).rejects.toMatchObject({
+        code: "stopped",
+      });
+    } finally {
+      write.resolve();
+      await h.owner.close();
+      await app.close();
+      await closing;
+      await collaboration.close();
+      await h.owner.close();
+    }
+  });
+
   it.each(["0.1.0", "0.1.1-staging.43.1"])(
     "rejects new snapshots before preparation or custody on %s",
     async (version) => {

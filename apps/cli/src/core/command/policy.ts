@@ -67,7 +67,17 @@ export type CommandResult<T> = SuccessCommandResult<T> | FailureCommandResult<T>
 type CommandFormatValueOptions<T> = { formatValue?: (value: T) => string };
 type CommandFormatWriterOptions = { stdout?: (chunk: string) => void; stderr?: (chunk: string) => void };
 type CommandFormatOptions<T> = CommandFormatValueOptions<T> & CommandFormatWriterOptions;
-export type CommandPresentationOptions<T> = { json?: boolean } & CommandFormatOptions<T>;
+type CommandRedactionOptions<T> = {
+  /**
+   * Put back fields of a successful result that must reach the caller exactly as stored.
+   *
+   * The shared redactor exists for logs and diagnostics, so it blanks fields by name. A few fields
+   * are the command's actual answer, and a caller may write them back: restore those here, by name,
+   * from the raw value. Everything else in the result stays redacted.
+   */
+  restoreAfterRedaction?: (redacted: T, raw: T) => T;
+};
+export type CommandPresentationOptions<T> = { json?: boolean } & CommandFormatOptions<T> & CommandRedactionOptions<T>;
 export type CommandExecutionOptions<T> = CommandPresentationOptions<T> & {
   logger?: ClientLogger;
   phase?: CommandPhase;
@@ -255,7 +265,8 @@ export function presentCommand<T>(
   const stdout = options.stdout ?? ((chunk: string) => process.stdout.write(chunk));
   const stderr = options.stderr ?? ((chunk: string) => process.stderr.write(chunk));
   if (result.ok) {
-    const value = redactValue(result.value);
+    const redacted = redactValue(result.value);
+    const value = options.restoreAfterRedaction?.(redacted, result.value) ?? redacted;
     const output = options.json
       ? JSON.stringify({ ok: true, result: value })
       : (options.formatValue ?? ((item) => formatHumanValue(item)))(value);

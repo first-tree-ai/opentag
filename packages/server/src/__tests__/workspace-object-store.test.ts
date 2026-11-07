@@ -90,6 +90,7 @@ interface StoredFakeObject {
   generation: string;
   metageneration: string;
   metadata: Record<string, string>;
+  contentDisposition?: string;
 }
 
 interface RecordedCall {
@@ -166,6 +167,7 @@ function createFakeGcs() {
       contentType: "application/octet-stream",
       updated: "2026-09-18T00:00:00.000Z",
       metadata: { ...current.metadata },
+      ...(current.contentDisposition ? { contentDisposition: current.contentDisposition } : {}),
     };
   }
 
@@ -189,6 +191,9 @@ function createFakeGcs() {
       generation: String(generationCounter),
       metageneration: "1",
       metadata: { ...(metadata as Record<string, string>) },
+      ...(typeof metadataJson.contentDisposition === "string"
+        ? { contentDisposition: metadataJson.contentDisposition }
+        : {}),
     };
     return jsonResponse(200, resourceJson());
   }
@@ -310,7 +315,75 @@ function createFakeGcs() {
 type FakeGcs = ReturnType<typeof createFakeGcs>;
 
 describe("workspace metadata fencing and sealing", () => {
-  it("rejects malformed, missing, foreign and corrupt upload inspections", async () => {
+  it.each(["claim", "upload"])(
+    "never rebases an uncertain old fencing claim over a successor %s",
+    async (successor) => {
+      const fake = createFakeGcs();
+      fake.plant(Buffer.from("baseline"), { owner: 1, saved: true, sealed: false });
+      const store = createStore(fake);
+      let raced = false;
+      let successorObject: WorkspaceObject | undefined;
+      fake.setInterceptor(async ({ call, proceed }) => {
+        if (raced || call.method !== "PATCH") return undefined;
+        raced = true;
+        await proceed();
+        successorObject = await store.claim(SCOPE, { fence: true });
+        if (successor === "upload")
+          successorObject = await store.write(SCOPE, successorObject, archiveInput(Buffer.from("successor work")));
+        throw new TypeError("old fencing response lost");
+      });
+      await expect(store.claim(SCOPE, { fence: true })).rejects.toMatchObject({ code: "conflict" });
+      expect(await store.head(SCOPE)).toEqual(successorObject);
+      expect(fake.callsNamed("PATCH")).toHaveLength(2);
+      expect(Buffer.from(await streamToBytes(await store.read(SCOPE, must(successorObject)))).toString()).toBe(
+        successor === "upload" ? "successor work" : "baseline",
+      );
+    },
+  );
+
+  it("reconciles an exact lost fence response and retries only an unchanged original snapshot", async () => {
+    const fake = createFakeGcs();
+    fake.plant(Buffer.from("baseline"), { owner: 1, saved: true, sealed: false });
+    const store = createStore(fake);
+    const previous = must(await store.head(SCOPE));
+    let first = true;
+    fake.setInterceptor(async ({ call, proceed }) => {
+      if (call.method !== "PATCH") return undefined;
+      if (first) {
+        first = false;
+        throw new TypeError("not committed");
+      }
+      await proceed();
+      throw new TypeError("committed response lost");
+    });
+    expect(await store.claim(SCOPE, { fence: true })).toEqual({ ...previous, metageneration: "2" });
+    expect(fake.callsNamed("PATCH")).toHaveLength(2);
+    for (const call of fake.callsNamed("PATCH"))
+      expect(call.url).toBe(
+        `${META_URL}?ifGenerationMatch=${previous.generation}&ifMetagenerationMatch=${previous.metageneration}`,
+      );
+  });
+
+  it("never initializes or takes ownership for a same-owner-only releasing fence", async () => {
+    const fake = createFakeGcs();
+    const store = createStore(fake);
+    await expect(store.claim(SCOPE, { fence: true, sameOwnerOnly: true, initialize: true })).rejects.toMatchObject({
+      code: "missing",
+    });
+    fake.plant(Buffer.from("baseline"), { owner: 1, saved: true, sealed: false });
+    const previous = must(await store.head(SCOPE));
+    await expect(
+      store.claim({ ...SCOPE, environmentGeneration: 2 }, { fence: true, sameOwnerOnly: true }),
+    ).rejects.toMatchObject({ code: "stale" });
+    expect(await store.head(SCOPE)).toEqual(previous);
+    expect(await store.claim(SCOPE, { fence: true, sameOwnerOnly: true })).toEqual({
+      ...previous,
+      metageneration: "2",
+    });
+    expect(fake.callsNamed("POST")).toHaveLength(0);
+  });
+
+  it("rejects malformed, missing and foreign inspections while tolerating legacy dispositions", async () => {
     const fake = createFakeGcs();
     const store = createStore(fake);
     const input = { id: "d45b0afb-a231-4ffa-b562-72acd250613a", generation: "1", metageneration: "1" };
@@ -320,8 +393,8 @@ describe("workspace metadata fencing and sealing", () => {
     await expect(store.inspectWrite(SCOPE, input)).rejects.toMatchObject({ code: "missing" });
     fake.plant(Buffer.from("archive"), { owner: 2, saved: true, sealed: false });
     await expect(store.inspectWrite(SCOPE, input)).rejects.toMatchObject({ code: "stale" });
-    must(fake.stored()).metadata.write = "invalid";
-    await expect(store.head(SCOPE)).rejects.toMatchObject({ code: "corrupt" });
+    must(fake.stored()).contentDisposition = "attachment; filename=legacy.tar.gz";
+    expect(await store.head(SCOPE)).toBeDefined();
   });
 
   it("uses upload identity to distinguish a competing byte-identical write after a fence", async () => {
@@ -352,7 +425,10 @@ describe("workspace metadata fencing and sealing", () => {
     expect(await store.inspectWrite(SCOPE, { ...previous, id: newId })).toEqual(current);
     const sealed = await store.seal(SCOPE, current);
     expect(sealed.sealed).toBe(true);
-    expect(must(fake.stored()).metadata.write).toBe(newId);
+    expect(must(fake.stored()).contentDisposition).toBe(`attachment; filename="state-${newId}.tar.gz"`);
+    expect(Object.keys(must(fake.stored()).metadata).sort()).toEqual(
+      Object.keys(metadataMap({ owner: 1, saved: true, sealed: true, sha256: sha256hex(content) })).sort(),
+    );
     await expect(store.inspectWrite(SCOPE, { ...previous, id: newId })).rejects.toMatchObject({ code: "conflict" });
   });
 
@@ -475,7 +551,8 @@ describe("workspace metadata fencing and sealing", () => {
       await store.seal(SCOPE, previous);
       return proceed();
     });
-    expect(await store.claim(SCOPE, { fence: true })).toEqual({ ...previous, metageneration: "2", sealed: true });
+    await expect(store.claim(SCOPE, { fence: true })).rejects.toMatchObject({ code: "conflict" });
+    expect(await store.head(SCOPE)).toEqual({ ...previous, metageneration: "2", sealed: true });
     expect(Buffer.from(must(fake.stored()).content).toString()).toBe("complete archive");
   });
 
@@ -961,10 +1038,8 @@ describe("workspace object store write", () => {
       name: OBJECT,
       contentType: "application/octet-stream",
       md5Hash: md5b64(content),
-      metadata: {
-        ...metadataMap({ owner: 1, saved: true, sealed: false, sha256: sha256hex(content) }),
-        write: expect.any(String),
-      },
+      metadata: metadataMap({ owner: 1, saved: true, sealed: false, sha256: sha256hex(content) }),
+      contentDisposition: expect.stringMatching(/^attachment; filename="state-[a-f0-9-]{36}\.tar\.gz"$/),
     });
     expect(Buffer.from(streamed).equals(content)).toBe(true);
     // Atomic overwrite: the old generation is gone from the fake's single latest slot.

@@ -100,7 +100,7 @@ export class FakeWorkspaceObjectStore implements WorkspaceObjectStore {
 
   async claim(
     scope: WorkspaceObjectScope,
-    options: { initialize?: boolean; fence?: boolean } = {},
+    options: { initialize?: boolean; fence?: boolean; sameOwnerOnly?: boolean } = {},
   ): Promise<WorkspaceObject> {
     this.claims += 1;
     if (this.failNextClaimWith) {
@@ -131,6 +131,9 @@ export class FakeWorkspaceObjectStore implements WorkspaceObjectStore {
     }
     if (current.ownerGeneration > scope.environmentGeneration) {
       throw new WorkspaceObjectStoreError("stale", "Workspace is owned by a newer environment generation");
+    }
+    if (options.sameOwnerOnly && current.ownerGeneration !== scope.environmentGeneration) {
+      throw new WorkspaceObjectStoreError("stale", "Workspace owner does not match the releasing allocation");
     }
     if (current.ownerGeneration === scope.environmentGeneration && (!options.fence || current.sealed)) {
       return snapshotOf(current);

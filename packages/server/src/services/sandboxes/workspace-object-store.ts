@@ -45,7 +45,10 @@ export interface WorkspaceWriteInspection {
 
 export interface WorkspaceObjectStore {
   /** Initialization is reserved for the Server before its first allocation; Runner claims never seed. */
-  claim(scope: WorkspaceObjectScope, options?: { initialize?: boolean; fence?: boolean }): Promise<WorkspaceObject>;
+  claim(
+    scope: WorkspaceObjectScope,
+    options?: { initialize?: boolean; fence?: boolean; sameOwnerOnly?: boolean },
+  ): Promise<WorkspaceObject>;
   seal(scope: WorkspaceObjectScope, previous: WorkspaceObject): Promise<WorkspaceObject>;
   inspectWrite(scope: WorkspaceObjectScope, input: WorkspaceWriteInspection): Promise<WorkspaceObject>;
   head(scope: WorkspaceObjectScope): Promise<WorkspaceObject | undefined>;
@@ -116,7 +119,6 @@ const META_OWNER = "owner";
 const META_SAVED = "saved";
 const META_SEALED = "sealed";
 const META_SHA256 = "sha256";
-const META_WRITE = "write";
 const METADATA_KEYS = new Set([
   META_SCHEMA,
   META_SANDBOX,
@@ -230,7 +232,7 @@ function assertStorageUrl(url: string): void {
 
 function metadataFor(
   scope: WorkspaceObjectScope,
-  state: { ownerGeneration: number; saved: boolean; sealed: boolean; sha256: string; writeId?: string },
+  state: { ownerGeneration: number; saved: boolean; sealed: boolean; sha256: string },
 ): Record<string, string> {
   return {
     [META_SCHEMA]: "1",
@@ -240,7 +242,6 @@ function metadataFor(
     [META_SAVED]: state.saved ? "true" : "false",
     [META_SEALED]: state.sealed ? "true" : "false",
     [META_SHA256]: state.sha256,
-    ...(state.writeId ? { [META_WRITE]: state.writeId } : {}),
   };
 }
 
@@ -267,16 +268,20 @@ function parseSnapshot(resource: unknown, location: ObjectLocation, scope: Works
   if (typeof md5Hash !== "string" || !MD5_PATTERN.test(md5Hash)) {
     fail("corrupt", "GCS object md5Hash is not a base64 digest");
   }
-  return parseCustomMetadata(record(body.metadata), scope, { generation, metageneration, bytes, md5: md5Hash });
+  return {
+    ...parseCustomMetadata(record(body.metadata), scope, { generation, metageneration, bytes, md5: md5Hash }),
+    ...parseWriteDisposition(body.contentDisposition),
+  };
 }
 
-function parseWriteMetadata(metadata: Record<string, unknown>): Pick<StoredSnapshot, "writeId"> {
-  const writeId = metadata[META_WRITE];
-  if (writeId === undefined) return {};
-  if (typeof writeId !== "string" || !WRITE_ID_PATTERN.test(writeId)) {
-    fail("corrupt", "Workspace write identity is malformed");
-  }
-  return { writeId };
+function parseWriteDisposition(value: unknown): Pick<StoredSnapshot, "writeId"> {
+  if (typeof value !== "string") return {};
+  const writeId = /^attachment; filename="state-([a-f0-9-]{36})\.tar\.gz"$/.exec(value)?.[1];
+  return writeId && WRITE_ID_PATTERN.test(writeId) ? { writeId } : {};
+}
+
+function formatWriteDisposition(writeId?: string): string | undefined {
+  return writeId ? `attachment; filename="state-${writeId}.tar.gz"` : undefined;
 }
 
 function parseCustomMetadata(
@@ -284,7 +289,7 @@ function parseCustomMetadata(
   scope: WorkspaceObjectScope,
   base: { generation: string; metageneration: string; bytes: number; md5: string },
 ): StoredSnapshot {
-  const keys = Object.keys(metadata).filter((key) => key !== META_WRITE);
+  const keys = Object.keys(metadata);
   if (keys.length !== METADATA_KEYS.size || !keys.every((key) => METADATA_KEYS.has(key))) {
     fail("corrupt", "GCS object metadata does not match the Workspace schema keys");
   }
@@ -318,7 +323,6 @@ function parseCustomMetadata(
     bytes: base.bytes,
     sha256,
     md5: base.md5,
-    ...parseWriteMetadata(metadata),
   };
 }
 
@@ -356,6 +360,33 @@ function snapshotsEqual(snapshot: StoredSnapshot, object: WorkspaceObject): bool
     snapshot.sha256 === object.sha256 &&
     snapshot.md5 === object.md5
   );
+}
+
+function requireFenceSnapshot(
+  scope: WorkspaceObjectScope,
+  current: StoredSnapshot | undefined,
+  sameOwnerOnly: boolean,
+): StoredSnapshot {
+  if (!current) fail("missing", "The expected workspace archive is absent");
+  if (
+    current.ownerGeneration > scope.environmentGeneration ||
+    (sameOwnerOnly && current.ownerGeneration !== scope.environmentGeneration)
+  ) {
+    fail("stale", "Workspace owner does not permit this fencing claim");
+  }
+  return current;
+}
+
+function confirmedFenceSnapshot(
+  observed: StoredSnapshot | undefined,
+  original: StoredSnapshot,
+  expected: StoredSnapshot,
+): StoredSnapshot | undefined {
+  if (observed && snapshotsEqual(observed, expected) && observed.writeId === original.writeId) return observed;
+  if (!observed || !snapshotsEqual(observed, original) || observed.writeId !== original.writeId) {
+    fail("conflict", "Workspace changed during a fencing claim; refusing to rebase");
+  }
+  return undefined;
 }
 
 function validateWriteInput(input: WorkspaceObjectWriteInput): void {
@@ -527,14 +558,13 @@ export class GcsWorkspaceObjectStore implements WorkspaceObjectStore {
    */
   async claim(
     scope: WorkspaceObjectScope,
-    options: { initialize?: boolean; fence?: boolean } = {},
+    options: { initialize?: boolean; fence?: boolean; sameOwnerOnly?: boolean } = {},
   ): Promise<WorkspaceObject> {
     const location = locationFor(scope);
+    if (options.fence) return publicSnapshot(await this.#fenceClaim(location, scope, options.sameOwnerOnly === true));
     for (let attempt = 0; ; attempt += 1) {
       try {
-        return publicSnapshot(
-          await this.#claimAttempt(location, scope, options.initialize === true, options.fence === true),
-        );
+        return publicSnapshot(await this.#claimAttempt(location, scope, options.initialize === true));
       } catch (error) {
         const retryable =
           error instanceof WorkspaceObjectStoreError &&
@@ -549,7 +579,6 @@ export class GcsWorkspaceObjectStore implements WorkspaceObjectStore {
     location: ObjectLocation,
     scope: WorkspaceObjectScope,
     initialize: boolean,
-    fence: boolean,
   ): Promise<StoredSnapshot> {
     const current = await this.#getMetadata(location, scope, AbortSignal.timeout(this.#timeoutMs));
     if (current === undefined) {
@@ -561,8 +590,36 @@ export class GcsWorkspaceObjectStore implements WorkspaceObjectStore {
     if (current.ownerGeneration > scope.environmentGeneration) {
       fail("stale", "Workspace is owned by a newer environment generation");
     }
-    if (current.ownerGeneration === scope.environmentGeneration && (!fence || current.sealed)) return current;
+    if (current.ownerGeneration === scope.environmentGeneration) return current;
     return this.#patchMetadata(location, scope, current, scope.environmentGeneration, false);
+  }
+
+  async #fenceClaim(
+    location: ObjectLocation,
+    scope: WorkspaceObjectScope,
+    sameOwnerOnly: boolean,
+  ): Promise<StoredSnapshot> {
+    const signal = AbortSignal.timeout(this.#timeoutMs);
+    const original = requireFenceSnapshot(scope, await this.#getMetadata(location, scope, signal), sameOwnerOnly);
+    if (original.ownerGeneration === scope.environmentGeneration && original.sealed) return original;
+    const expected = {
+      ...original,
+      ownerGeneration: scope.environmentGeneration,
+      metageneration: String(BigInt(original.metageneration) + 1n),
+      sealed: false,
+    };
+    for (let attempt = 0; ; attempt += 1) {
+      signal.throwIfAborted();
+      try {
+        return await this.#patchMetadata(location, scope, original, scope.environmentGeneration, false, signal);
+      } catch (error) {
+        if (!(error instanceof WorkspaceObjectStoreError) || !CLAIM_RETRYABLE.has(error.code)) throw error;
+        const observed = await this.#getMetadata(location, scope, signal);
+        const confirmed = confirmedFenceSnapshot(observed, original, expected);
+        if (confirmed) return confirmed;
+        if (attempt + 1 >= MAX_CLAIM_ATTEMPTS) throw error;
+      }
+    }
   }
 
   /** Seal only the exact saved snapshot; no archive bytes or retention properties are changed. */
@@ -684,12 +741,20 @@ export class GcsWorkspaceObjectStore implements WorkspaceObjectStore {
       saved: true,
       sealed: input.sealed,
       sha256: input.sha256,
-      writeId: write.writeId,
     });
     const conditions = `ifGenerationMatch=${previous.generation}&ifMetagenerationMatch=${previous.metageneration}`;
     let snapshot: StoredSnapshot;
     try {
-      snapshot = await this.#insertMultipart(location, scope, metadata, input.md5, input.bytes, input.body, conditions);
+      snapshot = await this.#insertMultipart(
+        location,
+        scope,
+        metadata,
+        input.md5,
+        input.bytes,
+        input.body,
+        conditions,
+        write.writeId,
+      );
     } catch (error) {
       if (error instanceof WorkspaceObjectStoreError && error.code === "unknown_result") {
         return this.#verifyWrite(location, scope, previous, write);
@@ -758,6 +823,7 @@ export class GcsWorkspaceObjectStore implements WorkspaceObjectStore {
     current: StoredSnapshot,
     nextOwner: number,
     sealed: boolean,
+    signal = AbortSignal.timeout(this.#timeoutMs),
   ): Promise<StoredSnapshot> {
     // The full validated metadata map is resent so the result is identical whether GCS merges or
     // replaces custom metadata under PATCH semantics.
@@ -766,13 +832,12 @@ export class GcsWorkspaceObjectStore implements WorkspaceObjectStore {
       saved: current.saved,
       sealed,
       sha256: current.sha256,
-      writeId: current.writeId,
     });
     const url = `${metadataUrl(location)}?ifGenerationMatch=${current.generation}&ifMetagenerationMatch=${current.metageneration}`;
     const response = await this.#send("PATCH", url, {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ metadata }),
-      signal: AbortSignal.timeout(this.#timeoutMs),
+      signal,
     });
     if (response.status === 404) {
       cancelQuietly(response);
@@ -845,6 +910,7 @@ export class GcsWorkspaceObjectStore implements WorkspaceObjectStore {
     bytes: number,
     body: AsyncIterable<Uint8Array>,
     conditionQuery: string,
+    writeId?: string,
   ): Promise<StoredSnapshot> {
     const boundary = `ot-${randomUUID().replaceAll("-", "")}`;
     const resource = JSON.stringify({
@@ -852,6 +918,7 @@ export class GcsWorkspaceObjectStore implements WorkspaceObjectStore {
       contentType: "application/octet-stream",
       md5Hash: md5,
       metadata,
+      contentDisposition: formatWriteDisposition(writeId),
     });
     const preamble = Buffer.from(
       `--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${resource}\r\n--${boundary}\r\nContent-Type: application/octet-stream\r\n\r\n`,

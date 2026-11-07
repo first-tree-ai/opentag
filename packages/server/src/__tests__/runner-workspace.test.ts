@@ -415,21 +415,24 @@ describe("workspace route authentication", () => {
 });
 
 describe("workspace claim", () => {
-  it("fences same-allocation writers without uploading and refuses fencing during release", async () => {
+  it("fences same-allocation writers without uploading, including during release", async () => {
     const accountId = await account();
     const stack = await createWorkspaceApp(accountId);
     const started = await startedSandbox(stack, accountId);
     const runner = await authenticatedWorkspaceRunner(stack, started.token);
     const previous = (await (await claimRequest(stack, started.token)).json()) as RunnerWorkspaceObject;
-    const fenced = await (await claimRequest(stack, started.token, true)).json();
+    const fenced = (await (await claimRequest(stack, started.token, true)).json()) as RunnerWorkspaceObject;
     expect(fenced).toEqual({ ...previous, metageneration: String(BigInt(previous.metageneration) + 1n) });
     expect(stack.store.writes).toHaveLength(0);
     await unit.database
       .update(sandboxes)
       .set({ lifecycle: "releasing" })
       .where(eq(sandboxes.id, started.sandbox.sandboxId));
-    expect((await claimRequest(stack, started.token, true)).status).toBe(409);
-    expect(await (await claimRequest(stack, started.token)).json()).toEqual(fenced);
+    expect((await claimRequest(stack, started.token, true)).status).toBe(200);
+    expect(await (await claimRequest(stack, started.token)).json()).toEqual({
+      ...fenced,
+      metageneration: String(BigInt(fenced.metageneration) + 1n),
+    });
     runner.socket.close();
     await runner.closed;
   });

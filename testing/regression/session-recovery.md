@@ -192,10 +192,16 @@ for stopping/replacing Instances separate from permission to run this catalogue.
 4. In the controlled transport harness, race an older upload with a same-allocation fencing claim,
    and race a seal with a claim. Expected: generation/metageneration preconditions prevent stale
    data or seals from replacing the current state; a same-owner claim cannot reopen a sealed object.
+   Lose an older fencing response, then let a successor claim/save before readback. Expected: the
+   older request never advances the successor's pins. Restart a real Runner while the allocation
+   is releasing and retry stop: it restores the same-owner object and completes the final seal.
 5. Inject missing/corrupt media, failed metadata updates, lost responses, transfer timeouts and
    cancellation. Expected: only exact durable readback proves success; uncertain results retain
    local state and block execution. Retry/restart preserves the latest complete archive and never
    replays a business action. Check durable bytes and object versions, not only diagnostic logs.
+6. Read and restore a newly written/sealed object with the fixed-point Server adapter, then write
+   through that adapter and read it again with the new one. Expected: the seven custom metadata
+   keys and archive bytes remain compatible in both directions; attempt hints do not block rollback.
 
 ## Not retried
 

@@ -154,14 +154,22 @@ even within the same allocation. This fences a delayed upload from an earlier pr
 repacking or uploading the restored archive. Same-owner claims never reopen a sealed object;
 readback claims do not advance the fence. Only a first unsaved workspace needs an initial archive
 upload before readiness. These are native conditional-write tokens, not application storage versions.
+Fencing retries remain bound to the original generation and metageneration within one transfer
+deadline: an exact one-step metadata result proves success, and only an unchanged original object
+permits another attempt. A later claim, seal or upload never becomes a new base for the old request.
+While releasing, a fresh process may fence and restore an existing same-owner object before answering
+the retry seal. It cannot seed missing storage or take ownership from another environment.
 See Google's [request preconditions](https://docs.cloud.google.com/storage/docs/request-preconditions)
 and [conditional object insertion](https://docs.cloud.google.com/storage/docs/json_api/v1/objects/insert).
 
 An interrupted upload retains the previous complete object. When an upload's response is lost,
 success requires readback matching the intended owner, length, checksum, and seal. No unconditional
 overwrite or automatic empty fallback is allowed.
-Each upload carries a random attempt identity, retained across its bounded retries and stored in
-custom object metadata. Upload readback verifies that identity and the new archive's initial
+Each upload carries a random attempt identity, retained across its bounded retries and encoded in
+the standard GCS `contentDisposition` filename. The fixed seven custom metadata keys stay unchanged,
+so fixed-point Server readers can still claim, read and restore new archives during rollback.
+Metadata-only claims and seals preserve the standard disposition; legacy archive writes may omit it.
+Upload readback verifies the identity and the new archive's initial
 metageneration of one: a later fencing claim or another byte-identical upload must never become
 the old uploader's next write base. This is an operation identity, not another runtime epoch or
 an archive catalogue. The Server keeps it out of the legacy object response shape.

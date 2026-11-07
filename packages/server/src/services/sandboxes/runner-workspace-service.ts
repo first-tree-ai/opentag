@@ -197,8 +197,8 @@ export class RunnerWorkspaceService {
 
   /**
    * Claim the workspace for the current allocation. `preparing`/`ready` claim through the store
-   * (only the allocator may initialize storage); a `releasing` allocation may only read back
-   * current same-owner metadata and must never initialize or claim another generation.
+   * (only the allocator may initialize storage); a `releasing` allocation may read or fence
+   * existing same-owner metadata, but must never initialize or take ownership of another generation.
    */
   async claim(
     context: RunnerWorkspaceContext,
@@ -213,7 +213,13 @@ export class RunnerWorkspaceService {
       }
     }
     if (context.row.lifecycle === "releasing") {
-      if (options.fence) throw conflict("A releasing environment cannot fence the workspace");
+      if (options.fence) {
+        try {
+          return await this.#store.claim(scope, { fence: true, sameOwnerOnly: true });
+        } catch (error) {
+          throw mapStoreError(error);
+        }
+      }
       const head = await this.#head(scope);
       if (!head || head.ownerGeneration !== context.row.environmentGeneration) {
         throw conflict("A releasing environment cannot claim the workspace");

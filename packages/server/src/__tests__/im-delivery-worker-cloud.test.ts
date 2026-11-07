@@ -26,6 +26,7 @@ import { dispatchClaimToken } from "../runtime/im-delivery-claim.js";
 import { ImDeliveryWorker } from "../runtime/im-delivery-worker.js";
 import type { CloudSessionAllocationPort, ImDeliveryDiagnosticReporter } from "../runtime/im-delivery-worker.types.js";
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
+import { RuntimeDispatchDeferredError } from "../runtime/runtime-domain-owner.js";
 import { AgentService } from "../services/agents/index.js";
 import { ComputerService } from "../services/computers/index.js";
 import { EffectiveRuntimeSnapshotAssembler } from "../services/runtime-config/index.js";
@@ -435,6 +436,35 @@ async function connectReady(fixture: Awaited<ReturnType<typeof cloudScope>>, sta
 }
 
 describe("ImDeliveryWorker accepted Runner readiness wakeup", () => {
+  it("records a Cloud pre-send batch change as expected backoff without an error diagnostic", async () => {
+    const f = await cloudScope();
+    const stack = makeStack();
+    await connectReady(f, stack);
+    const pending = await pendingDelivery(f.scope.sessionId);
+    const now = new Date();
+    const diagnostic = vi.fn();
+    vi.spyOn(stack.owner, "dispatchDelivery").mockRejectedValueOnce(new RuntimeDispatchDeferredError("batch_changed"));
+    const worker = makeWorker(stack.owner, undefined, { onDiagnostic: diagnostic, now: () => now });
+    try {
+      await worker.runOnce();
+      const [row] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, pending.deliveryId));
+      expect(row).toMatchObject({
+        state: "pending",
+        attemptCount: 1,
+        dispatchRequestId: null,
+        lastErrorCode: "IM_DELIVERY_BATCH_CHANGED",
+        nextAttemptAt: new Date(now.getTime() + 2_000),
+      });
+      expect(diagnostic).not.toHaveBeenCalled();
+    } finally {
+      await worker.stop();
+      stack.grants.close();
+    }
+  });
+
   it("dispatches attachment-only Cloud input with native Feishu identifiers", async () => {
     const fixture = await cloudScope();
     const stack = makeStack();

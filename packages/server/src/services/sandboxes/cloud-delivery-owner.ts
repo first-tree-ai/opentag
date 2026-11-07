@@ -34,6 +34,7 @@ import {
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import { withAgentSessionStopAuthority } from "../../runtime/agent-session-stop-authority.js";
 import type { DeliveryDispatchStatus, RuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
+import { RuntimeDispatchDeferredError } from "../../runtime/runtime-domain-owner.js";
 import type { RuntimeBusinessContext } from "../../runtime/runtime-session.js";
 import type { RuntimeCredentialOwner } from "../../runtime-credentials/runtime-credential-owner.js";
 import type { AgentSessionStopTarget } from "../agents/agent-service.js";
@@ -41,18 +42,25 @@ import { InboundReceiptPendingError } from "../im/inbound-admission.js";
 import type { SessionCliProofService } from "../sessions/session-cli-proof-service.js";
 import { CloudImSteering } from "./cloud-im-steering.js";
 import type { CloudModelGrantIssue } from "./cloud-model-grants.js";
+import {
+  cloudConnectionSocket,
+  isExactCloudConnection,
+  recordCloudActivity,
+  resolveCloudRuntimeModel,
+  revokeCloudModelGrant,
+  sendToCloudConnection,
+} from "./cloud-runner-helpers.js";
 import { type CloudConnectionRecord, type CloudRuntimeFence, cloudInstanceIdFor } from "./cloud-runtime-fence.js";
 import { loadManagedSandboxBySessionId, loadSandboxRecordBySessionId } from "./owned-sandbox.js";
 import type { RunnerControlSocket, RunnerHub, RunnerScope } from "./runner-hub.js";
 import type { SandboxAllocationReconciliation } from "./sandbox-runner-service.js";
 
 function assertCloudDispatchStatus(status: DeliveryDispatchStatus): void {
+  if (status === "dispatched" || status === "already_dispatched") return;
+  if (status === "batch_changed") throw new RuntimeDispatchDeferredError(status);
   if (status === "inbound_pending") throw new InboundReceiptPendingError();
   if (status === "stale_generation") {
     throw new CloudDeliveryDispatchError("stale_generation", "The delivery placement generation is stale");
-  }
-  if (status === "conflict") {
-    throw new CloudDeliveryDispatchError("dispatch_conflict", "The delivery dispatch state conflicts");
   }
   if (status === "claimed") {
     throw new CloudDeliveryDispatchError(
@@ -60,6 +68,7 @@ function assertCloudDispatchStatus(status: DeliveryDispatchStatus): void {
       "The Sandbox environment is being reclaimed; the input stays pending",
     );
   }
+  throw new CloudDeliveryDispatchError("dispatch_conflict", "The delivery dispatch state conflicts");
 }
 
 /**
@@ -299,12 +308,8 @@ export class CloudDeliveryOwner {
    * validated Router model); a model the Router does not currently offer —
    * or a catalog that cannot be refreshed — never reaches a Sandbox.
    */
-  async resolveRuntimeModel(runtime: EffectiveRuntimeSnapshot): Promise<EffectiveRuntimeSnapshot | undefined> {
-    const grants = this.#modelGrants;
-    if (!grants || !this.#modelBaseUrl) return undefined;
-    if (runtime.model) return (await grants.isModelAllowed(runtime.model)) ? runtime : undefined;
-    const fallback = await grants.defaultModel();
-    return fallback ? { ...runtime, model: fallback } : undefined;
+  resolveRuntimeModel(runtime: EffectiveRuntimeSnapshot): Promise<EffectiveRuntimeSnapshot | undefined> {
+    return resolveCloudRuntimeModel(runtime, this.#modelGrants, this.#modelBaseUrl);
   }
 
   inputInstance(sessionId: string): string | undefined {
@@ -1617,7 +1622,7 @@ export class CloudDeliveryOwner {
     const ownership = this.#grantOwnershipByTurn.get(turnId);
     if (ownership?.connectionId !== connectionId) return;
     this.#grantOwnershipByTurn.delete(turnId);
-    this.#modelGrants?.revokeExecution(turnId);
+    revokeCloudModelGrant(this.#modelGrants, turnId);
   }
 
   /**
@@ -1626,7 +1631,7 @@ export class CloudDeliveryOwner {
    */
   #revokeTurnGrants(turnId: string): void {
     this.#grantOwnershipByTurn.delete(turnId);
-    this.#modelGrants?.revokeExecution(turnId);
+    revokeCloudModelGrant(this.#modelGrants, turnId);
   }
 
   /* ------------------------------------------------------------------------------------------
@@ -1637,17 +1642,8 @@ export class CloudDeliveryOwner {
    * E7 business-activity clock. A failed touch must never fail a durable dispatch/report, but it
    * is surfaced as a sanitized operational signal; heartbeats deliberately do not call this.
    */
-  async #recordActivity(sandboxId: string): Promise<void> {
-    const note = this.#noteActivity;
-    if (!note) return;
-    try {
-      await note(sandboxId);
-    } catch {
-      this.#logger?.warn(
-        { code: "CLOUD_DELIVERY_ACTIVITY_TOUCH_FAILED", sandboxId },
-        "Sandbox business-activity clock update failed",
-      );
-    }
+  #recordActivity(sandboxId: string): Promise<void> {
+    return recordCloudActivity(sandboxId, this.#noteActivity, this.#logger, "CLOUD_DELIVERY_ACTIVITY_TOUCH_FAILED");
   }
 
   #context(connection: CloudConnectionRecord): RuntimeBusinessContext {
@@ -1693,25 +1689,15 @@ export class CloudDeliveryOwner {
    * Sandbox. Never "whichever socket now owns the sandbox id".
    */
   #socketFor(connection: CloudConnectionRecord): RunnerControlSocket | undefined {
-    if (this.#fence.connectionForSandbox(connection.scope.sandboxId)?.connectionId !== connection.connectionId) {
-      return undefined;
-    }
-    if (connection.socket) {
-      return this.#hub.isCurrent(connection.scope.sandboxId, connection.socket) ? connection.socket : undefined;
-    }
-    // Fence-only fixtures (tests/recovery snapshots) carry no socket; the hub's current socket is
-    // only acceptable while this exact connection is still the fence's current one (checked above).
-    return this.#hub.currentSocket(connection.scope.sandboxId);
+    return cloudConnectionSocket(this.#fence, this.#hub, connection);
   }
 
   #isExactConnection(connection: CloudConnectionRecord): boolean {
-    return this.#fence.isCurrent(connection.computerId, connection.instanceId, connection.connectionId);
+    return isExactCloudConnection(this.#fence, connection);
   }
 
   #sendToConnection(connection: CloudConnectionRecord, frame: Parameters<RunnerHub["sendToCurrent"]>[2]): boolean {
-    const socket = this.#socketFor(connection);
-    if (!socket) return false;
-    return this.#hub.sendToCurrent(connection.scope.sandboxId, socket, frame);
+    return sendToCloudConnection(this.#fence, this.#hub, connection, frame);
   }
 
   /**

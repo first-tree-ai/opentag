@@ -266,6 +266,20 @@ interface QueuedSessionVerified {
 
 type QueuedVerified = QueuedDeliveryVerified | QueuedSessionVerified;
 
+interface CloudTurnWork<Entry extends CloudJournalEntry> {
+  readonly kind: Entry["kind"];
+  readonly key: string;
+  readonly requestId: string;
+  readonly generation: number;
+  readonly model: RunnerCloudModelGrant | undefined;
+  readonly matches: (entry: CloudJournalEntry | undefined) => entry is Entry;
+  readonly markStarted: (entry: Entry) => Promise<Entry>;
+  readonly admit: (entry: Entry) => TurnCompletion | undefined;
+  readonly run: (entry: Entry, model: RunnerCloudModelGrant, signal: AbortSignal) => Promise<TurnCompletion>;
+  readonly settle: (entry: Entry, completion: TurnCompletion, checkpoint?: boolean) => Promise<void>;
+  readonly missingModel: (entry: Entry) => Promise<void>;
+}
+
 /**
  * Result of one start attempt: `started` occupies the turn slot, `settled` resolved the head
  * without starting it (cancel/phase/generation) so the drain must continue, and `wait` keeps the
@@ -1256,81 +1270,52 @@ export class CloudTurnRunner {
    * Turn execution
    * ------------------------------------------------------------------------------------------ */
 
-  /** Reserve the single turn slot synchronously, then fsync the started boundary, then run. */
-  async #startTurn(
-    entry: CloudJournalDeliveryEntry,
-    frame: RunnerCloudDeliveryVerifiedFrame,
-    generation: number,
-  ): Promise<StartTurnOutcome> {
-    if (this.#closed || this.#active) return "wait";
-    if (!(this.#options.canStart?.() ?? true)) return "wait";
-    let settle: () => void = () => undefined;
-    const settled = new Promise<void>((resolve) => {
-      settle = resolve;
-    });
-    const active: ActiveTurn = {
-      abort: new AbortController(),
-      entryKey: entry.deliveryId,
+  #deliveryWork(next: QueuedDeliveryVerified): CloudTurnWork<CloudJournalDeliveryEntry> {
+    return {
       kind: "delivery",
-      settle,
-      settled,
+      key: next.deliveryId,
+      requestId: next.frame.requestId,
+      generation: next.generation,
+      model: next.frame.model,
+      matches: (entry): entry is CloudJournalDeliveryEntry => entry?.kind === "delivery",
+      markStarted: (entry) => this.#options.journal.markStarted(entry.deliveryId, entry.scope),
+      admit: (entry) => this.#admit(entry.delivery, next.frame)?.completion,
+      run: (entry, model, signal) => this.#runInSandbox(entry.delivery, model, entry, signal, next.generation),
+      settle: (entry, completion, checkpoint) => this.#reportTerminal(entry, completion, checkpoint),
+      missingModel: async () => undefined,
     };
-    this.#active = active;
-    try {
-      if (this.#sandboxUnusable) {
-        throw new CloudJournalError(
-          "store_failed",
-          "The native sandbox namespace could not be verified clean; the Runner must not start another Turn",
-        );
-      }
-      if (this.#needsSandboxReset) await this.#resetSandboxNamespace();
-      const current = await this.#options.journal.read(entry.deliveryId);
-      if (this.#closed) return "wait";
-      if (current?.kind !== "delivery" || current.phase !== "received") {
-        // Another path already settled or started this head; the drain may advance.
-        this.#queue.delete(entry.requestId);
-        return "settled";
-      }
-      if (generation !== this.#channelGeneration) {
-        // The grant's connection closed while this read was pending: leave `received` for a fresh
-        // verification instead of marking started with a revoked grant, and advance the drain.
-        this.#queue.delete(entry.requestId);
-        return "settled";
-      }
-      if (active.abort.signal.aborted) {
-        // A stop arrived before the started boundary: no native effect happened, so settle an
-        // honest not_started result, never mark the entry started, and advance to the next head.
-        this.#queue.delete(entry.requestId);
-        this.#cancelRequested.delete(entry.deliveryId);
-        await this.#reportTerminal(current, cancelledBeforeStart());
-        return "settled";
-      }
-      const started = await this.#options.journal.markStarted(current.deliveryId, current.scope);
-      active.execution = this.#executeTurn(started, frame, active.abort.signal, generation)
-        .catch((error) => this.#reportPersistenceError(error))
-        .finally(() => {
-          this.#completeActive(active);
-          this.#scheduleDrain();
-        });
-      return "started";
-    } finally {
-      if (!active.execution) {
-        // Release the reserved slot. The caller advances a settled head; a wait or surfaced
-        // journal/namespace failure must not schedule another drain and spin on the same head.
-        this.#completeActive(active);
-      }
-    }
   }
 
-  /**
-   * The Session-message counterpart of `#startTurn`: same synchronous slot reservation, namespace
-   * reset, cancel re-check, and durable `started` marker, but the terminal evidence is the
-   * immutable Session settlement instead of a delivery report.
-   */
-  async #startSessionTurn(
-    entry: CloudJournalSessionEntry,
-    frame: RunnerCloudSessionMessageVerifiedFrame,
-    generation: number,
+  #sessionWork(next: QueuedSessionVerified): CloudTurnWork<CloudJournalSessionEntry> {
+    return {
+      kind: "session-message",
+      key: next.messageId,
+      requestId: next.frame.requestId,
+      generation: next.generation,
+      model: next.frame.model,
+      matches: (entry): entry is CloudJournalSessionEntry => entry?.kind === "session-message",
+      markStarted: (entry) => this.#options.journal.markSessionStarted(entry.messageId, entry.scope),
+      admit: () =>
+        this.#admitSession(next.frame) ? { outcome: "failed", executionEffects: "not_started" } : undefined,
+      run: (entry, model, signal) => this.#runSessionInSandbox(entry.message, model, entry, signal, next.generation),
+      settle: (entry, completion, checkpoint) =>
+        checkpoint
+          ? this.#settleSessionTerminal(
+              entry,
+              sessionSettlementOutcome(completion),
+              true,
+              completion.executionEffects,
+              completion.errorReason,
+            )
+          : this.#settleSessionTerminal(entry, sessionSettlementOutcome(completion)),
+      missingModel: (entry) => this.#settleSessionTerminal(entry, "failed"),
+    };
+  }
+
+  /** Reserve the single turn slot synchronously, then fsync the started boundary, then run. */
+  async #startTurn<Entry extends CloudJournalEntry>(
+    entry: Entry,
+    work: CloudTurnWork<Entry>,
   ): Promise<StartTurnOutcome> {
     if (this.#closed || this.#active) return "wait";
     if (!(this.#options.canStart?.() ?? true)) return "wait";
@@ -1340,8 +1325,8 @@ export class CloudTurnRunner {
     });
     const active: ActiveTurn = {
       abort: new AbortController(),
-      entryKey: entry.messageId,
-      kind: "session-message",
+      entryKey: work.key,
+      kind: work.kind,
       settle,
       settled,
     };
@@ -1354,24 +1339,25 @@ export class CloudTurnRunner {
         );
       }
       if (this.#needsSandboxReset) await this.#resetSandboxNamespace();
-      const current = await this.#options.journal.read(entry.messageId);
+      const current = await this.#options.journal.read(work.key);
       if (this.#closed) return "wait";
-      if (current?.kind !== "session-message" || current.phase !== "received") {
+      if (!work.matches(current) || current.phase !== "received") {
         this.#queue.delete(entry.requestId);
         return "settled";
       }
-      if (generation !== this.#channelGeneration) {
+      if (work.generation !== this.#channelGeneration) {
+        // A revoked grant leaves the received entry available for fresh verification.
         this.#queue.delete(entry.requestId);
         return "settled";
       }
       if (active.abort.signal.aborted) {
         this.#queue.delete(entry.requestId);
-        this.#cancelRequested.delete(entry.messageId);
-        await this.#settleSessionTerminal(current, "cancelled");
+        this.#cancelRequested.delete(work.key);
+        await work.settle(current, cancelledBeforeStart());
         return "settled";
       }
-      const started = await this.#options.journal.markSessionStarted(current.messageId, current.scope);
-      active.execution = this.#executeSessionTurn(started, frame, active.abort.signal, generation)
+      await work.markStarted(current);
+      active.execution = this.#executeTurn(work, active.abort.signal)
         .catch((error) => this.#reportPersistenceError(error))
         .finally(() => {
           this.#completeActive(active);
@@ -1379,6 +1365,7 @@ export class CloudTurnRunner {
         });
       return "started";
     } finally {
+      // A wait or surfaced journal/namespace failure must not spin on the same FIFO head.
       if (!active.execution) this.#completeActive(active);
     }
   }
@@ -1444,99 +1431,51 @@ export class CloudTurnRunner {
    * await so a delivery cancelled mid-drain is never started.
    */
   async #processQueued(next: QueuedVerified): Promise<"continue" | "started" | "stop"> {
-    return next.kind === "session-message" ? this.#processQueuedSession(next) : this.#processQueuedDelivery(next);
+    return next.kind === "delivery"
+      ? this.#processQueuedWork(this.#deliveryWork(next))
+      : this.#processQueuedWork(this.#sessionWork(next));
   }
 
-  /**
-   * Process the FIFO head. The entry stays queued until it is actually started, so losing the
-   * occupation race can never drop verified work, and cancellation is re-checked after every
-   * await so a delivery cancelled mid-drain is never started.
-   */
-  async #processQueuedDelivery(next: QueuedDeliveryVerified): Promise<"continue" | "started" | "stop"> {
-    if (this.#cancelRequested.delete(next.deliveryId)) {
-      this.#queue.delete(next.frame.requestId);
-      await this.#settleCancelled(next.deliveryId);
+  async #processQueuedWork<Entry extends CloudJournalEntry>(
+    work: CloudTurnWork<Entry>,
+  ): Promise<"continue" | "started" | "stop"> {
+    if (this.#cancelRequested.delete(work.key)) {
+      this.#queue.delete(work.requestId);
+      await this.#settleCancelled(work);
       return "continue";
     }
-    const entry = await this.#entryByRequestId(next.frame.requestId);
-    if (entry?.kind !== "delivery" || entry.phase !== "received") {
-      this.#queue.delete(next.frame.requestId);
+    const entry = await this.#entryByRequestId(work.requestId);
+    if (!work.matches(entry) || entry.phase !== "received") {
+      this.#queue.delete(work.requestId);
       return "continue";
     }
-    if (this.#cancelRequested.delete(next.deliveryId)) {
-      this.#queue.delete(next.frame.requestId);
-      await this.#settleCancelled(next.deliveryId);
+    if (this.#cancelRequested.delete(work.key)) {
+      this.#queue.delete(work.requestId);
+      await this.#settleCancelled(work);
       return "continue";
     }
-    if (next.generation !== this.#channelGeneration) {
-      // The connection that minted the grant is gone; keep the received entry for re-verification.
-      this.#queue.delete(next.frame.requestId);
+    if (work.generation !== this.#channelGeneration) {
+      this.#queue.delete(work.requestId);
       return "continue";
     }
-    const denial = this.#admit(entry.delivery, next.frame);
+    const denial = work.admit(entry);
     if (denial) {
-      this.#queue.delete(next.frame.requestId);
-      await this.#reportTerminal(entry, denial.completion);
+      this.#queue.delete(work.requestId);
+      await work.settle(entry, denial);
       return "continue";
     }
     if (!(this.#options.canStart?.() ?? true)) return "stop";
-    const outcome = await this.#startTurn(entry, next.frame, next.generation);
+    const outcome = await this.#startTurn(entry, work);
     if (outcome === "wait") return "stop";
-    this.#queue.delete(next.frame.requestId);
-    // A settled head must not stall the FIFO line: continue with the next queued delivery.
+    this.#queue.delete(work.requestId);
     return outcome === "started" ? "started" : "continue";
   }
 
-  /** Session-message FIFO head: identical discipline, terminal evidence is the settlement. */
-  async #processQueuedSession(next: QueuedSessionVerified): Promise<"continue" | "started" | "stop"> {
-    if (this.#cancelRequested.delete(next.messageId)) {
-      this.#queue.delete(next.frame.requestId);
-      await this.#settleCancelledSession(next.messageId);
-      return "continue";
-    }
-    const entry = await this.#entryByRequestId(next.frame.requestId);
-    if (entry?.kind !== "session-message" || entry.phase !== "received") {
-      this.#queue.delete(next.frame.requestId);
-      return "continue";
-    }
-    if (this.#cancelRequested.delete(next.messageId)) {
-      this.#queue.delete(next.frame.requestId);
-      await this.#settleCancelledSession(next.messageId);
-      return "continue";
-    }
-    if (next.generation !== this.#channelGeneration) {
-      this.#queue.delete(next.frame.requestId);
-      return "continue";
-    }
-    const denial = this.#admitSession(next.frame);
-    if (denial) {
-      this.#queue.delete(next.frame.requestId);
-      await this.#settleSessionTerminal(entry, denial);
-      return "continue";
-    }
-    if (!(this.#options.canStart?.() ?? true)) return "stop";
-    const outcome = await this.#startSessionTurn(entry, next.frame, next.generation);
-    if (outcome === "wait") return "stop";
-    this.#queue.delete(next.frame.requestId);
-    return outcome === "started" ? "started" : "continue";
-  }
-
-  async #settleCancelled(deliveryId: string): Promise<void> {
-    const entry = await this.#options.journal.read(deliveryId);
+  async #settleCancelled<Entry extends CloudJournalEntry>(work: CloudTurnWork<Entry>): Promise<void> {
+    const entry = await this.#options.journal.read(work.key);
     if (!entry) return;
     this.#assertCurrentScope(entry);
-    if (entry.kind === "delivery" && entry.phase === "received") {
-      await this.#reportTerminal(entry, cancelledBeforeStart());
-    }
-  }
-
-  async #settleCancelledSession(messageId: string): Promise<void> {
-    const entry = await this.#options.journal.read(messageId);
-    if (!entry) return;
-    this.#assertCurrentScope(entry);
-    if (entry.kind === "session-message" && entry.phase === "received") {
-      await this.#settleSessionTerminal(entry, "cancelled");
-    }
+    if (work.matches(entry) && entry.phase === "received") await work.settle(entry, cancelledBeforeStart());
   }
 
   #completeActive(active: ActiveTurn): void {
@@ -1544,45 +1483,29 @@ export class CloudTurnRunner {
     active.settle();
   }
 
-  async #executeTurn(
-    entry: CloudJournalDeliveryEntry,
-    frame: RunnerCloudDeliveryVerifiedFrame,
-    signal: AbortSignal,
-    generation: number,
-  ): Promise<void> {
-    const current = await this.#options.journal.read(entry.deliveryId);
-    if (current?.kind !== "delivery" || current.phase !== "started") return;
-    if (generation !== this.#channelGeneration) {
-      // The connection closed after the durable started marker but before any sandbox work: no
-      // execution effect occurred, so settle honestly instead of running with a revoked grant.
-      await this.#reportTerminal(current, cancelledBeforeStart());
+  async #executeTurn<Entry extends CloudJournalEntry>(work: CloudTurnWork<Entry>, signal: AbortSignal): Promise<void> {
+    const current = await this.#options.journal.read(work.key);
+    if (!work.matches(current) || current.phase !== "started") return;
+    if (work.generation !== this.#channelGeneration || signal.aborted) {
+      await work.settle(current, cancelledBeforeStart());
       return;
     }
-    if (signal.aborted) {
-      // A stop landed while the started marker was being written or shortly after. Nothing has
-      // been opened or executed yet, so this is a known not_started effect, not an unknown.
-      await this.#reportTerminal(current, cancelledBeforeStart());
+    if (!work.model) {
+      await work.missingModel(current);
       return;
     }
-    const model = frame.model;
-    if (!model) return;
     let completion: TurnCompletion;
     try {
-      completion = await this.#runInSandbox(current.delivery, model, current, signal, generation);
+      completion = await work.run(current, work.model, signal);
     } catch {
       completion = { errorReason: "turn_state_unknown", executionEffects: "may_have_occurred", outcome: "unknown" };
     }
     if (signal.aborted && completion.executionEffects !== "not_started" && completion.outcome !== "completed") {
       completion = { errorReason: "client_shutdown", executionEffects: "may_have_occurred", outcome: "cancelled" };
     }
-    // An interrupted/failed/unknown Turn may still own native processes. Clean up IMMEDIATELY,
-    // while the occupation stays reserved, and only publish the terminal report after the
-    // verified reset: a stopped Session must never leave orphan children behind, and a failed
-    // reset must never be reported as a safe cancellation.
+    // Hold occupation through namespace cleanup, checkpoint and durable terminal evidence.
     const cleanup = await this.#cleanupInterrupted(completion);
-    await this.#reportTerminal(current, cleanup.completion, true);
-    // Publish the honest report first; then surface the cleanup failure through the existing
-    // Runner failure path (serve marks the environment fatal and exits).
+    await work.settle(current, cleanup.completion, true);
     if (cleanup.failure !== undefined) this.#reportPersistenceError(cleanup.failure);
   }
 
@@ -1612,22 +1535,9 @@ export class CloudTurnRunner {
     completion: TurnCompletion,
     checkpoint = false,
   ): Promise<void> {
-    let checkpointError: unknown;
-    if (checkpoint) {
-      try {
-        await this.#options.checkpoint?.({ executionEffects: completion.executionEffects });
-      } catch (error) {
-        checkpointError = error;
-        if (completion.executionEffects !== "not_started") {
-          completion = workspaceSaveFailure(completion);
-        } else if (this.#options.sandboxReset) {
-          this.#markSandboxDirty();
-          await this.#resetSandboxNamespace().catch((resetError) => {
-            checkpointError = resetError;
-          });
-        }
-      }
-    }
+    const saved = checkpoint ? await this.#checkpoint(completion.executionEffects) : undefined;
+    const checkpointError = saved?.error;
+    if (saved?.failed && completion.executionEffects !== "not_started") completion = workspaceSaveFailure(completion);
     // Record exactly one honest result AFTER the save attempt. A crash before this point leaves
     // started/unknown custody (never automatic replay), not a success whose workspace was lost.
     const report = entry.report ?? this.#buildReport(entry.delivery, entry, completion);
@@ -1728,7 +1638,8 @@ export class CloudTurnRunner {
     const steering = this.#options.steeringEnabled?.() ? { turnId: entry.turnId, token: randomUUID() } : undefined;
     if (this.#active?.entryKey === entry.deliveryId && steering) this.#active.steering = steering;
     const openExecution =
-      this.#options.openExecution ?? ((input: CloudTurnExecutionOpenInput) => this.#openBridgeExecution(input));
+      this.#options.openExecution ??
+      ((input: CloudTurnExecutionOpenInput) => this.#openWorkBridgeExecution(entry, input.scope, input.signal));
     const openStartedAtMs = Date.now();
     const execution = await openExecution({ delivery, scope, turnId: entry.turnId, signal });
     const credentialOpenMs = Math.max(0, Date.now() - openStartedAtMs);
@@ -1761,50 +1672,6 @@ export class CloudTurnRunner {
     }
   }
 
-  /**
-   * Session-message execution: same durable `started` boundary and namespace discipline as an IM
-   * Turn, but the terminal evidence is the immutable Session settlement. The execution-open result
-   * carries the ephemeral Session CLI proof, which is forwarded to the worker via stdin.
-   */
-  async #executeSessionTurn(
-    entry: CloudJournalSessionEntry,
-    frame: RunnerCloudSessionMessageVerifiedFrame,
-    signal: AbortSignal,
-    generation: number,
-  ): Promise<void> {
-    const current = await this.#options.journal.read(entry.messageId);
-    if (current?.kind !== "session-message" || current.phase !== "started") return;
-    if (generation !== this.#channelGeneration || signal.aborted) {
-      // The connection closed or a stop landed after the started marker but before any sandbox
-      // work: no execution effect occurred, so settle honestly instead of running.
-      await this.#settleSessionTerminal(current, "cancelled");
-      return;
-    }
-    const model = frame.model;
-    if (!model) {
-      await this.#settleSessionTerminal(current, "failed");
-      return;
-    }
-    let completion: TurnCompletion;
-    try {
-      completion = await this.#runSessionInSandbox(current.message, model, current, signal, generation);
-    } catch {
-      completion = { errorReason: "turn_state_unknown", executionEffects: "may_have_occurred", outcome: "unknown" };
-    }
-    if (signal.aborted && completion.executionEffects !== "not_started" && completion.outcome !== "completed") {
-      completion = { errorReason: "client_shutdown", executionEffects: "may_have_occurred", outcome: "cancelled" };
-    }
-    const cleanup = await this.#cleanupInterrupted(completion);
-    await this.#settleSessionTerminal(
-      current,
-      sessionSettlementOutcome(cleanup.completion),
-      true,
-      cleanup.completion.executionEffects,
-      cleanup.completion.errorReason,
-    );
-    if (cleanup.failure !== undefined) this.#reportPersistenceError(cleanup.failure);
-  }
-
   /** Deadline/grant admission BEFORE any native or Pi effect, mirroring the IM Turn gate. */
   #admitSession(frame: RunnerCloudSessionMessageVerifiedFrame): CloudJournalSettlementOutcome | undefined {
     const model = frame.model;
@@ -1824,23 +1691,9 @@ export class CloudTurnRunner {
     executionEffects?: TurnCompletion["executionEffects"],
     reason?: TurnCompletion["errorReason"],
   ): Promise<void> {
-    let effective = outcome;
-    let checkpointError: unknown;
-    if (checkpoint) {
-      try {
-        await this.#options.checkpoint?.(executionEffects ? { executionEffects } : undefined);
-      } catch (error) {
-        checkpointError = error;
-        if (executionEffects !== "not_started") {
-          effective = "failed";
-        } else if (this.#options.sandboxReset) {
-          this.#markSandboxDirty();
-          await this.#resetSandboxNamespace().catch((resetError) => {
-            checkpointError = resetError;
-          });
-        }
-      }
-    }
+    const saved = checkpoint ? await this.#checkpoint(executionEffects) : undefined;
+    const checkpointError = saved?.error;
+    const effective = saved?.failed && executionEffects !== "not_started" ? "failed" : outcome;
     // A checkpoint failure replaces the outcome, so the worker's reason no longer describes it.
     const effectiveReason = effective === outcome ? reason : undefined;
     const recorded = await this.#options.journal.recordSessionSettled(
@@ -1853,6 +1706,24 @@ export class CloudTurnRunner {
     this.#notifyJournalChanged();
     this.#sendSessionSettled(recorded);
     if (checkpointError !== undefined) this.#reportCheckpointError(checkpointError);
+  }
+
+  async #checkpoint(
+    executionEffects?: TurnCompletion["executionEffects"],
+  ): Promise<{ failed: boolean; error?: unknown }> {
+    try {
+      await this.#options.checkpoint?.(executionEffects ? { executionEffects } : undefined);
+      return { failed: false };
+    } catch (error) {
+      let failure = error;
+      if (executionEffects === "not_started" && this.#options.sandboxReset) {
+        this.#markSandboxDirty();
+        await this.#resetSandboxNamespace().catch((resetError) => {
+          failure = resetError;
+        });
+      }
+      return { failed: true, error: failure };
+    }
   }
 
   async #runSessionInSandbox(
@@ -1874,7 +1745,7 @@ export class CloudTurnRunner {
     const deadlineAt = new Date(Date.now() + budgetMs).toISOString();
     const openExecution =
       this.#options.openSessionExecution ??
-      ((input: CloudSessionExecutionOpenInput) => this.#openSessionBridgeExecution(input));
+      ((input: CloudSessionExecutionOpenInput) => this.#openWorkBridgeExecution(entry, input.scope, input.signal));
     const openStartedAtMs = Date.now();
     const execution = await openExecution({ message, scope, turnId: entry.turnId, signal });
     const credentialOpenMs = Math.max(0, Date.now() - openStartedAtMs);
@@ -1976,29 +1847,24 @@ export class CloudTurnRunner {
    * unmounted private root. Nothing runs in this parent beyond credential relaying; the worker
    * executes inside the Sandbox.
    */
-  async #openBridgeExecution(input: CloudTurnExecutionOpenInput): Promise<CloudTurnExecutionHandle> {
+  async #openWorkBridgeExecution(
+    entry: CloudJournalEntry,
+    scope: CloudTurnScope,
+    signal: AbortSignal,
+  ): Promise<CloudTurnExecutionHandle> {
+    const message = entry.kind === "delivery" ? entry.delivery : entry.message;
     return this.#openRelayExecution({
-      agentId: input.delivery.agentId,
-      placementGeneration: input.delivery.placementGeneration,
-      sessionId: input.delivery.sessionId,
-      signal: input.signal,
-      source: { kind: "delivery", deliveryId: input.delivery.deliveryId, turnId: input.turnId },
-      scope: input.scope,
-      contextTrees: input.delivery.runtime.contextTrees,
-      agentSlug: managedAgentSlug(input.delivery.runtime.instructions.platform),
-    });
-  }
-
-  async #openSessionBridgeExecution(input: CloudSessionExecutionOpenInput): Promise<CloudTurnExecutionHandle> {
-    return this.#openRelayExecution({
-      agentId: input.message.agentId,
-      placementGeneration: input.message.placementGeneration,
-      sessionId: input.message.targetSessionId,
-      signal: input.signal,
-      source: { kind: "session-message", messageId: input.message.messageId },
-      scope: input.scope,
-      contextTrees: input.message.runtime.contextTrees,
-      agentSlug: managedAgentSlug(input.message.runtime.instructions.platform),
+      agentId: message.agentId,
+      placementGeneration: message.placementGeneration,
+      sessionId: entry.kind === "delivery" ? entry.delivery.sessionId : entry.message.targetSessionId,
+      signal,
+      source:
+        entry.kind === "delivery"
+          ? { kind: "delivery", deliveryId: entry.deliveryId, turnId: entry.turnId }
+          : { kind: "session-message", messageId: entry.messageId },
+      scope,
+      contextTrees: message.runtime.contextTrees,
+      agentSlug: managedAgentSlug(message.runtime.instructions.platform),
     });
   }
 

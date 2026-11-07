@@ -579,6 +579,70 @@ describe("SessionService with the unit database", () => {
     ).resolves.toMatchObject({ status: "rejected", code: "message_conflict" });
   });
 
+  it("sends a background-work notice to the message's sender, including from a visible target", async () => {
+    const service = new SessionService(db.database, { now: () => fixture.now });
+    const visible = await service.ensureChatSession(
+      { imBindingId: fixture.bindingId, channelId: "C1", conversationKind: "dm" },
+      "channel",
+    );
+    const child = await service.createInternalSessionWithMessage({
+      creatorSessionId: visible.session.id,
+      creatorInstallationId: fixture.installationId,
+      creatorConnectionInstanceId: fixture.instanceId,
+      creatorComputerId: fixture.computerId,
+      creatorPlacementGeneration: 1,
+      messageId: randomUUID(),
+      initialMessage: "task",
+    });
+    const callback = await service.authorizeAndRecordMessage({
+      messageId: randomUUID(),
+      sourceSessionId: child.session.id,
+      sourceInstallationId: fixture.installationId,
+      sourceComputerId: fixture.computerId,
+      sourceConnectionInstanceId: fixture.instanceId,
+      sourcePlacementGeneration: child.placement.generation,
+      targetSessionId: visible.session.id,
+      content: "callback",
+    });
+    const collaboration = new SessionCollaborationService({
+      assembler: { assembleForSession: vi.fn().mockResolvedValue({}) } as never,
+      domain: {
+        requestReconcile: vi.fn().mockResolvedValue({ status: "ready" }),
+        requestSessionMessageDelivery: vi.fn(
+          async (_computer: string, _instance: string, frame: { messageId: string }) => ({
+            status: "accepted",
+            messageId: frame.messageId,
+          }),
+        ),
+      } as never,
+      registry: {
+        capabilityVersion: vi.fn().mockReturnValue(4),
+        currentInstanceId: vi.fn().mockReturnValue(fixture.instanceId),
+        supportsCapability: vi.fn().mockReturnValue(true),
+      } as never,
+      sessions: service,
+    });
+    await expect(
+      collaboration.notifyRunOutcome({
+        childSessionId: visible.session.id,
+        messageId: callback.message.id,
+        outcome: "unknown",
+        reason: "background_work_possibly_stopped",
+        source: {
+          computerId: fixture.computerId,
+          connectionInstanceId: fixture.instanceId,
+          placementGeneration: visible.placement.generation,
+        },
+      }),
+    ).resolves.toBe("notified");
+    const [notice] = await db.database
+      .select()
+      .from(sessionMessages)
+      .where(eq(sessionMessages.id, runOutcomeNoticeMessageId(visible.session.id, callback.message.id)));
+    expect(notice).toMatchObject({ sourceSessionId: visible.session.id, targetSessionId: child.session.id });
+    expect(notice?.content).toContain("Outcome: unknown (reason: background_work_possibly_stopped)");
+  });
+
   it("authorizes messages and rejects stale, unavailable, and mismatched authorities", async () => {
     const service = new SessionService(db.database, { now: () => fixture.now });
     const source = await service.ensureChatSession(

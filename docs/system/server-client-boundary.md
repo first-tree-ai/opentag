@@ -278,6 +278,22 @@ Closing the old socket is cleanup, rather than the authority that revokes it.
 Work already executing on an offline Client cannot be physically stopped by
 Server credential revocation alone.
 
+Runtime business-frame credential admission uses one non-locking read statement.
+For Local Computers, the credential association, revocation state, Computer kind,
+installation, and deletion state share that statement's snapshot. Cloud admission
+reads the logical Computer and installation, then revalidates the deployment-issued
+control credential through the injected authority; it has no Local credential row.
+A concurrent uncommitted lifecycle change can still admit a frame against the
+previous committed state. This admission does not reserve authority for later
+effects. Some handler placement and connection fences read the in-memory registry,
+which post-commit connection cleanup updates. A frame admitted before revocation
+commits can still pass those fences and take effect afterward; they do not enforce
+database credential revocation. Only some paths, such as approval insertion,
+recheck database authority under a row lock. This admission check does not establish
+that every handler fences later effects against revocation.
+Registration and heartbeat instead recheck credentials under the Computer row lock
+inside the same transaction as their writes, preserving lifecycle lock order.
+
 ## Readiness
 
 Provider readiness, provider CLI artifact readiness, and current Integration

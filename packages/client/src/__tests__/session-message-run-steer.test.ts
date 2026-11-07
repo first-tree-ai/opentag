@@ -289,6 +289,33 @@ describe("a Session message steered into a Session message Run", () => {
   });
 });
 
+describe("background work left at the end of a Session message Run", () => {
+  it("reports for the Run's own message, and a message steered into it succeeds without a report", async () => {
+    const { attempts, runtime, steers } = harness();
+    const outcomes: SessionMessageRunOutcomeEvent[] = [];
+    const inbox = makeInbox(runtime, { outcomes });
+    const { message } = conversation();
+    const [first, second] = [message("first"), message("second")];
+    await inbox.accept(first);
+    const attempt = await started(attempts, 1);
+    await inbox.accept(second);
+    await vi.waitFor(() => expect(steers).toHaveLength(1));
+    await vi.waitFor(() => expect(inbox.getState(second.messageId)?.status).toBe("running"));
+    attempt.finish({ abandonedBackgroundWork: ["background shell"] });
+    await inbox.settled();
+    expect(inbox.getState(first.messageId)?.status).toBe("succeeded");
+    expect(inbox.getState(second.messageId)?.status).toBe("succeeded");
+    expect(outcomes).toEqual([
+      expect.objectContaining({
+        messageId: first.messageId,
+        outcome: "unknown",
+        reason: "background_work_possibly_stopped",
+      }),
+    ]);
+    expect(attempts).toHaveLength(1);
+  });
+});
+
 describe("the FIFO when acceptance times tie", () => {
   it("returns a message the provider never began ahead of one accepted after it in the same millisecond", async () => {
     const { attempts, runtime, steerOutcomes, steers } = harness();

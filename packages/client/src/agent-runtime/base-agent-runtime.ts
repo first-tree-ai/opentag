@@ -61,6 +61,8 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
   readonly manifest: AgentRuntimeManifest;
   readonly capabilities: AgentRuntimeCapabilities;
 
+  protected providerContext?: AgentProviderRunContext;
+
   readonly #eventSink: AgentRuntimeEventSink;
   readonly #queued: RunRecord[] = [];
   readonly #knownRunIds = new Set<string>();
@@ -229,6 +231,17 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
 
   protected abstract closeProvider(): Promise<void>;
 
+  protected requireProviderContext(): AgentProviderRunContext {
+    /* v8 ignore next -- provider queues drop events before or after their active context. */
+    if (!this.providerContext) {
+      throw new AgentProviderError(
+        "provider_protocol_error",
+        `${this.manifest.displayName} event arrived without an active run`,
+      );
+    }
+    return this.providerContext;
+  }
+
   protected closeForProviderFailure(): void {
     this.#providerFailureClosing = true;
     /* v8 ignore next -- close resolves through the run-failure path; the suppression only guards double faults. */
@@ -378,6 +391,7 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
       ...(this.#binding ? { binding: this.#binding } : {}),
       ...(error ? { error } : {}),
       ...(result.diagnostics !== undefined ? { providerDiagnostics: result.diagnostics } : {}),
+      ...(result.abandonedBackgroundWork ? { abandonedBackgroundWork: result.abandonedBackgroundWork } : {}),
     });
   }
 

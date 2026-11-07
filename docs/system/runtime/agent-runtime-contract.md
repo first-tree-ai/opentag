@@ -70,6 +70,13 @@ Run, and Provider-protocol identities.
 
 ## Data and Cancellation Boundaries
 
+Providers share internal configuration-merge and protocol-value utilities, while retaining their
+validation limits and failure cleanup. Codex and Claude Code accept opaque nonempty MCP gateway
+bearers and absolute HTTP(S) URLs without rewriting the URL. Pi's managed extension launch facts
+remain stricter: bounded URL and token, the MCP gateway path, no URL credentials/query/fragment,
+no unknown fields, and an `otmg_` token. These adapter-specific contracts do not change the common
+Runtime API.
+
 - Contract JSON accepts finite numbers, primitives, dense arrays, and plain or
   null-prototype data objects with enumerable data properties only.
 - Dates, maps, sets, class instances, accessors, symbols, sparse arrays, custom
@@ -143,7 +150,13 @@ new message. Session instructions currently appear in both the managed system pr
 per-delivery context. Session collaboration uses `buildSessionMessageInput` and has its own envelope.
 
 Local Claude Code starts a process for each Run with the native Session ID and `--resume` after
-initialization. Local Pi also starts a process per Run, restoring the exact Pi Session. Codex keeps
+initialization. The Run ends at the `result` of its own input, not at the first `result` on stdout. On `--resume`, Claude
+Code reports a task that the previous process left behind by queueing a notification and emitting a `result` for it with
+`origin` set, `num_turns: 0` and empty text, ahead of the Run's input. Taking that one as the terminal stopped the process
+before the model saw the input, and the Run reported `completed` with no work done. So the Run's input carries a `uuid`, and a successful `result` with an
+`origin` and no `user_message_uuids` never ends the Run. "No response requested." in a
+transcript is what Claude Code writes on the next `--resume` for a user message left unanswered, with model `<synthetic>`.
+It is not a model reply. An error `result` still ends the Run, whatever its origin. Local Pi also starts a process per Run, restoring the exact Pi Session. Codex keeps
 an App Server per prepared Session and starts native Turns on its thread; execution-service
 attachment may reload that same thread. `excludeTurns: true` suppresses history returned in the
 resume RPC response; it does not remove the model's conversation history. Local configuration

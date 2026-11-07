@@ -132,10 +132,11 @@ says so when the work may not fit and splits it into parts the user can request 
 For long-running delegated or multi-step work, the visible Session posts a short new IM message at each meaningful
 milestone — started, key finding, blocked and needs input, done — rather than editing one message, because IM clients do
 not notify on edits. Routine check-ins are not milestones, and short work stays silent until the final reply. The done
-milestone is the one self-contained final result, not a separate completion message, and a start notice already sent —
-such as a scheduled task's fixed start notification — satisfies started, so the convention never adds the completion
-notices scheduled-task metadata forbids. Internal Sessions never publish to IM; they report milestones to their creator
-through `opentag session send` only when useful, along with questions and the final result.
+milestone is the one self-contained final result, not a separate completion message. A scheduled task's message goes to
+the Agent only: its metadata forbids schedule lifecycle notices, and a run with nothing to report stays silent. openTag
+reports a failed or missed occurrence itself; see [Scheduled tasks](im-feedback.md#scheduled-tasks). Internal Sessions
+never publish to IM; they report milestones to their creator through `opentag session send` only when useful, along with
+questions and the final result.
 
 When a SessionMessage returns to a visible channel or thread Session, that callback Run retains the visible Session's IM
 authority. Credential grant v2 atomically supplies a temporary provider credential environment and a non-secret default
@@ -202,6 +203,21 @@ kind of Session the target is. A scheduled message has no sender: its notice goe
   notice ID. The wait runs outside the Runner's frame handling. Until that ack reaches the exact connection, the
   settling allocation stays in the Sandbox reclaim barrier, so idle reclamation or borrow cannot delete the journal;
   see [Cloud context](../cloud/cloud-context.md).
+
+- Background work: Local Claude Code runs one process per Run, and the process exits when the Run ends, so background
+  shells, background subagents, Monitors and in-process timers stop then. They do not survive to the next message, and
+  nothing wakes the Session later. A timer counts once its `ScheduleWakeup` or `CronCreate` call succeeded, until
+  `ScheduleWakeup` with `stop` or `CronDelete` removes it. A wakeup is also removed when a `command_lifecycle` with
+  `wakeup_source: loop_wakeup` names its `scheduled_for`. A cron firing names no job and can come from a durable job of an
+  earlier Run, so it removes nothing. The notice and report may therefore name a job that already ran, and both say the
+  work may still be live. A `durable` cron job is on disk and is not counted. The result of a fired timer's own turn
+  does not end the Run. Before the process exits, the Run tells the Session once which work may stop
+  (`[openTag notice] This Run is about to end.`), and gets one more model turn to wait for it, redo it in the foreground,
+  or tell whoever is waiting. The result after that notice ends the Run, with or without a `command_lifecycle` for it. If
+  work may still be live when that turn ends, the message still `succeeded` and is not run again, and the daemon reports
+  outcome `unknown` with reason `background_work_possibly_stopped` through the same report, so the message's sender gets a
+  notice, including when the target is a visible Session. An IM Turn gets the same notice in the Run and sends no report. A
+  message steered into that Run sends no report of its own.
 
 The notice is an ordinary SessionMessage from the target to the recipient. A sender that is also the creator gets one notice,
 since there is one recipient. It uses the existing authorization, lock order, activity projection, and delivery, including the

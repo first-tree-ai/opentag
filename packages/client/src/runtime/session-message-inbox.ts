@@ -40,7 +40,6 @@ import {
   type RuntimeRetryScheduler,
 } from "./runtime-durability.js";
 import {
-  buildScheduleStartNotification,
   escapeScheduledMetadataText,
   formatScheduleLocalTime,
   normalizeScheduleTaskPreview,
@@ -127,12 +126,17 @@ export interface SessionMessageRunOutcomeEvent {
   targetSessionId: string;
   agentId: string;
   placementGeneration: number;
-  outcome: "timed_out" | "failed";
+  outcome: "timed_out" | "failed" | "unknown";
   reason: string;
 }
 
 /** The stable code a Run outcome report carries for a timed-out Session message. */
 export const SESSION_MESSAGE_TURN_TIMEOUT_CODE = "turn_timeout";
+/**
+ * The Run completed, but background work it may have left behind stops with it, so what the sender
+ * is waiting for may never come. The message itself succeeded and is not run again.
+ */
+export const SESSION_MESSAGE_BACKGROUND_WORK_POSSIBLY_STOPPED_CODE = "background_work_possibly_stopped";
 
 export class SessionMessageInbox {
   readonly #admission: AdmissionController;
@@ -844,8 +848,7 @@ export class SessionMessageInbox {
       await settleRunTime();
       if (result.status !== "completed") throw runFailure(result);
       if (current && !this.#abort.signal.aborted) {
-        await this.#transition(current, "succeeded");
-        this.#remember(key, { hash: next.hash, status: "succeeded" });
+        await this.#settleCompleted(current, next.hash, result.abandonedBackgroundWork);
       }
       outcome = "completed";
     } catch (error) {
@@ -879,6 +882,24 @@ export class SessionMessageInbox {
     const steersSettled = this.#abort.signal.aborted || (await run.endAttempt());
     const retry = await this.#handleFailure(record, hash, phase, error, timedOut, steersSettled);
     return retry ? { retry } : "ended";
+  }
+
+  async #settleCompleted(
+    record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
+    hash: string,
+    abandonedBackgroundWork: readonly string[] | undefined,
+  ): Promise<void> {
+    const abandoned = (abandonedBackgroundWork?.length ?? 0) > 0;
+    const terminal = await this.#transition(
+      record,
+      "succeeded",
+      abandoned
+        ? { lastError: backgroundWorkStoppedFailure(record.payload.requestId), ...this.#pendingOutcomeReport() }
+        : {},
+    );
+    this.#remember(record.key, { hash, status: "succeeded" });
+    if (abandoned)
+      await this.#publishRunOutcome(terminal, "unknown", SESSION_MESSAGE_BACKGROUND_WORK_POSSIBLY_STOPPED_CODE);
   }
 
   #requirePreparedOutbox(
@@ -1022,12 +1043,9 @@ export class SessionMessageInbox {
     const key = stored.key;
     let record = { ...stored, payload: request.data } as DurableWorkRecord<SessionMessageDeliveryRequestV3>;
     this.#setRecord(record);
-    if (record.status === "succeeded") {
-      this.#remember(key, { hash, status: "succeeded" });
-      return undefined;
-    }
-    if (record.status === "dead-letter" || record.status === "failed") {
-      this.#remember(key, { hash, status: record.status, reason: "provider_unavailable" });
+    const terminal = terminalMemory(record.status, hash);
+    if (terminal) {
+      this.#remember(key, terminal);
       // The terminal fact committed but its report never reached the reporter (for example a
       // crash in between): re-derive it. Records without the marker predate it and are not
       // backfilled; the Run is never rerun either way.
@@ -1186,7 +1204,7 @@ export class SessionMessageInbox {
    */
   async #publishRunOutcome(
     record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
-    outcome: "timed_out" | "failed",
+    outcome: SessionMessageRunOutcomeEvent["outcome"],
     code: string,
   ): Promise<void> {
     if (!this.#onRunOutcome) return;
@@ -1271,12 +1289,18 @@ export class SessionMessageInbox {
   }
 }
 
+function terminalMemory(status: DurableWorkRecord["status"], hash: string): RememberedMessage | undefined {
+  if (status === "succeeded") return { hash, status };
+  return status === "dead-letter" || status === "failed" ? { hash, status, reason: "provider_unavailable" } : undefined;
+}
+
 /** The report a committed terminal record implies, matching what `#handleFailure` reported. */
 function terminalRunOutcome(record: DurableWorkRecord<SessionMessageDeliveryRequestV3>): {
-  outcome: "timed_out" | "failed";
+  outcome: SessionMessageRunOutcomeEvent["outcome"];
   code: string;
 } {
   const code = record.lastError?.code ?? "retry_exhausted";
+  if (record.status === "succeeded") return { outcome: "unknown", code };
   return { outcome: code === SESSION_MESSAGE_TURN_TIMEOUT_CODE ? "timed_out" : "failed", code };
 }
 
@@ -1342,6 +1366,17 @@ function withCarriedMessages(input: AgentInput, carried: readonly AgentInput[]):
       },
       ...carried.flatMap((message) => message.items),
     ],
+  };
+}
+
+function backgroundWorkStoppedFailure(requestId: string): DurableFailure {
+  return {
+    code: SESSION_MESSAGE_BACKGROUND_WORK_POSSIBLY_STOPPED_CODE,
+    category: "unavailable",
+    retryability: "never",
+    phase: "provider",
+    requestId,
+    message: "Background work this Run may have left behind stops when the Run ends",
   };
 }
 
@@ -1425,9 +1460,9 @@ export function sessionMessageSemanticHash(request: SessionMessageDeliveryReques
  * branch exposes it as trustworthy UTC without guessing a local timezone. A scheduled message
  * additionally gains a distinct managed metadata item (schedule name, scheduled/sent/processing
  * times in UTC and the schedule's IANA timezone, message id, detail link, and the normalized
- * <=120 code-point preview) plus the single best-effort start-notification instruction. The full
- * prompt always stays its own trailing user-task item, and untrusted name/preview text enters the
- * managed block only JSON-escaped, so it can never close a managed tag or forge instructions.
+ * <=120 code-point preview). The full prompt always stays its own trailing user-task item, and
+ * untrusted name/preview text enters the managed block only JSON-escaped, so it can never close a
+ * managed tag or forge instructions.
  */
 export function buildSessionMessageInput(
   request: SessionMessageDeliveryRequestV3,
@@ -1532,10 +1567,9 @@ function buildInternalSessionMessageContext(
 }
 
 /**
- * The distinct managed metadata item of a scheduled input. All schedule facts plus the exact
- * best-effort start notification. The name and preview are untrusted snapshot text and appear
- * only JSON-escaped; the pre-composed notification filters emoji for display while the managed
- * fields and the full task body keep them.
+ * The distinct managed metadata item of a scheduled input. The name and preview are untrusted
+ * snapshot text and appear only JSON-escaped. The scheduled message goes to the Agent only: the
+ * Server, not the Agent, reports a failed or missed occurrence to the conversation.
  */
 function buildScheduledTaskMetadataItem(
   request: SessionMessageDeliveryRequestV3,
@@ -1568,23 +1602,10 @@ function buildScheduledTaskMetadataItem(
   ];
   if (turnContext.sessionKind === "visible") {
     lines.push(
-      "Start notification: exactly once, when you actually begin processing this task — never on receipt, while queued, or from any earlier marker — decode the JSON string below and send its resulting text unchanged as plain text (without Markdown or automatic link parsing) to this Session's IM conversation through the provider CLI described in the Session message context:",
-      `Notification JSON: ${escapeScheduledMetadataText(
-        buildScheduleStartNotification({
-          name: origin.name,
-          preview,
-          scheduledFor,
-          processedAt,
-          timezone,
-          detailUrl: request.scheduleDetailUrl,
-        }),
-      )}`,
-      "The notification is best-effort: if sending fails or the result is uncertain, apply the provider CLI verification rules and continue the task. Do not retry the notification separately, and never let it block, fail, or abort the task. Send no other schedule lifecycle notification — no completion, failure, or skip notices.",
+      "Post to this Session's IM conversation only if this task produces something the conversation should see; a run with nothing to report stays silent. Send no schedule lifecycle notice: no start, completion, failure, or skip message. openTag reports a failed Run to the conversation itself.",
     );
   } else {
-    lines.push(
-      "No IM outbox is attached to this target Session; do not send a start notification for this scheduled task.",
-    );
+    lines.push("No IM outbox is attached to this target Session.");
   }
   lines.push("</opentag-scheduled-task-metadata>");
   return lines.join("\n");

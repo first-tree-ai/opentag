@@ -28,6 +28,7 @@ import type {
   RuntimeDeliveryWorkerMetric,
 } from "./im-delivery-worker.types.js";
 import { type PostgresRuntimeCustodyStore, writeTerminalReport } from "./runtime-custody-store.js";
+import { RuntimeDispatchDeferredError } from "./runtime-domain-owner.js";
 
 /**
  * Every transition that gives up on a claimed delivery attempt, in one place: backoff, dispatch
@@ -148,8 +149,8 @@ function shouldEmitFailureDiagnostic(code: string, previousErrorCode: DeliveryAt
   return (previousErrorCode ? canonicalFailureCode(previousErrorCode) : undefined) !== code;
 }
 
-function retryOutcome(code: string): "deferred" | "failed" {
-  return EXPECTED_CLOUD_WAIT_CODES.has(code) ? "deferred" : "failed";
+function retryOutcome(code: string, expectedDeferral = false): "deferred" | "failed" {
+  return expectedDeferral || EXPECTED_CLOUD_WAIT_CODES.has(code) ? "deferred" : "failed";
 }
 
 /**
@@ -165,7 +166,7 @@ export async function recordDeliveryFailure(
   options: DeliveryFailureOptions = {},
 ): Promise<void> {
   const bounded = BOUNDED_CODE.test(code) ? code : "IM_DELIVERY_FAILED";
-  setActiveSpanAttributes(outcomeAttrs(retryOutcome(bounded), bounded));
+  setActiveSpanAttributes(outcomeAttrs(retryOutcome(bounded, options.expectedDeferral), bounded));
   const streak = bounded === OPERATION_TIMEOUT_CODE ? operationTimeoutStreak(attempt.previousErrorCode) + 1 : 0;
   if (streak > 0 && options.allowTerminal !== false && operationTimeoutExhausted(streak)) {
     if (await settleExhaustedRun(deps, attempt)) return;
@@ -283,6 +284,10 @@ export async function handleDeliveryFailure(
   code: string,
   error: unknown,
 ): Promise<void> {
+  if (error instanceof RuntimeDispatchDeferredError) {
+    await recordDeliveryFailure(deps, attempt, error.code, { expectedDeferral: true });
+    return;
+  }
   if (error instanceof InboundReceiptPendingError) {
     await recordDeliveryFailure(deps, attempt, error.code, { retryDelayMs: cappedRetryDelayMs(attempt.attemptCount) });
     return;

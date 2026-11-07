@@ -38,12 +38,7 @@ import {
 } from "../runtime/agent-turn-runner.js";
 import { BackgroundWorkLedger, type BackgroundWorkLedgerStorage } from "../runtime/background-work-ledger.js";
 import { serializeEnvironment } from "../runtime/im-credential-environment-manager.js";
-import {
-  buildContinuationNotice,
-  type Interruption,
-  nextRetry,
-  type RetryCount,
-} from "../runtime/interruption-retry.js";
+import { buildContinuationNotice, type Interruption, nextRetry } from "../runtime/interruption-retry.js";
 import {
   type ManagedSessionContext,
   managedAgentSlug,
@@ -673,6 +668,7 @@ export async function runCloudTurnWorker(
       execution.signal.removeEventListener("abort", onAbort);
       await steering?.close().catch((error: unknown) => diagnostics.failure(error));
     }
+    completion = withEarlierEffects(completion, attempts);
     await recordRunLimit(backgroundWork, completion, options);
     return completion;
   } finally {
@@ -816,6 +812,8 @@ interface CloudRunAttempts {
   readonly steered: AgentInput[];
   /** Undefined between attempts, when a steer is left with the Server. */
   live: CloudTurnPiRuntime | undefined;
+  /** An attempt that exited may have changed the workspace, whatever later attempts do. */
+  effectsMayHaveOccurred?: boolean;
 }
 
 /**
@@ -830,20 +828,28 @@ async function runAttempts(
   attempt: (runtime: CloudTurnPiRuntime, interruption: Interruption | undefined) => Promise<TurnCompletion>,
   now: () => number,
 ): Promise<TurnCompletion> {
-  let retry: RetryCount = { count: 0, ranMs: 0 };
+  let count = 0;
   let activeRuntime = firstRuntime;
   let interruption: Interruption | undefined;
   while (true) {
     const startedAt = now();
     const completion = await attempt(activeRuntime, interruption);
     if (completion.errorReason !== "provider_process_exited") return completion;
-    const next = nextRetry({ count: retry.count, ranMs: retry.ranMs });
+    attempts.effectsMayHaveOccurred ||= completion.executionEffects !== "not_started";
+    const next = nextRetry({ count, ranMs: Math.max(0, now() - startedAt) });
     if (next.exhausted) return completion;
-    retry = { count: next.count, ranMs: Math.max(0, now() - startedAt) };
+    count = next.count;
     interruption = { reason: "provider_process_exited", at: new Date(now()).toISOString() };
     activeRuntime = await openRuntime();
     attempts.live = activeRuntime;
   }
+}
+
+/** A later attempt that never started says nothing about what an earlier one already did to the workspace. */
+function withEarlierEffects(completion: TurnCompletion, attempts: CloudRunAttempts): TurnCompletion {
+  return attempts.effectsMayHaveOccurred && completion.executionEffects === "not_started"
+    ? { ...completion, executionEffects: "may_have_occurred" }
+    : completion;
 }
 
 function withInterruption(

@@ -153,7 +153,7 @@ describe("a Pi process that exits during a Cloud Run", () => {
 
   async function run(
     results: ((input: AgentPromptRequest) => Promise<unknown>)[],
-    extra: { steering?: boolean; failReopen?: boolean } = {},
+    extra: { steering?: boolean; failReopen?: boolean; now?: () => number } = {},
   ) {
     const root = await mkdtemp(join(tmpdir(), "cloud-worker-retry-"));
     cleanup.push(() => rm(root, { recursive: true, force: true }));
@@ -178,6 +178,7 @@ describe("a Pi process that exits during a Cloud Run", () => {
       workspace: join(root, "workspace"),
       prepareContextTree: async () => ({ status: { status: "unavailable" as const, reason: "TIMEOUT" as const } }),
       createPiFactory: () => ({ create: open, resume: open }),
+      ...(extra.now ? { now: extra.now } : {}),
     } as never);
     return { completion, prompts, closes, opened: () => opened };
   }
@@ -204,6 +205,49 @@ describe("a Pi process that exits during a Cloud Run", () => {
     ]);
     expect(completion).toMatchObject({ outcome: "failed", errorReason: "provider_process_exited" });
     expect(prompts).toHaveLength(3);
+  });
+
+  describe("the reset after a retry that really ran", () => {
+    const FIVE_MINUTES = 5 * 60_000;
+    /** Each attempt moves the clock on by its duration, then exits; the last one answers. */
+    async function attemptsLasting(durations: number[]) {
+      let clock = Date.now();
+      const results = durations.map((ms, index) => async (input: AgentPromptRequest) => {
+        clock += ms;
+        return index === durations.length - 1 ? answered(input.runId) : exited(input.runId);
+      });
+      return run(results, { now: () => clock });
+    }
+
+    it("counts a long second retry, so the Run gets more retries", async () => {
+      const { completion, prompts } = await attemptsLasting([1_000, 1_000, FIVE_MINUTES, 1_000]);
+      expect(completion).toMatchObject({ outcome: "completed" });
+      expect(prompts).toHaveLength(4);
+    });
+
+    it("does not let a long first attempt earn an extra retry for the short ones after it", async () => {
+      const { completion, prompts } = await attemptsLasting([FIVE_MINUTES, 1_000, 1_000, 1_000]);
+      expect(completion).toMatchObject({ outcome: "failed", errorReason: "provider_process_exited" });
+      expect(prompts).toHaveLength(3);
+    });
+  });
+
+  it("keeps what an exited attempt may have done when the retry never starts", async () => {
+    const started = await run([
+      async (input) => exited(input.runId),
+      async (input) => ({
+        runId: input.runId,
+        output: [],
+        status: "failed" as const,
+        error: { code: "provider_start_failed" as const, message: "spawn failed" },
+      }),
+    ]);
+    expect(started.completion).toMatchObject({
+      errorReason: "provider_start_failed",
+      executionEffects: "may_have_occurred",
+    });
+    const reopened = await run([async (input) => exited(input.runId)], { failReopen: true });
+    expect(reopened.completion).toMatchObject({ executionEffects: "may_have_occurred" });
   });
 
   it("does not retry any other failure", async () => {

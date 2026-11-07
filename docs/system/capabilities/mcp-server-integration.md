@@ -1245,7 +1245,7 @@ discover through another call first.
   with a reason beats a tool that silently calls the wrong Server.
 - The catalogue is served from the stored probe snapshots rather than fanned out live. `tools/list`
   runs at the start of every turn; a live fan-out would add a round trip per Server to each one and
-  contend for the same four outbound slots a real tool call needs.
+  contend for outbound capacity needed by real tool calls.
 - When a mount's effective `extra_headers` includes `X-Lark-MCP-Allowed-Tools` (matched
   case-insensitively), its comma-separated upstream tool names restrict the mount's usable tool
   snapshot at both `catalog()` and `callTool()` time. Any tool not in the allowed set is omitted from

@@ -17,7 +17,7 @@ nothing else, so the surviving facts carry the Account into the resume path inst
 Neither mode is available in production, and neither touches an Account other than the authenticated one.
 
 For screen-level design review — copy, hierarchy, state communication — use `/internal/agent-setup`, which runs the
-real Agent Setup presentation against the #437 in-memory Adapter and needs neither an Account nor a reset.
+real Agent Setup presentation against the in-memory Adapter and needs neither an Account nor a reset.
 
 ## Where to click it
 

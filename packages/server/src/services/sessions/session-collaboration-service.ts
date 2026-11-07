@@ -17,11 +17,12 @@ import {
   type SessionMessageProvenance,
   type SessionMessageRunOutcome,
   type SessionMessageScheduledOrigin,
+  type SessionReconcileRequest,
   type SessionReconcileResult,
   type SessionRunInput,
 } from "@opentag/shared";
 import type { ServiceLogger } from "../../observability/service-logger.js";
-import type { ConnectionRegistry } from "../../runtime/connection-registry.js";
+import { type ConnectionRegistry, RuntimeRegistrySendError } from "../../runtime/connection-registry.js";
 import {
   type RuntimeDispatchAdmission,
   type RuntimeDomainOwner,
@@ -765,7 +766,7 @@ export class SessionCollaborationService {
         targetSessionId: input.targetSessionId,
         content: input.message,
       });
-      return await this.#deliver(attempt, input.targetSessionId);
+      return await this.#deliver(attempt, input.targetSessionId, { inlineLocalMessage: true });
     } catch (error) {
       const result = this.#failure(input.messageId, error);
       if (result.code === "scope_mismatch") {
@@ -996,7 +997,7 @@ export class SessionCollaborationService {
   ): Promise<RunOutcomeNoticeStatus> {
     try {
       return this.#runOutcomeNoticeStatus(
-        await this.#deliver(prepared.attempt, prepared.recipientSessionId, signal),
+        await this.#deliver(prepared.attempt, prepared.recipientSessionId, { signal }),
         input,
       );
     } catch (error) {
@@ -1024,7 +1025,7 @@ export class SessionCollaborationService {
   async #deliver(
     attempt: SessionMessageAttempt,
     sessionId: string,
-    signal?: AbortSignal,
+    { signal, inlineLocalMessage = false }: { signal?: AbortSignal; inlineLocalMessage?: boolean } = {},
   ): Promise<SessionCliCommandResponse> {
     if (attempt.attemptCount === null) {
       return response(
@@ -1041,7 +1042,10 @@ export class SessionCollaborationService {
     if (!provenance) {
       return this.#record(response(attempt.message.id, "unreachable", sessionId, "runtime_unavailable"), attemptCount);
     }
-    const result = await this.#deliverWithProvenance(attempt, attemptCount, sessionId, provenance, signal);
+    const result = await this.#deliverWithProvenance(attempt, attemptCount, sessionId, provenance, {
+      inlineLocalMessage,
+      ...(signal ? { signal } : {}),
+    });
     if (provenance.crossConversation || !provenance.initiatorSessionId) {
       this.#logCrossConversation(attempt, provenance, result);
     }
@@ -1053,7 +1057,7 @@ export class SessionCollaborationService {
     attemptCount: number,
     sessionId: string,
     provenance: SessionMessageProvenance,
-    signal?: AbortSignal,
+    { signal, inlineLocalMessage }: { signal?: AbortSignal; inlineLocalMessage: boolean },
   ): Promise<SessionCliCommandResponse> {
     const runtime = await this.#assembleTargetRuntime(attempt, sessionId);
     if (signal?.aborted) return response(attempt.message.id, "unknown", sessionId, "runtime_unavailable");
@@ -1066,7 +1070,7 @@ export class SessionCollaborationService {
     if (attempt.route.targetComputerKind === "cloud") {
       return this.#deliverCloud(attempt, sessionId, runtime, provenance, signal);
     }
-    return this.#deliverLocal(attempt, sessionId, runtime, provenance, attemptCount, signal);
+    return this.#deliverLocal(attempt, sessionId, runtime, provenance, attemptCount, inlineLocalMessage, signal);
   }
 
   async #resolveProvenance(attempt: SessionMessageAttempt): Promise<SessionMessageProvenance | undefined> {
@@ -1103,81 +1107,101 @@ export class SessionCollaborationService {
     );
   }
 
-  /** Local target dispatch over the existing reconcile + runtime-domain delivery boundaries. */
   async #deliverLocal(
     attempt: SessionMessageAttempt,
     sessionId: string,
     runtime: EffectiveRuntimeSnapshot,
     provenance: SessionMessageProvenance,
     attemptCount: number,
+    inlineLocalMessage: boolean,
     signal?: AbortSignal,
   ): Promise<SessionCliCommandResponse> {
     const gate = this.#localDeliveryGate(attempt.route, requiresProvenance(attempt.message, provenance));
     if ("code" in gate)
       return this.#record(response(attempt.message.id, "unreachable", sessionId, gate.code), attemptCount);
     const { targetInstanceId, provenanceSupported } = gate;
-    let reconciled: SessionReconcileResult;
-    try {
-      reconciled = await this.#domain.requestReconcile(
+    const message = {
+      messageId: attempt.message.id,
+      sourceSessionId: attempt.route.sourceSessionId,
+      ...(provenanceSupported ? { provenance } : {}),
+      content: { kind: "text" as const, text: attempt.message.content },
+    };
+    const inline =
+      inlineLocalMessage &&
+      this.#registry.capabilityVersion(
         attempt.route.targetComputerId,
         targetInstanceId,
-        {
-          type: "session:reconcile",
-          requestId: randomUUID(),
-          installationId: attempt.route.targetInstallationId,
-          sessionId: attempt.route.targetSessionId,
-          agentId: attempt.route.agentId,
-          placementGeneration: attempt.route.targetPlacementGeneration,
-          ...(attempt.route.targetSessionKind === "internal"
-            ? {
-                sessionKind: "internal" as const,
-                creatorSessionId: attempt.route.targetCreatorSessionId ?? attempt.route.sourceSessionId,
-              }
-            : {}),
-          desired: "ready",
-          runtime,
-        },
-        undefined,
-        (operation) => this.#sessions.withCollaborationDispatchAdmission(attempt.route, operation),
-        signal,
-        { joinSettlement: Boolean(signal) },
-      );
-    } catch {
+        RUNTIME_CAPABILITY.sessionMessageReconcile,
+      ) === 1;
+    const prepared = await this.#reconcileLocal(
+      attempt.route,
+      targetInstanceId,
+      {
+        type: "session:reconcile",
+        requestId: randomUUID(),
+        installationId: attempt.route.targetInstallationId,
+        sessionId: attempt.route.targetSessionId,
+        agentId: attempt.route.agentId,
+        placementGeneration: attempt.route.targetPlacementGeneration,
+        ...(attempt.route.targetSessionKind === "internal"
+          ? {
+              sessionKind: "internal" as const,
+              creatorSessionId: attempt.route.targetCreatorSessionId ?? attempt.route.sourceSessionId,
+            }
+          : {}),
+        desired: "ready",
+        runtime,
+        ...(inline ? { sessionMessage: message } : {}),
+      },
+      signal,
+    );
+    if ("unconfirmed" in prepared) {
+      return this.#record(response(attempt.message.id, "unknown", sessionId, "delivery_timeout"), attemptCount);
+    }
+    const reconciled = prepared.result;
+    if (!reconciled || !["ready", "running", "reporting"].includes(reconciled.status)) {
       return this.#record(response(attempt.message.id, "unreachable", sessionId, "runtime_not_ready"), attemptCount);
     }
-    if (!new Set(["ready", "running", "reporting"]).has(reconciled.status)) {
-      return this.#record(response(attempt.message.id, "unreachable", sessionId, "runtime_not_ready"), attemptCount);
+    if (reconciled.sessionMessage && reconciled.sessionMessage !== "deferred") {
+      return this.#record(mapDelivery(reconciled.sessionMessage, sessionId), attemptCount);
     }
     if (signal?.aborted) return response(attempt.message.id, "unknown", sessionId, "runtime_unavailable");
     const delivery: SessionMessageDeliveryRequestV3 = {
       type: "session:message:deliver",
       requestId: randomUUID(),
-      messageId: attempt.message.id,
-      sourceSessionId: attempt.route.sourceSessionId,
-      ...(provenanceSupported ? { provenance } : {}),
       targetSessionId: attempt.route.targetSessionId,
       agentId: attempt.route.agentId,
       placementGeneration: attempt.route.targetPlacementGeneration,
-      content: { kind: "text", text: attempt.message.content },
       runtime,
+      ...message,
     };
+    return this.#dispatchLocalMessage(attempt.route, targetInstanceId, delivery, attemptCount, signal);
+  }
+
+  async #dispatchLocalMessage(
+    route: AuthorizedSessionMessageRoute,
+    instanceId: string,
+    delivery: SessionMessageDeliveryRequestV3,
+    attemptCount: number,
+    signal?: AbortSignal,
+  ): Promise<SessionCliCommandResponse> {
     try {
       const delivered = await this.#domain.requestSessionMessageDelivery(
-        attempt.route.targetComputerId,
-        targetInstanceId,
+        route.targetComputerId,
+        instanceId,
         delivery,
         undefined,
-        (operation) => this.#sessions.withCollaborationDispatchAdmission(attempt.route, operation),
+        (operation) => this.#sessions.withCollaborationDispatchAdmission(route, operation),
         ...(signal ? ([signal] as const) : []),
       );
-      return this.#record(mapDelivery(delivered, sessionId), attemptCount);
+      return this.#record(mapDelivery(delivered, delivery.targetSessionId), attemptCount);
     } catch (error) {
       const unknown = deliveryOutcomeUnknown(error, signal);
       return this.#record(
         response(
-          attempt.message.id,
+          delivery.messageId,
           unknown ? "unknown" : "unreachable",
-          sessionId,
+          delivery.targetSessionId,
           unknown ? "delivery_timeout" : "runtime_unavailable",
         ),
         attemptCount,
@@ -1233,6 +1257,49 @@ export class SessionCollaborationService {
       ) ?? 0) >= RUNTIME_SESSION_COLLABORATION_PROVENANCE_VERSION;
     if (needsProvenance && !provenanceSupported) return { code: "unsupported_cross_conversation" };
     return { targetInstanceId, provenanceSupported };
+  }
+
+  async #reconcileLocal(
+    route: AuthorizedSessionMessageRoute,
+    instanceId: string,
+    request: SessionReconcileRequest,
+    signal?: AbortSignal,
+  ): Promise<{ result?: SessionReconcileResult } | { unconfirmed: true }> {
+    const send = (frame: SessionReconcileRequest, onDispatched?: () => void) =>
+      this.#domain.requestReconcile(
+        route.targetComputerId,
+        instanceId,
+        frame,
+        onDispatched,
+        (operation) => this.#sessions.withCollaborationDispatchAdmission(route, operation),
+        signal,
+        { joinSettlement: Boolean(signal) },
+      );
+    let inline = request.sessionMessage !== undefined;
+    let dispatched = false;
+    try {
+      const result = await send(
+        request,
+        inline
+          ? () => {
+              dispatched = true;
+            }
+          : undefined,
+      ).catch((error: unknown) => {
+        if (!(inline && error instanceof RuntimeRegistrySendError && error.code === "frame_too_large")) throw error;
+        // The registry refused this frame before sending. Each of the original frames can still fit.
+        inline = false;
+        return send({ ...request, requestId: randomUUID(), sessionMessage: undefined });
+      });
+      return inline && result.sessionMessage === undefined ? { unconfirmed: true } : { result };
+    } catch (error) {
+      const unconfirmed =
+        dispatched ||
+        deliveryOutcomeUnknown(error, signal) ||
+        (error instanceof RuntimeRegistrySendError && error.mayHaveSent) ||
+        (error instanceof RuntimeDomainRequestError && error.code === "delivery_unconfirmed");
+      return inline && unconfirmed ? { unconfirmed: true } : {};
+    }
   }
 
   /** Assemble the target Session's current runtime; a failure is recorded as runtime_not_ready. */

@@ -250,6 +250,51 @@ export function requiredTurnReportVersion(report: object): 1 | 2 | 3 {
   return 1;
 }
 
+const SessionMessageContentSchema = z
+  .object({
+    kind: z.literal("text"),
+    text: byteString(RUNTIME_DIRECT_TEXT_MAX_BYTES, "Session message text exceeds the 16 KiB limit", 1),
+  })
+  .strict();
+
+/** One Session's conversation as a message's receiver sees it. Never an authorization input. */
+export const SessionMessageConversationSchema = z
+  .object({
+    sessionKind: z.enum(["channel", "thread", "internal"]),
+    conversationKind: ImConversationKindSchema,
+    channelId: z.string().min(1).max(512),
+    threadKey: z.string().min(1).max(512).optional(),
+  })
+  .strict();
+
+/**
+ * Session-collaboration v5: where an ordinary message comes from, written by the Server; a sender cannot
+ * supply it. `source` is the direct sender's conversation. The initiator is the Session where the chain started,
+ * fixed when the message was recorded and the same across forwards. It is absent when it could not be proved,
+ * which a receiver treats as coming from an unknown conversation. Like the scheduled display metadata, none of
+ * this takes part in the semantic conflict hash.
+ */
+export const SessionMessageProvenanceSchema = z
+  .object({
+    source: SessionMessageConversationSchema,
+    initiatorSessionId: z.string().uuid().optional(),
+    initiator: SessionMessageConversationSchema.optional(),
+    /** How many Session messages came before this one in the chain. */
+    forwards: z.number().int().min(0),
+    /** True when the source or a known initiator is outside the target's conversation. */
+    crossConversation: z.boolean(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if ((value.initiatorSessionId === undefined) !== (value.initiator === undefined)) {
+      context.addIssue({
+        code: "custom",
+        path: ["initiator"],
+        message: "An initiator needs both its id and conversation",
+      });
+    }
+  });
+
 export const SessionReconcileRequestSchema = z
   .object({
     type: z.literal("session:reconcile"),
@@ -268,6 +313,17 @@ export const SessionReconcileRequestSchema = z
       .strict()
       .optional(),
     desired: z.enum(["ready", "stopped"]),
+    // Only sent to a Local Client that negotiated runtime.sessionMessageReconcile.
+    sessionMessage: z
+      .object({
+        messageId: z.string().uuid(),
+        sourceSessionId: z.string().uuid(),
+        // Only to a peer that negotiated runtime.sessionCollaboration version 5.
+        provenance: SessionMessageProvenanceSchema.optional(),
+        content: SessionMessageContentSchema,
+      })
+      .strict()
+      .optional(),
     runtime: EffectiveRuntimeSnapshotSchema.optional(),
   })
   .strict()
@@ -294,6 +350,18 @@ export const SessionReconcileRequestSchema = z
     }
     if (frame.sessionKind !== "internal" && frame.creatorSessionId) {
       context.addIssue({ code: "custom", path: ["creatorSessionId"], message: "A visible Session forbids a creator" });
+    }
+    if (
+      frame.sessionMessage &&
+      (frame.desired !== "ready" ||
+        !z.uuid().safeParse(frame.sessionId).success ||
+        !z.uuid().safeParse(frame.agentId).success)
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["sessionMessage"],
+        message: "A Session message requires a ready reconcile with Session and Agent UUIDs",
+      });
     }
     if (frame.desired === "stopped" && frame.sessionCliProof) {
       context.addIssue({
@@ -393,6 +461,26 @@ export const RetainedTurnReportClaimSchema = z
   })
   .strict();
 
+export const SessionMessageDeliveryResultSchema = z
+  .object({
+    type: z.literal("session:message:deliver:result"),
+    requestId: RuntimeRequestIdSchema,
+    messageId: z.string().uuid(),
+    targetSessionId: z.string().uuid(),
+    placementGeneration: RuntimeSequenceSchema,
+    status: z.enum(["accepted", "rejected"]),
+    reason: InputRejectReasonSchema.optional(),
+  })
+  .strict()
+  .superRefine((frame, context) => {
+    if (frame.status === "accepted" && frame.reason) {
+      context.addIssue({ code: "custom", path: ["reason"], message: "Accepted deliveries forbid a reason" });
+    }
+    if (frame.status === "rejected" && !frame.reason) {
+      context.addIssue({ code: "custom", path: ["reason"], message: "Rejected deliveries require a reason" });
+    }
+  });
+
 export const SessionReconcileResultSchema = z
   .object({
     type: z.literal("session:reconcile:result"),
@@ -402,6 +490,7 @@ export const SessionReconcileResultSchema = z
     status: z.enum(["ready", "stopped", "running", "reporting", "busy", "recovery_required", "rejected"]),
     reason: byteString(256, "Reconcile reason exceeds the 256-byte limit", 1).optional(),
     turn: ReconcileTurnSchema.optional(),
+    sessionMessage: z.union([z.literal("deferred"), SessionMessageDeliveryResultSchema]).optional(),
     // MVP-only recovery manifest. Durable Server-side Turn ownership replaces it after MVP.
     retainedReports: z.array(RetainedTurnReportClaimSchema).max(RUNTIME_MVP_RETAINED_REPORT_LIMIT).optional(),
   })
@@ -455,7 +544,18 @@ export const SessionReconcileResultSchema = z
         });
       }
     }
-  });
+  })
+  .refine(
+    ({ sessionMessage: message, requestId, sessionId, placementGeneration, status, retainedReports }) =>
+      !message ||
+      message === "deferred" ||
+      (message.requestId === requestId &&
+        message.targetSessionId === sessionId &&
+        message.placementGeneration === placementGeneration &&
+        ["ready", "running", "reporting"].includes(status) &&
+        !retainedReports?.length),
+    { path: ["sessionMessage"], message: "The delivery result does not match a ready reconcile" },
+  );
 
 export const RUNTIME_IM_BATCH_MAX_COUNT = 32;
 export const RuntimeImBatchMemberSchema = z
@@ -679,13 +779,6 @@ export const InternalSessionRuntimeOverridesSchema = z
   })
   .strict();
 
-const SessionMessageContentSchema = z
-  .object({
-    kind: z.literal("text"),
-    text: byteString(RUNTIME_DIRECT_TEXT_MAX_BYTES, "Session message text exceeds the 16 KiB limit", 1),
-  })
-  .strict();
-
 export const SessionMessageDeliveryRequestSchema = z
   .object({
     type: z.literal("session:message:deliver"),
@@ -702,63 +795,6 @@ export const SessionMessageDeliveryRequestSchema = z
   .superRefine((frame, context) => {
     if (frame.runtime.agentId !== frame.agentId) {
       context.addIssue({ code: "custom", path: ["runtime", "agentId"], message: "Agent identity does not match" });
-    }
-  });
-
-export const SessionMessageDeliveryResultSchema = z
-  .object({
-    type: z.literal("session:message:deliver:result"),
-    requestId: RuntimeRequestIdSchema,
-    messageId: z.string().uuid(),
-    targetSessionId: z.string().uuid(),
-    placementGeneration: RuntimeSequenceSchema,
-    status: z.enum(["accepted", "rejected"]),
-    reason: InputRejectReasonSchema.optional(),
-  })
-  .strict()
-  .superRefine((frame, context) => {
-    if (frame.status === "accepted" && frame.reason) {
-      context.addIssue({ code: "custom", path: ["reason"], message: "Accepted deliveries forbid a reason" });
-    }
-    if (frame.status === "rejected" && !frame.reason) {
-      context.addIssue({ code: "custom", path: ["reason"], message: "Rejected deliveries require a reason" });
-    }
-  });
-/** One Session's conversation as a message's receiver sees it. Never an authorization input. */
-export const SessionMessageConversationSchema = z
-  .object({
-    sessionKind: z.enum(["channel", "thread", "internal"]),
-    conversationKind: ImConversationKindSchema,
-    channelId: z.string().min(1).max(512),
-    threadKey: z.string().min(1).max(512).optional(),
-  })
-  .strict();
-
-/**
- * Session-collaboration v5: where an ordinary message comes from, written by the Server; a sender cannot
- * supply it. `source` is the direct sender's conversation. The initiator is the Session where the chain started,
- * fixed when the message was recorded and the same across forwards. It is absent when it could not be proved,
- * which a receiver treats as coming from an unknown conversation. Like the scheduled display metadata, none of
- * this takes part in the semantic conflict hash.
- */
-export const SessionMessageProvenanceSchema = z
-  .object({
-    source: SessionMessageConversationSchema,
-    initiatorSessionId: z.string().uuid().optional(),
-    initiator: SessionMessageConversationSchema.optional(),
-    /** How many Session messages came before this one in the chain. */
-    forwards: z.number().int().min(0),
-    /** True when the source or a known initiator is outside the target's conversation. */
-    crossConversation: z.boolean(),
-  })
-  .strict()
-  .superRefine((value, context) => {
-    if ((value.initiatorSessionId === undefined) !== (value.initiator === undefined)) {
-      context.addIssue({
-        code: "custom",
-        path: ["initiator"],
-        message: "An initiator needs both its id and conversation",
-      });
     }
   });
 
@@ -1678,6 +1714,9 @@ export function computeReconcilePayloadHash(input: SessionReconcileRequest): str
     frame.sessionCliProof?.proofId ?? null,
     frame.desired,
     frame.runtime ? computeRuntimeSnapshotHashes(frame.runtime).effectiveSnapshotHash : null,
+    ...(frame.sessionMessage
+      ? [frame.sessionMessage.messageId, frame.sessionMessage.sourceSessionId, frame.sessionMessage.content.text]
+      : []),
   ]);
 }
 

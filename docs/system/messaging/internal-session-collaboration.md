@@ -65,6 +65,15 @@ lock chain; an Agent has one current binding, so another Agent's target is class
 and answered `scope_mismatch`. Create retries first read the immutable target hint for that message and creator;
 the later message lock and input-conflict checks remain authoritative. There is no automatic database retry.
 
+For `session send` to a Local target, peers that negotiate `runtime.sessionMessageReconcile` can acknowledge a
+message in the reconcile response. The Server still assembles the runtime, mints the connection-bound proof, and
+checks current authority under the dispatch locks. A Client with the matching Session and proof already prepared
+validates the reconcile and uses its usual inbox, including the durable write before acceptance. If the target needs
+preparation or there are retained Turn Reports, the Client reconciles and explicitly defers the message. The Server
+rechecks dispatch authority before the separate delivery. Older peers and requests that exceed the combined frame
+limit use the two-frame path. An unconfirmed combined response leaves the message outcome `unknown`. The Server records that outcome without
+sending the message again.
+
 A temporary refusal returns `unreachable` with its cause as the code. `client_busy` means the Client is not admitting new
 work: an upgrade is switching over, the Client is stopping, or the bounded FIFO is full. The Cloud Runner reports the same
 code. `session_busy` and `agent_busy` map to their own codes, though the Local inbox does not return them today. Messages
@@ -232,7 +241,7 @@ sender and only climbs the creation tree, so a failure cannot bounce between two
 into a Run that fails gets its one notice like any other, which applies across conversations too.
 
 **Compatibility.** `provenance` needs `runtime.sessionCollaboration` version 5 on a Local target and Runner
-Session-collaboration version 4 on a Cloud target. A same-conversation message reaches an older peer without it, on the frozen
+Session-collaboration version 4 on a Cloud target. A message delivered inside a reconcile frame carries it the same way. A same-conversation message reaches an older peer without it, on the frozen
 frame. A cross-conversation message to an older peer is `unreachable` with `unsupported_cross_conversation` before any frame
 leaves, since that peer would present it as its own conversation's work. A message with no known initiator is treated the same, as it may have come from elsewhere, unless it was recorded as provably
 local (`session_messages.legacy_local_send`). That is set when the message is recorded, from the connection that sent it: a same-conversation

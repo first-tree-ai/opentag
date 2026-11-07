@@ -1115,34 +1115,38 @@ describe("Session collaboration authority", () => {
     }
   });
 
-  it("admits ready before suspension but fences the later SessionMessage frame", async () => {
-    const fixture = await createFixture();
-    try {
-      const reconcileDispatched = deferred<void>();
-      const continueReconcile = deferred<void>();
-      const collaboration = await createCollaborationFixture(fixture, {
-        onReconcileDispatched: () => reconcileDispatched.resolve(),
-        beforeReconcileResult: () => continueReconcile.promise,
-      });
-      const sending = collaboration.service.send(
-        { messageId: randomUUID(), targetSessionId: collaboration.targetSessionId, message: "race suspension" },
-        collaboration.source,
-      );
-      await reconcileDispatched.promise;
+  it.each([false, true])(
+    "fences the later SessionMessage frame after suspension (combined request: %s)",
+    async (inlineMessages) => {
+      const fixture = await createFixture();
+      try {
+        const reconcileDispatched = deferred<void>();
+        const continueReconcile = deferred<void>();
+        const collaboration = await createCollaborationFixture(fixture, {
+          inlineMessages,
+          onReconcileDispatched: () => reconcileDispatched.resolve(),
+          beforeReconcileResult: () => continueReconcile.promise,
+        });
+        const sending = collaboration.service.send(
+          { messageId: randomUUID(), targetSessionId: collaboration.targetSessionId, message: "race suspension" },
+          collaboration.source,
+        );
+        await reconcileDispatched.promise;
 
-      await new AgentService(fixture.database, {
-        stopSessions: async () => {
-          collaboration.frames.push("stopped");
-        },
-      }).suspendById(fixture.userId, fixture.agentId);
-      continueReconcile.resolve();
+        await new AgentService(fixture.database, {
+          stopSessions: async () => {
+            collaboration.frames.push("stopped");
+          },
+        }).suspendById(fixture.userId, fixture.agentId);
+        continueReconcile.resolve();
 
-      await expect(sending).resolves.toMatchObject({ status: "unreachable", code: "runtime_unavailable" });
-      expect(collaboration.frames).toEqual(["ready", "stopped"]);
-    } finally {
-      await fixture.sql.end();
-    }
-  });
+        await expect(sending).resolves.toMatchObject({ status: "unreachable", code: "runtime_unavailable" });
+        expect(collaboration.frames).toEqual([inlineMessages ? "ready+message" : "ready", "stopped"]);
+      } finally {
+        await fixture.sql.end();
+      }
+    },
+  );
 
   it("does not deliver to an ended target when IM binding disable commits between frames", async () => {
     const fixture = await createFixture();
@@ -1177,33 +1181,48 @@ describe("Session collaboration authority", () => {
     }
   });
 
-  it("does not dispatch ready after the source placement generation advances", async () => {
-    const fixture = await createFixture();
-    try {
-      const assemblyStarted = deferred<void>();
-      const continueAssembly = deferred<void>();
-      const collaboration = await createCollaborationFixture(fixture, {
-        assemble: async () => {
-          assemblyStarted.resolve();
-          await continueAssembly.promise;
-          return runtimeSnapshot(fixture.agentId);
-        },
-      });
-      const sending = collaboration.service.send(
-        { messageId: randomUUID(), targetSessionId: collaboration.targetSessionId, message: "stale source placement" },
-        collaboration.source,
-      );
-      await assemblyStarted.promise;
+  it.each([
+    { inlineMessages: false, placement: "source" },
+    { inlineMessages: true, placement: "source" },
+    { inlineMessages: true, placement: "target" },
+  ])(
+    "fences a dispatch after $placement placement advances (combined request: $inlineMessages)",
+    async ({ inlineMessages, placement }) => {
+      const fixture = await createFixture();
+      try {
+        const assemblyStarted = deferred<void>();
+        const continueAssembly = deferred<void>();
+        const collaboration = await createCollaborationFixture(fixture, {
+          inlineMessages,
+          assemble: async () => {
+            assemblyStarted.resolve();
+            await continueAssembly.promise;
+            return runtimeSnapshot(fixture.agentId);
+          },
+        });
+        const sending = collaboration.service.send(
+          {
+            messageId: randomUUID(),
+            targetSessionId: collaboration.targetSessionId,
+            message: "stale source placement",
+          },
+          collaboration.source,
+        );
+        await assemblyStarted.promise;
 
-      await fixture.sessions.movePlacement(collaboration.source.sessionId, fixture.computerId);
-      continueAssembly.resolve();
+        await fixture.sessions.movePlacement(
+          placement === "source" ? collaboration.source.sessionId : collaboration.targetSessionId,
+          fixture.computerId,
+        );
+        continueAssembly.resolve();
 
-      await expect(sending).resolves.toMatchObject({ status: "unreachable", code: "runtime_not_ready" });
-      expect(collaboration.frames).toEqual([]);
-    } finally {
-      await fixture.sql.end();
-    }
-  });
+        await expect(sending).resolves.toMatchObject({ status: "unreachable", code: "runtime_not_ready" });
+        expect(collaboration.frames).toEqual([]);
+      } finally {
+        await fixture.sql.end();
+      }
+    },
+  );
 
   it("does not dispatch ready after the source connection is replaced", async () => {
     const fixture = await createFixture();
@@ -1362,6 +1381,7 @@ function runtimeSnapshot(agentId: string) {
 }
 
 interface CollaborationRuntimeOptions {
+  inlineMessages?: boolean;
   assemble?: () => Promise<ReturnType<typeof runtimeSnapshot>>;
   beforeDeliveryAdmission?: () => Promise<void>;
   beforeReconcileResult?: () => Promise<void>;
@@ -1398,7 +1418,7 @@ async function createCollaborationFixture(
       admission?: RuntimeDispatchAdmission<SessionReconcileResult>,
     ): Promise<SessionReconcileResult> =>
       withAdmission(admission, async (admissionDispatched) => {
-        frames.push("ready");
+        frames.push(request.sessionMessage ? "ready+message" : "ready");
         admissionDispatched();
         onDispatched?.();
         options.onReconcileDispatched?.();
@@ -1409,6 +1429,7 @@ async function createCollaborationFixture(
           sessionId: request.sessionId,
           placementGeneration: request.placementGeneration,
           status: "ready",
+          ...(request.sessionMessage ? { sessionMessage: "deferred" as const } : {}),
         };
       }),
     requestSessionMessageDelivery: async (
@@ -1441,8 +1462,12 @@ async function createCollaborationFixture(
       assembler: { assembleForSession: options.assemble ?? (async () => runtimeSnapshot(fixture.agentId)) },
       domain,
       registry: {
-        capabilityVersion: (_computerId: string, _instanceId: string, capability: string) =>
-          capability === RUNTIME_CAPABILITY.sessionCollaboration ? RUNTIME_SESSION_COLLABORATION_PROVENANCE_VERSION : 2,
+        capabilityVersion: (_computer: string, _instance: string, capability: string) => {
+          if (capability === RUNTIME_CAPABILITY.sessionMessageReconcile) return options.inlineMessages ? 1 : undefined;
+          return capability === RUNTIME_CAPABILITY.sessionCollaboration
+            ? RUNTIME_SESSION_COLLABORATION_PROVENANCE_VERSION
+            : 2;
+        },
         currentInstanceId: () => instanceId,
         supportsCapability: () => true,
       },

@@ -11,7 +11,12 @@ export function feedbackLanguage(content: ImContentV1): FeedbackLanguage {
       return block.type === "link" ? [block.label] : [];
     })
     .join(" ");
-  return /\p{Script=Han}/u.test(written || content.fallbackText) ? "zh" : "en";
+  return textLanguage(written || content.fallbackText);
+}
+
+/** Chinese when the text contains Chinese, otherwise English. */
+export function textLanguage(text: string): FeedbackLanguage {
+  return /\p{Script=Han}/u.test(text) ? "zh" : "en";
 }
 
 const NEXT = {

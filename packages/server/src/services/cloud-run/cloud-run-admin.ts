@@ -1,5 +1,7 @@
+import { setTimeout as delay } from "node:timers/promises";
 import type { ChannelName } from "@opentag/shared";
 import { z } from "zod";
+import { type OutboundDeadline, withOutboundDeadline } from "../outbound/deadline.js";
 import { readBoundedJson } from "./bounded-json.js";
 import { CloudRunAdminError } from "./errors.js";
 import {
@@ -66,7 +68,7 @@ export interface CloudRunAdminOptions {
   tokenProvider: AccessTokenProvider;
   apiBaseUrl?: string;
   regionalApiBaseUrl?: (region: string) => string;
-  sleep?: (ms: number) => Promise<void>;
+  sleep?: (ms: number, signal?: AbortSignal) => Promise<void>;
   now?: () => number;
   diagnosticSessionIds?: readonly string[];
 }
@@ -74,6 +76,9 @@ export interface CloudRunAdminOptions {
 // error retries POST: a timeout/5xx may already have created the deterministic resource.
 const VPC_REJECTION =
   "metadata.annotations[run.googleapis.com/vpc-access-egress]: The run.googleapis.com/vpc-access-egress annotation cannot be set without also setting the run.googleapis.com/vpc-access-connector annotation or the run.googleapis.com/network-interfaces annotation.";
+const RETRYABLE_READ_STATUSES = new Set([502, 503, 504]);
+
+class RetryableCloudRunReadError extends CloudRunAdminError {}
 function record(value: unknown): Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
@@ -108,7 +113,7 @@ export class CloudRunAdmin {
   readonly #tokenProvider: AccessTokenProvider;
   readonly #apiBaseUrl: string;
   readonly #regionalApiBaseUrl: (region: string) => string;
-  readonly #sleep: (ms: number) => Promise<void>;
+  readonly #sleep: (ms: number, signal?: AbortSignal) => Promise<void>;
   readonly #now: () => number;
   readonly #diagnosticSessionIds: readonly string[];
   constructor(config: CloudRunAdminConfig, options: CloudRunAdminOptions) {
@@ -117,7 +122,11 @@ export class CloudRunAdmin {
     this.#tokenProvider = options.tokenProvider;
     this.#apiBaseUrl = options.apiBaseUrl ?? "https://run.googleapis.com";
     this.#regionalApiBaseUrl = options.regionalApiBaseUrl ?? ((r) => `https://${r}-run.googleapis.com`);
-    this.#sleep = options.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
+    this.#sleep =
+      options.sleep ??
+      (async (ms, signal) => {
+        await delay(ms, undefined, { signal });
+      });
     this.#now = options.now ?? Date.now;
     const selection = z.array(z.string().uuid()).min(1).max(16).safeParse(options.diagnosticSessionIds);
     this.#diagnosticSessionIds = selection.success ? selection.data : [];
@@ -154,17 +163,15 @@ export class CloudRunAdmin {
     await options.onOperation?.(operation.name);
     return { outcome: "created", operationName: operation.name, instance: await this.#adopt(name, spec, true) };
   }
-  async getInstance(name: string, timeoutMs = this.#config.apiTimeoutMs): Promise<CloudRunInstanceView | undefined> {
+  async getInstance(
+    name: string,
+    timeoutMs = this.#config.apiTimeoutMs,
+    signal?: AbortSignal,
+  ): Promise<CloudRunInstanceView | undefined> {
     this.#assertResourceName(name);
-    const r = await this.#request(
-      "GET",
-      `${this.#apiBaseUrl}/v2/${name}`,
-      undefined,
-      Math.min(timeoutMs, this.#config.apiTimeoutMs),
-    );
-    if (r.status === 404) return undefined;
-    if (!r.ok) throw this.#httpError(r, "get");
-    const body = record(await readBoundedJson(r));
+    const result = await this.#read(name, "get", timeoutMs, signal);
+    if (result === undefined) return undefined;
+    const body = record(result);
     if (body.name !== name)
       throw new CloudRunAdminError("ownership_mismatch", "Cloud Run read returned a different resource name");
     if (typeof body.uid !== "string" || !body.uid || body.uid.length > 128)
@@ -203,11 +210,13 @@ export class CloudRunAdmin {
       },
     };
   }
-  async getOperation(name: string): Promise<{ done: boolean; errorCode?: number; resourceName?: string }> {
+  async getOperation(
+    name: string,
+    timeoutMs = this.#config.apiTimeoutMs,
+    signal?: AbortSignal,
+  ): Promise<{ done: boolean; errorCode?: number; resourceName?: string }> {
     this.#assertOperationName(name);
-    const r = await this.#request("GET", `${this.#apiBaseUrl}/v2/${name}`);
-    if (!r.ok) throw this.#httpError(r, "operation-get");
-    const body = record(await readBoundedJson(r));
+    const body = record(await this.#read(name, "operation-get", timeoutMs, signal));
     if (body.name !== name) throw new CloudRunAdminError("ownership_mismatch", "Cloud Run operation identity changed");
     const response = record(body.response),
       error = record(body.error);
@@ -483,11 +492,59 @@ export class CloudRunAdmin {
     if (!name.startsWith(prefix) || !/^[a-zA-Z0-9_-]{1,200}$/.test(name.slice(prefix.length)))
       throw new CloudRunAdminError("invalid", "Cloud Run operation name is outside the configured project/region");
   }
+  async #read(
+    name: string,
+    operation: "get" | "operation-get",
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    if (timeoutMs <= 0) throw new CloudRunAdminError("unknown", "Cloud Run Admin GET deadline exceeded");
+    return withOutboundDeadline(
+      {
+        timeoutMs: Math.min(timeoutMs, this.#config.apiTimeoutMs),
+        signal,
+        failure: () => new CloudRunAdminError("unknown", "Cloud Run Admin GET deadline exceeded or cancelled"),
+      },
+      async (deadline) => {
+        const response = await this.#readResponse(name, operation, deadline);
+        if (response.status === 404 && operation === "get") {
+          void response.body?.cancel().catch(() => undefined);
+          return undefined;
+        }
+        if (!response.ok) throw this.#httpError(response, operation);
+        return await readBoundedJson(response);
+      },
+    );
+  }
+  async #readResponse(name: string, operation: string, deadline: OutboundDeadline): Promise<Response> {
+    for (let attempt = 0; ; attempt++) {
+      deadline.throwIfEnded();
+      let failure: CloudRunAdminError;
+      try {
+        const response = await this.#request(
+          "GET",
+          `${this.#apiBaseUrl}/v2/${name}`,
+          undefined,
+          deadline.remainingMs(),
+          deadline.signal,
+        );
+        if (!RETRYABLE_READ_STATUSES.has(response.status)) return response;
+        failure = this.#httpError(response, operation);
+      } catch (error) {
+        if (!(error instanceof RetryableCloudRunReadError)) throw error;
+        failure = error;
+      }
+      const backoffMs = 150 * 2 ** attempt;
+      if (attempt >= 2 || deadline.remainingMs() <= backoffMs) throw failure;
+      await this.#sleep(backoffMs, deadline.signal);
+    }
+  }
   async #request(
     method: string,
     url: string,
     body?: Record<string, unknown>,
     timeoutMs = this.#config.apiTimeoutMs,
+    signal?: AbortSignal,
   ): Promise<Response> {
     let token: string;
     try {
@@ -499,17 +556,24 @@ export class CloudRunAdmin {
         createRejected: method === "POST",
       });
     }
+    signal?.throwIfAborted();
     try {
       return await this.#fetch(url, {
         method,
         redirect: "error",
         headers: { authorization: `Bearer ${token}`, ...(body ? { "content-type": "application/json" } : {}) },
         ...(body ? { body: JSON.stringify(body) } : {}),
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: signal ?? AbortSignal.timeout(timeoutMs),
       });
     } catch (error) {
       if (error instanceof CloudRunAdminError) throw error;
       // Never attach transport causes or remote field errors: either may echo submitted secrets.
+      if (
+        method === "GET" &&
+        !signal?.aborted &&
+        !(error instanceof Error && (error.name === "AbortError" || error.name === "TimeoutError"))
+      )
+        throw new RetryableCloudRunReadError("unknown", "Cloud Run Admin GET transport failed");
       throw new CloudRunAdminError("unknown", `Cloud Run Admin ${method} transport failed`);
     }
   }

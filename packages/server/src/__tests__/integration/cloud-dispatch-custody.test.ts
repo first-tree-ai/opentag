@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   computeDirectInputHash,
   computeRuntimeImSteerInputHash,
+  computeTurnResultHash,
   type DirectImMessageDeliveryRequest,
   type RunnerServerFrame,
   type RuntimeImSteerRequest,
@@ -21,9 +22,11 @@ import {
   sessions,
   users,
 } from "../../db/schema/index.js";
+import { createServerDiagnosticReporter } from "../../observability/diagnostics.js";
 import { ConnectionRegistry } from "../../runtime/connection-registry.js";
 import { runImDeliveryExpiry } from "../../runtime/im-delivery-janitor.js";
 import { ImDeliveryWorker } from "../../runtime/im-delivery-worker.js";
+import type { ImDeliveryWorkerInput } from "../../runtime/im-delivery-worker.types.js";
 import { PostgresRuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
 import { AgentService } from "../../services/agents/index.js";
 import { ComputerService } from "../../services/computers/index.js";
@@ -272,7 +275,10 @@ function makeOwner() {
   return { hub, fence, custody, grants, owner };
 }
 
-function makeWorker(owner: CloudDeliveryOwner) {
+function makeWorker(
+  owner: CloudDeliveryOwner,
+  options: Pick<ImDeliveryWorkerInput, "now" | "onDiagnostic" | "onMetric" | "logger"> = {},
+) {
   return new ImDeliveryWorker({
     assembler: new EffectiveRuntimeSnapshotAssembler(client.database),
     database: client.database,
@@ -286,6 +292,7 @@ function makeWorker(owner: CloudDeliveryOwner) {
       ensureEnvironmentAllocated: async () => "ready",
     },
     intervalMs: 60_000,
+    ...options,
   });
 }
 
@@ -334,6 +341,223 @@ function deliveryRequest(input: {
 }
 
 describe("E4 Cloud dispatch custody on real PostgreSQL", () => {
+  it.each([
+    {
+      change: "delivery_batch",
+      code: "IM_DELIVERY_BATCH_CHANGED",
+      expectedFrame: "delivery:run",
+      expectedState: "accepted",
+    },
+    {
+      change: "steer_batch",
+      code: "IM_DELIVERY_BATCH_CHANGED",
+      expectedFrame: "delivery:steer",
+      expectedState: "steered",
+    },
+    {
+      change: "target_ended",
+      code: "IM_DELIVERY_STEER_TARGET_ENDED",
+      expectedFrame: "delivery:run",
+      expectedState: "accepted",
+    },
+  ] as const)(
+    "defers $change through the real Cloud owner and worker before sending, then retries once",
+    async ({ change, code, expectedFrame, expectedState }) => {
+      const f = await cloudScope();
+      const { hub, fence, custody, owner, grants } = makeOwner();
+      let clock = Date.now() + 1_000;
+      const sent: RunnerServerFrame[] = [];
+      const jobs: Promise<void>[] = [];
+      let connection: ReturnType<CloudRuntimeFence["attach"]>;
+      const socket: RunnerControlSocket = {
+        close() {},
+        send(frame) {
+          sent.push(frame);
+          if (frame.type === "delivery:run")
+            jobs.push(
+              owner.handleDeliveryReceived(connection, {
+                deliveryId: frame.delivery.deliveryId,
+                requestId: frame.requestId,
+                turnId: `cloud-turn-${frame.delivery.deliveryId}`,
+              }),
+            );
+          if (frame.type === "delivery:steer")
+            jobs.push(
+              (async () => {
+                const [row] = await client.database
+                  .select()
+                  .from(imMessageDeliveries)
+                  .where(eq(imMessageDeliveries.id, frame.steer.deliveryId));
+                expect(row?.dispatchPayload).toEqual(frame.steer);
+                await owner.handleSteerResult(connection, {
+                  type: "delivery:steer:result",
+                  requestId: frame.requestId,
+                  inputHash: row?.dispatchInputHash ?? "",
+                  result: {
+                    type: "im:steer:result",
+                    requestId: frame.requestId,
+                    deliveryId: frame.steer.deliveryId,
+                    sessionId: frame.steer.sessionId,
+                    placementGeneration: 1,
+                    rootDeliveryId: frame.steer.rootDeliveryId,
+                    expectedTurnId: frame.steer.expectedTurnId,
+                    status: "steered",
+                  },
+                });
+              })(),
+            );
+        },
+      };
+      hub.attach(f.scope, socket);
+      hub.markReady(f.scope, READINESS, socket);
+      connection = fence.attach({
+        computerId: f.cloud.computerId,
+        installationId: randomUUID(),
+        scope: f.scope,
+        socket,
+        imInputVersion: 1,
+      });
+      const pending = [];
+      for (let index = 0; index < 3; index += 1) {
+        const row = await agedPendingDelivery(f.scope.sessionId);
+        await client.database
+          .update(imMessageDeliveries)
+          .set({ expiresAt: new Date(clock + 60_000), nextAttemptAt: new Date(clock - 1_000 + index) })
+          .where(eq(imMessageDeliveries.id, row.deliveryId));
+        await client.database
+          .update(imMessages)
+          .set({ occurredAt: new Date(clock + index) })
+          .where(eq(imMessages.id, row.messageId));
+        pending.push(row);
+      }
+      const [root, first, last] = pending;
+      if (!root || !first || !last) throw new Error("Missing Cloud batch fixture");
+      if (change !== "delivery_batch") {
+        const request = deliveryRequest({ ...root, sessionId: f.scope.sessionId, agentId: f.agent.id });
+        await owner.dispatchDelivery({
+          computerId: f.cloud.computerId,
+          installationId: connection.installationId,
+          request,
+          inputHash: computeDirectInputHash(request),
+        });
+        await Promise.all(jobs);
+        await client.database
+          .update(imMessageDeliveries)
+          .set({ nextAttemptAt: new Date(clock + 60_000) })
+          .where(eq(imMessageDeliveries.id, root.deliveryId));
+        sent.length = 0;
+      }
+      const mutate = async () => {
+        if (change === "target_ended") {
+          const body = {
+            type: "turn:report" as const,
+            requestId: randomUUID(),
+            deliveryId: root.deliveryId,
+            turnId: `cloud-turn-${root.deliveryId}`,
+            sessionId: f.scope.sessionId,
+            agentId: f.agent.id,
+            placementGeneration: 1,
+            outcome: "completed" as const,
+            executionEffects: "completed" as const,
+            traceSummary: { lastSequence: 0, droppedEvents: 0 },
+          };
+          expect(
+            await custody.recordTurn(
+              { ...body, resultHash: computeTurnResultHash(body) },
+              {
+                computerId: f.cloud.computerId,
+                installationId: connection.installationId,
+                instanceId: connection.instanceId,
+                signal: new AbortController().signal,
+              },
+            ),
+          ).toBe("recorded");
+        } else
+          await client.database
+            .update(imMessageDeliveries)
+            .set({ nextAttemptAt: new Date(clock + 60_000) })
+            .where(eq(imMessageDeliveries.id, last.deliveryId));
+      };
+      const direct = custody.beginDeliveryDispatch.bind(custody);
+      const steer = custody.beginSteerDispatch.bind(custody);
+      const admission =
+        change === "delivery_batch"
+          ? vi.spyOn(custody, "beginDeliveryDispatch").mockImplementationOnce(async (...args) => {
+              expect(args[0].batch).toHaveLength(2);
+              await mutate();
+              return direct(...args);
+            })
+          : vi.spyOn(custody, "beginSteerDispatch").mockImplementationOnce(async (...args) => {
+              expect(args[0].batch).toHaveLength(1);
+              await mutate();
+              return steer(...args);
+            });
+      const error = vi.fn();
+      const diagnostic = vi.fn(createServerDiagnosticReporter(() => ({ error }) as never));
+      const warn = vi.fn();
+      const metric = vi.fn();
+      const worker = makeWorker(owner, {
+        now: () => new Date(clock),
+        onDiagnostic: diagnostic,
+        onMetric: metric,
+        logger: { debug: vi.fn(), info: vi.fn(), warn, error },
+      });
+      try {
+        await worker.runOnce();
+        expect(admission).toHaveBeenCalledTimes(1);
+        const headId = change === "delivery_batch" ? root.deliveryId : first.deliveryId;
+        const [row] = await client.database
+          .select()
+          .from(imMessageDeliveries)
+          .where(eq(imMessageDeliveries.id, headId));
+        expect(row).toMatchObject({
+          state: "pending",
+          attemptCount: 1,
+          dispatchRequestId: null,
+          dispatchPayload: null,
+          steerTargetDeliveryId: null,
+          turnId: null,
+          lastErrorCode: code,
+          nextAttemptAt: new Date(clock + 2_000),
+        });
+        expect(sent.filter((frame) => frame.type === "delivery:run" || frame.type === "delivery:steer")).toEqual([]);
+        expect(diagnostic).not.toHaveBeenCalled();
+        expect(error).not.toHaveBeenCalled();
+        expect(warn).toHaveBeenCalledWith(
+          expect.objectContaining({ code, deliveryId: headId, retryDelayMs: 2_000 }),
+          "IM delivery dispatch retry scheduled",
+        );
+        expect(metric.mock.calls.filter(([value]) => value.name === "retry")).toEqual([[{ name: "retry", value: 1 }]]);
+        await client.database
+          .update(imMessageDeliveries)
+          .set({ nextAttemptAt: new Date(0) })
+          .where(eq(imMessageDeliveries.id, last.deliveryId));
+        clock += 2_001;
+        await worker.runOnce();
+        await Promise.all(jobs);
+        const frames = sent.filter((frame) => frame.type === "delivery:run" || frame.type === "delivery:steer");
+        expect(frames).toHaveLength(1);
+        expect(frames[0]?.type).toBe(expectedFrame);
+        const rows = await client.database
+          .select()
+          .from(imMessageDeliveries)
+          .where(eq(imMessageDeliveries.sessionId, f.scope.sessionId));
+        expect(rows.find((row) => row.id === headId)).toMatchObject({
+          state: expectedState,
+          attemptCount: 2,
+        });
+        expect(rows.find((row) => row.id === last.deliveryId)?.state).toBe("steered");
+        expect(diagnostic).not.toHaveBeenCalled();
+        expect(error).not.toHaveBeenCalled();
+      } finally {
+        admission.mockRestore();
+        await worker.stop();
+        await Promise.all(jobs);
+        grants.close();
+      }
+    },
+  );
+
   it("merges ordered Cloud inputs and steers the remaining batch into the accepted Turn", async () => {
     const cloud = await cloudScope();
     const { hub, fence, owner, grants } = makeOwner();

@@ -54,7 +54,9 @@ export type DeliveryDispatchStatus =
   | "conflict"
   | "stale_generation"
   | "claimed"
-  | "inbound_pending";
+  | "inbound_pending"
+  | "batch_changed";
+export type SteerDispatchStatus = DeliveryDispatchStatus | "target_ended";
 export type DeliveryReleaseStatus = "released" | "already_released" | "conflict";
 export type SteerCustodyStatus = "steered" | "already_steered" | "conflict" | "stale_generation";
 export type SteerReleaseStatus = "released" | "already_released" | "conflict";
@@ -85,7 +87,7 @@ export interface RuntimeCustodyStore extends RuntimeCustodyStoreDispatchRelease 
     request: RuntimeImSteerRequest,
     inputHash: string,
     context: DeliveryDispatchContext,
-  ): Promise<DeliveryDispatchStatus>;
+  ): Promise<SteerDispatchStatus>;
   recordSteered(
     request: RuntimeImSteerRequest,
     inputHash: string,
@@ -350,7 +352,8 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       if (sandbox && (sandbox.lifecycle !== "ready" || sandbox.idleReclaimAt !== null)) return "claimed";
       const existing = await this.#dispatchAdmission(transaction, scope, request.requestId, inputHash);
       if (existing) return existing;
-      if (!(await reserveImBatch(transaction, request, this.#now()))) return "conflict";
+      const batch = await reserveImBatch(transaction, request, this.#now());
+      if (batch !== "reserved") return batch;
       const [dispatched] = await transaction
         .update(imMessageDeliveries)
         .set({
@@ -418,7 +421,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
     request: RuntimeImSteerRequest,
     inputHash: string,
     context: DeliveryDispatchContext,
-  ): Promise<DeliveryDispatchStatus> {
+  ): Promise<SteerDispatchStatus> {
     return this.#database.transaction(async (transaction) => {
       await lockImAgentCustody(transaction, request.agentId);
       const scope = await this.#deliveryScope(transaction, request.deliveryId);
@@ -428,8 +431,10 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       const existing = await this.#dispatchAdmission(transaction, scope, request.requestId, inputHash);
       if (existing) return existing;
       if (scope.delivery.steerTargetDeliveryId !== null) return "conflict";
-      if (!(await this.#steerTargetMatches(transaction, scope, request, context))) return "conflict";
-      if (!(await reserveImBatch(transaction, request, this.#now()))) return "conflict";
+      const target = await this.#steerTargetStatus(transaction, scope, request, context);
+      if (target !== "matches") return target;
+      const batch = await reserveImBatch(transaction, request, this.#now());
+      if (batch !== "reserved") return batch;
       const [dispatched] = await transaction
         .update(imMessageDeliveries)
         .set({
@@ -469,7 +474,7 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
       ) {
         return "conflict";
       }
-      if (!(await this.#steerTargetMatches(transaction, scope, request, context, true))) return "conflict";
+      if ((await this.#steerTargetStatus(transaction, scope, request, context, true)) !== "matches") return "conflict";
       const written = await this.#writeSteered(transaction, request.deliveryId, semanticHash, request.rootDeliveryId);
       if (written) {
         await settleImBatch(transaction, request, request.rootDeliveryId, this.#now());
@@ -816,15 +821,17 @@ export class PostgresRuntimeCustodyStore implements RuntimeCustodyStore {
     return undefined;
   }
 
-  async #steerTargetMatches(
+  async #steerTargetStatus(
     transaction: DatabaseTransaction,
     scope: DeliveryScope,
     request: RuntimeImSteerRequest,
     context: DeliveryDispatchContext,
     allowReported = false,
-  ): Promise<boolean> {
+  ): Promise<"matches" | "target_ended" | "conflict"> {
     const target = await this.#deliveryScope(transaction, request.rootDeliveryId);
-    return Boolean(target && steerTargetMatches(scope, target, request, context, allowReported));
+    if (!target || !steerTargetMatches(scope, target, request, context)) return "conflict";
+    if (allowReported || target.delivery.reportedAt === null) return "matches";
+    return target.delivery.turnReport?.outcome === "completed" ? "target_ended" : "conflict";
   }
 
   async #absorbedTargetMatches(
@@ -1104,12 +1111,10 @@ function steerTargetMatches(
   target: DeliveryScope,
   request: RuntimeImSteerRequest,
   context: DeliveryDispatchContext,
-  allowReported = false,
 ): boolean {
   return (
     target.delivery.id === request.rootDeliveryId &&
     target.delivery.state === "accepted" &&
-    (allowReported || target.delivery.reportedAt === null) &&
     target.delivery.turnId === request.expectedTurnId &&
     target.delivery.sessionId === delivery.delivery.sessionId &&
     target.agentId === delivery.agentId &&

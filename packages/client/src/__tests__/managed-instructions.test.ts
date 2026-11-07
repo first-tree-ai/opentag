@@ -335,7 +335,7 @@ describe("renderManagedSystemPrompt shared visible/internal behavior", () => {
         "Long work adds only the milestone messages described above, and its final result, which is the done milestone, is still one self-contained message.",
       );
       expect(prompt).toContain(
-        "The done milestone is the one self-contained final result, not a separate completion message, and a start notice that was already sent, such as a scheduled task's start notification, counts as started.",
+        "The done milestone is the one self-contained final result, not a separate completion message.",
       );
     }
     for (const [prompt, cli] of [

@@ -71,8 +71,8 @@ export async function reserveImBatch(
   transaction: DatabaseTransaction,
   request: ImRequest,
   now: Date,
-): Promise<boolean> {
-  if (!request.batch) return true;
+): Promise<"reserved" | "batch_changed" | "conflict"> {
+  if (!request.batch) return "reserved";
   const ids = request.batch.map((member) => member.deliveryId);
   const rows = await transaction
     .select()
@@ -90,23 +90,29 @@ export async function reserveImBatch(
             row.messageId === member.imMessageId &&
             row.sessionId === request.sessionId &&
             row.placementGeneration === request.placementGeneration &&
-            row.attention === request.attention &&
-            row.state === "pending" &&
-            row.reason === null &&
-            row.dispatchRequestId === null &&
-            row.steerTargetDeliveryId === null &&
-            !row.lastErrorCode?.startsWith("IM_DELIVERY_CLAIM_") &&
-            row.expiresAt > now &&
-            row.nextAttemptAt <= now,
+            row.attention === request.attention,
         ),
     )
   )
-    return false;
+    return "conflict";
+  if (
+    rows.some(
+      (row) =>
+        row.state !== "pending" ||
+        row.reason !== null ||
+        row.dispatchRequestId !== null ||
+        row.steerTargetDeliveryId !== null ||
+        row.lastErrorCode?.startsWith("IM_DELIVERY_CLAIM_") ||
+        row.expiresAt <= now ||
+        row.nextAttemptAt > now,
+    )
+  )
+    return "batch_changed";
   await transaction
     .update(imMessageDeliveries)
     .set({ reason: IM_BATCH_PENDING_REASON, steerTargetDeliveryId: request.deliveryId })
     .where(inArray(imMessageDeliveries.id, ids));
-  return true;
+  return "reserved";
 }
 
 export async function settleImBatch(

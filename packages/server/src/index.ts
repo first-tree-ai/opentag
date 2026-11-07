@@ -140,7 +140,7 @@ import {
 import { SandboxIdleReclaimer } from "./services/sandboxes/idle-reclaimer.js";
 import { SandboxService } from "./services/sandboxes/index.js";
 import type { SandboxAllocationReconciliation } from "./services/sandboxes/sandbox-runner-service.js";
-import { ScheduleScheduler, ScheduleService } from "./services/schedules/index.js";
+import { ScheduledFailureNotifier, ScheduleScheduler, ScheduleService } from "./services/schedules/index.js";
 import { SessionCliProofService, SessionCollaborationService, SessionService } from "./services/sessions/index.js";
 import { AccountSetupService } from "./services/setup/index.js";
 import { S3SkillObjectStore, SkillObjectGc, SkillPresetService, SkillService } from "./services/skills/index.js";
@@ -964,7 +964,7 @@ export async function startServer(): Promise<void> {
     );
     const slackWorkingStore = new SlackWorkingStore(database);
     // Bound after the collaboration service exists; the service itself depends on this owner.
-    let runOutcomeNotifier: SessionCollaborationService | undefined;
+    let runOutcomeNotifier: ScheduledFailureNotifier | undefined;
     // Late-bound like the notifier: recovery schedules its reconcile through this same owner.
     let recoveryDomain: RuntimeDomainOwner | undefined;
     const sessionRecovery = new SessionRecoveryService({
@@ -1223,8 +1223,15 @@ export async function startServer(): Promise<void> {
       cloud: cloudSessionOwner,
       logger: serviceLogger("session-collaboration"),
     });
-    runOutcomeNotifier = sessionCollaborationService;
-    cloudSessionOwner?.setRunOutcomeNotifier(sessionCollaborationService);
+    const scheduledFailures = new ScheduledFailureNotifier({
+      database,
+      logger: serviceLogger("scheduled-failures"),
+      messenger: imFeedbackMessenger,
+      publicUrl: config.publicUrl,
+      runOutcomes: sessionCollaborationService,
+    });
+    runOutcomeNotifier = scheduledFailures;
+    cloudSessionOwner?.setRunOutcomeNotifier(scheduledFailures);
     const imDeliveryLogger = serviceLogger("im-delivery");
     /*
      * The MCP management plane. Every outbound request goes through one fetcher that enforces the
@@ -1285,6 +1292,7 @@ export async function startServer(): Promise<void> {
       database,
       dispatch: sessionCollaborationService,
       logger: serviceLogger("schedule-scheduler"),
+      missNotices: scheduledFailures,
       publicUrl: config.publicUrl,
       sessions: sessionService,
     });
@@ -1294,6 +1302,7 @@ export async function startServer(): Promise<void> {
       stopping ??= startClosingServerResources([
         ["schedule scheduler", () => scheduleScheduler.stop()],
         ["Session outcome notices", () => sessionCollaborationService.close()],
+        ["scheduled failure notices", () => scheduledFailures.close()],
         ["channel target poller", () => channelTargetPoller.stop()],
         ["sandbox idle reclaimer", () => sandboxIdleReclaimer?.stop()],
         ["IM delivery worker", () => imDeliveryWorker.stop()],

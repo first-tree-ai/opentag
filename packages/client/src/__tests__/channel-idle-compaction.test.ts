@@ -8,7 +8,6 @@ import {
   ChannelActivityStore,
   channelIdleExceeded,
   endChannelTurn,
-  isChannelDelivery,
   isChannelOutbox,
 } from "../runtime/channel-idle-compaction.js";
 
@@ -36,42 +35,10 @@ describe("channelIdleExceeded", () => {
   });
 });
 
-describe("channel classification", () => {
-  const feishu = {
-    provider: "feishu",
-    teamBrand: "feishu",
-    appId: "cli",
-    botOpenId: "ou",
-    chatId: "oc",
-    messageId: "om",
-  } as const;
-  const slack = {
-    provider: "slack",
-    appId: "A",
-    teamId: "T",
-    botUserId: "U",
-    channelId: "C",
-    messageTs: "1.1",
-  } as const;
-  const delivery = (providerRef: typeof feishu | typeof slack | object, replyRole?: "observer") =>
-    ({ content: { providerRef }, ...(replyRole ? { replyRole } : {}) }) as Parameters<typeof isChannelDelivery>[0];
-
-  it("treats a delivery without a provider thread as the Channel Session", () => {
-    expect(isChannelDelivery(delivery(feishu))).toBe(true);
-    expect(isChannelDelivery(delivery(slack))).toBe(true);
-  });
-
-  it("treats a delivery with a provider thread as the Thread Session", () => {
-    expect(isChannelDelivery(delivery({ ...feishu, threadId: "omt" }))).toBe(false);
-    expect(isChannelDelivery(delivery({ ...slack, threadTs: "1.0" }))).toBe(false);
-  });
-
-  it("keeps the observer copy of a thread message on the Channel Session", () => {
-    expect(isChannelDelivery(delivery({ ...feishu, threadId: "omt" }, "observer"))).toBe(true);
-  });
-
-  it("reads a Session message's kind from its outbox", () => {
+describe("isChannelOutbox", () => {
+  it("reads the Session's kind from its outbox", () => {
     expect(isChannelOutbox({ provider: "feishu", sessionKind: "channel", chatId: "oc" })).toBe(true);
+    expect(isChannelOutbox({ provider: "slack", sessionKind: "channel", channelId: "C" })).toBe(true);
     expect(isChannelOutbox({ provider: "feishu", sessionKind: "thread", chatId: "oc", threadId: "omt" })).toBe(false);
     expect(isChannelOutbox(undefined)).toBe(false);
   });

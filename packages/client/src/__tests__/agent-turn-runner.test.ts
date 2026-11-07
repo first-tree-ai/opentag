@@ -9,6 +9,7 @@ import {
   type RuntimeApprovalRequest,
   RuntimeApprovalRequestSchema,
   RuntimeFrameEnvelopeSchema,
+  type RuntimeImOutboxContext,
   type RuntimeImSteerRequest,
   ServerRuntimeBusinessFrameSchema,
   type TurnActivityRequest,
@@ -1930,7 +1931,9 @@ describe("AgentTurnRunner", () => {
   });
 });
 
-function outgoingHarness(options: { channelActivity?: AgentTurnRunnerOptions["channelActivity"] } = {}) {
+function outgoingHarness(
+  options: { channelActivity?: AgentTurnRunnerOptions["channelActivity"]; outboxContext?: RuntimeImOutboxContext } = {},
+) {
   const request = delivery();
   request.content.providerRef = {
     provider: "feishu",
@@ -1992,7 +1995,11 @@ function outgoingHarness(options: { channelActivity?: AgentTurnRunnerOptions["ch
       },
     } as unknown as SessionRuntimeManager,
     credentialEnvironment: {
-      prepare: vi.fn(async () => ({ path: "/tmp/provider-env.sh", provider: "feishu" as const })),
+      prepare: vi.fn(async () => ({
+        path: "/tmp/provider-env.sh",
+        provider: "feishu" as const,
+        ...(options.outboxContext ? { outboxContext: options.outboxContext } : {}),
+      })),
       cleanup: vi.fn(async () => undefined),
     },
     turnPlan: { prepare, cleanup: vi.fn(async () => undefined) },
@@ -2017,16 +2024,26 @@ function outgoingHarness(options: { channelActivity?: AgentTurnRunnerOptions["ch
 }
 
 describe("Channel Session idle compaction", () => {
-  function compactionHarness(idle: boolean) {
+  const CHANNEL = { provider: "feishu", sessionKind: "channel", chatId: "oc_1" } as const;
+  const THREAD = { provider: "feishu", sessionKind: "thread", chatId: "oc_1", threadId: "omt_1" } as const;
+
+  function compactionHarness(idle: boolean, outboxContext?: RuntimeImOutboxContext) {
     const beginTurn = vi.fn(async () => idle);
     const recordActivity = vi.fn(async () => undefined);
-    return { ...outgoingHarness({ channelActivity: { beginTurn, recordActivity } }), beginTurn, recordActivity };
+    return {
+      ...outgoingHarness({
+        channelActivity: { beginTurn, recordActivity },
+        ...(outboxContext ? { outboxContext } : {}),
+      }),
+      beginTurn,
+      recordActivity,
+    };
   }
   const promptOf = (prompt: ReturnType<typeof outgoingHarness>["prompt"]) =>
     (prompt.mock.calls[0] as unknown as [{ compactContext?: boolean }])[0];
 
   it("asks the Provider to compact when the Channel Session has been idle", async () => {
-    const { runner, request, prompt, beginTurn, recordActivity } = compactionHarness(true);
+    const { runner, request, prompt, beginTurn, recordActivity } = compactionHarness(true, CHANNEL);
     runner.start(liveOwner(request));
     await vi.waitFor(() => expect(recordActivity).toHaveBeenCalledWith(request.sessionId, expect.any(Number)));
     expect(beginTurn).toHaveBeenCalledWith(request.sessionId, expect.any(Number));
@@ -2034,18 +2051,17 @@ describe("Channel Session idle compaction", () => {
   });
 
   it("does not compact a Channel Session that was active recently", async () => {
-    const { runner, request, prompt, recordActivity } = compactionHarness(false);
+    const { runner, request, prompt, recordActivity } = compactionHarness(false, CHANNEL);
     runner.start(liveOwner(request));
     await vi.waitFor(() => expect(recordActivity).toHaveBeenCalled());
     expect(promptOf(prompt).compactContext).toBeUndefined();
   });
 
-  it("leaves a Thread Session alone", async () => {
-    const { runner, request, prompt, beginTurn, recordActivity, submit } = compactionHarness(true);
-    request.content.providerRef = {
-      ...request.content.providerRef,
-      threadId: "omt_1",
-    } as typeof request.content.providerRef;
+  it.each([
+    ["a Thread Session", THREAD],
+    ["a Session whose Server sent no outbox", undefined],
+  ])("leaves %s alone", async (_name, outboxContext) => {
+    const { runner, request, prompt, beginTurn, recordActivity, submit } = compactionHarness(true, outboxContext);
     runner.start(liveOwner(request));
     await vi.waitFor(() => expect(submit).toHaveBeenCalled());
     expect(beginTurn).not.toHaveBeenCalled();
@@ -2053,13 +2069,16 @@ describe("Channel Session idle compaction", () => {
     expect(promptOf(prompt).compactContext).toBeUndefined();
   });
 
-  it("compacts the Channel Session on an observer copy of a thread message", async () => {
-    const { runner, request, prompt, recordActivity } = compactionHarness(true);
+  it.each([
+    ["an observer copy of a thread message", "observer" as const],
+    ["a reply in an ended thread, with no reply role", undefined],
+  ])("compacts the Channel Session on %s", async (_name, replyRole) => {
+    const { runner, request, prompt, recordActivity } = compactionHarness(true, CHANNEL);
     request.content.providerRef = {
       ...request.content.providerRef,
       threadId: "omt_1",
     } as typeof request.content.providerRef;
-    request.replyRole = "observer";
+    if (replyRole) request.replyRole = replyRole;
     runner.start(liveOwner(request));
     await vi.waitFor(() => expect(recordActivity).toHaveBeenCalled());
     expect(promptOf(prompt).compactContext).toBe(true);

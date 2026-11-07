@@ -192,6 +192,8 @@ than the Runner's Turn report.
 input. [Channel Sessions](../messaging/thread-sessions.md#channel-session-idle-compaction) set it on the first Turn after
 8 idle hours. A conversation with no history compacts nothing. Compaction time counts against the Turn's deadline, and
 an interrupt during compaction aborts the Run. Any other failure emits a `provider_warning` and the Run continues.
+Cancelling Codex's request does not stop a compaction Turn that is still starting, so an abort keeps ownership until that
+Turn ends. If it cannot be stopped within 5 seconds, the runtime closes and the next Run starts a new App Server.
 
 | Provider | Mechanism | Native identity | Usage in the Turn report |
 | --- | --- | --- | --- |
@@ -199,7 +201,8 @@ an interrupt during compaction aborts the Run. Any other failure emits a `provid
 | Codex | `thread/compact/start` on the prepared App Server, after any execution-service rebind. It answers at once and compacts in its own native Turn, which must complete first because `turn/start` is refused until then. Its notifications do not reach the Run. | Same thread ID | Not included: the compaction Turn reports no token totals |
 | Pi | The `compact` RPC in the Run's process, before `prompt`. Pi's `compaction_start` and `compaction_end` events are handled as for threshold compaction, and a refused compaction, such as a Session too small to summarize, warns through `compaction_end`. | Same Session file | Included, from `compaction_end` |
 
-Cloud runs Pi and keeps the activity time in its continuity directory, so it survives with the Pi history.
+Cloud runs Pi and keeps the activity time in its continuity directory, so it survives with the Pi history. The Runner
+passes the execution's outbox context to the worker in its stdin document.
 
 ## Provider and Product Support
 

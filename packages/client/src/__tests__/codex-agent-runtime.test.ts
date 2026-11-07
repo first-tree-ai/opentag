@@ -208,33 +208,51 @@ describe("CodexAgentRuntime", () => {
     it("aborts while the compaction request is unanswered, with no Turn to interrupt", async () => {
       const client = new ScriptedCodexClient("complete");
       client.compaction = "hold";
-      let answer = () => undefined as void;
-      client.compactAck = new Promise<void>((resolve) => {
-        answer = resolve;
-      });
+      client.compactAck = new Promise<void>(() => undefined);
       const runtime = await compactedThread(client).open;
       const run = runtime.prompt({ runId: "run", input: input("work"), compactContext: true });
       await vi.waitFor(() => expect(client.call("thread/compact/start")).toBeDefined());
       await runtime.abort({ expectedRunId: "run" });
       client.finishCompaction();
-      answer();
       await expect(run).resolves.toMatchObject({ status: "aborted" });
       expect(client.interrupts).toEqual([]);
       expect(client.call("turn/start")).toBeUndefined();
       await runtime.close();
     });
 
-    it("still aborts when the compaction Turn cannot be interrupted", async () => {
+    it("interrupts a compaction Turn that starts after the abort, before the Run settles", async () => {
+      const client = new ScriptedCodexClient("complete");
+      client.compaction = "hold";
+      client.compactAck = new Promise<void>(() => undefined);
+      const runtime = await compactedThread(client).open;
+      let settled = false;
+      const run = runtime.prompt({ runId: "run", input: input("work"), compactContext: true }).finally(() => {
+        settled = true;
+      });
+      await vi.waitFor(() => expect(client.call("thread/compact/start")).toBeDefined());
+      await runtime.abort({ expectedRunId: "run" });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(settled).toBe(false);
+      client.startCompaction();
+      await expect(run).resolves.toMatchObject({ status: "aborted" });
+      expect(client.interrupts).toEqual([{ threadId: "thread-1", turnId: "compact-turn" }]);
+      expect(runtime.state.phase).toBe("idle");
+      expect(client.closed).toBe(false);
+      await runtime.close();
+    });
+
+    it("closes the runtime when the compaction Turn cannot be interrupted", async () => {
       const client = new ScriptedCodexClient("complete");
       client.compaction = "hold";
       client.interruptError = new Error("interrupt failed");
       const runtime = await compactedThread(client).open;
       const run = runtime.prompt({ runId: "run", input: input("work"), compactContext: true });
       await vi.waitFor(() => expect(client.call("thread/compact/start")).toBeDefined());
-      await runtime.abort({ expectedRunId: "run" });
-      await expect(run).resolves.toMatchObject({ status: "aborted" });
+      await runtime.abort({ expectedRunId: "run" }).catch(() => undefined);
+      await expect(run).resolves.toMatchObject({ output: [] });
       expect(client.call("turn/start")).toBeUndefined();
-      await runtime.close();
+      await vi.waitFor(() => expect(runtime.state.phase).toBe("closed"));
+      expect(client.closed).toBe(true);
     });
 
     it("fails the Run when the Run deadline ends during compaction", async () => {
@@ -407,7 +425,7 @@ class ScriptedCodexClient implements InteractiveCodexAppServerClient {
     this.calls.push({ method: "initialize", params: { clientVersion } });
   }
 
-  async request(method: string, params: unknown): Promise<unknown> {
+  async request(method: string, params: unknown, signal?: AbortSignal): Promise<unknown> {
     this.calls.push({ method, params });
     if (method === "thread/start") return { thread: { id: "thread-1" } };
     if (method === "thread/resume") {
@@ -419,7 +437,11 @@ class ScriptedCodexClient implements InteractiveCodexAppServerClient {
       if (this.compaction === "refused") throw new Error("compaction refused");
       if (this.compaction === "refused-raw") throw "refused";
       if (this.compactAck) {
-        await this.compactAck;
+        // Like the real App Server client, an abort cancels only this local waiter.
+        await new Promise<void>((resolve, reject) => {
+          signal?.addEventListener("abort", () => reject(new Error("request aborted")), { once: true });
+          void this.compactAck?.then(resolve);
+        });
         return {};
       }
       this.#emitCompaction();
@@ -546,6 +568,13 @@ class ScriptedCodexClient implements InteractiveCodexAppServerClient {
       },
     });
     this.complete();
+  }
+
+  startCompaction(): void {
+    this.#emit({
+      method: "turn/started",
+      params: { threadId: "thread-1", turn: { id: "compact-turn", items: [], status: "inProgress" } },
+    });
   }
 
   finishCompaction(): void {

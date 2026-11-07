@@ -37,7 +37,7 @@ import {
   beginChannelTurn,
   type ChannelActivityStore,
   endChannelTurn,
-  isChannelDelivery,
+  isChannelOutbox,
 } from "./channel-idle-compaction.js";
 import { ImCredentialEnvironmentError } from "./im-credential-environment-manager.js";
 import type { ImResourceFetcher } from "./im-resource-fetcher.js";
@@ -657,13 +657,14 @@ export class AgentTurnRunner {
     let turnPlanInput: ProviderCliTurnPlanPrepareInput | undefined;
     let preparedExecutionId: string | undefined;
     let credentialPrepared = false;
-    const channelTurn = { sessionId: owner.request.sessionId, channel: isChannelDelivery(owner.request) };
+    const channelTurn = { sessionId: owner.request.sessionId, channel: false };
     const phaseTimings: TurnPhaseTimings = {};
     try {
       signal.throwIfAborted();
       const started = await this.#startTurn(owner, signal, interruption !== undefined);
       credentialPrepared = true;
       preparedExecutionId = started.preparedExecutionId;
+      channelTurn.channel = isChannelOutbox(started.credentials.outboxContext);
       phaseTimings.credentialPrepareMs = started.credentialPrepareMs;
       const turnPlanStartedAt = this.#now();
       turnPlanInput = await this.#prepareTurnPlanForRun(owner, turn, started.credentials, signal);

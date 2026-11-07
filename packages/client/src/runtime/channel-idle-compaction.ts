@@ -1,5 +1,5 @@
 import { resolve } from "node:path";
-import type { DirectImMessageDeliveryRequest, RuntimeImOutboxContext } from "@opentag/shared";
+import type { RuntimeImOutboxContext } from "@opentag/shared";
 import { createLogger } from "../observability/logger.js";
 import { ensurePrivateDirectory, readDurableJson, writeDurableJson } from "../storage/durable-file.js";
 import { resolveOpenTagHomeLayout } from "../storage/home-layout.js";
@@ -18,16 +18,10 @@ export function channelIdleExceeded(lastActivityAt: string | undefined, now: num
 }
 
 /**
- * Whether an IM delivery belongs to a Channel Session. A Thread Session exists only for an event
- * with a provider thread, and an observer copy of a thread message always goes to the Channel.
+ * Whether a visible Session is a Channel Session, from the outbox the Server derives from the Session
+ * itself. The message cannot answer this: a reply in an ended thread reaches the Channel Session with
+ * its thread reference intact. No outbox, as for an internal Session, is never a Channel Session.
  */
-export function isChannelDelivery(request: Pick<DirectImMessageDeliveryRequest, "content" | "replyRole">): boolean {
-  if (request.replyRole === "observer") return true;
-  const reference = request.content.providerRef;
-  return reference.provider === "feishu" ? !reference.threadId : !reference.threadTs;
-}
-
-/** Whether a Session message's visible target is a Channel Session; internal Sessions have no outbox. */
 export function isChannelOutbox(outboxContext: RuntimeImOutboxContext | undefined): boolean {
   return outboxContext?.sessionKind === "channel";
 }

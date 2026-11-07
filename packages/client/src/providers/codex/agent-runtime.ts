@@ -183,6 +183,7 @@ const CODEX_COMPACTION_STOP_MS = 5_000;
 
 interface CodexCompaction {
   readonly completed: ReturnType<typeof deferred<ParsedTurn>>;
+  stopping?: boolean;
   turnId?: string;
 }
 
@@ -422,14 +423,28 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     else logger.info({ runId: context.runId }, "Codex compacted the Session context");
   }
 
-  /** An abandoned compaction Turn would refuse the next `turn/start`, so it is interrupted first. */
+  /**
+   * An abandoned compaction Turn would refuse the next `turn/start`, and cancelling the request does
+   * not stop one still starting, so this keeps ownership until the Turn ends. If it cannot be stopped
+   * in time, the runtime closes and the next Run gets a new App Server rather than a busy thread.
+   */
   async #stopCompaction(compaction: CodexCompaction): Promise<void> {
+    compaction.stopping = true;
+    if (compaction.turnId) this.#interruptCompaction(compaction, compaction.turnId);
     try {
-      if (compaction.turnId) await this.#client.interrupt(this.#threadId, compaction.turnId);
       await settleUnlessAborted(compaction.completed.promise, AbortSignal.timeout(CODEX_COMPACTION_STOP_MS));
     } catch (error) {
       logger.warn({ code: "compaction_stop_failed", error: String(error) }, "Codex compaction did not stop in time");
+      this.closeForProviderFailure();
     }
+  }
+
+  #interruptCompaction(compaction: CodexCompaction, turnId: string): void {
+    void this.#client.interrupt(this.#threadId, turnId).catch((cause: unknown) => {
+      compaction.completed.reject(
+        new AgentProviderError("provider_error", "Codex compaction was not interrupted", { cause }),
+      );
+    });
   }
 
   /** True when the compaction Turn owns the notification, or it describes that Turn ending. */
@@ -441,6 +456,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     }
     if (message.method === "turn/started") {
       compaction.turnId = parseTurn(params?.turn, "turn/started").id;
+      if (compaction.stopping) this.#interruptCompaction(compaction, compaction.turnId);
       return true;
     }
     if (message.method === "turn/completed") {

@@ -39,7 +39,6 @@ import {
   beginChannelTurn,
   ChannelActivityStore,
   endChannelTurn,
-  isChannelDelivery,
   isChannelOutbox,
 } from "../runtime/channel-idle-compaction.js";
 import { serializeEnvironment } from "../runtime/im-credential-environment-manager.js";
@@ -444,10 +443,10 @@ function cloudPiDiagnostics(
 /** Its activity time lives beside the Pi history it describes, and survives a native rootfs reset with it. */
 function cloudChannelTurn(request: RunnerCloudWorkerRequest, continuityDirectory: string, now = Date.now) {
   const activity = new ChannelActivityStore(continuityDirectory);
-  const turn =
-    request.kind === "turn"
-      ? { sessionId: request.delivery.sessionId, channel: isChannelDelivery(request.delivery) }
-      : { sessionId: request.message.targetSessionId, channel: isChannelOutbox(request.outboxContext) };
+  const turn = {
+    sessionId: request.kind === "turn" ? request.delivery.sessionId : request.message.targetSessionId,
+    channel: isChannelOutbox(request.outboxContext),
+  };
   return {
     begin: () => beginChannelTurn(activity, turn, now()),
     end: () => endChannelTurn(activity, turn, now()),

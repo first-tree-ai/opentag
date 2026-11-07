@@ -67,6 +67,7 @@ import {
 } from "./agent-turn-runner.js";
 import { AgentWorkspaceManager } from "./agent-workspace.js";
 import { BackgroundWorkLedgers } from "./background-work-ledger.js";
+import { ChannelActivityStore } from "./channel-idle-compaction.js";
 import { ClientRuntime, type ClientRuntimeOptions } from "./client-runtime.js";
 import { ContextTreeManager, resolveContextTreePackage } from "./context-tree.js";
 import { InterruptedWorkRecovery } from "./interrupted-work-recovery.js";
@@ -895,10 +896,12 @@ export async function createClientRuntime(
   });
   // Durable input of accepted IM Turns, for their one automatic retry (Local only).
   const turnRetries = new TurnRetryStore(options.home);
+  const channelActivity = ChannelActivityStore.forHome(options.home);
   let runner: AgentTurnRunner;
   const sessionMessageInbox = new SessionMessageInbox({
     admission,
     backgroundWork,
+    channelActivity,
     cliCommand: options.cliCommand ?? "opentag",
     /* v8 ignore start -- late-bound adapter; the AgentTurnRunner methods have their own tests. */
     joinableRuns: {
@@ -958,6 +961,7 @@ export async function createClientRuntime(
   runner = new AgentTurnRunner({
     backgroundWork,
     bindingStore,
+    channelActivity,
     connection,
     custody,
     logger: moduleLogger("turn"),

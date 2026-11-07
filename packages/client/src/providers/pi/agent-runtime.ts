@@ -338,7 +338,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       await this.#restoreSessionState(state, context);
       this.#diagnostics.end();
       this.#diagnostics.start("prompt_acceptance", this.#promptAcceptanceTimeoutMs);
-      const accepted = await this.#requestPrompt(client, piInput(request), context.signal);
+      const accepted = await this.#compactThenPrompt(client, request, context.signal);
       if (accepted) {
         await this.#checkNativePrompt(client, context.signal);
         this.#promptAccepted?.resolve();
@@ -372,6 +372,34 @@ export class PiAgentRuntime extends BaseAgentRuntime {
       this.#diagnostics.completeCleanup(cleanupFailure, client?.exitStatus);
     }
     return piResultAfterCleanup(result, cleanupFailure);
+  }
+
+  async #compactThenPrompt(client: PiRpcClient, request: AgentPromptRequest, signal: AbortSignal): Promise<boolean> {
+    if (request.compactContext && !(await this.#compactContext(client, signal))) return false;
+    return this.#requestPrompt(client, piInput(request), signal);
+  }
+
+  /**
+   * Pi compacts through its `compact` RPC, on the same Session file. Its `compaction_end` already
+   * carries any warning and the summary's usage, so a refused command only moves on to the prompt. The summary call has no timeout of
+   * its own; it stays bounded by the Run signal, and an interrupt closes the process as it does for
+   * threshold compaction. Returns false when that close already owns the aborted terminal.
+   */
+  async #compactContext(client: PiRpcClient, signal: AbortSignal): Promise<boolean> {
+    this.#promptPhase = "awaiting-ack";
+    try {
+      await client.request({ type: "compact" }, signal, { timeoutMs: null });
+      return true;
+    } catch (error) {
+      if (!(error instanceof PiRpcError)) throw error;
+      if (error.code === "command") return true;
+      if (this.#closingForAbort && error.code === "aborted") {
+        this.#promptAccepted?.reject(error);
+        this.#diagnostics.failure(error, client.exitStatus, true);
+        return false;
+      }
+      throw error;
+    }
   }
 
   /**
@@ -522,7 +550,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     if (!this.#promptAccepted) throw new AgentRuntimeError("run_mismatch", "there is no active Pi prompt");
     await this.#promptAccepted.promise;
     if (this.#nativeResources && this.#terminalClaimed) {
-      throw new AgentRuntimeError("run_mismatch", "Pi settled before steer was accepted");
+      throw new AgentRuntimeError("steer_not_sent", "Pi settled before steer was accepted");
     }
     const client = this.#client;
     /* v8 ignore next -- the client remains owned until the active Provider Run leaves executeRun. */
@@ -1021,7 +1049,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     if (type === "compaction_end") {
       const result =
         message.result === undefined ? undefined : requireRecord(message.result, "Pi compaction_end result is invalid");
-      if (result === undefined) {
+      if (result === undefined && !isCompactionSkip(message)) {
         await this.requireProviderContext().emit({
           type: "provider_warning",
           code: message.aborted === true ? "pi_compaction_aborted" : "pi_compaction_failed",
@@ -1759,6 +1787,14 @@ function compactionDiagnostic(message: Readonly<Record<string, unknown>>): strin
 }
 
 const COMPACTION_DIAGNOSTIC_MAX_BYTES = 2 * 1024;
+
+/**
+ * A requested compaction Pi declined because there was nothing to summarize. It is not a failure, and
+ * warning about it would bury real ones in a rarely used Session, which meets this on every idle Turn.
+ */
+function isCompactionSkip(message: Readonly<Record<string, unknown>>): boolean {
+  return message.reason === "manual" && /Nothing to compact|Already compacted/.test(String(message.errorMessage));
+}
 
 function isNonNegativeNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;

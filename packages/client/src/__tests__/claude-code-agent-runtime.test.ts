@@ -301,6 +301,148 @@ describe("ClaudeCodeAgentRuntime", () => {
     }
   });
 
+  describe("compactContext", () => {
+    const BINDING = { providerId: "claude-code", schemaVersion: 1, payload: { sessionId: SESSION_ID } };
+    const compacted = [
+      { type: "system", subtype: "status", status: "compacting", session_id: SESSION_ID },
+      { type: "system", subtype: "compact_boundary", session_id: SESSION_ID },
+      { type: "result", subtype: "success", is_error: false, session_id: SESSION_ID, result: "" },
+    ];
+
+    function compactionHarness(compactMessages: readonly Record<string, unknown>[], compactFailure?: Error) {
+      const processes: ScriptedClaudeCodeProcess[] = [];
+      const events: AgentRuntimeEvent[] = [];
+      const factory = new ClaudeCodeAgentRuntimeFactory({
+        createSessionId: () => SESSION_ID,
+        createProcess: (_cwd, args) => {
+          const process = new ScriptedClaudeCodeProcess(args, "complete");
+          process.onCompact = { messages: compactMessages, failure: compactFailure };
+          processes.push(process);
+          return process;
+        },
+      });
+      const open = () =>
+        factory.resume({
+          ...createRequest((event) => {
+            events.push(event);
+          }),
+          binding: BINDING,
+        });
+      return { processes, events, open, factory };
+    }
+
+    it("compacts the same native Session in a separate process before the Run", async () => {
+      const { processes, events, open } = compactionHarness(compacted);
+      const runtime = await open();
+      await expect(runtime.prompt({ runId: "run", input: input("work"), compactContext: true })).resolves.toMatchObject(
+        { status: "completed" },
+      );
+      expect(processes).toHaveLength(2);
+      expect(processes[0]?.input).toMatchObject({
+        message: { content: [{ type: "text", text: "/compact" }] },
+      });
+      expect(processes[1]?.input).toMatchObject({ message: { content: [{ type: "text", text: "work" }] } });
+      for (const process of processes) {
+        expect(process.args[process.args.indexOf("--resume") + 1]).toBe(SESSION_ID);
+        expect(process.args).not.toContain("--session-id");
+      }
+      expect(processes[0]?.closeCount).toBeGreaterThan(0);
+      expect(events.some((event) => event.type === "provider_warning")).toBe(false);
+      await runtime.close();
+    });
+
+    it("does not compact without the request", async () => {
+      const { processes, open } = compactionHarness(compacted);
+      const runtime = await open();
+      await runtime.prompt({ runId: "run", input: input("work") });
+      expect(processes).toHaveLength(1);
+      await runtime.close();
+    });
+
+    it("has nothing to compact in a new conversation", async () => {
+      const { processes, factory } = compactionHarness(compacted);
+      const runtime = await factory.create(createRequest(() => undefined));
+      await runtime.prompt({ runId: "run", input: input("work"), compactContext: true });
+      expect(processes).toHaveLength(1);
+      await runtime.close();
+    });
+
+    it("warns and still runs when no compact boundary arrives", async () => {
+      const { processes, events, open } = compactionHarness([
+        { type: "result", subtype: "success", is_error: true, session_id: SESSION_ID, result: "Not enough messages" },
+      ]);
+      const runtime = await open();
+      await expect(runtime.prompt({ runId: "run", input: input("work"), compactContext: true })).resolves.toMatchObject(
+        { status: "completed" },
+      );
+      expect(processes).toHaveLength(2);
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "provider_warning",
+          code: "claude_compaction_failed",
+          message: "Not enough messages",
+        }),
+      );
+      await runtime.close();
+    });
+
+    it("warns and still runs when the compaction process fails", async () => {
+      const { processes, events, open } = compactionHarness([], new Error("compaction exited"));
+      const runtime = await open();
+      await expect(runtime.prompt({ runId: "run", input: input("work"), compactContext: true })).resolves.toMatchObject(
+        { status: "completed" },
+      );
+      expect(processes).toHaveLength(2);
+      expect(events).toContainEqual(
+        expect.objectContaining({ code: "claude_compaction_failed", message: "compaction exited" }),
+      );
+      await runtime.close();
+    });
+
+    it("names the failure generically when the compaction process rejects with a non-Error", async () => {
+      const { events, open } = compactionHarness([], "exit" as unknown as Error);
+      const runtime = await open();
+      await runtime.prompt({ runId: "run", input: input("work"), compactContext: true });
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          code: "claude_compaction_failed",
+          message: "Claude Code did not compact the conversation",
+        }),
+      );
+      await runtime.close();
+    });
+
+    it("still runs when the compaction process does not close cleanly", async () => {
+      const { processes, open } = compactionHarness(compacted);
+      const runtime = await open();
+      await expect(runtime.prompt({ runId: "run", input: input("work"), compactContext: true })).resolves.toMatchObject(
+        { status: "completed" },
+      );
+      expect(processes[0]?.closeCount).toBeGreaterThan(0);
+      await runtime.close();
+    });
+
+    it("aborts the Run instead of continuing when interrupted during compaction", async () => {
+      const processes: ScriptedClaudeCodeProcess[] = [];
+      const factory = new ClaudeCodeAgentRuntimeFactory({
+        createSessionId: () => SESSION_ID,
+        createProcess: (_cwd, args) => {
+          const process = new ScriptedClaudeCodeProcess(args, "hold");
+          processes.push(process);
+          return process;
+        },
+      });
+      const runtime = await factory.resume({ ...createRequest(() => undefined), binding: BINDING });
+      const run = runtime.prompt({ runId: "run", input: input("work"), compactContext: true });
+      await vi.waitFor(() => expect(processes[0]?.executing).toBe(true));
+      await runtime.abort({ expectedRunId: "run" });
+      await expect(run).resolves.toMatchObject({ status: "aborted" });
+      expect(processes).toHaveLength(1);
+      expect(processes[0]?.interruptCount).toBe(1);
+      await runtime.close();
+    });
+  });
+
   it("removes a fresh bridge when the provider process cannot start", async () => {
     let configPath: string | undefined;
     const factory = new ClaudeCodeAgentRuntimeFactory({
@@ -695,7 +837,7 @@ describe("ClaudeCodeAgentRuntime steer", () => {
       steerable.refuse = false;
       steerable.emit(result("done", 1, 0.01, 1), true);
       await expect(runtime.steer({ expectedRunId: "late-run", input: input("late") })).rejects.toMatchObject({
-        code: "run_mismatch",
+        code: "steer_not_sent",
       });
       steerable.finish();
       await expect(run).resolves.toMatchObject({ status: "completed", output: [{ type: "text", text: "done" }] });
@@ -740,10 +882,10 @@ class SteerableClaudeCodeProcess implements ClaudeCodeProcessClient {
     this.#finish?.();
   }
 
-  async steer(message: Readonly<Record<string, unknown>> & { readonly uuid: string }): Promise<{ started(): boolean }> {
+  async steer(message: Readonly<Record<string, unknown>> & { readonly uuid: string }) {
     if (this.refuse) throw new Error("closed");
     this.steered.push(message);
-    return { started: () => true };
+    return { started: () => true, inConversation: new Promise<void>(() => undefined) };
   }
 
   async interrupt(): Promise<void> {}
@@ -789,6 +931,7 @@ class ScriptedClaudeCodeProcess implements ClaudeCodeProcessClient {
   closeCount = 0;
   #reject?: (error: Error) => void;
   readonly sent: Readonly<Record<string, unknown>>[] = [];
+  onCompact?: { messages: readonly Record<string, unknown>[]; failure?: Error | undefined };
   #complete?: () => void;
   #onMessage?: (message: Readonly<Record<string, unknown>>) => void;
 
@@ -805,6 +948,10 @@ class ScriptedClaudeCodeProcess implements ClaudeCodeProcessClient {
     this.#onMessage = onMessage;
     this.input = inputValue;
     this.executing = true;
+    if (this.onCompact && JSON.stringify(inputValue).includes('"/compact"')) {
+      for (const message of this.onCompact.messages) onMessage(message);
+      return this.onCompact.failure ? Promise.reject(this.onCompact.failure) : Promise.resolve({ stderr: "" });
+    }
     if (this.#scenario === "approval") {
       onMessage({
         type: "control_request",
@@ -847,6 +994,9 @@ class ScriptedClaudeCodeProcess implements ClaudeCodeProcessClient {
     this.closeCount += 1;
     this.#reject?.(new Error("closed"));
     this.#reject = undefined;
+    if (this.onCompact && this.closeCount === 1 && this.input && JSON.stringify(this.input).includes('"/compact"')) {
+      throw new Error("close failed");
+    }
   }
 }
 

@@ -40,7 +40,8 @@ generated itself, with no model turn, and that never ends the Run.
 
 ## During the wait
 
-The Run stays `running` and keeps its admission slot, credentials and sandbox. A new message joins it through the normal
+The Run stays `running` and keeps its Session's admission slot, one of the 10 an Agent has on a Client, along with its credentials
+and sandbox. Other Sessions of the Agent keep running. A new message joins it through the normal
 steer path, for IM Turns and Session messages alike. No turn is active, so the adapter starts one: Claude Code takes the
 input on stdin, Codex gets `turn/start` and Pi gets `prompt`.
 

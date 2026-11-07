@@ -34,7 +34,11 @@ function harness(rtt = 480) {
     { getFeishuConnectionMaterial: binding } as unknown as ImBindingService,
     policy,
     "https://app.example.test",
-    { slackCooldownRemaining: async () => 0, deferSlackInstallation: async () => true },
+    {
+      slackCooldownRemaining: async () => 0,
+      deferSlackInstallation: async () => true,
+      messageLanguage: async () => "en" as const,
+    },
   );
   const target = {
     bindingId: randomUUID(),

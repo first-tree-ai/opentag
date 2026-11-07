@@ -44,6 +44,9 @@ same timezone before merging. The Agent list pins the 30-day window and reports 
 | `outputTokens` | Reported output tokens. |
 | `tokens` | `inputTokens + outputTokens` after that Provider rule. |
 
+Idle compaction before a Turn counts toward that Turn only for Pi; Claude Code and Codex do not report its tokens. See
+[Idle compaction](runtime/agent-runtime-contract.md#idle-compaction).
+
 Codex already includes cached tokens inside its input count, so adding them again would double-count; Claude Code and
 Pi report them separately. `runtimeUsageTotalTokens` in `@opentag/shared` owns this rule, and both the per-task and the
 aggregated paths use it.

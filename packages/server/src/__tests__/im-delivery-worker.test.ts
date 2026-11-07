@@ -2516,6 +2516,32 @@ describe("ImDeliveryWorker database workflow", () => {
       .where(eq(imMessageDeliveries.id, released.deliveryId));
     expect(releasedRow).toMatchObject({ dispatchRequestId: null, lastErrorCode: "IM_DELIVERY_RUNTIME_REJECTED" });
 
+    // A Client at its Agent or Client limit: the message is kept and tried again.
+    for (const deliveryReason of ["agent_busy", "client_busy"] as const) {
+      await unit.reset();
+      const full = await workerFixture(unit);
+      await new ImDeliveryWorker({
+        database: unit.database,
+        domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), full, {
+          deliveryStatus: "rejected",
+          deliveryReason,
+        }) as never,
+        assembler: { assembleForSession: vi.fn().mockResolvedValue(full.runtime) },
+        registry: full.registry,
+      }).runOnce();
+      const [fullRow] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, full.deliveryId));
+      expect(fullRow).toMatchObject({
+        state: "pending",
+        reason: null,
+        dispatchRequestId: null,
+        lastErrorCode: "IM_DELIVERY_RUNTIME_REJECTED",
+      });
+      expect(fullRow?.nextAttemptAt.getTime()).toBeGreaterThan(Date.now());
+    }
+
     await unit.reset();
     const failed = await workerFixture(unit);
     const failedEvents: string[] = [];
@@ -3264,6 +3290,60 @@ describe("ImDeliveryWorker database workflow", () => {
     await park(new Date(clock + 30_000));
     await worker.notifyComputerReady(fixture.computerId);
     expect(await readDue()).toBe(clock + 30_000);
+  });
+
+  it("makes an expired dispatch that still fences its Agent due again when the Computer registers", async () => {
+    const fixture = await workerFixture(unit);
+    const clock = Date.now();
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({
+        state: "expired",
+        reason: "ttl",
+        expiresAt: new Date(clock - 1_000),
+        dispatchRequestId: randomUUID(),
+        dispatchInputHash: "frozen-hash",
+        dispatchPayload: { frozen: true } as never,
+        nextAttemptAt: new Date(clock + 30 * 60_000),
+        lastErrorCode: "IM_DELIVERY_RUNTIME_UNAVAILABLE",
+      })
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture) as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+      registry: fixture.registry,
+      now: () => new Date(clock),
+    });
+    await worker.notifyComputerReady(fixture.computerId);
+    const [row] = await unit.database
+      .select({ nextAttemptAt: imMessageDeliveries.nextAttemptAt })
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    expect(row?.nextAttemptAt.getTime()).toBeLessThanOrEqual(clock + 1_000);
+  });
+
+  it("leaves an expired delivery with no dispatch alone when the Computer registers", async () => {
+    const fixture = await workerFixture(unit);
+    const clock = Date.now();
+    const parked = new Date(clock + 30 * 60_000);
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ state: "expired", reason: "ttl", expiresAt: new Date(clock - 1_000), nextAttemptAt: parked })
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture) as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+      registry: fixture.registry,
+      now: () => new Date(clock),
+    });
+    await worker.notifyComputerReady(fixture.computerId);
+    const [row] = await unit.database
+      .select({ nextAttemptAt: imMessageDeliveries.nextAttemptAt })
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    expect(row?.nextAttemptAt).toEqual(parked);
   });
 
   it("populates delivery row performance context for subsequent DB and runtime operations across deliver, steer, and recover", async () => {

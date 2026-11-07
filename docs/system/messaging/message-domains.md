@@ -64,7 +64,7 @@ that same order and apply the same suppression rule. Ingress uses the same Agent
 as delivery claims before making this decision.
 
 Eligible direct human inputs receive durable Server-owned task feedback: a working reaction after custody acceptance,
-terminal cleanup, and a sanitized error card on failure. Queued input alone creates no backlog reaction or progress
+terminal cleanup, and a sanitized failure message on failure. Queued input alone creates no backlog reaction or progress
 message. See [IM task feedback and safe recovery](im-feedback.md) for eligibility, native provider differences,
 Account confirmation, explicit retry identity, unknown-send reconciliation, and retention. A reaction alone is not a
 delivery receipt.

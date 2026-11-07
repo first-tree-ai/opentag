@@ -1,5 +1,5 @@
 import type { SessionMessageDeliveryRequestV3 } from "@opentag/shared";
-import type { AgentSteerOutcome, AgentSteerReceipt } from "../agent-runtime/types.js";
+import type { AgentRuntimeBinding, AgentSteerOutcome, AgentSteerReceipt } from "../agent-runtime/types.js";
 import { MAX_RECORDED_STEERS } from "./interruption-retry.js";
 import type { JoinableRuns } from "./session-message-inbox.js";
 
@@ -16,6 +16,11 @@ export function sessionMessageRunId(messageId: string): string {
 /** The message whose own Run this is, or undefined for another kind of Run, such as an IM Turn. */
 export function sessionMessageOfRun(runId: string): string | undefined {
   return runId.startsWith(RUN_ID_PREFIX) ? runId.slice(RUN_ID_PREFIX.length) : undefined;
+}
+
+/** What identifies a provider conversation: a steered message confirmed in one is not in another. */
+export function conversationIdentity(binding: AgentRuntimeBinding | undefined): string | undefined {
+  return binding ? JSON.stringify([binding.providerId, binding.schemaVersion, binding.payload]) : undefined;
 }
 
 /**

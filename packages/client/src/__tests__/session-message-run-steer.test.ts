@@ -481,6 +481,8 @@ describe("the retry of a Session message Run", () => {
   });
 
   it("shares the Run's actual run time: a retry keeps the remaining budget, and a long one resets the count", async () => {
+    // The run time tracker samples the clock once a minute, so this retry really runs at that cadence.
+    vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
     let now = 1_000;
     const budgets: number[] = [];
     const timeoutScheduler: RuntimeRetryScheduler = {
@@ -510,7 +512,10 @@ describe("the retry of a Session message Run", () => {
     expect(inbox.getState(first.messageId)).toMatchObject({ attempts: 1, ranMs: 60_000 });
     // The steered message has no run time or count of its own while it is in the Run.
     expect(inbox.getState(second.messageId)?.ranMs).toBeUndefined();
-    now += 300_000;
+    for (let minute = 0; minute < 5; minute += 1) {
+      now += 60_000;
+      await vi.advanceTimersByTimeAsync(60_000);
+    }
     retry.finish(rateLimited);
     const third = await started(attempts, 3);
     expect(budgets.at(-1)).toBe(3_240_000);
@@ -520,6 +525,7 @@ describe("the retry of a Session message Run", () => {
     third.finish();
     await inbox.settled();
     expect(inbox.getState(second.messageId)?.status).toBe("succeeded");
+    vi.useRealTimers();
   });
 
   it("answers a replay during the backoff without queueing the message or resetting its count", async () => {

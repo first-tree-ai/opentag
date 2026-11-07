@@ -46,7 +46,7 @@ import {
 import { createPlatformRuntime } from "./platform-runtime.js";
 import { AgentRuntimeOptionsOwner } from "./runtime/agent-runtime-options-owner.js";
 import { AgentRuntimeTestOwner } from "./runtime/agent-runtime-test-owner.js";
-import { stopCloudThenLocalAgentSessions } from "./runtime/agent-session-stopper.js";
+import { stopCloudThenLocalAgentSessions, stopEndedInternalSessions } from "./runtime/agent-session-stopper.js";
 import { loadApprovalAuthority } from "./runtime/approval-authority.js";
 import { ApprovalMessenger } from "./runtime/approval-messenger.js";
 import { PostgresApprovalStore } from "./runtime/approval-store.js";
@@ -1228,6 +1228,14 @@ export async function startServer(): Promise<void> {
       registry,
       sessions: sessionService,
       cloud: cloudSessionOwner,
+      stopEnded: (targets) =>
+        stopEndedInternalSessions(database, targets, {
+          ...(cloudSessionOwner ? { cloudSession: cloudSessionOwner } : {}),
+          currentInstanceId: (computerId) => registry.currentInstanceId(computerId),
+          onDiagnostic: reportDiagnostic,
+          requestReconcile: domainOwner.requestReconcile.bind(domainOwner),
+          revokeProof: (sessionId) => sessionCliProofService.revokeForSession(sessionId),
+        }),
       logger: serviceLogger("session-collaboration"),
       scheduleDetailUrl: (agentId, scheduleId) => scheduleDetailUrl(config.publicUrl, agentId, scheduleId),
     });
@@ -1484,7 +1492,12 @@ export async function startServer(): Promise<void> {
         // A Computer that just became usable makes its offline-parked retries due again, so an
         // offline backoff can never delay work behind a live runtime.
         onRegistered: async ({ computerId }) => {
-          await imDeliveryWorker?.notifyComputerReady(computerId);
+          await Promise.all([
+            sessionCollaborationService
+              .redeliverStops(computerId)
+              .catch(() => reportDiagnostic("SESSION_STOP_REDELIVERY_FAILED")),
+            imDeliveryWorker?.notifyComputerReady(computerId),
+          ]);
           sessionHeldDeliveryWorker?.notifyComputerReady(computerId);
         },
         channelTarget: () => channelTargetPoller.get(),

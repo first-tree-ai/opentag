@@ -34,6 +34,7 @@ import {
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import { withAgentSessionStopAuthority } from "../../runtime/agent-session-stop-authority.js";
 import type { DeliveryDispatchStatus, RuntimeCustodyStore } from "../../runtime/runtime-custody-store.js";
+import { RuntimeDispatchDeferredError } from "../../runtime/runtime-domain-owner.js";
 import type { RuntimeBusinessContext } from "../../runtime/runtime-session.js";
 import type { RuntimeCredentialOwner } from "../../runtime-credentials/runtime-credential-owner.js";
 import type { AgentSessionStopTarget } from "../agents/agent-service.js";
@@ -55,12 +56,11 @@ import type { RunnerControlSocket, RunnerHub, RunnerScope } from "./runner-hub.j
 import type { SandboxAllocationReconciliation } from "./sandbox-runner-service.js";
 
 function assertCloudDispatchStatus(status: DeliveryDispatchStatus): void {
+  if (status === "dispatched" || status === "already_dispatched") return;
+  if (status === "batch_changed") throw new RuntimeDispatchDeferredError(status);
   if (status === "inbound_pending") throw new InboundReceiptPendingError();
   if (status === "stale_generation") {
     throw new CloudDeliveryDispatchError("stale_generation", "The delivery placement generation is stale");
-  }
-  if (status === "conflict") {
-    throw new CloudDeliveryDispatchError("dispatch_conflict", "The delivery dispatch state conflicts");
   }
   if (status === "claimed") {
     throw new CloudDeliveryDispatchError(
@@ -68,6 +68,7 @@ function assertCloudDispatchStatus(status: DeliveryDispatchStatus): void {
       "The Sandbox environment is being reclaimed; the input stays pending",
     );
   }
+  throw new CloudDeliveryDispatchError("dispatch_conflict", "The delivery dispatch state conflicts");
 }
 
 /**

@@ -276,7 +276,7 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       }
       this.#process = process;
       this.#processReady?.resolve(process);
-      await process.execute(
+      const { abandonedBackgroundWork } = await process.execute(
         claudeCodeInput(request),
         (message, terminal) => this.#enqueue(message, terminal),
         context.signal,
@@ -284,7 +284,10 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       await this.#eventTail;
       if (this.#providerFailure) throw this.#providerFailure;
       if (!this.#terminal) throw protocolError("Claude Code exited without a result message");
-      return claudeCodeRunResult(this.#terminal, this.#assistantError);
+      return {
+        ...claudeCodeRunResult(this.#terminal, this.#assistantError),
+        ...(abandonedBackgroundWork ? { abandonedBackgroundWork } : {}),
+      };
     } catch (error) {
       if (context.signal.aborted) throw error;
       logger.debug({ code: "provider_run_failed", error: String(error) }, "Claude Code provider run failed");
@@ -1135,7 +1138,7 @@ function parseMcpGatewayConfiguration(value: unknown): ClaudeCodeMcpGatewayConfi
 }
 
 function claudeCodeInput(request: AgentPromptRequest): Readonly<Record<string, unknown>> {
-  return claudeCodeUserMessage(request.input.items);
+  return { ...claudeCodeUserMessage(request.input.items), uuid: randomUUID() };
 }
 
 function claudeCodeUserMessage(items: AgentPromptRequest["input"]["items"]): Readonly<Record<string, unknown>> {
@@ -1199,7 +1202,8 @@ function mergeTerminals(earlier: readonly ClaudeCodeTerminal[], last: ClaudeCode
   return {
     ...last,
     permissionDenials: [...earlier, last].flatMap((terminal) => terminal.permissionDenials),
-    earlierResults: earlier.flatMap((terminal) => (terminal.result === undefined ? [] : [terminal.result])),
+    // A result Claude Code generated for itself has no model turn and no text.
+    earlierResults: earlier.flatMap((terminal) => (terminal.result ? [terminal.result] : [])),
     ...(numTurns !== undefined ? { numTurns } : {}),
     ...(totalCostUsd !== undefined ? { totalCostUsd } : {}),
     ...(Object.keys(usage).length > 0 ? { usage } : {}),

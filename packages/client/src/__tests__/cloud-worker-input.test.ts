@@ -92,7 +92,7 @@ it("builds scheduled Cloud input at worker processing time with a separate full 
   expect(input.items[0]?.text).toContain("Processing time (UTC): 2026-09-28T01:12:34.000Z");
   expect(input.items[1]?.text).toContain("Processing started: 2026-09-28T01:12:34.000Z");
   expect(input.items[1]?.text).toContain("2026-09-28 09:00:00 +08:00");
-  expect(input.items[1]?.text).toContain("Notification JSON:");
+  expect(input.items[1]?.text).not.toContain("Notification JSON");
   expect(input.items[2]?.text).toBe("Full scheduled task tail marker");
 });
 

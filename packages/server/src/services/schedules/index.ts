@@ -1,4 +1,5 @@
 export { ScheduleServiceError, scheduleError, scheduleInvalidRequest } from "./errors.js";
+export { ScheduledFailureNotifier } from "./scheduled-failure-notifier.js";
 export {
   type ScheduleClaimOutcome,
   ScheduleScheduler,

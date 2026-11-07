@@ -32,6 +32,18 @@ export interface FeedbackTransport {
   find(target: FeedbackTarget, cursor?: string): Promise<{ ids: string[]; cursor?: string }>;
 }
 
+/** The Bot and conversation a Server-written message goes to, without a native input to reply to. */
+export interface ConversationTextTarget {
+  bindingGeneration: number;
+  bindingId: string;
+  channelId: string;
+  installationId: string | null;
+  provider: "slack" | "feishu";
+  /** Slack thread timestamp. On Feishu a thread needs `replyToExternalId` instead. */
+  threadKey: string | null;
+  replyToExternalId?: string;
+}
+
 export class ImFeedbackMessenger implements FeedbackTransport {
   constructor(
     readonly bindings: ImBindingService,
@@ -92,7 +104,10 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     }
   }
 
-  async #slack(target: FeedbackTarget, signal: AbortSignal) {
+  async #slack(
+    target: Pick<FeedbackTarget, "bindingId" | "bindingGeneration" | "installationId">,
+    signal: AbortSignal,
+  ) {
     const material = await this.bindings.getSlackConnectionMaterial(target.bindingId);
     if (
       !material ||
@@ -110,7 +125,7 @@ export class ImFeedbackMessenger implements FeedbackTransport {
     };
   }
 
-  async #feishu(target: FeedbackTarget, signal: AbortSignal) {
+  async #feishu(target: Pick<FeedbackTarget, "bindingId" | "bindingGeneration">, signal: AbortSignal) {
     const material = await this.bindings.getFeishuConnectionMaterial(target.bindingId);
     if (!material || material.generation !== target.bindingGeneration)
       throw new FeedbackProviderError("IM_FEEDBACK_BINDING_STALE", true, true);
@@ -260,23 +275,52 @@ export class ImFeedbackMessenger implements FeedbackTransport {
         { maxAttempts: 1, timeoutMs: 8_000 },
       );
     } catch (error) {
-      if (error instanceof FeedbackProviderError) throw error;
-      if (error instanceof ExternalCallPolicyError && error.phase === "circuit")
-        throw new FeedbackProviderError("IM_PROVIDER_CIRCUIT_OPEN", true, false, 30_000);
-      if (error instanceof ExternalCallPolicyError && error.phase === "admission")
-        throw new FeedbackProviderError(error.code, true);
-      const code = slackErrorCode(error);
-      const permanent = [
-        "invalid_auth",
-        "token_revoked",
-        "missing_scope",
-        "channel_not_found",
-        "not_in_channel",
-        "invalid_blocks",
-        "invalid_arguments",
-      ].includes(code ?? "");
-      if (permanent) throw new FeedbackProviderError("IM_FEEDBACK_SEND_REJECTED", true, true);
-      throw new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false);
+      throw postFailure(error);
+    }
+  }
+
+  /**
+   * One plain message from the Bot into a conversation. No Markdown, mention, or link parsing, and
+   * `requestId` is Feishu's send idempotency key; Slack has no equivalent.
+   */
+  async postConversationText(target: ConversationTextTarget, text: string, requestId: string): Promise<string> {
+    try {
+      return await this.#run(
+        `${target.provider}.feedback.post`,
+        async (signal) => {
+          if (target.provider === "slack") {
+            const { api } = await this.#slack(target, signal);
+            const r = await this.#slackCall({ ...target, provider: "slack" }, () =>
+              api.chat.postMessage({
+                channel: target.channelId,
+                ...(target.threadKey ? { thread_ts: target.threadKey } : {}),
+                text,
+                parse: "none",
+                unfurl_links: false,
+                unfurl_media: false,
+              }),
+            );
+            if (!r.ok || !r.ts) throw new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false);
+            return r.ts;
+          }
+          const { api } = await this.#feishu(target, signal);
+          const data = { msg_type: "text", content: JSON.stringify({ text }), uuid: requestId };
+          const r = target.replyToExternalId
+            ? await api.im.v1.message.reply({
+                path: { message_id: target.replyToExternalId },
+                data: { ...data, reply_in_thread: true },
+              })
+            : await api.im.v1.message.create({
+                params: { receive_id_type: "chat_id" },
+                data: { ...data, receive_id: target.channelId },
+              });
+          if (r.code !== 0 || !r.data?.message_id) throw new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false);
+          return r.data.message_id;
+        },
+        { maxAttempts: 1, timeoutMs: 8_000 },
+      );
+    } catch (error) {
+      throw postFailure(error);
     }
   }
 
@@ -470,4 +514,24 @@ function slackRetryAfter(error: unknown): number {
   )
     return Math.ceil(error.retryAfter * 1_000);
   return 30_000;
+}
+
+function postFailure(error: unknown): FeedbackProviderError {
+  if (error instanceof FeedbackProviderError) return error;
+  if (error instanceof ExternalCallPolicyError && error.phase === "circuit")
+    return new FeedbackProviderError("IM_PROVIDER_CIRCUIT_OPEN", true, false, 30_000);
+  if (error instanceof ExternalCallPolicyError && error.phase === "admission")
+    return new FeedbackProviderError(error.code, true);
+  const code = slackErrorCode(error);
+  const permanent = [
+    "invalid_auth",
+    "token_revoked",
+    "missing_scope",
+    "channel_not_found",
+    "not_in_channel",
+    "invalid_blocks",
+    "invalid_arguments",
+  ].includes(code ?? "");
+  if (permanent) return new FeedbackProviderError("IM_FEEDBACK_SEND_REJECTED", true, true);
+  return new FeedbackProviderError("IM_FEEDBACK_SEND_UNKNOWN", false);
 }

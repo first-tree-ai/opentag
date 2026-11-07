@@ -1,9 +1,14 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { type ClientLogger, createLogger } from "../../observability/logger.js";
 import { signalWatchedProcess, spawnWatchedProcess } from "../process-owner.js";
 
 export const CLAUDE_CODE_MAX_LINE_BYTES = 8 * 1024 * 1024;
 export const CLAUDE_CODE_MAX_STDERR_BYTES = 64 * 1024;
+
+/** Tools that change timers living inside the Claude Code process, which appear in no task list. */
+const IN_PROCESS_TIMER_TOOLS = new Set(["ScheduleWakeup", "CronCreate", "CronDelete"]);
+const WAKEUP_TIMER = "ScheduleWakeup timer";
 
 export class ClaudeCodeProcessError extends Error {
   constructor(
@@ -38,6 +43,8 @@ export interface ClaudeCodeSpawnOptions {
 
 export interface ClaudeCodeProcessResult {
   readonly stderr: string;
+  /** What may still have been live in the process when its Run ended; if so, it stops when the process exits. */
+  readonly abandonedBackgroundWork?: readonly string[];
 }
 
 /**
@@ -98,6 +105,12 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
   readonly #pendingSteers = new Set<string>();
   /** Steered command uuids Claude Code reported as started. */
   readonly #startedSteers = new Set<string>();
+  /** Claude Code's latest report of the background tasks it is running, by task id. */
+  #backgroundTasks = new Map<string, string>();
+  readonly #inProcessTimers = new InProcessTimers();
+  #backgroundNoticeSent = false;
+  /** Sampled at the terminal result: stopping the process empties the lists above. */
+  #abandonedAtTerminal: readonly string[] = [];
 
   constructor(options: ClaudeCodeSpawnOptions) {
     this.#permissionControl = options.args.includes("--permission-prompt-tool");
@@ -275,7 +288,8 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
       this.#pendingSteers.delete(parsed.command_uuid)
     )
       this.#startedSteers.add(parsed.command_uuid);
-    const terminal = parsed.type === "result" && this.#pendingSteers.size === 0;
+    this.#observeBackgroundWork(parsed);
+    const terminal = parsed.type === "result" && this.#endsRun(parsed);
     try {
       this.#listener?.(parsed, terminal);
     } catch (error) {
@@ -289,10 +303,69 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
       return;
     }
     if (terminal) {
+      this.#abandonedAtTerminal = this.#backgroundWork();
       this.#terminalReceived = true;
       this.#closing = true;
       signalWatchedProcess(this.#child, "SIGTERM");
     }
+  }
+
+  /**
+   * Only the result of the Run's own input can end the Run, and only when nothing steered is still
+   * waiting. Claude Code also reports a result for input it generated itself, such as the notice it
+   * queues on `--resume` about a background task the previous process left behind. That result comes
+   * first, with no model turn, while the Run's input is still queued behind it.
+   *
+   * The background notice is deliberately not in `#pendingSteers`: it asks for a wrap-up, so the next
+   * result ends the Run whether or not Claude Code reported the notice's `command_lifecycle`. Input is
+   * first in, first out, so nothing else can produce that result: a steer written before the notice held
+   * it back, and one written after it stays pending until its own result.
+   */
+  #endsRun(result: Record<string, unknown>): boolean {
+    if (this.#pendingSteers.size > 0) return false;
+    if (result.is_error === true) return true;
+    if (this.#isSelfGeneratedResult(result)) return false;
+    return !this.#sendBackgroundNotice();
+  }
+
+  #isSelfGeneratedResult(result: Record<string, unknown>): boolean {
+    const inputs = result.user_message_uuids;
+    if (Array.isArray(inputs) && inputs.length > 0) return false;
+    return isRecord(result.origin) || this.#inProcessTimers.turnRunning;
+  }
+
+  /** Follows what will stop with this process. The list of tasks is replaced on every change. */
+  #observeBackgroundWork(parsed: Record<string, unknown>): void {
+    if (parsed.type === "system" && parsed.subtype === "background_tasks_changed" && Array.isArray(parsed.tasks)) {
+      this.#backgroundTasks = new Map(parsed.tasks.filter(isRecord).map(backgroundTaskEntry));
+      return;
+    }
+    this.#inProcessTimers.observe(parsed);
+  }
+
+  #backgroundWork(): string[] {
+    return [...this.#backgroundTasks.values(), ...this.#inProcessTimers.labels()];
+  }
+
+  /**
+   * The process exits with its Run, and its background work stops with it. The Session hears about it
+   * once, while it can still act. True when the notice went out, so the Run continues past this result.
+   */
+  #sendBackgroundNotice(): boolean {
+    const work = this.#backgroundWork();
+    if (this.#backgroundNoticeSent || work.length === 0 || this.#signal?.aborted) return false;
+    this.#backgroundNoticeSent = true;
+    const uuid = randomUUID();
+    const notice = {
+      type: "user",
+      uuid,
+      message: { role: "user", content: [{ type: "text", text: buildBackgroundWorkNotice(work) }] },
+      parent_tool_use_id: null,
+    };
+    this.#child.stdin.write(`${JSON.stringify(notice)}\n`, (error) => {
+      if (error) this.#fail(new ClaudeCodeProcessError("write", "Claude Code input could not be written"));
+    });
+    return true;
   }
 
   #handleInitialize(parsed: Record<string, unknown>): boolean {
@@ -342,7 +415,11 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
       );
       return;
     }
-    this.#resolveExecution?.({ stderr: this.#stderr.toString("utf8") });
+    const abandonedBackgroundWork = this.#abandonedAtTerminal;
+    this.#resolveExecution?.({
+      stderr: this.#stderr.toString("utf8"),
+      ...(abandonedBackgroundWork.length > 0 ? { abandonedBackgroundWork } : {}),
+    });
     this.#clearExecution();
   }
 
@@ -371,6 +448,75 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
   }
 }
 
+/**
+ * The timers that may be live in this process. A tool call counts only once its `tool_result` succeeded:
+ * an invalid cron expression creates nothing, and `CronDelete` and `ScheduleWakeup` with `stop` remove what
+ * they name. A cron firing names no job and can come from a durable job of an earlier Run, so it removes
+ * nothing, and a report may name a job that already ran. A cron job with `durable: true` is written to disk,
+ * so it does not stop with the process.
+ */
+class InProcessTimers {
+  /** Timer tool calls waiting for their `tool_result`, by tool call id. */
+  readonly #calls = new Map<string, Record<string, unknown>>();
+  /** Live timers by job id, with one entry for the Session's single pending wakeup. */
+  readonly #live = new Map<string, string>();
+  /** When the pending wakeup is due, which is how its firing names it. */
+  #wakeupScheduledFor?: unknown;
+  /** Turns Claude Code started because a timer fired, by command uuid. */
+  readonly #firedTurns = new Set<string>();
+
+  /** A fired timer's turn reports its own `result`, which is not the result of any input. */
+  get turnRunning(): boolean {
+    return this.#firedTurns.size > 0;
+  }
+
+  observe(frame: Record<string, unknown>): void {
+    if (frame.type === "command_lifecycle") this.#observeLifecycle(frame);
+    if (!isRecord(frame.message) || !Array.isArray(frame.message.content)) return;
+    for (const block of frame.message.content.filter(isRecord)) {
+      if (frame.type === "assistant" && block.type === "tool_use") this.#recordCall(block);
+      if (frame.type === "user" && block.type === "tool_result") this.#settleCall(block, frame.tool_use_result);
+    }
+  }
+
+  /** Firing shows only here. `loop_wakeup` is a wakeup and `scheduled_for` matches it; a cron firing names no job. */
+  #observeLifecycle(frame: Record<string, unknown>): void {
+    const command = String(frame.command_uuid);
+    if (frame.state === "completed") this.#firedTurns.delete(command);
+    if (frame.state !== "started" || typeof frame.wakeup_source !== "string") return;
+    this.#firedTurns.add(command);
+    const named = typeof frame.scheduled_for === "number" && frame.scheduled_for === this.#wakeupScheduledFor;
+    if (frame.wakeup_source === "loop_wakeup" && named) this.#live.delete(WAKEUP_TIMER);
+  }
+
+  labels(): string[] {
+    return [...this.#live.values()];
+  }
+
+  #recordCall(block: Record<string, unknown>): void {
+    if (IN_PROCESS_TIMER_TOOLS.has(String(block.name))) this.#calls.set(String(block.id), block);
+  }
+
+  #settleCall(block: Record<string, unknown>, toolUseResult: unknown): void {
+    const id = String(block.tool_use_id);
+    const call = this.#calls.get(id);
+    this.#calls.delete(id);
+    if (!call || block.is_error === true) return;
+    const input = isRecord(call.input) ? call.input : {};
+    const result = isRecord(toolUseResult) ? toolUseResult : {};
+    if (call.name === "ScheduleWakeup") {
+      if (input.stop === true) this.#live.delete(WAKEUP_TIMER);
+      else this.#live.set(WAKEUP_TIMER, WAKEUP_TIMER);
+      this.#wakeupScheduledFor = result.scheduledFor;
+    } else if (call.name === "CronDelete") {
+      this.#live.delete(String(input.id));
+    } else if (result.durable !== true) {
+      const jobId = typeof result.id === "string" ? result.id : id;
+      this.#live.set(jobId, `CronCreate job ${jobId}`);
+    }
+  }
+}
+
 async function settlesWithin(promise: Promise<void>, milliseconds: number): Promise<boolean> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<false>((resolve) => {
@@ -381,6 +527,21 @@ async function settlesWithin(promise: Promise<void>, milliseconds: number): Prom
   /* v8 ignore else -- the timer is always armed before the race settles. */
   if (timer) clearTimeout(timer);
   return settled;
+}
+
+function backgroundTaskEntry(task: Record<string, unknown>): [string, string] {
+  const type = String(task.task_type);
+  return [String(task.task_id), typeof task.description === "string" ? `${task.description} (${type})` : type];
+}
+
+/** What the Session reads at the end of a Run that leaves background work behind. */
+function buildBackgroundWorkNotice(work: readonly string[]): string {
+  return [
+    "[openTag notice] This Run is about to end. Claude Code exits with it. This background work may still be running or pending, and if so it stops then, with no result:",
+    ...work.map((item) => `- ${item}`),
+    "Nothing wakes this Session afterwards. If the result matters, wait for it now in this Run or run the work in the foreground.",
+    "If you leave it unfinished, tell whoever is waiting for it before you end this Run.",
+  ].join("\n");
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

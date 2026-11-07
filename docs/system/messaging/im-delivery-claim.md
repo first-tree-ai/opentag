@@ -330,6 +330,28 @@ report is recorded, and the follow-up has no frozen dispatch request. The retry 
 the delivery ID, code and delay. Missing or mismatched targets, other report outcomes and frozen
 dispatches retain their failure diagnostics; the code alone does not identify an expected fallback.
 
+The final dispatch transaction applies the same classification after acquiring the Agent custody
+fence and reloading the target under row locks. Only a matching accepted target with a recorded
+`completed` report returns `target_ended`. Identity, report owner and placement-generation conflicts,
+missing targets and other report outcomes remain conflicts. An existing frozen dispatch is checked
+first and retains its original correlation and recovery path.
+
+Batch preparation reads a bounded set of pending inputs before the dispatch transaction. Under the
+custody fence, reservation checks every selected member's identity and eligibility before writing
+any reservation. A member that became claimed, unavailable, expired or not yet due returns
+`batch_changed`; missing members and message, Session, generation or attention mismatches remain
+conflicts. A new message outside the selected batch does not invalidate that batch. Reservation and
+the head's frozen dispatch commit or roll back together.
+
+These two explicit pre-send outcomes use `IM_DELIVERY_STEER_TARGET_ENDED` and
+`IM_DELIVERY_BATCH_CHANGED`, respectively. They retain pending input and the normal bounded retry
+schedule, emit a retry warning and counter, and mark the operation deferred without an error
+diagnostic. No delivery or steer frame or dispatch notification is sent, and no release is needed
+because nothing was frozen. The next attempt rebuilds input from Inbox; stable delivery and message
+identities and normal custody acknowledgements still apply. Database exceptions, authorization or
+generation conflicts, send failures and unknown execution outcomes retain their existing failure
+and reconciliation paths; a generic conflict never authorizes a fresh send.
+
 A timed-out attempt is recorded once, by the deadline. The aborted operation does not record a
 second, contradictory failure: that write would describe the same attempt and would reset the
 consecutive-timeout count the deadline just produced.

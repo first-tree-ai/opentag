@@ -170,6 +170,8 @@ export interface DurableWorkRecord<T = unknown> {
    * this binding, so resuming that session must not inject it again.
    */
   readonly steerInConversation?: string;
+  /** Session-message only: the provider conversation this message's own Run last ran in. */
+  readonly runConversation?: string;
   readonly interruption?: { readonly reason: string; readonly at: string };
   readonly payload: T;
   readonly status: DurableWorkStatus;

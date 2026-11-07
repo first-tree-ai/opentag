@@ -784,7 +784,7 @@ export class SessionMessageInbox {
   async #holdFailingJoined(next: QueuedMessage): Promise<boolean> {
     const key = sessionMessageKey(next.request);
     const record = this.#records.get(key);
-    const ended = record && endedRunOutcome(record, this.#joinedRunStatus(record));
+    const ended = record && endedRunOutcome(record, this.#joinedRun(record));
     if (record && ended) {
       await this.#settleSteered(record, next.hash, ended);
       this.#dequeue(next.request.targetSessionId, next);
@@ -981,6 +981,7 @@ export class SessionMessageInbox {
     let executionSignal: AbortSignal | undefined;
     let outcome: "completed" | "ended" | { retry: DurableWorkRecord<SessionMessageDeliveryRequestV3> } = "ended";
     let runTime: { finish(): Promise<number> } | undefined;
+    let ranIn: AgentRuntime | undefined;
     const settleRunTime = async () => {
       // Once per Run: a returned failure reaches this again on its way to the failure path.
       if (!runTime) return;
@@ -988,7 +989,7 @@ export class SessionMessageInbox {
       runTime = undefined;
       // Recorded by the write that follows; the record may hold newer run time than `current`.
       const latest = this.#records.get(key) ?? current;
-      if (latest) current = withRunTime(latest, ranMs);
+      if (latest) current = { ...withRunTime(latest, ranMs), runConversation: ranIn && conversationIdentity(ranIn) };
     };
     const ensureRunSignal = (): AbortSignal => {
       if (runSignal) return runSignal;
@@ -1037,6 +1038,7 @@ export class SessionMessageInbox {
       runtimeSignal.throwIfAborted();
       const runtime = await this.#runtimeManager.ensureRuntime(sessionId, runtimeSignal);
       await runtime.waitForIdle();
+      ranIn = runtime;
       phase = "prompt";
       ensureRunSignal().throwIfAborted();
       const context = turnContext(sessionKind, outboxContext);
@@ -1243,7 +1245,7 @@ export class SessionMessageInbox {
         const reason = recoverableFailure(record.interruption?.reason) ?? "daemon_crash";
         await this.#failTerminally(record, hash, "runtime", interruptedFailure(record.payload.requestId, reason));
       } else {
-        const ended = endedRunOutcome(record, this.#joinedRunStatus(record));
+        const ended = endedRunOutcome(record, this.#joinedRun(record));
         if (ended) await this.#settleSteered(record, hash, ended);
         else this.#enqueue(record.payload, hash);
       }
@@ -1255,15 +1257,16 @@ export class SessionMessageInbox {
   }
 
   #joinedRunFailed(record: DurableWorkRecord<SessionMessageDeliveryRequestV3>): boolean {
-    const status = this.#joinedRunStatus(record);
+    const status = this.#joinedRun(record)?.status;
     return status === "failed" || status === "dead-letter";
   }
 
-  #joinedRunStatus(
+  /** The record of the message whose own Run this message joined, when it joined one. */
+  #joinedRun(
     record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
-  ): DurableWorkRecord["status"] | undefined {
+  ): DurableWorkRecord<SessionMessageDeliveryRequestV3> | undefined {
     const runMessageId = record.joinedRunId && sessionMessageOfRun(record.joinedRunId);
-    return runMessageId ? this.#records.get(`${record.payload.targetSessionId}:${runMessageId}`)?.status : undefined;
+    return runMessageId ? this.#records.get(`${record.payload.targetSessionId}:${runMessageId}`) : undefined;
   }
 
   /**
@@ -1647,15 +1650,16 @@ function alreadyInConversation(
 
 /**
  * A message already in its Run's conversation ends with that Run. When the Run ended before the message
- * could rejoin it, the Run's own record says how.
+ * could rejoin it, the Run's own record says how, but only if the Run ended in the conversation that holds
+ * the message. A Run that resumed another conversation, or left no record of one, never saw it.
  */
 function endedRunOutcome(
   record: DurableWorkRecord<SessionMessageDeliveryRequestV3>,
-  runStatus: DurableWorkRecord["status"] | undefined,
+  run: DurableWorkRecord<SessionMessageDeliveryRequestV3> | undefined,
 ): AgentSteerOutcome | undefined {
-  if (!record.steerInConversation) return undefined;
-  if (runStatus === "succeeded") return "processed";
-  return runStatus === "failed" || runStatus === "dead-letter" ? "interrupted" : undefined;
+  if (!record.steerInConversation || run?.runConversation !== record.steerInConversation) return undefined;
+  if (run.status === "succeeded") return "processed";
+  return run.status === "failed" || run.status === "dead-letter" ? "interrupted" : undefined;
 }
 
 /** The message rejoins the Run without input: the Run's own outcome decides it, as for any joined message. */

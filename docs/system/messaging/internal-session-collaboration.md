@@ -441,5 +441,5 @@ The signal differs by Provider, and each was measured by killing the process at 
 - **Pi:** no signal, so the message is injected again with the notice, as before.
 
 A message without a confirmation is injected again with the notice, so a crash before it, or a failed write of the record, costs a
-repeat and never a loss. So does a Run that resumes a different Provider conversation. A retry after a model HTTP 429 still carries
+repeat and never a loss. So does a Run that resumes a different Provider conversation, including one that ends before the message could rejoin it: a Run's record names the conversation it ran in, and the message only takes that Run's outcome if it is the conversation holding the message. A retry after a model HTTP 429 still carries
 every message in the Run, confirmed or not. A failed attempt may not have recorded them, and that path is unchanged.

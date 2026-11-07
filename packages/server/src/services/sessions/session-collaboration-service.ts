@@ -177,7 +177,7 @@ const SCHEDULED_LOCAL_BUDGET_MS = 60_000;
 const SCHEDULED_CLOUD_BUDGET_MS = 50_000;
 const MAX_BACKGROUND_OUTCOME_NOTICES = 16;
 
-type PreparedRunOutcomeNotice = { attempt: SessionMessageAttempt; creatorSessionId: string };
+type PreparedRunOutcomeNotice = { attempt: SessionMessageAttempt; recipientSessionId: string };
 
 /** Internal sentinel: the total budget (or Server stop) fired before the transport send was marked. */
 class ScheduledDispatchAbortError extends Error {
@@ -862,11 +862,11 @@ export class SessionCollaborationService {
   }
 
   /**
-   * Tell the creator of an internal Session that one of its Runs ended without completing. The
-   * notice is an ordinary SessionMessage from the child to its creator with a deterministic id,
-   * so it reuses the existing authorization, lock order, idempotency, activity projection, and
-   * delivery (including visible-Session callback rules). Notices only ever travel to the
-   * creator, so they move strictly up the creation tree and can never echo back to the child.
+   * Tell a message's sender that its Run ended without completing. The notice is an ordinary
+   * SessionMessage from the target to the sender with a deterministic id, so it reuses the existing
+   * authorization, lock order, idempotency, activity projection, and delivery (including
+   * visible-Session callback rules). `resolveRunOutcomeNotice` picks the recipient, and a failed
+   * notice is never reported back to its own sender, so notices cannot echo between two Sessions.
    */
   async notifyRunOutcome(input: RunOutcomeNoticeInput): Promise<RunOutcomeNoticeStatus> {
     const prepared = await this.#prepareRunOutcomeNotice(input);
@@ -928,21 +928,22 @@ export class SessionCollaborationService {
         sourceComputerId: input.source.computerId,
         sourceConnectionInstanceId: input.source.connectionInstanceId,
         sourcePlacementGeneration: input.source.placementGeneration,
-        targetSessionId: notice.creatorSessionId,
+        targetSessionId: notice.recipientSessionId,
         content: renderRunOutcomeNotice(input),
+        serverDerivedId: true,
       });
       if (attempt.attemptCount === null) {
         return this.#runOutcomeNoticeStatus(
           response(
             noticeId,
             attempt.message.lastOutcome,
-            notice.creatorSessionId,
+            notice.recipientSessionId,
             attempt.message.lastErrorCode ?? undefined,
           ),
           input,
         );
       }
-      return { attempt, creatorSessionId: notice.creatorSessionId };
+      return { attempt, recipientSessionId: notice.recipientSessionId };
     } catch (error) {
       return this.#runOutcomeNoticeStatus(this.#failure(noticeId, error), input);
     }
@@ -955,7 +956,7 @@ export class SessionCollaborationService {
   ): Promise<RunOutcomeNoticeStatus> {
     try {
       return this.#runOutcomeNoticeStatus(
-        await this.#deliver(prepared.attempt, prepared.creatorSessionId, signal),
+        await this.#deliver(prepared.attempt, prepared.recipientSessionId, signal),
         input,
       );
     } catch (error) {
@@ -1616,6 +1617,7 @@ function mapExpectedFailure(error: unknown): { status: "unreachable" | "rejected
   if (code === "SESSION_TARGET_UNAVAILABLE") return { status: "rejected", code: "target_unavailable" };
   if (code === "SESSION_SCOPE_MISMATCH") return { status: "rejected", code: "scope_mismatch" };
   if (code === "SESSION_MESSAGE_CONFLICT") return { status: "rejected", code: "message_conflict" };
+  if (code === "SESSION_MESSAGE_ID_RESERVED") return { status: "rejected", code: "message_id_reserved" };
   // Router model admission for a Cloud Session override: an unoffered model is a deterministic
   // rejection; an unconfirmable model list is transient and unreachable.
   if (code === "SESSION_MODEL_UNAVAILABLE") return { status: "rejected", code: "model_unavailable" };

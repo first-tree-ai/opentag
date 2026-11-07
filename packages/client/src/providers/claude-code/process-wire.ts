@@ -120,6 +120,7 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
   #ownResultSeen = false;
   readonly #noticeUuids = new Set<string>();
   #followUpFailed = false;
+  #steerInTurn = false;
 
   constructor(options: ClaudeCodeSpawnOptions) {
     this.#permissionControl = options.args.includes("--permission-prompt-tool");
@@ -316,8 +317,10 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
       typeof parsed.command_uuid === "string" &&
       (parsed.state === "started" || parsed.state === "completed") &&
       this.#pendingSteers.delete(parsed.command_uuid)
-    )
+    ) {
       this.#startedSteers.add(parsed.command_uuid);
+      this.#steerInTurn = true;
+    }
     const finished = this.#observeBackgroundWork(parsed);
     const terminal = parsed.type === "result" && this.#endsRun(parsed);
     try {
@@ -350,9 +353,12 @@ export class ClaudeCodeProcess implements ClaudeCodeProcessClient {
    * the Run's limit bounds the wait.
    */
   #endsRun(result: Record<string, unknown>): boolean {
+    // A steer that started in this turn makes it input someone is waiting on, whatever started the turn.
+    const steerInTurn = this.#steerInTurn;
+    this.#steerInTurn = false;
     if (this.#pendingSteers.size > 0) return false;
     if (result.is_error === true) {
-      this.#followUpFailed = this.#ownResultSeen && this.#isSelfGeneratedResult(result);
+      this.#followUpFailed = this.#ownResultSeen && !steerInTurn && this.#isSelfGeneratedResult(result);
       return true;
     }
     if (!this.#isSelfGeneratedResult(result)) this.#ownResultSeen = true;

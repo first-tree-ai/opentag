@@ -220,6 +220,8 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
   #wakeInputs: WakeInput[] = [];
   /** Present while the Run waits between turns for background work. */
   #wait?: { resolve(): void };
+  /** The turn in progress carries nothing but background results, after the input was answered. */
+  #followUpOnly = false;
   /** Usage of this Run's finished turns; a wake is one more turn of the same Run. */
   #finishedUsage?: AgentUsage;
   /** Present only between run admission and `turn/start`, when there is no provider turn to interrupt. */
@@ -285,6 +287,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     this.#backgroundCommands.clear();
     this.#wakeInputs = [];
     this.#finishedUsage = undefined;
+    this.#followUpOnly = false;
     this.#resetTurn();
 
     const preTurnAbort = new AbortController();
@@ -305,12 +308,10 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       }
       this.#preTurnAbort = undefined;
       let terminal = await this.#runTurn(this.#turnStartParams(request));
-      /** Whether the turn in progress carries nothing but background results, after the input was answered. */
-      let followUpOnly = false;
       while (terminal.status === "completed" && this.#mustContinue()) {
         const wake = await this.#waitForWake(context.signal);
         if (!wake) return await this.#stopBackgroundWork({ ...terminal, status: "interrupted" });
-        followUpOnly = !wake.some((input) => input.accepted);
+        this.#followUpOnly = !wake.some((input) => input.accepted);
         this.#completedMessages.clear();
         this.#resetTurn();
         terminal = await this.#runTurn(
@@ -319,7 +320,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
         );
       }
       const result = await this.#stopBackgroundWork(terminal);
-      if (!followUpOnly || result.status !== "failed") return result;
+      if (!this.#followUpOnly || result.status !== "failed") return result;
       return answeredWithFollowUpFailure(result);
     } catch (error) {
       const failure = error instanceof Error ? error : new Error("Codex run failed");
@@ -423,7 +424,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
 
   /** Waits for a reason to start another turn. Undefined means the Run was aborted. */
   async #waitForWake(signal: AbortSignal): Promise<WakeInput[] | undefined> {
-    while (this.#wakeInputs.length === 0) {
+    while (this.#wakeInputs.length === 0 && !this.#providerFailure) {
       if (signal.aborted) return undefined;
       await new Promise<void>((resolve) => {
         this.#wait = { resolve };
@@ -431,6 +432,8 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       });
       this.#wait = undefined;
     }
+    // The original turn has completed, so nothing else would carry the App Server's failure.
+    if (this.#providerFailure) throw this.#providerFailure;
     if (signal.aborted) return undefined;
     return this.#wakeInputs.splice(0);
   }
@@ -494,6 +497,8 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       await accepted.promise;
       return;
     }
+    // Whatever this turn started as, it now carries input someone is waiting on: its failure is the Run's.
+    this.#followUpOnly = false;
     const turnId = await this.#activeTurnId();
     const response = requireRecord(
       await this.#client.request("turn/steer", {
@@ -545,6 +550,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       this.#providerFailure ??= failure;
       this.#terminal?.reject(failure);
       this.#turnIdReady?.reject(failure);
+      this.#wait?.resolve();
     }
     this.#unsubscribeRequests();
     this.#unsubscribeNotifications();
@@ -1131,6 +1137,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     this.#providerFailure = error;
     this.#terminal?.reject(error);
     this.#turnIdReady?.reject(error);
+    this.#wait?.resolve();
     this.closeForProviderFailure();
   }
 

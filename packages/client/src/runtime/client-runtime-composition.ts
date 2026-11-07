@@ -358,6 +358,7 @@ export class ComposedClientRuntime {
   readonly bindingStore: SessionBindingStore;
   readonly custody: TurnCustodyOwner;
   readonly credentialEnvironment: RuntimeCredentialEnvironmentManager;
+  readonly interruptedWork: InterruptedWorkRecovery;
   readonly reconciler: SessionReconciler;
   readonly sessionMessageInbox: SessionMessageInbox;
   readonly sessionMessageOutcomes?: SessionMessageOutcomeReporter;
@@ -397,6 +398,7 @@ export class ComposedClientRuntime {
       reportOwner: TurnReportOwner;
       durabilityMetrics: RuntimeDurabilityMetrics;
       runner: AgentTurnRunner;
+      interruptedWork: InterruptedWorkRecovery;
       runtimeManager: SessionRuntimeManager;
       workspace: AgentWorkspaceManager;
       refreshCapability: (fresh?: boolean) => Promise<void>;
@@ -421,6 +423,7 @@ export class ComposedClientRuntime {
     this.reportOwner = components.reportOwner;
     this.durabilityMetrics = components.durabilityMetrics;
     this.runner = components.runner;
+    this.interruptedWork = components.interruptedWork;
     this.runtimeManager = components.runtimeManager;
     this.workspace = components.workspace;
     this.#refreshCapability = components.refreshCapability;
@@ -520,10 +523,13 @@ export class ComposedClientRuntime {
     this.#unsubscribeSelfCheck?.();
     this.#capabilityAbort.abort(new Error("Client Runtime stopped"));
     this.sessionMessageInbox.stop();
+    // Before the runner: a retry dispatched to a stopped runner would be recorded as begun and never run.
+    this.interruptedWork.stop();
     this.runner.stop();
     await Promise.all([
       this.#capabilityRefreshInFlight,
       Promise.allSettled([...this.#selfCheckReports]),
+      this.interruptedWork.settled(),
       this.runner.settled(),
       this.sessionMessageInbox.settled(),
     ]);
@@ -1032,6 +1038,7 @@ export async function createClientRuntime(
     reportOwner,
     durabilityMetrics,
     runner,
+    interruptedWork: recovery,
     runtimeManager,
     workspace,
     refreshCapability,

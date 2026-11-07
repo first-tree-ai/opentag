@@ -6,6 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { delimiter, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  computeDirectInputHash,
   computeRuntimeSnapshotHashes,
   type DirectImMessageDeliveryRequest,
   type EffectiveRuntimeSnapshot,
@@ -42,6 +43,7 @@ import {
   resolveProxyValidationOpener,
 } from "../runtime/client-runtime-composition.js";
 import * as contextTreeModule from "../runtime/context-tree.js";
+import { TurnRetryStore, turnRetryRecord } from "../runtime/interruption-retry.js";
 import { resetLoginShellPathDirsCache } from "../runtime/login-shell-path.js";
 import {
   collectOutgoingReplyReceipts,
@@ -483,6 +485,78 @@ describe("createClientRuntime production composition", () => {
       }
     },
   );
+
+  it("does not start a retry whose start is being recorded when the runtime stops, nor count it", async () => {
+    const home = await temporaryDirectory("opentag-retry-shutdown-");
+    const connection = runtimeConnection();
+    const factory = new PiAgentRuntimeFactory({
+      probeRunner: async () => ({ credential: true, rpc: true, version: "0.84.2" }),
+    });
+    const options = {
+      clientVersion: "0.0.1",
+      environment: { HOME: home, PATH: process.env.PATH },
+      factory,
+      home,
+    };
+    const piSnapshot: EffectiveRuntimeSnapshot = { ...snapshot(), provider: "pi" };
+    const request = delivery(piSnapshot);
+    const retries = new TurnRetryStore(home);
+    const first = await createClientRuntime(connection, options);
+    try {
+      await first.reconciler.reconcile(reconcileRequest(connection.installationId, piSnapshot));
+      await first.bindingStore.recordAccepted(request, computeDirectInputHash(request), "turn-1");
+      await retries.write(turnRetryRecord(request, "turn-1"));
+    } finally {
+      first.stop();
+      await first.run();
+    }
+    const restart = () =>
+      createClientRuntime(runtimeConnection(undefined, undefined, connection.installationId), options);
+    const restarted = await restart();
+    await expect(retries.read(request.sessionId)).resolves.toMatchObject({ retries: 1, retryNotStarted: true });
+
+    const update = TurnRetryStore.prototype.update;
+    let release = () => {};
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const held = vi.spyOn(TurnRetryStore.prototype, "update").mockImplementationOnce(async function (
+      this: TurnRetryStore,
+      ...args
+    ) {
+      await blocked;
+      return update.apply(this, args);
+    });
+    const start = vi.spyOn(restarted.runner, "start");
+    const dispatch = vi.spyOn(restarted.custody, "resume");
+    const turn = { deliveryId: request.deliveryId, turnId: "turn-1" };
+    const resumed = restarted.interruptedWork.resume(request.sessionId, turn);
+    restarted.stop();
+    const stopped = restarted.run();
+    let finished = false;
+    void stopped.finally(() => {
+      finished = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(finished).toBe(false);
+    release();
+    await stopped;
+    held.mockRestore();
+
+    await expect(resumed).resolves.toBe(false);
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(start).not.toHaveBeenCalled();
+    await expect(retries.read(request.sessionId)).resolves.toMatchObject({ retries: 1, retryNotStarted: true });
+
+    // No Provider ran, so the next daemon doesn't count it again.
+    const next = await restart();
+    try {
+      await expect(retries.read(request.sessionId)).resolves.toMatchObject({ retries: 1, retryNotStarted: true });
+    } finally {
+      next.stop();
+      await next.run();
+    }
+  });
 
   it("recovers a Pi binding when Client restarts before the first prompt", async () => {
     const home = await temporaryDirectory("opentag-pi-unmaterialized-");
@@ -1335,6 +1409,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
         workspace: {},
         credentialEnvironment: { close: vi.fn(async () => undefined) },
         sessionMessageInbox: { stop: vi.fn(), settled: vi.fn(async () => undefined) },
+        interruptedWork: { stop: () => undefined, settled: async () => undefined },
         runner: { stop: vi.fn(), settled: vi.fn(async () => undefined) },
         reportOwner: { stop: vi.fn(), settled: vi.fn(async () => undefined) },
         runtimeManager: { close },
@@ -1386,6 +1461,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
       sessionMessageInbox: { settled: vi.fn(async () => undefined), stop: vi.fn() },
       reconciler: {},
       reportOwner: { settled: vi.fn(async () => undefined), stop: vi.fn() },
+      interruptedWork: { stop: () => undefined, settled: async () => undefined },
       runner: { settled: vi.fn(async () => undefined), stop: vi.fn() },
       runtimeManager: { close: vi.fn(async () => undefined) },
       workspace: {},
@@ -1486,6 +1562,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
         sessionMessageInbox: { settled: vi.fn(async () => undefined), stop: vi.fn() },
         reconciler: {},
         reportOwner: { settled: vi.fn(async () => undefined), stop: vi.fn() },
+        interruptedWork: { stop: () => undefined, settled: async () => undefined },
         runner: { settled: vi.fn(async () => undefined), stop: vi.fn() },
         runtimeManager: { close: vi.fn(async () => undefined) },
         workspace: {},
@@ -1516,6 +1593,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
           reconciler: {},
           sessionMessageInbox: {},
           reportOwner: {},
+          interruptedWork: { stop: () => undefined, settled: async () => undefined },
           runner: {},
           runtimeManager: {},
           workspace: {},
@@ -1553,6 +1631,7 @@ printf '__OT_SHELL_PATH____OT_SHELL_PATH____OT_SHELL_ENV__\n\n__OT_SHELL_ENV__'
         reconciler: { protectedWorkSnapshot: () => ({ activities: [{}], recoveries: [{}, {}] }) },
         sessionMessageInbox: { pendingCount: 2 },
         reportOwner: { pendingCount: 3 },
+        interruptedWork: { stop: () => undefined, settled: async () => undefined },
         runner: { activeCount: 4 },
         runtimeManager: {},
         workspace: {},

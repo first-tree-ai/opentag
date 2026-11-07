@@ -527,10 +527,11 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     const client = this.#client;
     /* v8 ignore next -- the client remains owned until the active Provider Run leaves executeRun. */
     if (!client) throw new AgentRuntimeError("run_mismatch", "there is no active Pi process");
+    // Whatever this agent run started as, it now carries input someone is waiting on: its failure is the Run's.
+    this.#followUpOnly = false;
     if (this.#waitingForBackgroundWork) {
       // Pi is idle, so `steer` has nothing to join. A `prompt` that names how to behave while streaming
       // also holds if a wake has just started a new agent run.
-      this.#followUpOnly = false;
       await client.request(
         { type: "prompt", message: piItems(request.input.items), streamingBehavior: "steer" },
         this.providerContext?.signal,

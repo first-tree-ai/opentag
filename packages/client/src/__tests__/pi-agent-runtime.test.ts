@@ -257,6 +257,35 @@ describe("PiAgentRuntime", () => {
       await runtime.close();
     });
 
+    it("fails the Run when input steered into a running wake fails with it", async () => {
+      const { client, run, runtime, background } = await holding();
+      client.emit(status([job]));
+      client.complete();
+      await vi.waitFor(() => expect(background()).toHaveLength(1));
+      await new Promise((resolve) => setImmediate(resolve));
+      client.emit({ type: "agent_start" });
+      await new Promise((resolve) => setImmediate(resolve));
+      const receipt = await runtime.steer({ expectedRunId: "bg", input: input("a new request") });
+      expect(client.commands.at(-1)).toEqual({ type: "steer", message: "a new request" });
+      client.fail();
+      const result = await run;
+      expect(result).toMatchObject({ status: "failed" });
+      expect(result.followUpFailure).toBeUndefined();
+      await expect(receipt.outcome).resolves.toBe("interrupted");
+      await runtime.close();
+    });
+
+    it("carries a process exit during the wait out of the Run", async () => {
+      const { client, run, runtime, background } = await holding();
+      client.emit(status([job]));
+      client.complete();
+      await vi.waitFor(() => expect(background()).toHaveLength(1));
+      await new Promise((resolve) => setImmediate(resolve));
+      client.emit({ type: "opentag/process_error", error: new PiRpcError("exited", "Pi RPC exited") });
+      await expect(run).resolves.toMatchObject({ status: "failed", error: { code: "provider_process_exited" } });
+      await runtime.close();
+    });
+
     it("tells the model with a prompt, and that agent run's failure is a follow-up failure", async () => {
       const { client, run, runtime, background } = await holding();
       client.emit(status([job]));

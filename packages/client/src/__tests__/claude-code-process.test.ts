@@ -290,6 +290,22 @@ describe("ClaudeCodeProcess", () => {
     await expect(run).resolves.toEqual({ stderr: "", followUpFailed: true });
   });
 
+  it("does not call it a follow-up when input steered into the wake turn fails with it", async () => {
+    const child = fakeChild();
+    const process = fakeProcess(child);
+    const run = process.execute({ type: "user", uuid: "prompt" }, () => undefined, new AbortController().signal);
+    for (const frame of [backgroundTasks({ task_id: "a" }), { type: "result", user_message_uuids: ["prompt"] }])
+      child.stdout.write(`${JSON.stringify(frame)}\n`);
+    await process.steer({ type: "user", uuid: "new-request" });
+    const frames = [
+      { type: "command_lifecycle", command_uuid: "new-request", state: "started" },
+      { ...selfGeneratedResult, is_error: true },
+    ];
+    for (const frame of frames) child.stdout.write(`${JSON.stringify(frame)}\n`);
+    child.emit("exit", 143, null);
+    await expect(run).resolves.toEqual({ stderr: "" });
+  });
+
   it("writes a notice during the wait, whose result holds nothing back and whose failure is a follow-up failure", async () => {
     const child = fakeChild();
     const writes: { uuid: string; message: { content: [{ text: string }] } }[] = [];

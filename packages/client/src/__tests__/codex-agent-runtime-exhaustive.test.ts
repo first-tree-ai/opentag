@@ -821,6 +821,50 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
       expect(result.followUpFailure).toBeUndefined();
     });
 
+    it("fails the Run when input steered into a running wake turn fails with it", async () => {
+      const { client, runtime, run, turnStarts, background } = await started();
+      client.complete({ id: "turn-1", items: [] });
+      await vi.waitFor(() => expect(background()).toHaveLength(1));
+      late(client, command("cmd", { status: "completed", exitCode: 0 }));
+      await vi.waitFor(() => expect(turnStarts()).toBe(2));
+      await vi.waitFor(() => expect(background().at(-1)).toMatchObject({ items: [] }));
+      await new Promise((resolve) => setImmediate(resolve));
+      const receipt = await runtime.steer({ expectedRunId: "bg", input: input("a new request") });
+      expect(client.call("turn/steer")?.params).toMatchObject({ expectedTurnId: "turn-2" });
+      client.complete({ id: "turn-2", status: "failed", error: { message: "model failed" }, items: [] });
+      const result = await run;
+      expect(result).toMatchObject({ status: "failed" });
+      expect(result.followUpFailure).toBeUndefined();
+      await expect(receipt.outcome).resolves.toBe("interrupted");
+      await runtime.close();
+    });
+
+    it("carries the App Server's failure out of the wait, as a process exit the retry rule sees", async () => {
+      const { client, runtime, run, background } = await started();
+      client.complete({ id: "turn-1", items: [] });
+      await vi.waitFor(() => expect(background()).toHaveLength(1));
+      await new Promise((resolve) => setImmediate(resolve));
+      client.emit({
+        method: "opentag/processError",
+        params: { error: new CodexAppServerError("exited", "App Server exited") },
+      });
+      await expect(run).resolves.toMatchObject({
+        status: "failed",
+        error: { code: "provider_process_exited", message: "App Server exited" },
+      });
+      await expect(runtime.close()).resolves.toBeUndefined();
+    });
+
+    it("settles a Run in the wait when the runtime closes", async () => {
+      const { client, runtime, run, background } = await started();
+      client.complete({ id: "turn-1", items: [] });
+      await vi.waitFor(() => expect(background()).toHaveLength(1));
+      await new Promise((resolve) => setImmediate(resolve));
+      await runtime.close();
+      await expect(run).resolves.toMatchObject({ status: expect.stringMatching(/aborted|failed/) });
+      expect(client.closed).toBe(true);
+    });
+
     it("fails input it accepted for a turn that could not start", async () => {
       const { client, runtime, run, background } = await started();
       client.complete({ id: "turn-1", items: [] });

@@ -70,7 +70,7 @@ function cardActions(
 }
 
 /** The link stays in the text so readback can match the exact details URL on both providers. */
-function textLink(provider: FeedbackTarget["provider"], url: string, label: string): string {
+export function textLink(provider: FeedbackTarget["provider"], url: string, label: string): string {
   return provider === "slack" ? `<${url}|${label}>` : `[${label}](${url})`;
 }
 

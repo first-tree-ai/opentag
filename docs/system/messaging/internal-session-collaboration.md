@@ -292,7 +292,7 @@ retries are cancelled and its queued messages are withdrawn.
   Its execution side is told after commit. A stop that is repeated answers `alreadyStopped` and tells it again.
 - **What the caller learns.** `execution` says how far the stop reached: `stopped` (the Client confirmed the Run and
   queue are gone), `requested` (the Cloud Runner was sent the cancellation), `pending` (the Computer or Runner could not
-  be reached) or `not_interrupted` (a Client older than this behavior answered `busy`, so its Run continues without
+  be reached, or did not answer within 15 seconds, which stays below the CLI's 30-second request timeout) or `not_interrupted` (a Client older than this behavior answered `busy`, so its Run continues without
   Session authority until it ends). `activeDescendantCount` says how many descendants keep running.
 - **Notice.** A creator that called `session stop` has its answer and is not woken. When another ancestor stopped the
   child, the creator gets one SessionMessage from that ancestor, starting with the Run outcome notice header and saying
@@ -307,7 +307,8 @@ write was already in flight neither starts a Run nor answers `accepted`. A provi
 The same Client behavior applies to an Agent lifecycle stop of an internal Session, which previously answered `busy`
 while a Run was active; a visible Session's Turn still answers `busy`.
 
-A Computer that cannot be reached misses the frame and nothing durable records that. When a Computer registers, the
+Past the 15 seconds the stop goes on in the background: a late Client answer is ignored apart from retiring the proof, and
+another ancestor's notice to the creator is still sent. A Computer that cannot be reached misses the frame and nothing durable records that. When a Computer registers, the
 Server sends a stop for up to 64 of its internal Sessions that ended in the last 24 hours, because repeating a stop is
 harmless. A daemon that restarted in the meantime also has its waiting messages refused with `session_ended`. A Server
 restart loses nothing, since this read is against the database. A Cloud Runner re-announces its journal when it

@@ -4,6 +4,7 @@ import {
   RUNTIME_CAPABILITY,
   RUNTIME_SESSION_COLLABORATION_SCHEDULED_VERSION,
   type RunnerCloudSessionMessageReceivedFrame,
+  SESSION_STOP_ANSWER_BUDGET_MS,
   type SessionCliCommandResponse,
   type SessionCliCreateRequest,
   type SessionCliSendRequest,
@@ -257,6 +258,8 @@ export interface SessionCollaborationServiceOptions {
   cloud?: CloudSessionMessageDispatch;
   /** Tells the execution side of ended internal Sessions to stop; absent means a stop stays `pending`. */
   stopEnded?: (targets: InternalSessionStopTarget[]) => Promise<Map<string, SessionCliStopExecution>>;
+  /** Test seam for how long a stop waits for its execution side before answering `pending`. */
+  stopAnswerBudgetMs?: number;
   /** Test seam for the scheduled total budgets; production uses the stage-timeout sums. */
   scheduledBudgets?: { localMs?: number; cloudMs?: number };
   onDiagnostic?: (code: string) => void;
@@ -275,6 +278,8 @@ export class SessionCollaborationService {
   readonly #onDiagnostic: SessionCollaborationServiceOptions["onDiagnostic"];
   readonly #logger: SessionCollaborationServiceOptions["logger"];
   readonly #outcomeNotices = new Map<string, { controller: AbortController; done: Promise<void> }>();
+  readonly #stopWork = new Set<Promise<void>>();
+  readonly #stopAnswerBudgetMs: number;
   #closing = false;
 
   constructor(options: SessionCollaborationServiceOptions) {
@@ -284,6 +289,7 @@ export class SessionCollaborationService {
     this.#sessions = options.sessions;
     this.#cloud = options.cloud;
     this.#stopEnded = options.stopEnded;
+    this.#stopAnswerBudgetMs = options.stopAnswerBudgetMs ?? SESSION_STOP_ANSWER_BUDGET_MS;
     this.#scheduledLocalBudgetMs = options.scheduledBudgets?.localMs ?? SCHEDULED_LOCAL_BUDGET_MS;
     this.#scheduledCloudBudgetMs = options.scheduledBudgets?.cloudMs ?? SCHEDULED_CLOUD_BUDGET_MS;
     this.#onDiagnostic = options.onDiagnostic;
@@ -776,15 +782,42 @@ export class SessionCollaborationService {
       this.#onDiagnostic?.("SESSION_COLLABORATION_RUNTIME_UNAVAILABLE");
       return { status: "unreachable", sessionId, code: "runtime_unavailable" };
     }
-    const executions = await this.#stopEnded?.([stopped.target]);
-    if (stopped.target.creatorSessionId !== source.sessionId) await this.#noticeStopped(stopped.target, source);
+    // The stop already took effect, so a Client that does not answer delays only the news: the work goes on
+    // in the background, and the caller gets `pending` before its own request times out.
+    let execution: SessionCliStopExecution = "pending";
+    const finished = this.#trackStopWork(async () => {
+      const executions = await this.#stopEnded?.([stopped.target]);
+      execution = executions?.get(sessionId) ?? "pending";
+      if (stopped.target.creatorSessionId !== source.sessionId && !this.#closing) {
+        await this.#noticeStopped(stopped.target, source);
+      }
+    });
+    await this.#withinStopAnswerBudget(finished);
     return {
       status: "stopped",
       sessionId,
-      execution: executions?.get(sessionId) ?? "pending",
+      execution,
       alreadyStopped: stopped.alreadyStopped,
       activeDescendantCount: stopped.activeDescendantCount,
     };
+  }
+
+  #trackStopWork(work: () => Promise<void>): Promise<void> {
+    const done: Promise<void> = work()
+      .catch(() => this.#onDiagnostic?.("SESSION_STOP_BACKGROUND_FAILED"))
+      .finally(() => this.#stopWork.delete(done));
+    this.#stopWork.add(done);
+    return done;
+  }
+
+  async #withinStopAnswerBudget(work: Promise<void>): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const budget = new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, this.#stopAnswerBudgetMs);
+      timer.unref?.();
+    });
+    await Promise.race([work, budget]);
+    clearTimeout(timer);
   }
 
   /** A reconnected Computer may have missed a stop. Repeating one is harmless, so nothing tracks which did. */
@@ -873,6 +906,7 @@ export class SessionCollaborationService {
     this.#closing = true;
     for (const { controller } of this.#outcomeNotices.values()) controller.abort();
     await Promise.all([...this.#outcomeNotices.values()].map(({ done }) => done));
+    await Promise.all(this.#stopWork);
   }
 
   async #prepareRunOutcomeNotice(

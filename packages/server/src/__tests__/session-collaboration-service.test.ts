@@ -460,6 +460,87 @@ describe("SessionCollaborationService", () => {
       });
     });
 
+    describe("a Client that does not answer", () => {
+      function frozen(fixture: ReturnType<typeof serviceFixture>) {
+        const answer = deferred<Map<string, "stopped">>();
+        fixture.stopEnded.mockReturnValue(answer.promise as never);
+        const service = new SessionCollaborationService({
+          assembler: fixture.assembler,
+          domain: fixture.domain as never,
+          logger: fixture.logger,
+          onDiagnostic: fixture.onDiagnostic,
+          registry: fixture.registry,
+          sessions: fixture.sessions as never,
+          stopEnded: fixture.stopEnded as never,
+          stopAnswerBudgetMs: 5,
+        });
+        return { answer, service };
+      }
+
+      it("answers pending within the budget, which is below the CLI's timeout", async () => {
+        const fixture = serviceFixture();
+        const sessionId = stopped(fixture, fixture.source.sessionId);
+        const { answer, service } = frozen(fixture);
+
+        await expect(service.stop({ targetSessionId: sessionId }, fixture.source)).resolves.toMatchObject({
+          status: "stopped",
+          sessionId,
+          execution: "pending",
+        });
+
+        answer.resolve(new Map([[sessionId, "stopped"]]));
+        await service.close();
+      });
+
+      it("does not let a slow notice hide the confirmed execution, and still delivers it", async () => {
+        const fixture = serviceFixture();
+        const sessionId = stopped(fixture, randomUUID());
+        const delivered = deferred<void>();
+        fixture.sessions.authorizeAndRecordMessage.mockImplementation(async () => {
+          await delivered.promise;
+          throw new SessionServiceError("SESSION_TARGET_UNAVAILABLE", "the creator ended");
+        });
+        const service = new SessionCollaborationService({
+          assembler: fixture.assembler,
+          domain: fixture.domain as never,
+          logger: fixture.logger,
+          registry: fixture.registry,
+          sessions: fixture.sessions as never,
+          stopEnded: fixture.stopEnded as never,
+          stopAnswerBudgetMs: 5,
+        });
+
+        await expect(service.stop({ targetSessionId: sessionId }, fixture.source)).resolves.toMatchObject({
+          execution: "stopped",
+        });
+        expect(fixture.logger.error).not.toHaveBeenCalled();
+        delivered.resolve();
+        await service.close();
+        expect(fixture.logger.error).toHaveBeenCalledWith(
+          expect.objectContaining({ code: "SESSION_STOP_NOTICE_NOT_DELIVERED" }),
+          expect.any(String),
+        );
+      });
+
+      it("makes shutdown wait for the late answer, skips the notice, and reports a failure", async () => {
+        const fixture = serviceFixture();
+        const sessionId = stopped(fixture, randomUUID());
+        const { answer, service } = frozen(fixture);
+        await service.stop({ targetSessionId: sessionId }, fixture.source);
+
+        let closed = false;
+        const closing = service.close().then(() => {
+          closed = true;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        expect(closed).toBe(false);
+        answer.reject(new Error("the domain closed"));
+        await closing;
+        expect(fixture.sessions.authorizeAndRecordMessage).not.toHaveBeenCalled();
+        expect(fixture.onDiagnostic).toHaveBeenCalledWith("SESSION_STOP_BACKGROUND_FAILED");
+      });
+    });
+
     it("maps refusals and hides unexpected failures", async () => {
       const fixture = serviceFixture();
       const targetSessionId = randomUUID();

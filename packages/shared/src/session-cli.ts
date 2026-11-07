@@ -48,6 +48,13 @@ export const SessionCliCommandResponseSchema = z
   })
   .strict();
 
+/**
+ * How long `session stop` waits for its execution side before answering `pending`. It must stay below the
+ * CLI's request timeout, or a frozen Client turns a stop that already took effect into a transport error, and
+ * above what a Client needs to close a provider that ignores the interrupt (5 s of grace plus the close).
+ */
+export const SESSION_STOP_ANSWER_BUDGET_MS = 15_000;
+
 export const SessionCliStopRequestSchema = z
   .object({
     targetSessionId: z.string().uuid(),
@@ -57,7 +64,7 @@ export const SessionCliStopRequestSchema = z
 /**
  * What became of the Session's work once the Session ended. `stopped`: its Client confirmed the Run and
  * queue are gone. `requested`: its Cloud Runner was sent the cancellation. `pending`: its Computer could not
- * be reached; the stop is sent again when the Computer reconnects. `not_interrupted`: its Client is too old
+ * be reached or did not answer in time; the stop is sent again when the Computer reconnects. `not_interrupted`: its Client is too old
  * to interrupt a Run, which continues without Session authority until it ends.
  */
 export const SessionCliStopExecutionSchema = z.enum(["stopped", "requested", "pending", "not_interrupted"]);

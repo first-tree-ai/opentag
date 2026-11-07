@@ -166,7 +166,7 @@ export function formatSessionStopResult(result: SessionCliStopResponse): string 
   ].join(" ");
   const notes = [
     ...(result.execution === "pending"
-      ? ["Its Computer could not be reached; the stop is sent again when it reconnects."]
+      ? ["Its Computer did not confirm the stop; it is sent again when the Computer reconnects."]
       : []),
     ...(result.execution === "not_interrupted"
       ? ["Its Client is too old to interrupt a Run: the running Run continues until it ends."]

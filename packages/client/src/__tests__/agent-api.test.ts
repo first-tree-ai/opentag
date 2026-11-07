@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { PROVIDER_CLI_REASON_V2_HEADER, PROVIDER_READINESS_V1_HEADER } from "@opentag/shared";
+import {
+  PROVIDER_CLI_REASON_V2_HEADER,
+  PROVIDER_READINESS_V1_HEADER,
+  SESSION_STOP_ANSWER_BUDGET_MS,
+} from "@opentag/shared";
 import { describe, expect, it, vi } from "vitest";
 import { OpenTagApi, OpenTagApiError } from "../api.js";
+import { OPEN_TAG_API_REQUEST_TIMEOUT_MS } from "../request-policy.js";
 
 const agentId = "1a63a21e-f6c7-4474-91ea-4dabf0566a24";
 const computerId = "85fe9af3-d1c6-472b-b78c-8a7ccf512750";
@@ -227,6 +232,10 @@ describe("OpenTagApi Agent methods", () => {
       items: [],
     });
     expect(fetchImpl).toHaveBeenCalledTimes(10);
+  });
+
+  it("gets a stop's answer from the Server before its own request times out", () => {
+    expect(SESSION_STOP_ANSWER_BUDGET_MS).toBeLessThan(OPEN_TAG_API_REQUEST_TIMEOUT_MS);
   });
 
   it("stops a Session with the proof and asks for stopped Sessions only when told to", async () => {

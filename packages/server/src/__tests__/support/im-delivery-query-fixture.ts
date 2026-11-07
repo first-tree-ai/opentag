@@ -39,7 +39,8 @@ export async function seedDeliveryQuery(database: DatabaseClient, history = 0, b
   `);
   await database.execute(sql`
     with spec as (
-      select i,1 as sid from generate_series(1,${history}::int+${blocked}::int) i
+      select i,1 as sid from generate_series(1,${history}::int) i
+      union all select i+${history}::int,0 from generate_series(1,${blocked}::int) i
       union all select ${history + blocked + 1}::int,0
       union all select ${history + blocked + 2}::int,2
     ) insert into im_messages(id,im_binding_id,channel_id,external_message_id,provider_revision_key,
@@ -51,7 +52,8 @@ export async function seedDeliveryQuery(database: DatabaseClient, history = 0, b
   await database.execute(sql`
     with spec as (
       select i,1 as sid,true as history,false as occupant from generate_series(1,${history}::int) i
-      union all select i+${history}::int,1,false,false from generate_series(1,${blocked}::int) i
+      -- Blocked input waits behind the occupant of its own Session.
+      union all select i+${history}::int,0,false,false from generate_series(1,${blocked}::int) i
       union all select ${history + blocked + 1}::int,0,false,true
       union all select ${history + blocked + 2}::int,2,false,false
     ) insert into im_message_deliveries(id,message_id,session_id,attention,state,placement_generation,

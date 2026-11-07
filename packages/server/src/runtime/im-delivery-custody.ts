@@ -20,7 +20,7 @@ import { runtimeProviderMessageRef } from "./runtime-provider-message-ref.js";
 
 /**
  * Shared IM delivery custody/query helpers. Kept out of the worker module so the claim and
- * delivery paths share one definition of "another delivery already owns this Agent" and one
+ * delivery paths share one definition of "another delivery already owns this Session" and one
  * frame-fitting rule, without growing the worker further.
  */
 
@@ -32,37 +32,21 @@ export interface ClaimLease {
 }
 
 /**
- * The concurrency scope of one delivery. A Local Computer executes one Turn at a time for its
- * Agent, so a Local delivery occupies the whole Agent. A Cloud Computer is only the Account's
- * logical identity: every Agent Session owns its own Sandbox Runner, so a Cloud delivery occupies
- * just its Session. This is the E6 contract: different Cloud Sessions of one Agent execute
- * concurrently, the same Cloud Session keeps exactly one custody owner and stays ordered, and a
- * live Local occupancy still fences every Session of its Agent.
+ * Where a delivery waits for its turn: its Session, on any Computer. A Session runs one Turn at a time
+ * and stays ordered, and different Sessions of one Agent run concurrently. A Local Client bounds how many
+ * at once with its own admission limits, and the Server retries what it refuses. Custody also keeps one
+ * fence across a whole Agent: a Local delivery and a Cloud delivery of one Agent never run together.
  */
-export type DeliveryOccupancyScope =
-  | { kind: "agent"; agentId: string }
-  | { kind: "session"; agentId: string; sessionId: string };
+export function deliveryLaneKey(subject: { sessionId: string }): string {
+  return `session:${subject.sessionId}`;
+}
 
-/** The identity a delivery needs to resolve its occupancy scope and scheduler lane. */
+/** The identity a delivery needs to resolve its occupancy. */
 export interface DeliveryOccupancySubject {
   deliveryId: string;
   agentId: string;
   sessionId: string;
   computerKind: "local" | "cloud";
-}
-
-export function deliveryOccupancyScope(subject: {
-  computerKind: "local" | "cloud";
-  agentId: string;
-  sessionId: string;
-}): DeliveryOccupancyScope {
-  return subject.computerKind === "cloud"
-    ? { kind: "session", agentId: subject.agentId, sessionId: subject.sessionId }
-    : { kind: "agent", agentId: subject.agentId };
-}
-
-export function occupancyScopeKey(scope: DeliveryOccupancyScope): string {
-  return scope.kind === "agent" ? `agent:${scope.agentId}` : `session:${scope.sessionId}`;
 }
 
 export async function hasOtherCustody(database: CustodyQuery, subject: DeliveryOccupancySubject): Promise<boolean> {

@@ -2516,6 +2516,32 @@ describe("ImDeliveryWorker database workflow", () => {
       .where(eq(imMessageDeliveries.id, released.deliveryId));
     expect(releasedRow).toMatchObject({ dispatchRequestId: null, lastErrorCode: "IM_DELIVERY_RUNTIME_REJECTED" });
 
+    // A Client at its Agent or Client limit: the message is kept and tried again.
+    for (const deliveryReason of ["agent_busy", "client_busy"] as const) {
+      await unit.reset();
+      const full = await workerFixture(unit);
+      await new ImDeliveryWorker({
+        database: unit.database,
+        domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), full, {
+          deliveryStatus: "rejected",
+          deliveryReason,
+        }) as never,
+        assembler: { assembleForSession: vi.fn().mockResolvedValue(full.runtime) },
+        registry: full.registry,
+      }).runOnce();
+      const [fullRow] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, full.deliveryId));
+      expect(fullRow).toMatchObject({
+        state: "pending",
+        reason: null,
+        dispatchRequestId: null,
+        lastErrorCode: "IM_DELIVERY_RUNTIME_REJECTED",
+      });
+      expect(fullRow?.nextAttemptAt.getTime()).toBeGreaterThan(Date.now());
+    }
+
     await unit.reset();
     const failed = await workerFixture(unit);
     const failedEvents: string[] = [];

@@ -52,11 +52,10 @@ import {
 } from "./im-delivery-content.js";
 import {
   type ClaimLease,
-  deliveryOccupancyScope,
+  deliveryLaneKey,
   fitDeliveryFrame,
   hasOtherCustody,
   loadDirectHistory,
-  occupancyScopeKey,
 } from "./im-delivery-custody.js";
 import { isOperationCancellation, withOperationDeadline } from "./im-delivery-deadline.js";
 import {
@@ -582,7 +581,7 @@ export class ImDeliveryWorker {
         computerKind: row.computerKind,
       };
       const otherCustody = row.state === "accepted" ? undefined : custody.other(subject);
-      const laneKey = occupancyScopeKey(deliveryOccupancyScope(subject));
+      const laneKey = deliveryLaneKey(subject);
       let steerTarget: { id: string; turnId: string } | undefined;
       if (otherCustody) {
         const instanceId =
@@ -1076,8 +1075,6 @@ export class ImDeliveryWorker {
     signal.throwIfAborted();
     // A late acceptance may commit after this delivery was claimed. Recheck at
     // the last boundary before any reconcile or delivery frame reaches runtime.
-    // The subject is Local here (the Cloud branch returned above), so this is the
-    // unchanged Agent-wide fence.
     if (
       await hasOtherCustody(this.#database, {
         deliveryId,

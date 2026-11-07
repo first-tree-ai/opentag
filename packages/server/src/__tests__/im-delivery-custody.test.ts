@@ -12,13 +12,13 @@ import {
   users,
 } from "../db/schema/index.js";
 import { dispatchClaimToken } from "../runtime/im-delivery-claim.js";
-import { deliveryOccupancyScope, findOtherCustody, occupancyScopeKey } from "../runtime/im-delivery-custody.js";
+import { deliveryLaneKey, findOtherCustody } from "../runtime/im-delivery-custody.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 /**
- * The E6 occupancy rule itself: a Local delivery owns its whole Agent, a Cloud delivery owns only
- * its Session, and a live Local occupancy still fences every Session of its Agent. The worker
- * suites cover the claim and scheduling projections of the same rule.
+ * The occupancy rule itself: a delivery owns only its Session, on any Computer, and a Local and a
+ * Cloud delivery of one Agent still fence each other. The worker suites cover the claim and
+ * scheduling projections of the same rule.
  */
 
 let unit: UnitDatabase;
@@ -29,20 +29,8 @@ afterAll(async () => unit?.close());
 beforeEach(async () => unit.reset());
 
 describe("delivery occupancy scope", () => {
-  it("maps a Local delivery to its Agent and a Cloud delivery to its Session", () => {
-    expect(deliveryOccupancyScope({ computerKind: "local", agentId: "agent-1", sessionId: "session-1" })).toEqual({
-      kind: "agent",
-      agentId: "agent-1",
-    });
-    expect(deliveryOccupancyScope({ computerKind: "cloud", agentId: "agent-1", sessionId: "session-1" })).toEqual({
-      kind: "session",
-      agentId: "agent-1",
-      sessionId: "session-1",
-    });
-    expect(occupancyScopeKey({ kind: "agent", agentId: "agent-1" })).toBe("agent:agent-1");
-    expect(occupancyScopeKey({ kind: "session", agentId: "agent-1", sessionId: "session-1" })).toBe(
-      "session:session-1",
-    );
+  it("puts a delivery in its Session's lane", () => {
+    expect(deliveryLaneKey({ sessionId: "session-1" })).toBe("session:session-1");
   });
 
   it("lets different Cloud Sessions of one Agent own custody concurrently", async () => {
@@ -86,14 +74,42 @@ describe("delivery occupancy scope", () => {
     expect(other?.id).toBe(occupant);
   });
 
-  it("keeps the Agent-wide fence for Local deliveries in different Sessions", async () => {
+  it("keeps a Cloud occupant's Agent-wide fence for the Agent's other Local Session", async () => {
     const fixture = await twoSessionFixture("local");
-    const occupant = await createDelivery(fixture.firstSessionId, "occupied");
+    const cloudComputerId = await createComputer(fixture.accountId, "cloud");
+    const cloudSessionId = await createSession(fixture.bindingId, cloudComputerId);
+    const occupant = await createDelivery(cloudSessionId, "occupied");
+    const subjectDeliveryId = await createDelivery(fixture.firstSessionId);
+    const other = await findOtherCustody(unit.database, {
+      deliveryId: subjectDeliveryId,
+      agentId: fixture.agentId,
+      sessionId: fixture.firstSessionId,
+      computerKind: "local",
+    });
+    expect(other?.id).toBe(occupant);
+  });
+
+  it("lets different Local Sessions of one Agent own custody concurrently", async () => {
+    const fixture = await twoSessionFixture("local");
+    await createDelivery(fixture.firstSessionId, "occupied");
     const subjectDeliveryId = await createDelivery(fixture.secondSessionId);
     const other = await findOtherCustody(unit.database, {
       deliveryId: subjectDeliveryId,
       agentId: fixture.agentId,
       sessionId: fixture.secondSessionId,
+      computerKind: "local",
+    });
+    expect(other).toBeUndefined();
+  });
+
+  it("fences the same Local Session until its custody is reconciled", async () => {
+    const fixture = await twoSessionFixture("local");
+    const occupant = await createDelivery(fixture.firstSessionId, "occupied");
+    const subjectDeliveryId = await createDelivery(fixture.firstSessionId);
+    const other = await findOtherCustody(unit.database, {
+      deliveryId: subjectDeliveryId,
+      agentId: fixture.agentId,
+      sessionId: fixture.firstSessionId,
       computerKind: "local",
     });
     expect(other?.id).toBe(occupant);

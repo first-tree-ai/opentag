@@ -179,8 +179,8 @@ export async function readDeliveryCustody(database: DeliveryWorkQuery) {
 
 type CustodyGroups = Map<string, Map<string, DeliveryCustodyRow>>;
 export class DeliveryCustodySnapshot {
-  readonly #agents: CustodyGroups = new Map();
   readonly #localAgents: CustodyGroups = new Map();
+  readonly #cloudAgents: CustodyGroups = new Map();
   readonly #sessions: CustodyGroups = new Map();
   readonly #accepted: CustodyGroups = new Map();
 
@@ -188,9 +188,8 @@ export class DeliveryCustodySnapshot {
     for (const row of rows) {
       const context = contexts.get(row.sessionId);
       if (!activeDeliveryContext(context)) continue;
-      this.#put(this.#agents, context.agentId, row);
       this.#put(this.#sessions, row.sessionId, row);
-      if (context.computerKind === "local") this.#put(this.#localAgents, context.agentId, row);
+      this.#put(context.computerKind === "local" ? this.#localAgents : this.#cloudAgents, context.agentId, row);
       if (row.state === "accepted" && row.reportedAt === null) this.#put(this.#accepted, row.sessionId, row);
     }
   }
@@ -210,8 +209,9 @@ export class DeliveryCustodySnapshot {
   other(subject: { deliveryId: string; sessionId: string; agentId: string; computerKind: "local" | "cloud" }) {
     return (
       this.#other(this.#sessions.get(subject.sessionId), subject.deliveryId) ??
+      // An Agent mid-move between its Local and Cloud Computers must not run on both.
       this.#other(
-        (subject.computerKind === "local" ? this.#agents : this.#localAgents).get(subject.agentId),
+        (subject.computerKind === "local" ? this.#cloudAgents : this.#localAgents).get(subject.agentId),
         subject.deliveryId,
       )
     );

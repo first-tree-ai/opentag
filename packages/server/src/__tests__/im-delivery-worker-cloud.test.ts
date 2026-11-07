@@ -2269,10 +2269,10 @@ describe("ImDeliveryWorker Cloud Session occupancy", () => {
     );
   });
 
-  it("keeps the Agent-wide custody fence for Local deliveries across Sessions", async () => {
+  it("keeps a Local Session to one delivery at a time", async () => {
     const scope = await localScope();
     const occupant = await pendingDelivery(scope.firstSessionId);
-    const candidate = await pendingDelivery(scope.secondSessionId);
+    const candidate = await pendingDelivery(scope.firstSessionId);
     await unit.database
       .update(imMessageDeliveries)
       .set({ lastErrorCode: dispatchClaimToken(), nextAttemptAt: new Date(Date.now() + 60_000) })
@@ -2296,12 +2296,67 @@ describe("ImDeliveryWorker Cloud Session occupancy", () => {
     });
     await worker.runOnce();
 
-    // A Local Turn owns the whole Agent: the other Local Session may not start.
+    // Same-Session input waits for the occupant, and this occupant can't be steered into.
     const [row] = await unit.database
       .select()
       .from(imMessageDeliveries)
       .where(eq(imMessageDeliveries.id, candidate.deliveryId));
-    expect(row).toMatchObject({ state: "pending", dispatchRequestId: null, lastErrorCode: null });
+    expect(row).toMatchObject({ state: "pending", dispatchRequestId: null });
+  });
+
+  it("starts a second Local Session while the first holds custody", async () => {
+    const scope = await localScope();
+    const occupant = await pendingDelivery(scope.firstSessionId);
+    const candidate = await pendingDelivery(scope.secondSessionId);
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ lastErrorCode: dispatchClaimToken(), nextAttemptAt: new Date(Date.now() + 60_000) })
+      .where(eq(imMessageDeliveries.id, occupant.deliveryId));
+
+    const requestDelivery = vi.fn(async (_computerId, _instanceId, request, onDispatched) => {
+      onDispatched?.();
+      return {
+        type: "im:deliver:result" as const,
+        requestId: request.requestId,
+        deliveryId: request.deliveryId,
+        sessionId: request.sessionId,
+        placementGeneration: request.placementGeneration,
+        status: "accepted" as const,
+        turnId: `turn-${request.deliveryId}`,
+      };
+    });
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: {
+        requestReconcile: vi.fn(async (_computerId, _instanceId, request, onDispatched) => {
+          onDispatched?.();
+          return {
+            type: "session:reconcile:result" as const,
+            requestId: request.requestId,
+            sessionId: request.sessionId,
+            placementGeneration: request.placementGeneration,
+            status: "ready" as const,
+          };
+        }),
+        requestDelivery,
+      } as never,
+      assembler: {
+        assembleForSession: vi.fn(async (sessionId: string) => ({
+          contextTrees: [],
+          agentId: scope.agentId,
+          provider: "pi" as const,
+          revision: { agent: { id: scope.agentId, sequence: 1 }, session: { id: sessionId, sequence: 1 } },
+          instructions: { platform: "", agent: "" },
+          execution: { approvalPolicy: "never" as const, networkAccess: false },
+          workspace: { workspaceId: scope.agentId, mode: "empty_on_create" as const, sharing: "agent" as const },
+        })),
+      },
+      registry: scope.registry,
+    });
+    await worker.runOnce();
+
+    expect(requestDelivery).toHaveBeenCalledOnce();
+    expect(requestDelivery.mock.calls[0]?.[2]).toMatchObject({ deliveryId: candidate.deliveryId });
   });
 
   it("claims a later Local delivery while an earlier Local input backs off (Local order unchanged)", async () => {

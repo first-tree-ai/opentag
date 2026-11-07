@@ -66,7 +66,7 @@ export interface InterruptedTurnResumer {
    * Called under the Agent lock once the Session is prepared. Starts the retry and returns true,
    * or returns false so the Turn falls back to an ordinary recovery report.
    */
-  resume(sessionId: string, turn: SessionTurnIdentity): boolean;
+  resume(sessionId: string, turn: SessionTurnIdentity): Promise<boolean>;
   /** The retry cannot run (preparation failed or was refused): fall back to recovery reporting. */
   abandon(sessionId: string, turn: SessionTurnIdentity, reason: string): void;
 }
@@ -316,11 +316,15 @@ export class SessionReconciler {
   }
 
   /** Under the Agent lock: hand a prepared interrupted Turn to the resumer for its automatic retry. */
-  #resumed(sessionId: string, unresolved: SessionTurnIdentity, resumeTurn: SessionTurnIdentity | undefined): boolean {
+  async #resumed(
+    sessionId: string,
+    unresolved: SessionTurnIdentity,
+    resumeTurn: SessionTurnIdentity | undefined,
+  ): Promise<boolean> {
     if (!resumeTurn || unresolved.turnId !== resumeTurn.turnId || unresolved.deliveryId !== resumeTurn.deliveryId) {
       return false;
     }
-    return this.#resumer?.resume(sessionId, unresolved) === true;
+    return (await this.#resumer?.resume(sessionId, unresolved)) === true;
   }
 
   async #reconcileLocked(
@@ -483,7 +487,7 @@ export class SessionReconciler {
         deliveryId: preparedSession.unresolvedTurn.deliveryId,
         turnId: preparedSession.unresolvedTurn.turnId,
       };
-      if (this.#resumed(request.sessionId, recovery, resumeTurn)) {
+      if (await this.#resumed(request.sessionId, recovery, resumeTurn)) {
         return { ...this.#result(request, "running"), turn: recovery };
       }
       this.setRecovery(request.sessionId, recovery);

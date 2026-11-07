@@ -419,7 +419,7 @@ describe("the retry count shared by process interruptions and model 429", () => 
     await second.recovery.start();
     second.prepare();
     expect(second.recovery.isPendingRetry(second.request.sessionId, TURN_ID)).toBe(false);
-    expect(second.recovery.resume(second.request.sessionId, second.identity)).toBe(false);
+    expect(await second.recovery.resume(second.request.sessionId, second.identity)).toBe(false);
     expect(second.prompt).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(second.inbox.getState(message.messageId)?.status).toBe("failed"));
     await second.stop();
@@ -460,7 +460,7 @@ describe("the retry count shared by process interruptions and model 429", () => 
     await second.inbox.ready();
     await second.recovery.start();
     second.prepare();
-    expect(second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
+    expect(await second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
     await vi.waitFor(() => expect(second.runtime.steer).toHaveBeenCalledTimes(2));
     expect(second.steerText(0)).toContain("carried into the retry");
     expect(second.steerText(0)).toContain("Your previous turn was interrupted");
@@ -489,7 +489,7 @@ describe("the retry count shared by process interruptions and model 429", () => 
     await second.inbox.ready();
     await second.recovery.start();
     second.prepare();
-    expect(second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
+    expect(await second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
     await vi.waitFor(() => expect(second.runtime.steer).toHaveBeenCalledOnce());
     second.endAttempt();
     await vi.waitFor(() => expect(second.prompt).toHaveBeenCalledTimes(2));
@@ -524,7 +524,7 @@ describe("the retry count shared by process interruptions and model 429", () => 
     await second.inbox.ready();
     await second.recovery.start();
     second.prepare();
-    expect(second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
+    expect(await second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
     await vi.waitFor(() => expect(second.runtime.steer).toHaveBeenCalledOnce());
     expect(second.promptText(0)).toContain("restarted or upgraded");
     expect(second.steerText(0)).toContain("the OpenTag daemon stopped (crash, power loss, restart, or upgrade)");
@@ -554,7 +554,7 @@ describe("the retry count shared by process interruptions and model 429", () => 
     await second.inbox.ready();
     await second.recovery.start();
     second.prepare();
-    expect(second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
+    expect(await second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
     await vi.waitFor(() => expect(second.runtime.steer).toHaveBeenCalledOnce());
     expect(second.promptText(0)).toContain("HTTP 429");
     // The 429 was counted when it failed; the restart starts that retry without counting it again.
@@ -639,7 +639,7 @@ describe("the retry count shared by process interruptions and model 429", () => 
     second.prepare();
     const timer = vi.mocked(globalThis.setTimeout);
     timer.mockClear();
-    expect(second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
+    expect(await second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
     await vi.waitFor(() => expect(second.prompt).toHaveBeenCalledOnce());
     expect(timer.mock.calls.map((call) => call[1])).toContain(BUDGET_MS - spent);
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -796,7 +796,7 @@ describe("Session messages after a crash or restart", () => {
     expect(second.runtime.steer).not.toHaveBeenCalled();
 
     second.prepare();
-    expect(second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
+    expect(await second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
     await vi.waitFor(() => expect(second.runtime.steer).toHaveBeenCalledTimes(3));
     expect(second.promptText(0)).toContain("Your previous turn was interrupted");
     expect(second.promptText(0)).not.toContain("steered before the crash");
@@ -831,7 +831,7 @@ describe("Session messages after a crash or restart", () => {
     await second.inbox.ready();
     await second.recovery.start();
     second.prepare();
-    expect(second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
+    expect(await second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
     await vi.waitFor(() => expect(second.runtime.steer).toHaveBeenCalledOnce());
     second.endAttempt();
     await second.runner.settled();
@@ -857,7 +857,7 @@ describe("Session messages after a crash or restart", () => {
     await second.inbox.ready();
     await second.recovery.start();
     second.prepare();
-    expect(second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
+    expect(await second.recovery.resume(second.request.sessionId, second.identity)).toBe(true);
     await vi.waitFor(() => expect(second.prompt).toHaveBeenCalledOnce());
     second.endAttempt();
     await second.runner.settled();

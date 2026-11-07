@@ -113,40 +113,74 @@ export class InterruptedWorkRecovery implements InterruptedTurnResumer {
     return this.#supported() && pending?.record.turnId === turn.turnId && pending.record.deliveryId === turn.deliveryId;
   }
 
-  resume(sessionId: string, turn: SessionTurnIdentity): boolean {
+  async resume(sessionId: string, turn: SessionTurnIdentity): Promise<boolean> {
     const pending = this.#turns.get(sessionId);
     if (!pending || pending.record.turnId !== turn.turnId) return false;
-    const started = this.#options.custody.resume(pending.record.request, pending.record.turnId, {
-      continuation: pending.interruption,
-      steers: pending.steers,
-    });
+    // Recorded before the Turn starts: a Turn that crashes the daemon right away must still be counted.
+    if (!(await this.#markRetryStarted(sessionId, turn.turnId))) {
+      this.#retryLater(sessionId);
+      return false;
+    }
+    const current = !this.#stopped && this.#turns.get(sessionId) === pending;
+    const started =
+      current &&
+      this.#options.custody.resume(pending.record.request, pending.record.turnId, {
+        continuation: pending.interruption,
+        steers: pending.steers,
+      });
     this.#logger.info(
       { sessionId, turnId: turn.turnId, reason: pending.interruption.reason, started },
       started ? "Interrupted Turn automatic retry started" : "Interrupted Turn retry could not start yet",
     );
     if (!started) {
+      await this.#unmarkRetryStarted(sessionId, pending);
       // The Turn keeps its pending retry; the open recover request asks for another ready reconcile
       // and gives up (reporting the Turn) only when its attempts run out.
-      const request = this.#requests.get(sessionId);
-      if (request) this.#scheduleResend(sessionId, request);
+      this.#retryLater(sessionId);
       return false;
     }
     this.#turns.delete(sessionId);
     this.#settle(sessionId);
-    this.#markRetryStarted(sessionId, turn.turnId);
     // Waiting Session messages join the resumed Turn as soon as it can take them.
     this.#options.inbox.sessionPrepared(sessionId);
     return true;
   }
 
-  /** From here an interruption is the retry's own and counts again. A failed write only forgoes that one count. */
-  #markRetryStarted(sessionId: string, turnId: string): void {
-    void this.#options.retries
-      .update(sessionId, turnId, ({ interruption: _ended, retryNotStarted: _waiting, ...started }) => started)
+  #retryLater(sessionId: string): void {
+    const request = this.#requests.get(sessionId);
+    if (request) this.#scheduleResend(sessionId, request);
+  }
+
+  /**
+   * From here an interruption is the retry's own and counts again. When this can't be recorded the retry
+   * doesn't start, so no retry ever runs uncounted: it stays pending like one that could not start yet.
+   */
+  async #markRetryStarted(sessionId: string, turnId: string): Promise<boolean> {
+    try {
+      await this.#options.retries.update(
+        sessionId,
+        turnId,
+        ({ interruption: _ended, retryNotStarted: _waiting, ...started }) => started,
+      );
+      return true;
+    } catch {
+      this.#logger.warn(
+        { code: "TURN_RETRY_START_NOT_RECORDED", sessionId, turnId },
+        "Turn retry start could not be recorded, so it does not start yet",
+      );
+      return false;
+    }
+  }
+
+  /** The retry did not start after all. If this write fails, a restart counts it once more. */
+  async #unmarkRetryStarted(sessionId: string, pending: PendingTurn): Promise<void> {
+    const { interruption } = pending;
+    await this.#options.retries
+      .update(sessionId, pending.record.turnId, (record) => ({ ...record, interruption, retryNotStarted: true }))
       .catch(() =>
         this.#logger.warn(
-          { code: "TURN_RETRY_START_NOT_RECORDED", sessionId, turnId },
-          "Turn retry start could not be recorded",
+          { code: "TURN_RETRY_WAIT_NOT_RECORDED", sessionId, turnId: pending.record.turnId },
+          "Turn retry that did not start could not be recorded as waiting",
         ),
       );
   }

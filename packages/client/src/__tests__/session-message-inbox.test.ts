@@ -1422,7 +1422,7 @@ describe("SessionMessageInbox", () => {
     );
     // The ready reconcile prepares the Session and resumes the Turn: the reconciler answers `running`.
     prepared = true;
-    expect(recovery.resume(sessionId, { deliveryId: imRequest.deliveryId, turnId: "turn-1" })).toBe(true);
+    expect(await recovery.resume(sessionId, { deliveryId: imRequest.deliveryId, turnId: "turn-1" })).toBe(true);
     await handlers.onReconciled({ desired: "ready", sessionId } as never, { status: "running" } as never);
     await vi.waitFor(() => expect(steer).toHaveBeenCalledOnce());
     expect(prompt).not.toHaveBeenCalled();

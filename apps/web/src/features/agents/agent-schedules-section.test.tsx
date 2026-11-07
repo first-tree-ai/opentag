@@ -3,6 +3,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, browserApi } from "../../api.js";
+import * as m from "../../paraglide/messages.js";
 import { AgentSchedulesSection } from "./agent-schedules-section.js";
 import { shortScheduleTime } from "./schedule-rule.js";
 
@@ -98,11 +99,14 @@ describe("AgentSchedulesSection", () => {
 
     mount();
     fireEvent.click(await screen.findByRole("button", { name: "Daily check" }));
-    expect(
-      await screen.findByText(
-        "This Run failed with code provider_process_exited. It won't be rerun; the next run follows the schedule.",
-      ),
-    ).toBeTruthy();
+    const note = await screen.findByText(
+      "This Run failed with code provider_process_exited. It won't be rerun; the next run follows the schedule.",
+    );
+    // A stable reason can be 64 characters with no space to break at.
+    expect(note.classList.contains("wrap-anywhere")).toBe(true);
+    expect(m.agents_schedules_run_failed_note({ code: "x", next: "不会补跑。" }, { locale: "zh" })).toBe(
+      "这次运行失败，错误代码 x。不会补跑。",
+    );
   });
 
   it.each([

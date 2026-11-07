@@ -106,7 +106,7 @@
   "agents_schedules_reason_rejected": "Agent 没有接收",
   "agents_schedules_reason_skipped": "已跳过",
   "agents_schedules_resume": "恢复",
-  "agents_schedules_run_failed_note": "这次运行失败，错误代码 {code}。",
+  "agents_schedules_run_failed_note": "这次运行失败，错误代码 {code}。{next}",
   "agents_schedules_target": "发送到",
   "agents_schedules_target_channel": "{provider} · 群聊",
   "agents_schedules_target_internal": "内部会话 {sessionId}",

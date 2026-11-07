@@ -163,7 +163,9 @@ to it with `opentag session send`.
 - The creator gets no notice. Repeat with a grandchild stopped from the root: its creator gets one notice saying the
   child cannot be continued.
 - A sibling, or the Session itself, stopping it gets `not_ancestor`.
-- Stop a Session that has a running child: the output reports one descendant still running, and the child keeps running.
+- Stop a Session with running descendants two levels down: the output reports them stopped, all their Provider processes
+  are gone within seconds, none of their creators gets a notice, and a sibling outside the tree keeps running.
+- A parent whose Run has ended, with a child still running: the child is unaffected until the parent is stopped.
 - With the daemon's network cut while a Run is active, the stop answers `execution=pending`; the Run ends shortly after
   the network returns. With the daemon stopped instead, the waiting message fails after restart and is not run.
 - With the daemon frozen (`SIGSTOP`) while a Run is active, the stop answers `execution=pending` within 15 seconds, not a

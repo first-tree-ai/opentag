@@ -888,6 +888,52 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
       await vi.waitFor(() => expect(client.closed).toBe(true));
     });
 
+    it("keeps a failed turn's own failure when its interrupt also fails and a wake is queued", async () => {
+      const interrupt = deferred<void>();
+      const client = new ManualCodexClient({ interruptResponse: interrupt.promise });
+      const gate = deferred<void>();
+      let hold = false;
+      const events: AgentRuntimeEvent[] = [];
+      const runtime = await factory(client).create(
+        createRequest(async (event) => {
+          events.push(event);
+          if (hold) await gate.promise;
+        }),
+      );
+      const run = runtime.prompt({ runId: "bg", input: input("start it") });
+      await client.called("turn/start");
+      client.emitItem("item/started", command("one"));
+      client.emitItem("item/started", command("two"));
+      client.complete({ id: "turn-1", items: [] });
+      await vi.waitFor(() => expect(events.some((event) => event.type === "background_work_changed")).toBe(true));
+      await new Promise((resolve) => setImmediate(resolve));
+      await runtime.steer({ expectedRunId: "bg", input: input("a new request") });
+      await vi.waitFor(() => expect(client.calls.filter((call) => call.method === "turn/start")).toHaveLength(2));
+      late(client, command("one", { status: "completed", exitCode: 0 }));
+      await vi.waitFor(() =>
+        expect(events.filter((event) => event.type === "background_work_finished")).toHaveLength(1),
+      );
+      await new Promise((resolve) => setImmediate(resolve));
+      const aborting = runtime.abort({ expectedRunId: "bg" }).catch(() => undefined);
+      await vi.waitFor(() => expect(client.interrupts).toHaveLength(1));
+      // The failure arrives while an earlier event is still being delivered, and then the interrupt finds no turn.
+      hold = true;
+      client.emitItem("item/started", { id: "pending", type: "mcpToolCall" });
+      await new Promise((resolve) => setImmediate(resolve));
+      client.complete({
+        id: "turn-2",
+        status: "failed",
+        error: { message: "429", codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 429 } } },
+        items: [],
+      });
+      interrupt.reject(new Error("turn is already terminal"));
+      await aborting;
+      hold = false;
+      gate.resolve();
+      await expect(run).resolves.toMatchObject({ error: { code: "provider_rate_limited" } });
+      await runtime.close();
+    });
+
     it("fails input it accepted for a turn that could not start", async () => {
       const { client, runtime, run, background } = await started();
       client.complete({ id: "turn-1", items: [] });

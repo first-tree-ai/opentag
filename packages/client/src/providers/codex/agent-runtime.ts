@@ -1128,9 +1128,11 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
    * that ends the Run may claim: a later turn of a continuing Run must stay interruptible.
    */
   #endsRun(turn: ParsedTurn): boolean {
-    if (this.#wakeInputs.length > 0) return false;
+    // Only a completed turn continues the Run, whatever is queued behind a failed one.
     if (turn.status !== "completed") return true;
-    return this.#backgroundCommands.size === 0 && this.#heldCommands(turn).length === 0;
+    return (
+      this.#wakeInputs.length === 0 && this.#backgroundCommands.size === 0 && this.#heldCommands(turn).length === 0
+    );
   }
 
   /** Commands still open at a completed turn's end, unless the turn's own items report them as ended. */

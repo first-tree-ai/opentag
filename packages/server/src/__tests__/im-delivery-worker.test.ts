@@ -3233,6 +3233,8 @@ describe("ImDeliveryWorker database workflow", () => {
         reason: "ttl",
         expiresAt: new Date(clock - 1_000),
         dispatchRequestId: randomUUID(),
+        dispatchInputHash: "frozen-hash",
+        dispatchPayload: { frozen: true } as never,
         nextAttemptAt: new Date(clock + 30 * 60_000),
         lastErrorCode: "IM_DELIVERY_RUNTIME_UNAVAILABLE",
       })

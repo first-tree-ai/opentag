@@ -21,7 +21,7 @@ afterEach(async () => {
 afterAll(async () => pg?.stop());
 
 /** An accepted, unreported IM Turn whose Client then restarted under a new connection instance. */
-async function restarted() {
+async function restarted(capable = { current: true }) {
   const client = createDatabaseClient(pg.databaseUrl, { max: 2 });
   clients.push(client);
   const f = await createFixture(client.database);
@@ -48,7 +48,7 @@ async function restarted() {
   const service = new SessionRecoveryService({
     assembler,
     database: client.database,
-    registry: { canReceiveSnapshot: () => true },
+    registry: { canReceiveSnapshot: () => true, supportsCapability: () => capable.current },
     requestReconcile,
   });
   const frame = {
@@ -69,6 +69,80 @@ async function restarted() {
   };
   return { client, custody, f, context, service, frame, requestReconcile, assembler, owner };
 }
+
+/** A second accepted Turn of the same Agent, in its own Session, frozen on a newer Agent revision. */
+async function acceptNewerTurn(h: Awaited<ReturnType<typeof restarted>>) {
+  const sessionId = randomUUID();
+  await h.client.database.insert(sessions).values({
+    id: sessionId,
+    imBindingId: h.f.bindingId,
+    channelId: "channel-newer",
+    conversationKind: "channel",
+    kind: "channel",
+  });
+  await h.client.database
+    .insert(sessionPlacements)
+    .values({ sessionId, computerId: h.context.computerId, generation: 1 });
+  const [follow] = h.f.steerRequests;
+  await h.client.database
+    .update(imMessageDeliveries)
+    .set({ sessionId })
+    .where(eq(imMessageDeliveries.id, follow.deliveryId));
+  const request = {
+    ...h.f.rootRequest,
+    requestId: randomUUID(),
+    deliveryId: follow.deliveryId,
+    imMessageId: follow.imMessageId,
+    sessionId,
+    runtime: {
+      ...h.f.runtime,
+      revision: { ...h.f.runtime.revision, agent: { sequence: 2, id: "agent-revision-2" } },
+    },
+  };
+  const hash = computeDirectInputHash(request);
+  expect(await h.custody.beginDeliveryDispatch(request, hash, h.f.dispatchContext)).toBe("dispatched");
+  expect(await h.custody.acceptDelivery(request, hash, "turn-newer", h.f.context)).toBe("accepted");
+  return {
+    ...h.frame,
+    requestId: randomUUID(),
+    sessionId,
+    deliveryId: follow.deliveryId,
+    turnId: "turn-newer",
+  };
+}
+
+it("recovers Turns oldest configuration first on a Client without per-Session configuration", async () => {
+  const capable = { current: false };
+  const h = await restarted(capable);
+  const newer = await acceptNewerTurn(h);
+  // Newer first would have that Client refuse the older Turn's recovery as stale.
+  expect(await h.service.recover(newer, h.context)).toEqual({
+    status: "retry",
+    reason: "older_configuration_recovering",
+  });
+  expect(h.requestReconcile).not.toHaveBeenCalled();
+  // The older Turn goes first, then the newer one once the older has reported.
+  expect(await h.service.recover(h.frame, h.context)).toEqual({ status: "scheduled" });
+  await h.service.settled();
+  expect(h.requestReconcile).toHaveBeenCalledOnce();
+  expect(await h.service.recover(newer, h.context)).toEqual({
+    status: "retry",
+    reason: "older_configuration_recovering",
+  });
+  expect(await h.custody.recordTurn(turnReport(h.f, "completed"), h.context)).toBe("recorded");
+  expect(await h.service.recover(newer, h.context)).toEqual({ status: "scheduled" });
+  await h.service.settled();
+  expect(h.requestReconcile.mock.calls.at(-1)?.[2]).toMatchObject({ sessionId: newer.sessionId });
+});
+
+it("recovers in any order on a Client with per-Session configuration", async () => {
+  const h = await restarted();
+  const newer = await acceptNewerTurn(h);
+  expect(await h.service.recover(newer, h.context)).toEqual({ status: "scheduled" });
+  expect(await h.service.recover(h.frame, h.context)).toEqual({ status: "scheduled" });
+  await h.service.settled();
+  expect(h.requestReconcile).toHaveBeenCalledTimes(2);
+});
 
 it("moves the accepted Turn to the new connection and prepares the Session with the frozen snapshot", async () => {
   const h = await restarted();

@@ -154,6 +154,11 @@ Session has already prepared a newer revision. Only for such a Client does the S
 concurrently. A Client without it compares per Agent and would abandon that recovery, so the Server keeps one Turn per
 Agent for it.
 
+Rollback: a downgraded Client can inherit Turns accepted concurrently on different revisions. The Server then recovers them
+oldest revision first, answering `session:recover` with `retry` (`older_configuration_recovering`) until the older Turns
+have reported. The Client's recover attempts bound that wait at about 5 minutes. After that, it reports the waiting Turn
+through its ordinary failure path, so that Turn gets an error card and isn't resumed.
+
 ## Session recovery
 
 The optional `runtime.sessionRecovery` capability (version 1) lets a restarted Local daemon ask the Server to prepare

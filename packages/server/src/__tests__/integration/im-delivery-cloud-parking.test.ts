@@ -311,6 +311,7 @@ async function parkCloudDispatch(database: ReturnType<typeof createDatabaseClien
       canReceiveSnapshot: () => true,
       capabilityVersion: () => 2,
       currentInstanceId: () => fixture.instanceId,
+      supportsCapability: () => false,
     } as never,
     cloudDelivery: {
       canBatch: () => false,

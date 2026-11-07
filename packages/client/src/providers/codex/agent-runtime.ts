@@ -180,6 +180,14 @@ type CodexEnvelope =
   | { readonly type: "notification"; readonly message: CodexAppServerMessage }
   | { readonly type: "request"; readonly request: CodexAppServerRequest };
 
+const CODEX_COMPACTION_STOP_MS = 5_000;
+
+interface CodexCompaction {
+  readonly completed: ReturnType<typeof deferred<ParsedTurn>>;
+  stopping?: boolean;
+  turnId?: string;
+}
+
 interface ParsedTurn {
   readonly error?: string;
   readonly errorCode?: unknown;
@@ -200,6 +208,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
   readonly #threadStartParams: Readonly<Record<string, unknown>>;
   /** Codex writes a thread's rollout only once a turn starts; until then it cannot be resumed. */
   #threadPersisted: boolean;
+  #compaction?: CodexCompaction;
   readonly #mcpAttachTimeoutMs: number;
   /**
    * Whether the loaded thread may hold MCP state other than "none": a gateway catalogue, or an
@@ -277,7 +286,9 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     this.#preTurnAbort = preTurnAbort;
     try {
       try {
-        await this.#attachRunConfiguration(request, context, AbortSignal.any([context.signal, preTurnAbort.signal]));
+        const preTurnSignal = AbortSignal.any([context.signal, preTurnAbort.signal]);
+        await this.#attachRunConfiguration(request, context, preTurnSignal);
+        if (request.compactContext && this.#threadPersisted) await this.#compactContext(context, preTurnSignal);
       } catch (error) {
         if (!preTurnAbort.signal.aborted) throw error;
       }
@@ -380,11 +391,82 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
       this.#providerFailure ??= failure;
       this.#terminal?.reject(failure);
       this.#turnIdReady?.reject(failure);
+      this.#compaction?.completed.reject(failure);
     }
     this.#unsubscribeRequests();
     this.#unsubscribeNotifications();
     this.#client.setDynamicToolHandler?.(undefined);
     await this.#client.close();
+  }
+
+  /**
+   * `thread/compact/start` answers at once and compacts in a Turn of its own on the same thread;
+   * `turn/start` is refused until that Turn completes. Its notifications are consumed here and never
+   * reach the Run. A failed compaction is a warning: the Run continues on the uncompacted thread.
+   */
+  async #compactContext(context: AgentProviderRunContext, signal: AbortSignal): Promise<void> {
+    const compaction: CodexCompaction = { completed: deferred<ParsedTurn>() };
+    void compaction.completed.promise.catch(() => undefined);
+    this.#compaction = compaction;
+    let failure: string | undefined;
+    try {
+      await this.#client.request("thread/compact/start", { threadId: this.#threadId }, signal);
+      const turn = await settleUnlessAborted(compaction.completed.promise, signal);
+      if (turn.status !== "completed") failure = turn.error ?? `Codex compaction ended as ${turn.status}`;
+    } catch (error) {
+      if (signal.aborted) {
+        await this.#stopCompaction(compaction);
+        throw error;
+      }
+      failure = error instanceof Error ? error.message : "Codex compaction failed";
+    } finally {
+      this.#compaction = undefined;
+    }
+    if (failure) await context.emit({ type: "provider_warning", code: "codex_compaction_failed", message: failure });
+    else logger.info({ runId: context.runId }, "Codex compacted the Session context");
+  }
+
+  /**
+   * An abandoned compaction Turn would refuse the next `turn/start`, and cancelling the request does
+   * not stop one still starting, so this keeps ownership until the Turn ends. If it cannot be stopped
+   * in time, the runtime closes and the next Run gets a new App Server rather than a busy thread.
+   */
+  async #stopCompaction(compaction: CodexCompaction): Promise<void> {
+    compaction.stopping = true;
+    if (compaction.turnId) this.#interruptCompaction(compaction, compaction.turnId);
+    try {
+      await settleUnlessAborted(compaction.completed.promise, AbortSignal.timeout(CODEX_COMPACTION_STOP_MS));
+    } catch (error) {
+      logger.warn({ code: "compaction_stop_failed", error: String(error) }, "Codex compaction did not stop in time");
+      this.closeForProviderFailure();
+    }
+  }
+
+  #interruptCompaction(compaction: CodexCompaction, turnId: string): void {
+    void this.#client.interrupt(this.#threadId, turnId).catch((cause: unknown) => {
+      compaction.completed.reject(
+        new AgentProviderError("provider_error", "Codex compaction was not interrupted", { cause }),
+      );
+    });
+  }
+
+  /** True when the compaction Turn owns the notification, or it describes that Turn ending. */
+  #consumeCompactionNotification(compaction: CodexCompaction, message: CodexAppServerMessage): boolean {
+    const params = record(message.params);
+    if (message.method === "opentag/processError" || message.method === "thread/closed") {
+      compaction.completed.reject(new AgentProviderError("provider_error", "Codex stopped during compaction"));
+      return false;
+    }
+    if (message.method === "turn/started") {
+      compaction.turnId = parseTurn(params?.turn, "turn/started").id;
+      if (compaction.stopping) this.#interruptCompaction(compaction, compaction.turnId);
+      return true;
+    }
+    if (message.method === "turn/completed") {
+      compaction.completed.resolve(parseTurn(params?.turn, "turn/completed"));
+      return true;
+    }
+    return compaction.turnId !== undefined && params?.turnId === compaction.turnId;
   }
 
   /**
@@ -611,6 +693,12 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     this.#claimTerminalAtIngress(envelope);
     const next = this.#eventTail.then(async () => {
       if (!this.providerContext) return;
+      if (
+        this.#compaction &&
+        envelope.type === "notification" &&
+        this.#consumeCompactionNotification(this.#compaction, envelope.message)
+      )
+        return;
       if (this.#buffering) {
         this.#buffered.push(envelope);
         return;
@@ -1700,6 +1788,15 @@ function codexQuestionResult(method: string, response: AgentQuestionResponse): u
       : { action: "cancel", content: null };
   }
   return { answers: response.decision === "answer" ? (response.value ?? {}) : {} };
+}
+
+function settleUnlessAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    signal.throwIfAborted();
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
 }
 
 function parseTurnResponse(value: unknown, source: string): ParsedTurn {

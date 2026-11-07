@@ -540,9 +540,9 @@ Reservation locks capacity first, then authority rows before Sandbox; physical c
 ownership checks never acquire those authority locks after locking Sandbox. Agent overview keeps
 current Agent ownership and can use its retained owned Cloud placements after detach.
 
-The existing IM delivery worker uses a Session lane for Cloud and an Agent lane for Local. Durable
-custody follows the same boundary: a running or uncertain Cloud delivery fences its own Session;
-Local custody retains the Agent-wide fence. The short PostgreSQL advisory lock still serializes
+The existing IM delivery worker uses a Session lane. Durable custody follows the same boundary: a
+running or uncertain delivery fences its own Session, and a Local and a Cloud delivery of one Agent
+fence each other. The short PostgreSQL advisory lock still serializes
 claim decisions for an Agent, ending before allocation, dispatch or execution. Committed custody
 then prevents a second Worker from admitting overlapping work in the same Session.
 

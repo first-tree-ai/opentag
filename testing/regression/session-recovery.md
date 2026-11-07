@@ -16,6 +16,20 @@ the same Session after the daemon is back, its input begins with
 - One Agent on that Computer with an IM binding, and permission to stop, kill and restart its daemon.
 - For internal Sessions: a request that makes the visible Session run `opentag session create` for a long task.
 
+## Failure messages
+
+With an IM test binding and a runtime that can be made to fail on request:
+
+1. Send a Chinese request that fails. Expected: one plain-text reply in the same conversation or thread with three
+   Chinese sentences (what happened, whether operations ran, what to do next) and a clickable 查看详情 link with no raw
+   URL or Markdown. It shows no error code, and the failed reaction appears. Opening the link while signed in as the Agent owner shows the error code.
+2. Send an English request that fails. Expected: the same message in English. Mentioning a Bot with a Chinese name
+   does not change the language.
+3. Make the workspace save fail. Expected: a card with Retry save and Discard buttons in the language of the request,
+   with no error code. The buttons open the details page.
+4. Fail an input that was created before plain text was enabled. Expected: it stays a card; nothing is converted or
+   sent again.
+
 ## Feishu system reaction projection
 
 With an authorized Feishu test binding, verify a running task has the App's `OnIt`, terminal success removes it,
@@ -46,6 +60,15 @@ retain unknown-send reconciliation. During controlled shutdown,
 verify all admitted projections settle before the worker stops and a claim returned after stop starts no provider call.
 Cancel an in-flight working task and verify its working reaction is removed without creating a failure card or replaying
 execution. These deterministic checks do not establish native provider latency or deployment acceptance.
+
+## Channel Session idle compaction
+
+Run once per Provider the release supports on a Local Computer. Send a Channel Session a message containing a codeword
+and let it reply. Stop the daemon, set `lastActivityAt` in the Session's file under `runtime/channel-activity/` in the
+OpenTag home to more than 8 hours ago, start the daemon, and ask for the codeword. The Turn compacts first (Claude Code
+transcript `compact_boundary`, Codex `contextCompaction` item, Pi `compaction_end`), the Session and native conversation
+IDs are unchanged, and the reply has the codeword. Repeat with the file set just under 8 hours ago: no compaction. A
+Thread Session never compacts.
 
 ## Daemon crash (power loss)
 
@@ -163,7 +186,9 @@ to it with `opentag session send`.
 - The creator gets no notice. Repeat with a grandchild stopped from the root: its creator gets one notice saying the
   child cannot be continued.
 - A sibling, or the Session itself, stopping it gets `not_ancestor`.
-- Stop a Session that has a running child: the output reports one descendant still running, and the child keeps running.
+- Stop a Session with running descendants two levels down: the output reports them stopped, all their Provider processes
+  are gone within seconds, none of their creators gets a notice, and a sibling outside the tree keeps running.
+- A parent whose Run has ended, with a child still running: the child is unaffected until the parent is stopped.
 - With the daemon's network cut while a Run is active, the stop answers `execution=pending`; the Run ends shortly after
   the network returns. With the daemon stopped instead, the waiting message fails after restart and is not run.
 - With the daemon frozen (`SIGSTOP`) while a Run is active, the stop answers `execution=pending` within 15 seconds, not a

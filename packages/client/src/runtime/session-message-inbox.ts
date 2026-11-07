@@ -11,6 +11,12 @@ import {
 import type { AgentInput, AgentRuntime, AgentSteerOutcome, AgentSteerReceipt } from "../agent-runtime/types.js";
 import { type ClientLogger, createLogger } from "../observability/logger.js";
 import type { AdmissionController } from "./admission-controller.js";
+import {
+  beginChannelTurn,
+  type ChannelActivityStore,
+  endChannelTurn,
+  isChannelOutbox,
+} from "./channel-idle-compaction.js";
 import { ImCredentialEnvironmentError } from "./im-credential-environment-manager.js";
 import {
   buildContinuationNotice,
@@ -78,6 +84,8 @@ export interface JoinableRuns {
 
 export interface SessionMessageInboxOptions {
   admission: AdmissionController;
+  /** Without one, Channel Sessions never compact on idle. */
+  channelActivity?: Pick<ChannelActivityStore, "beginTurn" | "recordActivity">;
   cliCommand?: string;
   credentialEnvironment: Pick<RuntimeCredentialEnvironmentManager, "cleanup" | "prepare"> &
     Partial<Pick<RuntimeCredentialEnvironmentManager, "mode" | "outboxContextForSession">>;
@@ -150,6 +158,7 @@ const MAX_STOPPED_PLACEMENTS = 1024;
 
 export class SessionMessageInbox {
   readonly #admission: AdmissionController;
+  readonly #channelActivity: SessionMessageInboxOptions["channelActivity"];
   readonly #cliCommand: string;
   readonly #credentialEnvironment: SessionMessageInboxOptions["credentialEnvironment"];
   readonly #turnPlan: SessionMessageInboxOptions["turnPlan"];
@@ -207,6 +216,7 @@ export class SessionMessageInbox {
 
   constructor(options: SessionMessageInboxOptions) {
     this.#admission = options.admission;
+    this.#channelActivity = options.channelActivity;
     this.#cliCommand = options.cliCommand ?? "opentag";
     this.#credentialEnvironment = options.credentialEnvironment;
     this.#turnPlan = options.turnPlan;
@@ -344,14 +354,17 @@ export class SessionMessageInbox {
     } catch {
       this.#queuedTotal -= 1;
       this.#records.delete(key);
-      // A stop during this write already refuses the message for good; a disk failure is the lesser news.
-      const reason = this.#isStopped(request) ? "session_not_ready" : "provider_unavailable";
-      this.#remember(key, { hash, status: "rejected", reason });
       this.#logger.warn(
         { code: "SESSION_MESSAGE_PERSISTENCE_FAILED", messageId: request.messageId },
         "Session message persistence failed",
       );
-      return deliveryResult(request, "rejected", reason);
+      // A stop during this write already refuses the message for good; a disk failure is the lesser news.
+      if (this.#isStopped(request)) {
+        this.#remember(key, { hash, status: "rejected", reason: "session_not_ready" });
+        return deliveryResult(request, "rejected", "session_not_ready");
+      }
+      // A failed write says nothing about the message: not remembered, and a replay may succeed.
+      return deliveryResult(request, "rejected", "client_busy");
     }
     // A stop that began during this write must not queue it, and it never saw the capacity held here.
     if (this.#isStopped(request)) {
@@ -984,6 +997,7 @@ export class SessionMessageInbox {
     const key = `${next.request.targetSessionId}:${next.request.messageId}`;
     let current = this.#records.get(key);
     let credentialPrepared = false;
+    const channelTurn = { sessionId, channel: false };
     let preparedExecutionId: string | undefined;
     let turnPlanInput: ProviderCliTurnPlanPrepareInput | undefined;
     let phase = "runtime";
@@ -1057,10 +1071,16 @@ export class SessionMessageInbox {
       ranIn = runtime;
       phase = "prompt";
       ensureRunSignal().throwIfAborted();
+      channelTurn.channel = isChannelOutbox(outboxContext);
       const context = turnContext(sessionKind, outboxContext);
       const result = await runtime.prompt({
         runId,
         allowedUnixSockets,
+        ...(await beginChannelTurn(
+          this.#channelActivity,
+          { ...channelTurn, retry: Boolean(continuation) },
+          this.#now(),
+        )),
         /*
          * The processing clock is sampled HERE — after the queue drain, admission reservation,
          * credential preparation, and `waitForIdle()` — so the Agent sees the actual processing
@@ -1094,6 +1114,7 @@ export class SessionMessageInbox {
     } finally {
       this.#runStops.delete(sessionId);
       timer?.cancel();
+      await endChannelTurn(this.#channelActivity, channelTurn, this.#now());
       await this.#cleanupTurnPlan(turnPlanInput);
       if (credentialPrepared) {
         await this.#credentialEnvironment.cleanup(sessionId, preparedExecutionId).catch(() => undefined);
@@ -1143,13 +1164,21 @@ export class SessionMessageInbox {
     abandonedBackgroundWork: readonly string[] | undefined,
   ): Promise<void> {
     const abandoned = (abandonedBackgroundWork?.length ?? 0) > 0;
-    const terminal = await this.#transition(
-      record,
-      "succeeded",
-      abandoned
-        ? { lastError: backgroundWorkStoppedFailure(record.payload.requestId), ...this.#pendingOutcomeReport() }
-        : {},
-    );
+    const fields = abandoned
+      ? { lastError: backgroundWorkStoppedFailure(record.payload.requestId), ...this.#pendingOutcomeReport() }
+      : {};
+    const terminal = await this.#transition(record, "succeeded", fields).catch(() => {
+      // The Run did complete, so this is no failure to report, and it must not stay in flight here, where it
+      // would hold up an upgrade. The record stays `running` on disk and the next start treats it as
+      // interrupted: it may run again, with the notice that it may already have been handled.
+      this.#logger.warn(
+        { code: "SESSION_MESSAGE_PERSISTENCE_FAILED", messageId: record.payload.messageId, status: "succeeded" },
+        "Session message success could not be recorded",
+      );
+      const local = { ...record, ...fields, status: "succeeded" as const, updatedAt: this.#now() };
+      this.#setRecord(local);
+      return local;
+    });
     this.#remember(record.key, { hash, status: "succeeded" });
     if (abandoned)
       await this.#publishRunOutcome(terminal, "unknown", SESSION_MESSAGE_BACKGROUND_WORK_POSSIBLY_STOPPED_CODE);

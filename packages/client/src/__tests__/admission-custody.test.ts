@@ -231,6 +231,56 @@ describe("TurnCustodyOwner", () => {
     expect(fixture.reconciler.getAgent("agent-1")?.revisionSequence).toBe(1);
   });
 
+  it("lets a steer in at the Agent limit without taking a slot, while a new Session waits", async () => {
+    const fixture = await custodyFixture();
+    const admission = new AdmissionController();
+    const steer = vi.fn(async (request: RuntimeImSteerRequest) => ({
+      type: "im:steer:result" as const,
+      requestId: request.requestId,
+      deliveryId: request.deliveryId,
+      sessionId: request.sessionId,
+      placementGeneration: request.placementGeneration,
+      rootDeliveryId: request.rootDeliveryId,
+      expectedTurnId: request.expectedTurnId,
+      status: "steered" as const,
+    }));
+    const owner = new TurnCustodyOwner({
+      admission,
+      bindingStore: fixture.store,
+      id: () => "turn-1",
+      reconciler: fixture.reconciler,
+      steer,
+    });
+    const root = delivery(fixture.runtime, "delivery-1", randomUUID());
+    await expect(owner.accept(root)).resolves.toMatchObject({ result: { status: "accepted", turnId: "turn-1" } });
+    for (let index = 1; index < 10; index += 1) admission.reserve(`session-other-${index}`, "agent-1");
+    expect(admission.snapshot().activeAgents.get("agent-1")).toBe(10);
+
+    await expect(
+      owner.acceptSteer({
+        type: "im:steer",
+        requestId: randomUUID(),
+        deliveryId: "delivery-2",
+        imMessageId: "message-delivery-2",
+        sessionId: "session-1",
+        agentId: "agent-1",
+        placementGeneration: 1,
+        rootDeliveryId: "delivery-1",
+        expectedTurnId: "turn-1",
+        attention: "direct",
+        content: root.content,
+      } as RuntimeImSteerRequest),
+    ).resolves.toMatchObject({ status: "steered" });
+    expect(steer).toHaveBeenCalledOnce();
+    expect(admission.snapshot().activeAgents.get("agent-1")).toBe(10);
+
+    await fixture.reconciler.reconcile({ ...fixture.reconcile, requestId: randomUUID(), sessionId: "session-new" });
+    const waiting = delivery(fixture.runtime, "delivery-3", randomUUID());
+    await expect(owner.accept({ ...waiting, sessionId: "session-new" })).resolves.toMatchObject({
+      result: { status: "rejected", reason: "agent_busy" },
+    });
+  });
+
   it("deduplicates steer requests and converges an ordinary redelivery as absorbed", async () => {
     const fixture = await custodyFixture();
     const steer = vi.fn(async (request: RuntimeImSteerRequest) => {

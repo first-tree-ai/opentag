@@ -57,6 +57,7 @@ const errorSchema = z
           "provider_unavailable",
           "resume_failed",
           "run_mismatch",
+          "steer_not_sent",
           "unsupported_capability",
         ]),
         z.string().regex(/^E[A-Z0-9_]{1,40}$/),

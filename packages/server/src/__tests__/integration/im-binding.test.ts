@@ -3661,6 +3661,7 @@ describe("IM binding persistence", () => {
         canReceiveSnapshot: () => true,
         capabilityVersion: () => 1,
         currentInstanceId: () => instanceId,
+        supportsCapability: () => false,
       };
       const failedDomain = {
         requestReconcile: dispatchedRuntimeFailure(new Error("runtime unavailable")),
@@ -4586,6 +4587,7 @@ describe("IM binding persistence", () => {
         canReceiveSnapshot: () => true,
         capabilityVersion: () => 1,
         currentInstanceId: () => firstInstanceId,
+        supportsCapability: () => false,
       };
       const racingRun = new ImDeliveryWorker({
         assembler: guardedAssembler,
@@ -4761,6 +4763,7 @@ describe("IM binding persistence", () => {
           canReceiveSnapshot: () => true,
           capabilityVersion: () => 1,
           currentInstanceId: () => instanceId,
+          supportsCapability: () => false,
         } as never,
         domain: firstDomain as never,
         claimLeaseMs: 300,
@@ -4805,6 +4808,7 @@ describe("IM binding persistence", () => {
           canReceiveSnapshot: () => true,
           capabilityVersion: () => 1,
           currentInstanceId: () => undefined,
+          supportsCapability: () => false,
         } as never,
         domain: secondDomain as never,
       });
@@ -4867,6 +4871,7 @@ describe("IM binding persistence", () => {
           canReceiveSnapshot: () => true,
           capabilityVersion: () => 1,
           currentInstanceId: () => staleInstanceId,
+          supportsCapability: () => false,
         } as never,
         domain: domain as never,
       }).runOnce();
@@ -4923,6 +4928,7 @@ describe("IM binding persistence", () => {
           canReceiveSnapshot: () => true,
           capabilityVersion: () => 1,
           currentInstanceId: () => instanceId,
+          supportsCapability: () => false,
         } as never,
         domain: {
           requestReconcile: dispatchedRuntimeResult({ status: "ready" }),
@@ -5027,6 +5033,7 @@ describe("IM binding persistence", () => {
         canReceiveSnapshot: () => true,
         capabilityVersion: () => 1,
         currentInstanceId: () => instanceId,
+        supportsCapability: () => false,
       };
       const worker = imDeliveryWorker({
         database: value.database,

@@ -1,14 +1,17 @@
 import { randomUUID } from "node:crypto";
 import {
   HTTP_PATHS,
+  RUNTIME_CAPABILITY,
   SESSION_CLI_PROOF_HEADER,
   type SessionCliCreateRequest,
   type SessionCliSendRequest,
+  type SessionReconcileRequest,
 } from "@opentag/shared";
 import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
 import { registerRuntimeSessionRoutes } from "../api/runtime-sessions.js";
 import { createServerDiagnosticReporter } from "../observability/diagnostics.js";
+import { RuntimeRegistrySendError } from "../runtime/connection-registry.js";
 import { RuntimeDomainRequestError } from "../runtime/runtime-domain-owner.js";
 import type { SessionCliSourceContext } from "../services/sessions/session-cli-proof-service.js";
 import { SessionCollaborationService } from "../services/sessions/session-collaboration-service.js";
@@ -641,6 +644,130 @@ describe("SessionCollaborationService", () => {
     });
   });
 
+  it("waits for two serial round trips on the existing Local send path", async () => {
+    const fixture = serviceFixture();
+    const reconcile = await fixture.domain.requestReconcile();
+    const delivery = await fixture.domain.requestSessionMessageDelivery();
+    fixture.domain.requestReconcile.mockClear().mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return reconcile;
+    });
+    fixture.domain.requestSessionMessageDelivery.mockClear().mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      return delivery;
+    });
+
+    vi.useFakeTimers();
+    try {
+      const start = Date.now();
+      const response = fixture.service.send(sendRequest(fixture), fixture.source);
+      await vi.advanceTimersByTimeAsync(499);
+      expect(fixture.domain.requestReconcile).toHaveBeenCalledOnce();
+      expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(fixture.domain.requestSessionMessageDelivery).toHaveBeenCalledOnce();
+      expect(fixture.sessions.recordMessageOutcome).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(response).resolves.toMatchObject({ status: "accepted" });
+      expect(Date.now() - start).toBe(1000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("records a warm compatible Local send after one 500 ms round trip", async () => {
+    const fixture = serviceFixture({ inlineMessages: true });
+    fixture.domain.requestReconcile.mockImplementation(
+      async (_computerId, _instanceId, request: SessionReconcileRequest) => {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        return {
+          ...reconcileReceipt(request),
+          sessionMessage: {
+            type: "session:message:deliver:result",
+            requestId: request.requestId,
+            messageId: request.sessionMessage?.messageId,
+            targetSessionId: request.sessionId,
+            placementGeneration: request.placementGeneration,
+            status: "accepted",
+          },
+        };
+      },
+    );
+
+    vi.useFakeTimers();
+    try {
+      const response = fixture.service.send(sendRequest(fixture), fixture.source);
+      await vi.advanceTimersByTimeAsync(499);
+      expect(fixture.sessions.recordMessageOutcome).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(response).resolves.toMatchObject({ status: "accepted" });
+      expect(fixture.domain.requestReconcile).toHaveBeenCalledOnce();
+      expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
+      expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({ messageId: fixture.messageId, outcome: "accepted", attemptCount: 1 }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("delivers separately only after the Client explicitly defers a prepared target", async () => {
+    const fixture = serviceFixture({ inlineMessages: true });
+    fixture.domain.requestReconcile.mockImplementation(
+      async (_computerId, _instanceId, request: SessionReconcileRequest) => ({
+        ...reconcileReceipt(request),
+        sessionMessage: "deferred",
+      }),
+    );
+    await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+      status: "accepted",
+    });
+    expect(fixture.domain.requestSessionMessageDelivery).toHaveBeenCalledOnce();
+    const reconcile = fixture.domain.requestReconcile.mock.calls[0]?.[2];
+    const delivery = fixture.domain.requestSessionMessageDelivery.mock.calls[0]?.[2];
+    expect(reconcile.sessionMessage.messageId).toBe(delivery.messageId);
+    expect(reconcile.runtime).toBe(delivery.runtime);
+    expect(reconcile.requestId).not.toBe(delivery.requestId);
+  });
+
+  it("uses two ordinary frames if the combined frame exceeds the wire limit", async () => {
+    const fixture = serviceFixture({ inlineMessages: true });
+    fixture.domain.requestReconcile.mockRejectedValueOnce(new RuntimeRegistrySendError("frame_too_large", "too large"));
+    await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+      status: "accepted",
+    });
+    expect(fixture.domain.requestReconcile.mock.calls[0]?.[2].sessionMessage).toBeDefined();
+    expect(fixture.domain.requestReconcile.mock.calls[1]?.[2].sessionMessage).toBeUndefined();
+    expect(fixture.domain.requestSessionMessageDelivery).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    new RuntimeDomainRequestError("timeout", "lost acknowledgement"),
+    new RuntimeDomainRequestError("delivery_unconfirmed", "owner stopped"),
+    new RuntimeRegistrySendError("instance_replaced", "connection replaced during send", true),
+  ])("leaves a potentially delivered combined request unknown after %s", async (error) => {
+    const fixture = serviceFixture({ inlineMessages: true });
+    fixture.domain.requestReconcile.mockRejectedValue(error);
+    await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+      status: "unknown",
+      code: "delivery_timeout",
+    });
+    expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
+    expect(fixture.sessions.recordMessageOutcome).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ outcome: "unknown", errorCode: "delivery_timeout" }),
+    );
+  });
+
+  it("records a refused combined admission as unreachable without sending another frame", async () => {
+    const fixture = serviceFixture({ inlineMessages: true });
+    fixture.domain.requestReconcile.mockRejectedValue(new RuntimeDomainRequestError("authority_unavailable", "denied"));
+    await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+      status: "unreachable",
+      code: "runtime_not_ready",
+    });
+    expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
+  });
+
   it("records reconcile failure as unreachable without attempting delivery", async () => {
     const fixture = serviceFixture();
     fixture.domain.requestReconcile.mockResolvedValue({
@@ -802,12 +929,23 @@ describe("SessionCollaborationService", () => {
   });
 });
 
+function reconcileReceipt(request: SessionReconcileRequest) {
+  return {
+    type: "session:reconcile:result",
+    requestId: request.requestId,
+    sessionId: request.sessionId,
+    placementGeneration: request.placementGeneration,
+    status: "ready",
+  };
+}
+
 function serviceFixture(
   options: {
     attemptCount?: number | null;
     lastOutcome?: "accepted" | "unknown";
     targetSessionKind?: "channel" | "thread" | "internal";
     targetComputerKind?: "local" | "cloud";
+    inlineMessages?: boolean;
   } = {},
 ) {
   const sourceSessionId = randomUUID();
@@ -899,7 +1037,9 @@ function serviceFixture(
   const onDiagnostic = vi.fn(createServerDiagnosticReporter(() => diagnosticLogger as never));
   const logger = { error: vi.fn() };
   const registry = {
-    capabilityVersion: vi.fn().mockReturnValue(2),
+    capabilityVersion: vi.fn((_computer: string, _instance: string, capability: string) =>
+      capability === RUNTIME_CAPABILITY.sessionMessageReconcile ? (options.inlineMessages ? 1 : undefined) : 2,
+    ),
     currentInstanceId: vi.fn().mockReturnValue(instanceId),
     supportsCapability: vi.fn().mockReturnValue(true),
   };

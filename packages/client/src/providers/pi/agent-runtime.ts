@@ -363,8 +363,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
 
   /**
    * Pi compacts through its `compact` RPC, on the same Session file. Its `compaction_end` already
-   * carries the warning for a failure, such as a Session too small to compact, and the summary's
-   * usage, so a refused command only moves on to the prompt. The summary call has no timeout of
+   * carries any warning and the summary's usage, so a refused command only moves on to the prompt. The summary call has no timeout of
    * its own; it stays bounded by the Run signal, and an interrupt closes the process as it does for
    * threshold compaction. Returns false when that close already owns the aborted terminal.
    */
@@ -954,7 +953,7 @@ export class PiAgentRuntime extends BaseAgentRuntime {
     if (type === "compaction_end") {
       const result =
         message.result === undefined ? undefined : requireRecord(message.result, "Pi compaction_end result is invalid");
-      if (result === undefined) {
+      if (result === undefined && !isCompactionSkip(message)) {
         await this.requireProviderContext().emit({
           type: "provider_warning",
           code: message.aborted === true ? "pi_compaction_aborted" : "pi_compaction_failed",
@@ -1680,6 +1679,14 @@ function compactionDiagnostic(message: Readonly<Record<string, unknown>>): strin
 }
 
 const COMPACTION_DIAGNOSTIC_MAX_BYTES = 2 * 1024;
+
+/**
+ * A requested compaction Pi declined because there was nothing to summarize. It is not a failure, and
+ * warning about it would bury real ones in a rarely used Session, which meets this on every idle Turn.
+ */
+function isCompactionSkip(message: Readonly<Record<string, unknown>>): boolean {
+  return message.reason === "manual" && /Nothing to compact|Already compacted/.test(String(message.errorMessage));
+}
 
 function isNonNegativeNumber(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;

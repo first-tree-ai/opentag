@@ -456,7 +456,7 @@ describe("PiAgentRuntime", () => {
   });
 
   describe("compactContext", () => {
-    function compacting(outcome: "complete" | "refused") {
+    function compacting(outcome: "complete" | "refused" | "failed") {
       const client = new ScriptedPiClient("complete");
       client.messageCount = 2;
       client.compactOutcome = outcome;
@@ -495,15 +495,26 @@ describe("PiAgentRuntime", () => {
       await runtime.close();
     });
 
-    it("warns through compaction_end and still prompts when Pi refuses to compact", async () => {
+    it("prompts without a warning when the Session is too small to compact", async () => {
       const { client, events, open } = compacting("refused");
       const runtime = await open;
       await expect(runtime.prompt({ runId: "run", input: input("work"), compactContext: true })).resolves.toMatchObject(
         { status: "completed" },
       );
       expect(client.commands.some((command) => command.type === "prompt")).toBe(true);
+      expect(events.some((event) => event.type === "provider_warning")).toBe(false);
+      await runtime.close();
+    });
+
+    it("warns through compaction_end and still prompts when compaction fails", async () => {
+      const { client, events, open } = compacting("failed");
+      const runtime = await open;
+      await expect(runtime.prompt({ runId: "run", input: input("work"), compactContext: true })).resolves.toMatchObject(
+        { status: "completed" },
+      );
+      expect(client.commands.some((command) => command.type === "prompt")).toBe(true);
       expect(events).toContainEqual(
-        expect.objectContaining({ code: "pi_compaction_failed", message: "Nothing to compact (session too small)" }),
+        expect.objectContaining({ code: "pi_compaction_failed", message: "Compaction failed: model unavailable" }),
       );
       await runtime.close();
     });
@@ -1428,7 +1439,7 @@ class ScriptedPiClient implements PiRpcClient {
   sessionFile = SESSION_FILE;
   compactError?: Error;
   compactHold = false;
-  compactOutcome: "complete" | "refused" = "complete";
+  compactOutcome: "complete" | "refused" | "failed" = "complete";
   #compactHeld?: (error: Error) => void;
 
   constructor(scenario: Scenario, sessionId = SESSION_ID) {
@@ -1503,8 +1514,11 @@ class ScriptedPiClient implements PiRpcClient {
         });
       }
       this.#emit({ type: "compaction_start", reason: "manual" });
-      if (this.compactOutcome === "refused") {
-        const errorMessage = "Nothing to compact (session too small)";
+      if (this.compactOutcome !== "complete") {
+        const errorMessage =
+          this.compactOutcome === "refused"
+            ? "Compaction failed: Nothing to compact (session too small)"
+            : "Compaction failed: model unavailable";
         this.#emit({ type: "compaction_end", reason: "manual", aborted: false, errorMessage });
         throw new PiRpcError("command", errorMessage);
       }

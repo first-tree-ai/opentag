@@ -151,6 +151,25 @@ execution. These deterministic checks do not establish native provider latency o
    through the target's deduplication. Cloud-origin settlement acknowledgements
    retain their existing bounded, final-notification wait.
 
+## Stopping an internal Session
+
+Ask the visible Session to create a long-running internal Session (for example `sleep 600`), and queue a second message
+to it with `opentag session send`.
+
+- `opentag session stop <id>` from its creator answers `status=stopped execution=stopped`. The Provider process is gone
+  within seconds, the queued message never runs, and the daemon does not retry anything.
+- `opentag session list` no longer shows it; `opentag session list --include-stopped` shows it with a stopped time.
+- `opentag session send <id>` answers `rejected` with `target_unavailable`; a repeated stop answers `alreadyStopped=true`.
+- The creator gets no notice. Repeat with a grandchild stopped from the root: its creator gets one notice saying the
+  child cannot be continued.
+- A sibling, or the Session itself, stopping it gets `not_ancestor`.
+- Stop a Session that has a running child: the output reports one descendant still running, and the child keeps running.
+- With the daemon's network cut while a Run is active, the stop answers `execution=pending`; the Run ends shortly after
+  the network returns. With the daemon stopped instead, the waiting message fails after restart and is not run.
+- With the daemon frozen (`SIGSTOP`) while a Run is active, the stop answers `execution=pending` within 15 seconds, not a
+  request timeout; the Run ends after the daemon resumes (`SIGCONT`).
+- On Cloud, the same stop answers `execution=requested` and the Run settles as cancelled, without a notice.
+
 ## Background work at the end of a Run
 
 Needs a real Claude Code: the Lab's scripted Claude does not start background tasks.
@@ -160,6 +179,14 @@ Needs a real Claude Code: the Lab's scripted Claude does not start background ta
    and the message's sender gets a notice with reason `background_work_possibly_stopped`.
 2. Send it another message. The transcript shows the Claude Code task notification and then the message, followed by an
    assistant reply, not `No response requested.`, and the record `succeeded` only after that reply.
+
+## Schedules on an internal Session
+
+1. Have an internal Session run `opentag agent self schedule create`. The result's `target` is that Session, with
+   `internal: true`. Web lists it as "Internal Session" with a short ID.
+2. When it fires, the message runs in that Session and nothing is posted to IM.
+3. Make a scheduled Run fail. Its creator gets one Run outcome notice, and IM gets nothing.
+4. Run `opentag session stop` from its creator. The schedule is off, and nothing fires afterwards.
 
 ## Steered Session messages
 

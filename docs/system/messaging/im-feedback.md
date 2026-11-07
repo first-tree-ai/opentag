@@ -128,7 +128,10 @@ Delivery is best effort:
   loses the message. The Agent schedule page still shows the miss from `last_dispatch`.
 - A Client that never returns never reports a message it accepted; its next occurrence reports the miss instead.
 
-The schedule page is unchanged: its last run shows delivery, so a Run that failed after delivery still reads as run.
+The message links to the schedule, whose last run shows the reason. A Run that failed after delivery writes its code to
+the summary's existing `last_dispatch.code` with the outcome still `accepted`, and the page reads as failed. The summary
+only describes the latest occurrence: once the next one is claimed, the link shows that one, and an older report writes
+nothing. A cancelled Run leaves the summary alone.
 
 ## Account operations
 

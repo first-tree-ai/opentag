@@ -265,6 +265,13 @@ type LastDispatch = NonNullable<AgentScheduleListItem["lastDispatch"]>;
 /** The last occurrence in the reader's terms: just its time when it ran, otherwise what went wrong. */
 function LastRun({ last, timezone }: { last: LastDispatch; timezone: string }) {
   const time = <time dateTime={last.scheduledFor}>{shortScheduleTime(last.scheduledFor, timezone)}</time>;
+  if (last.outcome === "accepted" && last.code !== null) {
+    return (
+      <span className="text-kumo-danger">
+        {m.agents_schedules_last_short()} {time} {m.agents_schedules_last_failed()}
+      </span>
+    );
+  }
   if (last.outcome === "accepted") {
     return (
       <span>
@@ -385,9 +392,13 @@ function ScheduleDetail({ schedule }: { schedule: AgentSchedule }) {
 }
 
 function lastRunNote(last: LastDispatch, hasNext: boolean): string | undefined {
-  if (last.outcome === "accepted") return undefined;
+  const noRerun = hasNext ? m.agents_schedules_no_rerun_next() : m.agents_schedules_no_rerun();
+  // Once delivered, a code can only be why the Run failed. The IM message links here for it.
+  if (last.outcome === "accepted") {
+    return last.code === null ? undefined : `${m.agents_schedules_run_failed_note({ code: last.code })} ${noRerun}`;
+  }
   if (last.outcome === "unknown") return m.agents_schedules_unconfirmed_note();
-  return hasNext ? m.agents_schedules_no_rerun_next() : m.agents_schedules_no_rerun();
+  return noRerun;
 }
 
 function DetailRow({ label, value }: { label: string; value: string }) {

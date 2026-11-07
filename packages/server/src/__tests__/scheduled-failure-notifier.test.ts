@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   agentSchedules,
@@ -329,6 +329,97 @@ describe("a scheduled Run that failed", () => {
     } as never);
     await expect(h.notifier.notifyRunOutcome(report(value, messageId))).resolves.toBe("notified");
     expect(h.post.mock.calls[0]?.[0 as never]).toMatchObject({ replyToExternalId: "om_latest" });
+  });
+});
+
+describe("the failure reason behind the details link", () => {
+  async function delivered(value: Seed, last: { outcome: string; code: string | null; scheduledFor?: string }) {
+    const scheduleId = await insertEverySchedule(value);
+    const messageId = randomUUID();
+    const scheduledFor = T0.toISOString();
+    await db.database
+      .update(agentSchedules)
+      .set({
+        lastDispatch: {
+          scheduledFor: last.scheduledFor ?? scheduledFor,
+          attemptedAt: scheduledFor,
+          messageId,
+          outcome: last.outcome,
+          code: last.code,
+        } as never,
+      })
+      .where(eq(agentSchedules.id, scheduleId));
+    await db.database.insert(sessionMessages).values({
+      id: messageId,
+      scheduledOrigin: { scheduleId, scheduledFor, timezone: "UTC", name: "Hourly check" },
+      targetSessionId: value.sessionId,
+      content: "Check the build.",
+      contentHash: "a".repeat(64),
+      lastOutcome: "accepted",
+    });
+    return { messageId, scheduleId };
+  }
+  const summary = async (scheduleId: string) =>
+    (await db.database.select().from(agentSchedules).where(eq(agentSchedules.id, scheduleId)))[0]?.lastDispatch;
+
+  it.each(["notifyRunOutcome", "notifyRunOutcomeInBackground"] as const)(
+    "tells two different failures apart on the schedule through %s, and stays out of the message",
+    async (entry) => {
+      for (const reason of ["provider_start_failed", "provider_process_exited"]) {
+        const value = await seed();
+        const { messageId, scheduleId } = await delivered(value, { outcome: "accepted", code: null });
+        const h = harness();
+        await h.notifier[entry](report(value, messageId, { reason }));
+        expect(await summary(scheduleId)).toMatchObject({ outcome: "accepted", code: reason });
+        await vi.waitFor(() => expect(h.post).toHaveBeenCalledOnce());
+        expect((h.post.mock.calls[0] as unknown as [unknown, string])[1]).not.toContain(reason);
+      }
+    },
+  );
+
+  it("restores the reason when a late receipt cleared it, and settles an unconfirmed hand-off", async () => {
+    const value = await seed();
+    const { messageId, scheduleId } = await delivered(value, { outcome: "unknown", code: "delivery_uncertain" });
+    const h = harness();
+    await h.notifier.notifyRunOutcome(report(value, messageId));
+    expect(await summary(scheduleId)).toMatchObject({ outcome: "accepted", code: "provider_unavailable" });
+
+    await db.database
+      .update(agentSchedules)
+      .set({ lastDispatch: sql`${agentSchedules.lastDispatch} || jsonb_build_object('code', null)` })
+      .where(eq(agentSchedules.id, scheduleId));
+    await h.notifier.notifyRunOutcome(report(value, messageId));
+    expect(await summary(scheduleId)).toMatchObject({ code: "provider_unavailable" });
+  });
+
+  it("leaves a later occurrence's summary, a cancelled Run, and a foreign report alone", async () => {
+    const value = await seed();
+    const h = harness();
+    const later = await delivered(value, { outcome: "accepted", code: null, scheduledFor: "2026-09-28T02:00:00.000Z" });
+    await h.notifier.notifyRunOutcome(report(value, later.messageId));
+    expect(await summary(later.scheduleId)).toMatchObject({ code: null });
+
+    const current = await delivered(await seed(), { outcome: "accepted", code: null });
+    const owner = await db.database.select().from(sessionMessages).where(eq(sessionMessages.id, current.messageId));
+    const session = owner[0]?.targetSessionId as string;
+    const [placement] = await db.database
+      .select()
+      .from(sessionPlacements)
+      .where(eq(sessionPlacements.sessionId, session));
+    const base = { childSessionId: session, messageId: current.messageId };
+    const source = {
+      computerId: placement?.computerId as string,
+      connectionInstanceId: randomUUID(),
+      placementGeneration: 1,
+    };
+    await h.notifier.notifyRunOutcome({ ...base, outcome: "cancelled", reason: "turn_cancelled", source });
+    await h.notifier.notifyRunOutcome({
+      ...base,
+      outcome: "failed",
+      reason: "provider_failed",
+      source: { ...source, computerId: randomUUID() },
+    });
+    expect(await summary(current.scheduleId)).toMatchObject({ code: null });
   });
 });
 

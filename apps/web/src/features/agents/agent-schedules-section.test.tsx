@@ -61,6 +61,7 @@ describe("AgentSchedulesSection", () => {
     ["skipped", "late", "text-kumo-danger", "didn't run: the time was missed"],
     ["rejected", "agent_suspended", "text-kumo-danger", "didn't run: the Agent was paused"],
     ["unknown", null, "text-kumo-warning", "not confirmed"],
+    ["accepted", "provider_process_exited", "text-kumo-danger", "failed"],
   ] as const)("says what happened to a %s (%s) last run in the reader's terms", async (outcome, code, tone, suffix) => {
     const item = schedule({
       lastDispatch: { scheduledFor: TIME, attemptedAt: null, messageId: null, outcome, code },
@@ -82,8 +83,29 @@ describe("AgentSchedulesSection", () => {
     expect(detail).not.toHaveBeenCalled();
   });
 
+  it("names why a delivered Run failed in its detail, for the IM failure message's link", async () => {
+    const item = schedule({
+      lastDispatch: {
+        scheduledFor: TIME,
+        attemptedAt: TIME,
+        messageId: null,
+        outcome: "accepted",
+        code: "provider_process_exited",
+      },
+    });
+    vi.spyOn(browserApi, "agentSchedules").mockResolvedValue({ items: [summaryOf(item)], nextCursor: null });
+    vi.spyOn(browserApi, "agentSchedule").mockResolvedValue(item);
+
+    mount();
+    fireEvent.click(await screen.findByRole("button", { name: "Daily check" }));
+    expect(
+      await screen.findByText(
+        "This Run failed with code provider_process_exited. It won't be rerun; the next run follows the schedule.",
+      ),
+    ).toBeTruthy();
+  });
+
   it.each([
-    ["accepted", null],
     ["unreachable", "It won't be rerun; the next run follows the schedule."],
     ["rejected", "It won't be rerun; the next run follows the schedule."],
     ["skipped", "It won't be rerun; the next run follows the schedule."],

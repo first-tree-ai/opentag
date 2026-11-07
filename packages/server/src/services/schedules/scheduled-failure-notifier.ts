@@ -2,7 +2,14 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { AgentScheduleLastDispatch } from "@opentag/shared";
 import { and, desc, eq, sql } from "drizzle-orm";
 import type { DatabaseClient } from "../../db/client.js";
-import { imBindings, imMessages, sessionMessages, sessionPlacements, sessions } from "../../db/schema/index.js";
+import {
+  agentSchedules,
+  imBindings,
+  imMessages,
+  sessionMessages,
+  sessionPlacements,
+  sessions,
+} from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
 import { detailsLink } from "../im/im-feedback-card.js";
 import { type FeedbackLanguage, failureCopy, textLanguage } from "../im/im-feedback-copy.js";
@@ -293,6 +300,8 @@ export class ScheduledFailureNotifier implements RunOutcomeNotifier, ScheduledMi
     let scheduled: { occurrence: ScheduledOccurrence; authorized: boolean } | undefined;
     try {
       scheduled = await this.#readScheduledRun(input);
+      if (scheduled?.authorized && input.outcome !== "cancelled")
+        await this.#recordRunFailure(scheduled.occurrence, input.reason);
     } catch {
       return "retry";
     }
@@ -344,6 +353,27 @@ export class ScheduledFailureNotifier implements RunOutcomeNotifier, ScheduledMi
       .where(eq(sessions.id, sessionId))
       .limit(1);
     return row?.kind === "internal";
+  }
+
+  /**
+   * Keep the reason the message leaves out reachable from its details link: the schedule summary, while it
+   * still describes this occurrence. A Run proves the hand-off landed, so this also settles an `unknown`
+   * one. Repeated reports write again only if the delivery receipt arrived afterwards and cleared the code.
+   */
+  async #recordRunFailure(occurrence: ScheduledOccurrence, reason: string): Promise<void> {
+    await this.#options.database
+      .update(agentSchedules)
+      .set({
+        lastDispatch: sql`${agentSchedules.lastDispatch} || jsonb_build_object('outcome', 'accepted', 'code', ${reason}::text)`,
+      })
+      .where(
+        and(
+          eq(agentSchedules.id, occurrence.scheduleId),
+          sql`${agentSchedules.lastDispatch} ->> 'scheduledFor' = ${occurrence.scheduledFor}`,
+          sql`${agentSchedules.lastDispatch} ->> 'outcome' in ('accepted', 'unknown')`,
+          sql`${agentSchedules.lastDispatch} ->> 'code' is distinct from ${reason}`,
+        ),
+      );
   }
 
   /** The scheduled facts of a reported message whose target is a visible Session, else undefined. */

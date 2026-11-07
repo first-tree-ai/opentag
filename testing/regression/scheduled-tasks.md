@@ -33,7 +33,7 @@ error code and a clickable link that opens the schedule in Web.
 | ST-11 | Pause, edit, delete | Pause, edit, or delete a schedule as an occurrence is due | No failure message |
 | ST-12 | Agent paused | Suspend the Agent across an occurrence | No failure message |
 | ST-13 | Untrusted name | Name a schedule with provider mention or link syntax, then make it fail | The name appears as text. Nobody is mentioned, and the only disguised link is the details link |
-| ST-14 | Language and link | Make a schedule with a Chinese task fail, then one with an English task; click the link in each | Each message follows its task's language, shows no error code, and its link opens the schedule. Check Slack and Feishu in the client |
+| ST-14 | Language and link | Make a schedule with a Chinese task fail, then one with an English task; click the link in each | Each message follows its task's language, shows no error code, and its link opens the schedule, which shows the Run as failed with its code. Check Slack and Feishu in the client |
 
 Automated tests cover the deterministic decisions in `scheduled-failure-notifier.test.ts` and the provider request shapes
 with mocked SDKs in `im-feedback-messenger.test.ts`. Only these cases exercise a real provider.

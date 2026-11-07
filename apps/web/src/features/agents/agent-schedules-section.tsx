@@ -229,6 +229,9 @@ function ScheduleRow({
         {/* Running on schedule is the default; only a state that differs from it gets a label. It
             leads the summary line so the title row always keeps its single action. */}
         {status ? <StatusIndicator label={status} tone="neutral" /> : null}
+        {item.target.internal ? (
+          <span>{m.agents_schedules_target_internal({ sessionId: item.target.sessionId.slice(0, 8) })}</span>
+        ) : null}
         <span>{scheduleRuleText(item.schedule, item.timezone)}</span>
         {item.nextTriggerAt ? (
           <span>
@@ -354,8 +357,9 @@ function ScheduleDetail({ schedule }: { schedule: AgentSchedule }) {
   const last = schedule.lastDispatch;
   const target = schedule.target;
   const provider = messagingProviderLabel(target.provider);
-  const destination =
-    target.sessionKind === "thread"
+  const destination = target.internal
+    ? m.agents_schedules_target_internal({ sessionId: target.sessionId })
+    : target.sessionKind === "thread"
       ? m.agents_schedules_target_thread({ provider })
       : m.agents_schedules_target_channel({ provider });
   // The zone is worth naming only when the reader's clock reads differently at the next (or last) run.

@@ -1617,7 +1617,10 @@ describe("AgentTurnRunner", () => {
     let receipt: RecordedSteerInput | undefined;
     const runtimeState = { phase: "running" as const, activeRunId: "turn-1", queuedRunCount: 0 };
     const capabilities = { steer: "supported" as "supported" | "unsupported", interactions: "unsupported" as const };
-    const steer = vi.fn().mockRejectedValueOnce(new Error("steer failed")).mockResolvedValue(undefined);
+    const steer = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("steer failed"))
+      .mockResolvedValue({ outcome: Promise.resolve("processed") });
     const markReporting = vi.fn(
       () =>
         new Promise<void>((resolve) => {

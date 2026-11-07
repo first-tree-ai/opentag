@@ -11,8 +11,8 @@ import {
   sessions,
 } from "../../db/schema/index.js";
 import type { ServiceLogger } from "../../observability/service-logger.js";
-import { detailsLink } from "../im/im-feedback-card.js";
-import { type FeedbackLanguage, failureCopy, textLanguage } from "../im/im-feedback-copy.js";
+import { textLink } from "../im/im-feedback-card.js";
+import { FEEDBACK_LABELS, type FeedbackLanguage, failureCopy, textLanguage } from "../im/im-feedback-copy.js";
 import { FeedbackProviderError, type ImFeedbackMessenger } from "../im/im-feedback-messenger.js";
 import type {
   RunOutcomeNoticeInput,
@@ -168,7 +168,11 @@ function message(
   publicUrl: string,
   [what, effects, next]: readonly [string, string, string],
 ): string {
-  const link = detailsLink(provider, scheduleDetailUrl(publicUrl, occurrence.agentId, occurrence.scheduleId), language);
+  const link = textLink(
+    provider,
+    scheduleDetailUrl(publicUrl, occurrence.agentId, occurrence.scheduleId),
+    FEEDBACK_LABELS.details[language],
+  );
   return [what, effects, `${next} ${link}`].join("\n\n");
 }
 

@@ -679,6 +679,7 @@ function snapshotPromptRequest(request: AgentPromptRequest): AgentPromptRequest 
     ...(request.allowedUnixSockets ? { allowedUnixSockets: immutableSnapshot(request.allowedUnixSockets) } : {}),
     ...(request.configuration ? { configuration: immutableSnapshot(request.configuration) } : {}),
     ...(request.signal ? { signal: request.signal } : {}),
+    ...(request.compactContext ? { compactContext: true } : {}),
   });
 }
 

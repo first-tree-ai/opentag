@@ -265,8 +265,11 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
           this.#cwd,
           this.#bridgeIdentity,
         );
+        if (request.compactContext && this.#sessionExists)
+          await this.#compactContext(request, context, hostedToolBridge);
         process = this.#createProcess(this.#arguments(request, hostedToolBridge));
       } catch (error) {
+        if (context.signal.aborted) throw error;
         logger.debug({ code: "provider_start_failed", error: String(error) }, "Claude Code provider startup failed");
         throw new AgentProviderError(
           "provider_start_failed",
@@ -318,6 +321,47 @@ export class ClaudeCodeAgentRuntime extends BaseAgentRuntime {
       this.#toolBlocks.clear();
       this.#permissions.clear();
     }
+  }
+
+  /**
+   * Claude Code compacts through its native `/compact` command, which has no RPC of its own, so it
+   * runs in a process of its own before the Run's process. The next `--resume` then continues from
+   * the compact boundary of the same native Session. Only an abort stops the Run.
+   */
+  async #compactContext(
+    request: AgentPromptRequest,
+    context: AgentProviderRunContext,
+    hostedToolBridge: ClaudeCodeHostedToolBridge,
+  ): Promise<void> {
+    let compacted = false;
+    let failure = "Claude Code did not compact the conversation";
+    let process: ClaudeCodeProcessClient | undefined;
+    try {
+      process = this.#createProcess(this.#arguments(request, hostedToolBridge));
+      this.#process = process;
+      await process.execute(
+        claudeCodeUserMessage([{ type: "text", text: "/compact" }]),
+        (message) => {
+          if (message.type === "system" && message.subtype === "compact_boundary") compacted = true;
+          if (message.type === "result" && message.is_error === true && typeof message.result === "string")
+            failure = message.result;
+        },
+        context.signal,
+      );
+    } catch (error) {
+      if (context.signal.aborted) throw error;
+      failure = error instanceof Error ? error.message : failure;
+    } finally {
+      this.#process = undefined;
+      await process?.close().catch((error: unknown) => {
+        logger.debug({ code: "provider_close_failed", error: String(error) }, "Claude Code provider close failed");
+      });
+    }
+    if (compacted) {
+      logger.info({ runId: context.runId }, "Claude Code compacted the Session context");
+      return;
+    }
+    await context.emit({ type: "provider_warning", code: "claude_compaction_failed", message: failure });
   }
 
   /**

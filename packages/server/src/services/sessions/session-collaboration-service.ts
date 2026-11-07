@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   type EffectiveRuntimeSnapshot,
   RUNTIME_CAPABILITY,
+  RUNTIME_SESSION_COLLABORATION_PROVENANCE_VERSION,
   RUNTIME_SESSION_COLLABORATION_SCHEDULED_VERSION,
   type RunnerCloudSessionMessageReceivedFrame,
   SESSION_STOP_ANSWER_BUDGET_MS,
@@ -11,9 +12,9 @@ import {
   type SessionCliStopExecution,
   type SessionCliStopRequest,
   type SessionCliStopResponse,
-  type SessionMessageDeliveryRequest,
   type SessionMessageDeliveryRequestV3,
   type SessionMessageDeliveryResult,
+  type SessionMessageProvenance,
   type SessionMessageRunOutcome,
   type SessionMessageScheduledOrigin,
   type SessionReconcileResult,
@@ -65,6 +66,7 @@ export type CloudSessionMessageDeliveryInput =
   | {
       route: AuthorizedSessionMessageRoute;
       message: { id: string; content: string };
+      provenance?: SessionMessageProvenance;
       runtime: EffectiveRuntimeSnapshot;
       /** The durable attempt fencing token from the authorization transaction. */
       attemptCount: number;
@@ -247,6 +249,7 @@ export interface SessionCollaborationServiceOptions {
     | "disableScheduleForInvalidTarget"
     | "hasAcceptedScheduledMessage"
     | "recordMessageOutcome"
+    | "resolveMessageProvenance"
     | "resolveRunOutcomeNotice"
     | "recentlyEndedInternalSessions"
     | "resolveScheduledMessageRoute"
@@ -263,7 +266,7 @@ export interface SessionCollaborationServiceOptions {
   /** Test seam for the scheduled total budgets; production uses the stage-timeout sums. */
   scheduledBudgets?: { localMs?: number; cloudMs?: number };
   onDiagnostic?: (code: string) => void;
-  logger?: Pick<ServiceLogger, "error">;
+  logger?: Pick<ServiceLogger, "error"> & Partial<Pick<ServiceLogger, "info">>;
 }
 
 export class SessionCollaborationService {
@@ -755,7 +758,21 @@ export class SessionCollaborationService {
       });
       return await this.#deliver(attempt, input.targetSessionId);
     } catch (error) {
-      return this.#failure(input.messageId, error);
+      const result = this.#failure(input.messageId, error);
+      if (result.code === "scope_mismatch") {
+        this.#logger?.info?.(
+          {
+            operation: "session.message.other_agent",
+            agentId: source.agentId,
+            sourceSessionId: source.sessionId,
+            targetSessionId: input.targetSessionId,
+            outcome: result.status,
+            code: result.code,
+          },
+          "Session message to another Agent refused",
+        );
+      }
+      return result;
     }
   }
 
@@ -1006,21 +1023,70 @@ export class SessionCollaborationService {
       );
     }
     if (signal?.aborted) return response(attempt.message.id, "unknown", sessionId, "runtime_unavailable");
+    const attemptCount = attempt.attemptCount;
+    // A message that cannot say where it came from is not delivered: the receiver would take it as local.
+    const provenance = await this.#resolveProvenance(attempt);
+    if (!provenance) {
+      return this.#record(response(attempt.message.id, "unreachable", sessionId, "runtime_unavailable"), attemptCount);
+    }
+    const result = await this.#deliverWithProvenance(attempt, attemptCount, sessionId, provenance, signal);
+    if (provenance.crossConversation) this.#logCrossConversation(attempt, provenance, result);
+    return result;
+  }
+
+  async #deliverWithProvenance(
+    attempt: SessionMessageAttempt,
+    attemptCount: number,
+    sessionId: string,
+    provenance: SessionMessageProvenance,
+    signal?: AbortSignal,
+  ): Promise<SessionCliCommandResponse> {
     const runtime = await this.#assembleTargetRuntime(attempt, sessionId);
     if (signal?.aborted) return response(attempt.message.id, "unknown", sessionId, "runtime_unavailable");
     if (!runtime) {
-      return this.#record(
-        response(attempt.message.id, "unreachable", sessionId, "runtime_not_ready"),
-        attempt.attemptCount,
-      );
+      return this.#record(response(attempt.message.id, "unreachable", sessionId, "runtime_not_ready"), attemptCount);
     }
     // Cloud targets execute on their own Session-scoped Sandbox Runner, never on the Local
     // Computer's connection registry; there is no Local reconcile step — the assembled snapshot
     // rides in the dispatch and the allocation/Runner fence is the delivery boundary.
     if (attempt.route.targetComputerKind === "cloud") {
-      return this.#deliverCloud(attempt, sessionId, runtime, signal);
+      return this.#deliverCloud(attempt, sessionId, runtime, provenance, signal);
     }
-    return this.#deliverLocal(attempt, sessionId, runtime, attempt.attemptCount, signal);
+    return this.#deliverLocal(attempt, sessionId, runtime, provenance, attemptCount, signal);
+  }
+
+  async #resolveProvenance(attempt: SessionMessageAttempt): Promise<SessionMessageProvenance | undefined> {
+    try {
+      return await this.#sessions.resolveMessageProvenance(attempt.message);
+    } catch {
+      this.#logInternalFailure("SESSION_COLLABORATION_PROVENANCE_FAILED", {
+        messageId: attempt.message.id,
+        targetSessionId: attempt.route.targetSessionId,
+      });
+      return undefined;
+    }
+  }
+
+  /** The trial's record of what crosses conversations and how long chains get. No message content. */
+  #logCrossConversation(
+    attempt: SessionMessageAttempt,
+    provenance: SessionMessageProvenance,
+    result: SessionCliCommandResponse,
+  ): void {
+    this.#logger?.info?.(
+      {
+        operation: "session.message.cross_conversation",
+        agentId: attempt.route.agentId,
+        messageId: attempt.message.id,
+        sourceSessionId: attempt.route.sourceSessionId,
+        targetSessionId: attempt.route.targetSessionId,
+        initiatorSessionId: provenance.initiatorSessionId ?? null,
+        forwards: provenance.forwards,
+        outcome: result.status,
+        ...(result.code ? { code: result.code } : {}),
+      },
+      "Cross-conversation Session message",
+    );
   }
 
   /** Local target dispatch over the existing reconcile + runtime-domain delivery boundaries. */
@@ -1028,30 +1094,14 @@ export class SessionCollaborationService {
     attempt: SessionMessageAttempt,
     sessionId: string,
     runtime: EffectiveRuntimeSnapshot,
+    provenance: SessionMessageProvenance,
     attemptCount: number,
     signal?: AbortSignal,
   ): Promise<SessionCliCommandResponse> {
-    const targetInstanceId = this.#registry.currentInstanceId(attempt.route.targetComputerId);
-    if (
-      !targetInstanceId ||
-      !this.#registry.supportsCapability(
-        attempt.route.targetComputerId,
-        targetInstanceId,
-        RUNTIME_CAPABILITY.sessionCollaboration,
-      )
-    ) {
-      return this.#record(response(attempt.message.id, "unreachable", sessionId, "runtime_unavailable"), attemptCount);
-    }
-    if (
-      attempt.route.targetSessionKind !== "internal" &&
-      this.#registry.capabilityVersion(
-        attempt.route.targetComputerId,
-        targetInstanceId,
-        RUNTIME_CAPABILITY.imCredentialGrant,
-      ) !== 2
-    ) {
-      return this.#record(response(attempt.message.id, "unreachable", sessionId, "outbox_unavailable"), attemptCount);
-    }
+    const gate = this.#localDeliveryGate(attempt.route, provenance);
+    if ("code" in gate)
+      return this.#record(response(attempt.message.id, "unreachable", sessionId, gate.code), attemptCount);
+    const { targetInstanceId, provenanceSupported } = gate;
     let reconciled: SessionReconcileResult;
     try {
       reconciled = await this.#domain.requestReconcile(
@@ -1085,11 +1135,12 @@ export class SessionCollaborationService {
       return this.#record(response(attempt.message.id, "unreachable", sessionId, "runtime_not_ready"), attemptCount);
     }
     if (signal?.aborted) return response(attempt.message.id, "unknown", sessionId, "runtime_unavailable");
-    const delivery: SessionMessageDeliveryRequest = {
+    const delivery: SessionMessageDeliveryRequestV3 = {
       type: "session:message:deliver",
       requestId: randomUUID(),
       messageId: attempt.message.id,
       sourceSessionId: attempt.route.sourceSessionId,
+      ...(provenanceSupported ? { provenance } : {}),
       targetSessionId: attempt.route.targetSessionId,
       agentId: attempt.route.agentId,
       placementGeneration: attempt.route.targetPlacementGeneration,
@@ -1120,6 +1171,43 @@ export class SessionCollaborationService {
     }
   }
 
+  /** The pre-transport gate for a Local target. Every refusal here happens before a single frame exists. */
+  #localDeliveryGate(
+    route: AuthorizedSessionMessageRoute,
+    provenance: SessionMessageProvenance,
+  ): { code: string } | { targetInstanceId: string; provenanceSupported: boolean } {
+    const targetInstanceId = this.#registry.currentInstanceId(route.targetComputerId);
+    if (
+      !targetInstanceId ||
+      !this.#registry.supportsCapability(
+        route.targetComputerId,
+        targetInstanceId,
+        RUNTIME_CAPABILITY.sessionCollaboration,
+      )
+    ) {
+      return { code: "runtime_unavailable" };
+    }
+    if (
+      route.targetSessionKind !== "internal" &&
+      this.#registry.capabilityVersion(
+        route.targetComputerId,
+        targetInstanceId,
+        RUNTIME_CAPABILITY.imCredentialGrant,
+      ) !== 2
+    ) {
+      return { code: "outbox_unavailable" };
+    }
+    const provenanceSupported =
+      (this.#registry.capabilityVersion(
+        route.targetComputerId,
+        targetInstanceId,
+        RUNTIME_CAPABILITY.sessionCollaboration,
+      ) ?? 0) >= RUNTIME_SESSION_COLLABORATION_PROVENANCE_VERSION;
+    // An older Client would present a message from elsewhere as this conversation's own work.
+    if (provenance.crossConversation && !provenanceSupported) return { code: "unsupported_cross_conversation" };
+    return { targetInstanceId, provenanceSupported };
+  }
+
   /** Assemble the target Session's current runtime; a failure is recorded as runtime_not_ready. */
   async #assembleTargetRuntime(
     attempt: SessionMessageAttempt,
@@ -1146,6 +1234,7 @@ export class SessionCollaborationService {
     attempt: SessionMessageAttempt,
     sessionId: string,
     runtime: EffectiveRuntimeSnapshot,
+    provenance: SessionMessageProvenance,
     signal?: AbortSignal,
   ): Promise<SessionCliCommandResponse> {
     const attemptCount = attempt.attemptCount;
@@ -1167,6 +1256,7 @@ export class SessionCollaborationService {
         {
           route: attempt.route,
           message: { id: attempt.message.id, content: attempt.message.content },
+          provenance,
           runtime,
           attemptCount,
         },

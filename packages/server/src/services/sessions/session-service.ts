@@ -5,12 +5,17 @@ import type {
   ImConversationKind,
   InternalSessionRuntimeOverrides,
   Session,
+  SessionCliAgentListQuery,
+  SessionCliAgentListResponse,
   SessionCliListItem,
   SessionCliListQuery,
   SessionCliListResponse,
   SessionKind,
+  SessionMessageConversation,
+  SessionMessageProvenance,
   SessionPlacement,
 } from "@opentag/shared";
+import { RuntimeUserTaskSourceSchema } from "@opentag/shared";
 import { and, desc, eq, gte, inArray, isNotNull, isNull, or, type SQL, sql } from "drizzle-orm";
 import type { DatabaseClient, DatabaseTransaction } from "../../db/client.js";
 import {
@@ -50,6 +55,18 @@ interface LockedCollaborationAuthority {
   sessions: SessionRow[];
   placements: PlacementRow[];
   computers: AuthorityComputer[];
+}
+
+/** A chain longer than this reads as having no known start, which a receiver treats as non-owner. */
+const SESSION_MESSAGE_CHAIN_LIMIT = 32;
+
+function sessionConversation(session: SessionScope & { kind: SessionKind }): SessionMessageConversation {
+  return {
+    sessionKind: session.kind,
+    conversationKind: session.conversationKind,
+    channelId: session.channelId,
+    ...(session.threadKey ? { threadKey: session.threadKey } : {}),
+  };
 }
 
 function sameSessionScope(left: SessionScope, right: SessionScope): boolean {
@@ -1267,6 +1284,175 @@ export class SessionService {
     };
   }
 
+  /**
+   * The live Sessions of the source's Agent. Keyset-paged over the Agent's own Sessions: the page reads this
+   * binding's rows through its scope index and sorts them, so its cost is bounded by one Agent's Sessions.
+   */
+  async listAgentSessions(
+    sourceSessionId: string,
+    query: SessionCliAgentListQuery,
+  ): Promise<SessionCliAgentListResponse> {
+    const cursor = query.cursor ? decodeListCursor(query.cursor) : undefined;
+    type AgentSessionRow = {
+      sessionId: string;
+      sessionKind: SessionKind;
+      conversationKind: ImConversationKind;
+      channelId: string;
+      threadKey: string | null;
+      createdAt: Date | string;
+      title: string | null;
+      parentSessionId: string | null;
+      taskPreview: string | null;
+    };
+    const rows = await this.#database.execute<AgentSessionRow>(sql`
+      select
+        peer.id as "sessionId",
+        peer.kind as "sessionKind",
+        peer.conversation_kind as "conversationKind",
+        peer.channel_id as "channelId",
+        peer.thread_key as "threadKey",
+        peer.created_at as "createdAt",
+        coalesce(peer.manual_title, peer.generated_title) as "title",
+        peer.created_by_session_id as "parentSessionId",
+        link.task_preview as "taskPreview"
+      from sessions source
+      inner join sessions peer on peer.im_binding_id = source.im_binding_id
+      left join session_descendants link
+        on link.ancestor_session_id = peer.created_by_session_id and link.descendant_session_id = peer.id
+      where source.id = ${sourceSessionId}::uuid
+        and peer.ended_at is null
+        ${query.visibleOnly ? sql`and peer.kind <> 'internal'` : sql``}
+        ${cursor ? sql`and (peer.created_at, peer.id) < (${cursor.at.toISOString()}::timestamptz, ${cursor.sessionId}::uuid)` : sql``}
+      order by peer.created_at desc, peer.id desc
+      limit ${query.limit + 1}
+    `);
+    const page = [...rows].slice(0, query.limit);
+    const last = page.at(-1);
+    return {
+      items: page.map((row) => ({
+        sessionId: row.sessionId,
+        sessionKind: row.sessionKind,
+        conversationKind: row.conversationKind,
+        channelId: row.channelId,
+        ...(row.threadKey ? { threadKey: row.threadKey } : {}),
+        createdAt: new Date(row.createdAt).toISOString(),
+        ...(row.title ? { title: row.title } : {}),
+        ...(row.parentSessionId ? { parentSessionId: row.parentSessionId } : {}),
+        ...(row.taskPreview ? { taskPreview: truncateUtf8(row.taskPreview, 256) } : {}),
+        ...(row.sessionId === sourceSessionId ? { current: true } : {}),
+      })),
+      ...(rows.length > query.limit && last
+        ? { nextCursor: encodeListCursor(new Date(last.createdAt), last.sessionId, last.sessionId) }
+        : {}),
+    };
+  }
+
+  /**
+   * Where an ordinary message comes from, derived from stored messages alone, so a sender cannot supply it.
+   * A send made inside a Run with an execution (Cloud and the Local proxy mode) records that Run's input in
+   * `user_task_source`. A send with no execution (the default Local mode) has no such link, so its Session's
+   * latest input before the send stands in: a person's message ends the chain there, and a Session message
+   * continues it. Reads are unlocked: every row followed is immutable apart from its outcome. See the
+   * collaboration docs for what this cannot tell apart.
+   */
+  async resolveMessageProvenance(message: SessionMessageRow): Promise<SessionMessageProvenance> {
+    let current: SessionMessageRow = message;
+    let forwards = 0;
+    let initiatorSessionId: string | undefined;
+    for (; forwards <= SESSION_MESSAGE_CHAIN_LIMIT; forwards += 1) {
+      const step = await this.#messageChainStep(current);
+      if ("initiatorSessionId" in step) {
+        initiatorSessionId = step.initiatorSessionId;
+        break;
+      }
+      current = step.previous;
+    }
+    const ids = [message.sourceSessionId, message.targetSessionId, initiatorSessionId].filter(
+      (id): id is string => id !== undefined && id !== null,
+    );
+    const rows = await this.#database
+      .select({
+        id: sessions.id,
+        imBindingId: sessions.imBindingId,
+        channelId: sessions.channelId,
+        conversationKind: sessions.conversationKind,
+        threadKey: sessions.threadKey,
+        kind: sessions.kind,
+      })
+      .from(sessions)
+      .where(inArray(sessions.id, [...new Set(ids)]));
+    const source = rows.find((row) => row.id === message.sourceSessionId);
+    const target = rows.find((row) => row.id === message.targetSessionId);
+    if (!source || !target) throw new Error("A recorded Session message lost its Sessions");
+    const found = rows.find((row) => row.id === initiatorSessionId);
+    // A Session from another binding belongs to the Agent's past; it cannot speak for this one.
+    const initiator = found?.imBindingId === target.imBindingId ? found : undefined;
+    return {
+      source: sessionConversation(source),
+      ...(initiator ? { initiatorSessionId: initiator.id, initiator: sessionConversation(initiator) } : {}),
+      forwards: Math.min(forwards, SESSION_MESSAGE_CHAIN_LIMIT),
+      crossConversation: !sameSessionScope(source, target) || !initiator || !sameSessionScope(initiator, target),
+    };
+  }
+
+  async #messageChainStep(
+    message: SessionMessageRow,
+  ): Promise<{ initiatorSessionId: string } | { previous: SessionMessageRow }> {
+    const parsed = RuntimeUserTaskSourceSchema.safeParse(message.userTaskSource);
+    const recorded = parsed.success ? parsed.data : undefined;
+    const sourceSessionId = message.sourceSessionId;
+    // A schedule has no sending Session: the chain starts where the schedule was asked for, or where it runs.
+    if (!sourceSessionId) return { initiatorSessionId: recorded?.sessionId ?? message.targetSessionId };
+    if (recorded?.sessionId === sourceSessionId) {
+      if (recorded.source.kind !== "session-message") return { initiatorSessionId: sourceSessionId };
+      const previous = await this.#inboundMessage(sourceSessionId, eq(sessionMessages.id, recorded.source.messageId));
+      return previous ? { previous } : { initiatorSessionId: sourceSessionId };
+    }
+    const previous = await this.#inboundMessage(
+      sourceSessionId,
+      and(
+        eq(sessionMessages.lastOutcome, "accepted"),
+        sql`(${sessionMessages.createdAt}, ${sessionMessages.id}) < (${message.createdAt.toISOString()}::timestamptz, ${message.id}::uuid)`,
+      ),
+    );
+    if (!previous || (await this.#acceptedImInputBetween(sourceSessionId, previous.createdAt, message.createdAt))) {
+      return { initiatorSessionId: sourceSessionId };
+    }
+    return { previous };
+  }
+
+  /**
+   * Whether a person's message reached this Session between two instants, which makes it the latest input.
+   * Only reached by a send with no recorded Run that follows a Session message, and bounded by the Session's
+   * own deliveries. An observer copy is not input to act on.
+   */
+  async #acceptedImInputBetween(sessionId: string, after: Date, before: Date): Promise<boolean> {
+    const [row] = await this.#database
+      .select({ id: imMessageDeliveries.id })
+      .from(imMessageDeliveries)
+      .where(
+        and(
+          eq(imMessageDeliveries.sessionId, sessionId),
+          inArray(imMessageDeliveries.state, ["accepted", "steered"]),
+          sql`coalesce(${imMessageDeliveries.acceptedAt}, ${imMessageDeliveries.steeredAt}) > ${after.toISOString()}::timestamptz`,
+          sql`coalesce(${imMessageDeliveries.acceptedAt}, ${imMessageDeliveries.steeredAt}) < ${before.toISOString()}::timestamptz`,
+          sql`coalesce(${imMessageDeliveries.dispatchPayload} ->> 'replyRole', '') <> 'observer'`,
+        ),
+      )
+      .limit(1);
+    return Boolean(row);
+  }
+
+  async #inboundMessage(targetSessionId: string, predicate: SQL | undefined): Promise<SessionMessageRow | undefined> {
+    const [row] = await this.#database
+      .select()
+      .from(sessionMessages)
+      .where(and(eq(sessionMessages.targetSessionId, targetSessionId), predicate))
+      .orderBy(desc(sessionMessages.createdAt), desc(sessionMessages.id))
+      .limit(1);
+    return row;
+  }
+
   async #recordSessionActivity(
     transaction: DatabaseTransaction,
     message: SessionMessageRow,
@@ -1425,15 +1611,7 @@ export class SessionService {
           or(
             eq(sessions.id, source.session.id),
             targetSessionId
-              ? and(
-                  eq(sessions.id, targetSessionId),
-                  eq(sessions.imBindingId, source.session.imBindingId),
-                  eq(sessions.channelId, source.session.channelId),
-                  eq(sessions.conversationKind, source.session.conversationKind),
-                  source.session.threadKey === null
-                    ? isNull(sessions.threadKey)
-                    : eq(sessions.threadKey, source.session.threadKey),
-                )
+              ? and(eq(sessions.id, targetSessionId), eq(sessions.imBindingId, source.session.imBindingId))
               : undefined,
           ),
         ),
@@ -1580,7 +1758,7 @@ export class SessionService {
         installationId: computer.currentInstallationId,
       };
     }
-    // Foreign-scope targets must retain their error precedence without joining the lock chain.
+    // Another Agent's targets must retain their error precedence without joining the lock chain.
     const [target] = await transaction
       .select({
         session: sessions,
@@ -1602,8 +1780,9 @@ export class SessionService {
     if (target.computerOwnerAccountId !== target.agentCreatedByUserId) {
       throw new SessionServiceError("SESSION_TARGET_UNAVAILABLE", "The target Session Computer requires Agent rebind");
     }
-    if (!sameSessionScope(target.session, sourceSession)) {
-      throw new SessionServiceError("SESSION_SCOPE_MISMATCH", "The target Session has a different collaboration scope");
+    // An Agent has one current binding, so this is the Agent boundary.
+    if (target.session.imBindingId !== sourceSession.imBindingId) {
+      throw new SessionServiceError("SESSION_SCOPE_MISMATCH", "The target Session belongs to another Agent");
     }
     throw new SessionServiceError("SESSION_TARGET_UNAVAILABLE", "The target Session is not active");
   }

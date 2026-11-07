@@ -6,6 +6,7 @@ import {
   type SessionMessageDeliveryRequestV3,
   SessionMessageDeliveryRequestV3Schema,
   type SessionMessageDeliveryResult,
+  type SessionMessageProvenance,
   SessionMessageRunOutcomeReasonSchema,
 } from "@opentag/shared";
 import type { AgentInput, AgentRuntime, AgentSteerOutcome, AgentSteerReceipt } from "../agent-runtime/types.js";
@@ -1699,7 +1700,31 @@ function sessionMessageOriginLines(request: SessionMessageDeliveryRequestV3): st
   const origin = request.scheduledOrigin;
   return origin
     ? [`Schedule ID: ${origin.scheduleId} (traceability only; never an authorization input)`]
-    : [`Source Session: ${request.sourceSessionId}`];
+    : [`Source Session: ${request.sourceSessionId}`, ...sessionMessageProvenanceLines(request.provenance)];
+}
+
+/** JSON that cannot close a managed tag, however a provider shapes its conversation identifiers. */
+function managedJson(value: unknown): string {
+  return JSON.stringify(value).replace(
+    /[<>&]/gu,
+    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
+}
+
+/** Server-written facts; the conversation identifiers enter the managed block only JSON-escaped. */
+function sessionMessageProvenanceLines(provenance: SessionMessageProvenance | undefined): string[] {
+  if (!provenance) return [];
+  return [
+    `Source conversation: ${managedJson(provenance.source)}`,
+    provenance.initiator
+      ? `Initiator Session: ${provenance.initiatorSessionId}`
+      : "Initiator Session: unknown (the chain could not be followed to its start; treat it as non-owner)",
+    ...(provenance.initiator ? [`Initiator conversation: ${managedJson(provenance.initiator)}`] : []),
+    `Forwarded: ${provenance.forwards} Session messages came before this one in the chain`,
+    provenance.crossConversation
+      ? "This chain involves a different conversation from this Session's."
+      : "This chain stays in this Session's conversation.",
+  ];
 }
 
 function buildVisibleSessionMessageContext(
@@ -1720,15 +1745,18 @@ function buildVisibleSessionMessageContext(
     '<opentag-session-message-context source="managed">',
     request.scheduledOrigin
       ? "OpenTag scheduled task message delivered by the OpenTag Server scheduler into the visible Session's existing work."
-      : "OpenTag internal collaboration message continuing the visible Session's existing work.",
+      : request.provenance?.crossConversation
+        ? "OpenTag collaboration message from a different conversation than this visible Session's."
+        : "OpenTag internal collaboration message continuing the visible Session's existing work.",
     `Message ID: ${request.messageId}`,
     ...sessionMessageOriginLines(request),
     `Target Session: ${request.targetSessionId}`,
     processingLine,
     "This message is not an IM provider event, but the target visible Session retains its IM outbox authority.",
     ...buildProviderOutboxInstructions({
-      actionInstruction:
-        "When this collaboration message contains a user-visible result, question, or blocker, synthesize it and deliver it through the provider CLI in this Turn before ending. Do not wait for another IM message. Do not automatically forward the source text verbatim.",
+      actionInstruction: request.provenance?.crossConversation
+        ? "People in this conversation may not be able to see the source conversation. Post here only what they may see and what this conversation needs, and only if it is meant for them; answer the sender through session send instead. Do not forward the source text."
+        : "When this collaboration message contains a user-visible result, question, or blocker, synthesize it and deliver it through the provider CLI in this Turn before ending. Do not wait for another IM message. Do not automatically forward the source text verbatim.",
       provider: outboxContext.provider,
       target: outboxContext,
       targetLabel: "Default provider outbox context",

@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import { type OpenTagApi, OpenTagApiError, readComputerIdentity, readSessionCliProofFile } from "@opentag/client";
 import {
   SESSION_CLI_DEFAULT_LIMIT,
+  SessionCliAgentListQuerySchema,
+  type SessionCliAgentListResponse,
   type SessionCliCommandResponse,
   SessionCliCreateRequestSchema,
   SessionCliListQuerySchema,
@@ -146,6 +148,20 @@ export async function runSessionList(options: {
   return runtime.api.listInternalSessions(runtime.proof, input);
 }
 
+export async function runSessionAgentList(options: {
+  visible?: boolean;
+  limit?: number;
+  cursor?: string;
+}): Promise<SessionCliAgentListResponse> {
+  const input = SessionCliAgentListQuerySchema.parse({
+    ...(options.visible ? { visibleOnly: true } : {}),
+    limit: options.limit ?? SESSION_CLI_DEFAULT_LIMIT,
+    cursor: options.cursor,
+  });
+  const runtime = await resolveSessionProofContext();
+  return runtime.api.listAgentSessions(runtime.proof, input);
+}
+
 export function formatSessionCommandResult(result: SessionCliCommandResponse): string {
   return [
     `status=${result.status}`,
@@ -206,6 +222,23 @@ export function formatSessionList(result: SessionCliListResponse): string {
   );
   if (result.nextCursor) rows.push(`Next cursor: ${result.nextCursor}`);
   return [header, ...rows].join("\n");
+}
+
+export function formatSessionAgentList(result: SessionCliAgentListResponse): string {
+  const text = (value: string | undefined) => (value ?? "-").replaceAll("\t", " ").replaceAll("\n", " ");
+  const rows = result.items.map((item) =>
+    [
+      `${item.sessionId}${item.current ? " (this Session)" : ""}`,
+      item.sessionKind,
+      item.conversationKind,
+      item.channelId,
+      item.threadKey ?? "-",
+      item.parentSessionId ?? "-",
+      text(item.title ?? item.taskPreview),
+    ].join("\t"),
+  );
+  if (result.nextCursor) rows.push(`Next cursor: ${result.nextCursor}`);
+  return ["SESSION ID\tKIND\tCONVERSATION\tCHANNEL\tTHREAD\tPARENT SESSION\tTITLE OR TASK", ...rows].join("\n");
 }
 
 async function resolveMessage(options: SessionMessageOptions): Promise<string> {

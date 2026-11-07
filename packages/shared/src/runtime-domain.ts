@@ -11,6 +11,7 @@ import {
   ProviderReadinessStatusSchema,
 } from "./computer.js";
 import { ContextTreesSchema, normalizeContextTrees } from "./context-tree.js";
+import { ImConversationKindSchema } from "./im-message.js";
 import {
   runtimeByteString as byteString,
   RUNTIME_ID_MAX_BYTES,
@@ -723,6 +724,45 @@ export const SessionMessageDeliveryResultSchema = z
       context.addIssue({ code: "custom", path: ["reason"], message: "Rejected deliveries require a reason" });
     }
   });
+/** One Session's conversation as a message's receiver sees it. Never an authorization input. */
+export const SessionMessageConversationSchema = z
+  .object({
+    sessionKind: z.enum(["channel", "thread", "internal"]),
+    conversationKind: ImConversationKindSchema,
+    channelId: z.string().min(1).max(512),
+    threadKey: z.string().min(1).max(512).optional(),
+  })
+  .strict();
+
+/**
+ * Session-collaboration v5: where an ordinary message comes from, written by the Server from the
+ * authenticated source and the stored message chain; a sender cannot supply any of it. `source` is the
+ * direct sender's conversation. The initiator is the Session where the chain started and stays the same
+ * across forwards. It is absent when the chain could not be followed to its start, which a receiver treats
+ * as coming from an unknown conversation. Like the scheduled display metadata, none of this takes part in
+ * the semantic conflict hash.
+ */
+export const SessionMessageProvenanceSchema = z
+  .object({
+    source: SessionMessageConversationSchema,
+    initiatorSessionId: z.string().uuid().optional(),
+    initiator: SessionMessageConversationSchema.optional(),
+    /** How many Session messages came before this one in the chain. */
+    forwards: z.number().int().min(0),
+    /** True when the source or the initiator is outside the target's conversation. */
+    crossConversation: z.boolean(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    if ((value.initiatorSessionId === undefined) !== (value.initiator === undefined)) {
+      context.addIssue({
+        code: "custom",
+        path: ["initiator"],
+        message: "An initiator needs both its id and conversation",
+      });
+    }
+  });
+
 /*
  * Session-collaboration v3: the scheduled-origin branch. The v2
  * `SessionMessageDeliveryRequestSchema` above is frozen forever; ordinary messages keep flowing
@@ -742,6 +782,8 @@ export const SessionMessageDeliveryRequestV3Schema = z
     sentAt: z.string().datetime({ offset: true }).optional(),
     /** Deep link to the current Schedule detail page, from the deployment public URL. */
     scheduleDetailUrl: z.string().url().max(2048).optional(),
+    /** Only on the ordinary branch, and only to a peer that negotiated version 5. */
+    provenance: SessionMessageProvenanceSchema.optional(),
     targetSessionId: z.string().uuid(),
     agentId: z.string().uuid(),
     placementGeneration: RuntimeSequenceSchema,
@@ -759,6 +801,13 @@ export const SessionMessageDeliveryRequestV3Schema = z
       context.addIssue({
         code: "custom",
         message: "Exactly one of sourceSessionId or scheduledOrigin must be present",
+      });
+    }
+    if (scheduled && frame.provenance !== undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["provenance"],
+        message: "A scheduled delivery has no Session provenance",
       });
     }
     if (scheduled && frame.sentAt === undefined) {
@@ -1429,6 +1478,8 @@ export type ImMessageDeliveryResult = z.infer<typeof ImMessageDeliveryResultSche
 export type InternalSessionRuntimeOverrides = z.infer<typeof InternalSessionRuntimeOverridesSchema>;
 export type SessionMessageDeliveryRequest = z.infer<typeof SessionMessageDeliveryRequestSchema>;
 export type SessionMessageDeliveryRequestV3 = z.infer<typeof SessionMessageDeliveryRequestV3Schema>;
+export type SessionMessageConversation = z.infer<typeof SessionMessageConversationSchema>;
+export type SessionMessageProvenance = z.infer<typeof SessionMessageProvenanceSchema>;
 export type SessionMessageDeliveryResult = z.infer<typeof SessionMessageDeliveryResultSchema>;
 export type SessionMessageRunOutcome = z.infer<typeof SessionMessageRunOutcomeSchema>;
 export type SessionMessageOutcomeReport = z.infer<typeof SessionMessageOutcomeReportSchema>;

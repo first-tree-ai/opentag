@@ -3,6 +3,7 @@ import { Readable } from "node:stream";
 import { gzipSync } from "node:zlib";
 import {
   type NormalizedInboundImEvent,
+  type RuntimeExecutionSource,
   SESSION_RUN_OUTCOME_NOTICE_HEADER,
   type SessionReconcileRequest,
   type SessionReconcileResult,
@@ -97,6 +98,12 @@ async function readNodeStream(stream: Readable): Promise<Buffer> {
 async function setAvatarUrl(db: UnitDatabase, bindingId: string, providerUrl = AVATAR_URL): Promise<void> {
   await db.database.update(imBindings).set({ botAvatarUrl: providerUrl }).where(eq(imBindings.id, bindingId));
 }
+
+const SAME_CONVERSATION = {
+  source: { sessionKind: "channel", conversationKind: "channel", channelId: "C1" },
+  forwards: 0,
+  crossConversation: false,
+};
 
 describe("SessionService with the unit database", () => {
   let db: UnitDatabase;
@@ -770,6 +777,244 @@ describe("SessionService with the unit database", () => {
     expect(notice?.content).toContain("Outcome: unknown (reason: background_work_possibly_stopped)");
   });
 
+  describe("message provenance and the Agent's Session list", () => {
+    async function chats() {
+      const service = new SessionService(db.database, { now: () => new Date() });
+      const open = async (channelId: string, conversationKind: "dm" | "channel") =>
+        (await service.ensureChatSession({ imBindingId: fixture.bindingId, channelId, conversationKind }, "channel"))
+          .session;
+      const [dm, group, other] = [await open("D1", "dm"), await open("G1", "channel"), await open("D2", "dm")];
+      const send = async (
+        sourceSessionId: string,
+        targetSessionId: string,
+        userTaskSource?: { sessionId: string; source: RuntimeExecutionSource },
+      ) => {
+        const { message } = await service.authorizeAndRecordMessage({
+          messageId: randomUUID(),
+          sourceSessionId,
+          ...(userTaskSource ? { userTaskSource } : {}),
+          sourceInstallationId: fixture.installationId,
+          sourceConnectionInstanceId: fixture.instanceId,
+          sourceComputerId: fixture.computerId,
+          sourcePlacementGeneration: 1,
+          targetSessionId,
+          content: `from ${sourceSessionId}`,
+        });
+        await service.recordMessageOutcome({ messageId: message.id, attemptCount: 1, outcome: "accepted" });
+        return message;
+      };
+      const child = async (creatorSessionId: string) => {
+        const created = await service.createInternalSessionWithMessage({
+          creatorSessionId,
+          creatorInstallationId: fixture.installationId,
+          creatorConnectionInstanceId: fixture.instanceId,
+          creatorComputerId: fixture.computerId,
+          creatorPlacementGeneration: 1,
+          messageId: randomUUID(),
+          initialMessage: "task",
+        });
+        await service.recordMessageOutcome({ messageId: created.message.id, attemptCount: 1, outcome: "accepted" });
+        return created.session;
+      };
+      return { service, dm, group, other, send, child };
+    }
+    const fromIm = { kind: "delivery", deliveryId: "delivery", turnId: "turn" } as const;
+
+    it("keeps the first Session as initiator across forwards recorded by Runs", async () => {
+      const { service, dm, group, other, send } = await chats();
+      const first = await send(dm.id, group.id, { sessionId: dm.id, source: fromIm });
+      await expect(service.resolveMessageProvenance(first)).resolves.toEqual({
+        source: { sessionKind: "channel", conversationKind: "dm", channelId: "D1" },
+        initiatorSessionId: dm.id,
+        initiator: { sessionKind: "channel", conversationKind: "dm", channelId: "D1" },
+        forwards: 0,
+        crossConversation: true,
+      });
+      const second = await send(group.id, other.id, {
+        sessionId: group.id,
+        source: { kind: "session-message", messageId: first.id },
+      });
+      await expect(service.resolveMessageProvenance(second)).resolves.toMatchObject({
+        source: { channelId: "G1" },
+        initiatorSessionId: dm.id,
+        forwards: 1,
+        crossConversation: true,
+      });
+    });
+
+    it("says a same-conversation chain stays in its conversation", async () => {
+      const { service, group, send, child } = await chats();
+      const worker = await child(group.id);
+      const report = await send(worker.id, group.id);
+      await expect(service.resolveMessageProvenance(report)).resolves.toMatchObject({
+        source: { sessionKind: "internal", channelId: "G1" },
+        initiatorSessionId: group.id,
+        forwards: 1,
+        crossConversation: false,
+      });
+    });
+
+    it("follows an internal Run with no execution through the latest message it accepted", async () => {
+      const { service, dm, group, other, send, child } = await chats();
+      const worker = await child(group.id);
+      await send(dm.id, worker.id, { sessionId: dm.id, source: fromIm });
+      const forwarded = await send(worker.id, other.id);
+      await expect(service.resolveMessageProvenance(forwarded)).resolves.toMatchObject({
+        initiatorSessionId: dm.id,
+        forwards: 1,
+      });
+      // A message that came later, or was never accepted, does not change what was already sent.
+      const { message: refused } = await service.authorizeAndRecordMessage({
+        messageId: randomUUID(),
+        sourceSessionId: group.id,
+        sourceInstallationId: fixture.installationId,
+        sourceConnectionInstanceId: fixture.instanceId,
+        sourceComputerId: fixture.computerId,
+        sourcePlacementGeneration: 1,
+        targetSessionId: worker.id,
+        content: "not accepted",
+      });
+      expect(refused.lastOutcome).toBe("unknown");
+      const again = await send(worker.id, other.id);
+      await expect(service.resolveMessageProvenance(again)).resolves.toMatchObject({ initiatorSessionId: dm.id });
+      await expect(service.resolveMessageProvenance(forwarded)).resolves.toMatchObject({ initiatorSessionId: dm.id });
+    });
+
+    it("follows a visible Session with no recorded Run through its latest input", async () => {
+      const { service, dm, group, other, send } = await chats();
+      await send(dm.id, group.id);
+      const forwarded = await send(group.id, other.id);
+      await expect(service.resolveMessageProvenance(forwarded)).resolves.toMatchObject({
+        initiatorSessionId: dm.id,
+        forwards: 1,
+      });
+      const [imMessage] = await db.database
+        .insert(imMessages)
+        .values({
+          imBindingId: fixture.bindingId,
+          channelId: "G1",
+          externalMessageId: randomUUID(),
+          providerRevisionKey: "1",
+          operation: "created",
+          direction: "inbound",
+          authorKind: "human",
+          authorExternalId: "person",
+          content: { text: "from a person" },
+          providerContext: {},
+          occurredAt: new Date(),
+        } as never)
+        .returning();
+      if (!imMessage) throw new Error("IM message fixture was not created");
+      await db.database.insert(imMessageDeliveries).values({
+        messageId: imMessage.id,
+        sessionId: group.id,
+        attention: "direct",
+        state: "accepted",
+        placementGeneration: 1,
+        executionOrigin: "local",
+        turnId: randomUUID(),
+        reportOwnerInstanceId: randomUUID(),
+        inputHash: "a".repeat(64),
+        acceptedAt: new Date(Date.now() + 5),
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      const afterPerson = await send(group.id, other.id);
+      await expect(service.resolveMessageProvenance(afterPerson)).resolves.toMatchObject({
+        initiatorSessionId: group.id,
+        forwards: 0,
+      });
+      await expect(service.resolveMessageProvenance(forwarded)).resolves.toMatchObject({ initiatorSessionId: dm.id });
+    });
+
+    it("treats a visible Session with no recorded Run as the chain's start", async () => {
+      const { service, dm, group, send } = await chats();
+      const message = await send(dm.id, group.id);
+      await expect(service.resolveMessageProvenance(message)).resolves.toMatchObject({
+        initiatorSessionId: dm.id,
+        forwards: 0,
+      });
+    });
+
+    it("starts a schedule's chain at its recorded Session, or where it runs", async () => {
+      const { service, dm, group, send } = await chats();
+      const insert = async (userTaskSource: { sessionId: string; source: RuntimeExecutionSource } | null) => {
+        const [row] = await db.database
+          .insert(sessionMessages)
+          .values({
+            id: randomUUID(),
+            targetSessionId: group.id,
+            userTaskSource,
+            scheduledOrigin: {
+              scheduleId: randomUUID(),
+              scheduledFor: new Date().toISOString(),
+              timezone: "UTC",
+              name: "daily",
+            },
+            content: "scheduled",
+            contentHash: "a".repeat(64),
+          })
+          .returning();
+        if (!row) throw new Error("Scheduled message fixture was not created");
+        return row;
+      };
+      const forwardOf = (scheduled: { id: string }) =>
+        send(group.id, dm.id, { sessionId: group.id, source: { kind: "session-message", messageId: scheduled.id } });
+      await expect(
+        service.resolveMessageProvenance(await forwardOf(await insert({ sessionId: dm.id, source: fromIm }))),
+      ).resolves.toMatchObject({ initiatorSessionId: dm.id, forwards: 1 });
+      await expect(service.resolveMessageProvenance(await forwardOf(await insert(null)))).resolves.toMatchObject({
+        initiatorSessionId: group.id,
+        forwards: 1,
+      });
+    });
+
+    it("reports no initiator once a chain is too long to follow", async () => {
+      const { service, dm, group, send } = await chats();
+      let message = await send(dm.id, group.id, { sessionId: dm.id, source: fromIm });
+      let [from, to] = [group.id, dm.id];
+      for (let hop = 0; hop < 34; hop += 1) {
+        message = await send(from, to, { sessionId: from, source: { kind: "session-message", messageId: message.id } });
+        [from, to] = [to, from];
+      }
+      const provenance = await service.resolveMessageProvenance(message);
+      expect(provenance.initiatorSessionId).toBeUndefined();
+      expect(provenance.initiator).toBeUndefined();
+      expect(provenance.forwards).toBe(32);
+      expect(provenance.crossConversation).toBe(true);
+    });
+
+    it("lists the Agent's live Sessions with their conversations", async () => {
+      const { service, dm, group, other, child } = await chats();
+      const worker = await child(group.id);
+      await db.database.update(sessions).set({ endedAt: new Date() }).where(eq(sessions.id, other.id));
+      const { items } = await service.listAgentSessions(dm.id, { limit: 100 });
+      const byId = new Map(items.map((item) => [item.sessionId, item]));
+      expect(byId.has(other.id)).toBe(false);
+      expect(byId.get(dm.id)).toMatchObject({
+        current: true,
+        sessionKind: "channel",
+        conversationKind: "dm",
+        channelId: "D1",
+      });
+      expect(byId.get(group.id)).toMatchObject({ sessionKind: "channel", channelId: "G1" });
+      expect(byId.get(group.id)).not.toHaveProperty("current");
+      expect(byId.get(worker.id)).toMatchObject({
+        sessionKind: "internal",
+        channelId: "G1",
+        parentSessionId: group.id,
+        taskPreview: "task",
+      });
+      const visible = await service.listAgentSessions(dm.id, { limit: 100, visibleOnly: true });
+      expect(visible.items.map((item) => item.sessionKind)).not.toContain("internal");
+      const first = await service.listAgentSessions(dm.id, { limit: 1 });
+      expect(first.items).toHaveLength(1);
+      const second = await service.listAgentSessions(dm.id, { limit: 100, cursor: first.nextCursor as string });
+      expect(second.items.map((item) => item.sessionId)).not.toContain(first.items[0]?.sessionId);
+      expect(second.items).toHaveLength(items.length - 1);
+    });
+  });
+
   it("authorizes messages and rejects stale, unavailable, and mismatched authorities", async () => {
     const service = new SessionService(db.database, { now: () => fixture.now });
     const source = await service.ensureChatSession(
@@ -868,9 +1113,12 @@ describe("SessionService with the unit database", () => {
       { imBindingId: fixture.bindingId, channelId: "C2", conversationKind: "dm" },
       "channel",
     );
-    await expect(
-      service.authorizeAndRecordMessage({ ...args, targetSessionId: other.session.id, messageId: randomUUID() }),
-    ).rejects.toMatchObject({ code: "SESSION_SCOPE_MISMATCH" });
+    const crossed = await service.authorizeAndRecordMessage({
+      ...args,
+      targetSessionId: other.session.id,
+      messageId: randomUUID(),
+    });
+    expect(crossed.route.targetSessionId).toBe(other.session.id);
     await expect(
       service.authorizeAndRecordMessage({ ...args, sourceSessionId: randomUUID(), messageId: randomUUID() }),
     ).rejects.toMatchObject({ code: "SESSION_SOURCE_UNAVAILABLE" });
@@ -2061,7 +2309,12 @@ describe("SessionCollaborationService response mapping", () => {
       domain,
       registry,
       sessions,
-      service: new SessionCollaborationService({ assembler, domain, registry, sessions: sessions as never }),
+      service: new SessionCollaborationService({
+        assembler,
+        domain,
+        registry,
+        sessions: { ...sessions, resolveMessageProvenance: vi.fn(async () => SAME_CONVERSATION) } as never,
+      }),
     };
   }
 

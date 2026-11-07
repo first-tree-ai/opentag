@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   type EffectiveRuntimeSnapshot,
+  RUNNER_SESSION_COLLABORATION_V4,
   RUNTIME_DEFAULT_MAX_DURATION_MS,
   RUNTIME_MAX_DURATION_MS,
   type RunnerCloudModelGrant,
@@ -499,6 +500,13 @@ class CloudSessionDispatchUnavailableError extends Error {
 }
 
 /** The connection was current but negotiated only the ordinary-message v1 contract. */
+class CloudCrossConversationUnsupportedError extends Error {
+  constructor() {
+    super("The Runner connection does not understand Session message provenance");
+    this.name = "CloudCrossConversationUnsupportedError";
+  }
+}
+
 class CloudScheduledOriginUnsupportedError extends Error {
   readonly code = "unsupported_schedule_origin";
 
@@ -526,6 +534,20 @@ export interface CloudSessionTargetEnvelope {
 }
 
 /** The owner and dispatcher share one Cloud delivery input contract. */
+/** The outcome of a dispatch the Runner connection refused or never answered; undefined for anything else. */
+function cloudDispatchRefusal(error: unknown): CloudSessionMessageOutcome | undefined {
+  if (error instanceof CloudSessionDispatchUnavailableError)
+    return { status: "unreachable", code: "runtime_not_ready" };
+  if (error instanceof CloudScheduledOriginUnsupportedError) {
+    return { status: "unreachable", code: "unsupported_schedule_origin" };
+  }
+  if (error instanceof CloudCrossConversationUnsupportedError) {
+    return { status: "unreachable", code: "unsupported_cross_conversation" };
+  }
+  if (error instanceof CloudSessionDispatchTimeoutError) return { status: "unknown", code: "delivery_timeout" };
+  return undefined;
+}
+
 export type CloudSessionDeliveryInput = CloudSessionMessageDeliveryInput;
 
 function isScheduledCloudDelivery(
@@ -727,7 +749,10 @@ export class CloudSessionCollaborationOwner {
             scheduledOrigin: input.message.scheduledOrigin,
             scheduleDetailUrl: input.message.scheduleDetailUrl,
           }
-        : { sourceSessionId: input.route.sourceSessionId }),
+        : {
+            sourceSessionId: input.route.sourceSessionId,
+            ...(input.provenance ? { provenance: input.provenance } : {}),
+          }),
       targetSessionId: route.targetSessionId,
       agentId: route.agentId,
       placementGeneration: route.targetPlacementGeneration,
@@ -782,15 +807,8 @@ export class CloudSessionCollaborationOwner {
       receipt = admitted.receipt;
     } catch (error) {
       this.#work.settleUnassigned(workAllocation, message.id);
-      if (error instanceof CloudSessionDispatchUnavailableError) {
-        return { status: "unreachable", code: "runtime_not_ready" };
-      }
-      if (error instanceof CloudScheduledOriginUnsupportedError) {
-        return { status: "unreachable", code: "unsupported_schedule_origin" };
-      }
-      if (error instanceof CloudSessionDispatchTimeoutError) {
-        return { status: "unknown", code: "delivery_timeout" };
-      }
+      const refused = cloudDispatchRefusal(error);
+      if (refused) return refused;
       throw error;
     }
     const result = await this.#settleReceipt(sandbox, receipt, request, input.attemptCount);
@@ -828,6 +846,11 @@ export class CloudSessionCollaborationOwner {
     if (!connection) throw new CloudSessionDispatchUnavailableError();
     if (scheduled && connection.sessionCollaborationVersion < 2) {
       throw new CloudScheduledOriginUnsupportedError();
+    }
+    if (connection.sessionCollaborationVersion < RUNNER_SESSION_COLLABORATION_V4) {
+      // An older Runner would present a message from elsewhere as this conversation's own work.
+      if (request.provenance?.crossConversation) throw new CloudCrossConversationUnsupportedError();
+      delete request.provenance;
     }
     const socket = this.#socketFor(connection);
     if (!socket) throw new CloudSessionDispatchUnavailableError();

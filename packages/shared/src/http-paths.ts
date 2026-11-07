@@ -56,6 +56,7 @@ export const RUNTIME_IM_RESOURCE_TEMPLATE = `${API_V1_PREFIX}/runtime/im-message
 export const RUNTIME_INTERNAL_SESSIONS_PATH = `${API_V1_PREFIX}/runtime/sessions/internal`;
 export const RUNTIME_SESSION_MESSAGES_PATH = `${API_V1_PREFIX}/runtime/session-messages`;
 export const RUNTIME_SESSIONS_PATH = `${API_V1_PREFIX}/runtime/sessions`;
+export const RUNTIME_AGENT_SESSIONS_PATH = `${API_V1_PREFIX}/runtime/agent-sessions`;
 export const RUNTIME_SESSION_STOP_PATH = `${API_V1_PREFIX}/runtime/sessions/stop`;
 export const RUNTIME_DURABLE_WORK_PATH = `${API_V1_PREFIX}/runtime/durable-work`;
 /**
@@ -242,6 +243,7 @@ export const HTTP_PATHS = {
   runtimeInternalSessions: RUNTIME_INTERNAL_SESSIONS_PATH,
   runtimeSessionMessages: RUNTIME_SESSION_MESSAGES_PATH,
   runtimeSessions: RUNTIME_SESSIONS_PATH,
+  runtimeAgentSessions: RUNTIME_AGENT_SESSIONS_PATH,
   runtimeSessionStop: RUNTIME_SESSION_STOP_PATH,
   runtimeSkills: RUNTIME_SKILLS_PATH,
   runtimeSkillPresets: RUNTIME_SKILL_PRESETS_PATH,

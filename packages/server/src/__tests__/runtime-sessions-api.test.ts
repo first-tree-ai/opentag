@@ -34,7 +34,7 @@ describe("Runtime Session CLI routes", () => {
       runtimeSessions: {
         collaboration: { create, send, stop },
         proofs: { authenticate },
-        sessions: { listInternalSessions },
+        sessions: { listAgentSessions: vi.fn(async () => ({ items: [] })), listInternalSessions },
       },
     });
     const messageId = randomUUID();
@@ -119,7 +119,7 @@ describe("Runtime Session CLI routes", () => {
       runtimeSessions: {
         collaboration: { create: vi.fn(), send: vi.fn(), stop },
         proofs: { authenticate },
-        sessions: { listInternalSessions },
+        sessions: { listAgentSessions: vi.fn(async () => ({ items: [] })), listInternalSessions },
       },
     });
     const stopped = await app.inject({
@@ -160,7 +160,7 @@ describe("Runtime Session CLI routes", () => {
             throw new SessionCliProofError("invalid_proof", "invalid");
           },
         },
-        sessions: { listInternalSessions: vi.fn() },
+        sessions: { listAgentSessions: vi.fn(async () => ({ items: [] })), listInternalSessions: vi.fn() },
       },
     });
     const response = await app.inject({ method: "GET", url: HTTP_PATHS.runtimeSessions });

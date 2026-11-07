@@ -1,6 +1,6 @@
 ---
 title: "Internal Session collaboration"
-description: "Session CLI delegation between an Agent's Sessions: proofs, scope, callbacks into visible Sessions, and delivery limits."
+description: "Session CLI delegation between an Agent's Sessions: proofs, reach across conversations, message provenance, callbacks into visible Sessions, and delivery limits."
 ---
 
 # Internal Session collaboration
@@ -12,6 +12,7 @@ opentag session create --message <task>
 opentag session send <target-session-id> --message <text>
 opentag session stop <internal-session-id>
 opentag session list
+opentag session list --agent
 ```
 
 The current source Session is implicit. The Runtime supplies a managed proof file and the CLI reads the Server binding
@@ -37,8 +38,9 @@ openTag introduces per-Session OS or container isolation, the proof lets the Ser
 removes caller-selected source flags; it is not a security boundary against a compromised sibling Session that can read
 the daemon user's files.
 
-`session create` atomically creates an internal child Session and its first message. `session send` addresses an
-existing Session in the same Agent and conversation scope. Both accept an optional `--message-id` for an explicit retry;
+`session create` atomically creates an internal child Session and its first message. `session send` addresses any
+unended Session of the same Agent, in any conversation; see
+[Messages between conversations](#messages-between-conversations). Both accept an optional `--message-id` for an explicit retry;
 reuse the same ID and identical semantic input after an uncertain result. A new message can use any UUID except version 5, which
 is reserved for the messages the Server writes itself and is rejected with `message_id_reserved`. A retry of a message already
 recorded under a version 5 ID still works. `accepted` means the target accepted the
@@ -58,9 +60,9 @@ in order, once admission is released. The Cloud Runner path never steers a Sessi
 
 Within each existing create/send transaction, authorization locks the source Agent, binding,
 Sessions in ID order (`FOR NO KEY UPDATE`), placements in Session ID order, then Computers in ID order.
-The locked rows supply the current authority checks. Only targets in the full binding, channel,
-conversation-kind and thread scope enter this lock chain; foreign-scope targets are classified by
-an unlocked read. Create retries first read the immutable target hint for that message and creator;
+The locked rows supply the current authority checks. Only targets of the source's IM binding enter this
+lock chain; an Agent has one current binding, so another Agent's target is classified by an unlocked read
+and answered `scope_mismatch`. Create retries first read the immutable target hint for that message and creator;
 the later message lock and input-conflict checks remain authoritative. There is no automatic database retry.
 
 A temporary refusal returns `unreachable` with its cause as the code. `client_busy` means the Client is not admitting new
@@ -158,6 +160,76 @@ and cleanup share one serial lifecycle per Session: a replacement waits for olde
 an older token cannot remove the replacement's context or files. A Run that never prepared credentials does not perform
 Session-wide cleanup. Other Sessions prepare independently.
 An older grant without outbox context still leaves visible Session messages queued until the Turn ends.
+
+## Messages between conversations
+
+An Agent often works in several chats at once, and its Sessions coordinate through `session send` whichever conversation
+each belongs to: a visible channel or thread Session, or an internal Session created elsewhere. Another Agent's Session and
+an ended Session stay refused, with `scope_mismatch` and `target_unavailable`. There is no owner-only limit. The owner's
+direct-message Session already holds what the others discuss and has to coordinate them, so two non-owner Sessions talking
+adds little. A Session's conversation scope stays immutable; only the reach of `session send` changed.
+
+`session list --agent` finds a target: every live Session of the Agent, newest first, with its kind, conversation kind,
+channel, thread, and title or first task, the source itself marked `current`. `--visible` leaves out internal Sessions.
+It pages like `session list` and takes neither `--recursive`, `--include-stopped` nor `--since`. There is no index for this
+order, so a page sorts the Agent's own Sessions.
+
+Delivery works as it does inside a conversation. The target decides what to do, and nothing reaches IM on its own. A visible
+target's outbox comes from its own scope, so it can reply only in its own conversation.
+
+**Provenance.** Every ordinary message carries `provenance`, written by the Server: the direct sender's conversation, the
+initiator, how many Session messages came before it (`forwards`), and whether the chain leaves the target's conversation
+(`crossConversation`). The initiator is the Session where the chain started. It stays the same across forwards: when A sends
+to B and B sends to C, C sees B as the direct sender and A as the initiator. Otherwise a request would look like a trusted
+internal one after a single hop. The target's managed context prints these facts, and a visible target receiving a
+cross-conversation message is told to post only what its own conversation may see instead of publishing the result.
+
+The Server derives provenance from stored messages at each dispatch, so a sender cannot supply it, and there is no new
+column. A send inside a Run with an execution, on Cloud or in the Local proxy mode, records that Run's input in
+`session_messages.user_task_source`, which links the message to the one that started the Run; a delivery or a validation Run
+ends the chain at that Session. A send with no execution, which is every send on a default Local Computer, has no such link, so
+its Session's latest input before the send stands in: a person's message accepted there ends the chain at that Session, and an
+accepted Session message continues it. A schedule starts the chain at the Session recorded when it was asked for, or else at
+the Session it runs in. A chain of more than 32 forwards reports no initiator, which the target treats as non-owner, as it
+does a Session of an earlier binding. A failure to read provenance leaves the message `unreachable`, since the target would
+otherwise take it as local.
+
+These links do not cover everything:
+
+- On a default Local Computer "latest input" is an inference. A send from a long Run names whichever input arrived last,
+  including a message still queued behind that Run. A message from the owner's chain queued behind a Run working for a group
+  can therefore label the group's work as the owner's, and the reverse.
+- With an execution, the link names the Run's own input. A message steered into that Run has no execution of its own, so what
+  the Run then sends still names the Run's initiator, not the steered message's. A message from a group steered into a Run
+  started in the owner's direct message can therefore be forwarded under the owner's chain.
+- "Cannot be changed" holds against the Agent's normal commands. On Local, the proof is not a boundary against a compromised
+  sibling Session, as described above.
+- The Server has no record of which person a direct message belongs to. The Agent reads the initiator's conversation and
+  applies what it knows about its owner; there is no owner flag.
+
+**Standing.** Managed instructions tell the receiver to treat a message as coming from the initiator's conversation. Only a
+chain started in the owner's direct message is the owner's instruction. A group has many people, so its Session ID cannot tell
+the owner from a colleague: a chain started in a group is non-owner even if the owner asked there. Content from one conversation is not repeated to people who could not see it. On Local, Sessions of one daemon user
+already share files and memory, so what is new is waking another Session to act at once. On Cloud each Session shares nothing,
+so this is a new channel and the initiator matters more. The guarding is model judgement, not isolation, and can be talked
+around, as group chats and direct messages can today.
+
+**Loops.** Nothing limits how often two Sessions answer each other. Managed instructions do: send only what the other side
+needs, never answer just to acknowledge, thank, agree or restate, stop and tell a person when a chain is several forwards long
+or not converging, and resend at most once after a notice. Each message's forward count makes a long chain visible to the
+Agent. If this proves too weak in the trial, the count is where a platform limit would go. The
+[Run outcome notice](#run-outcome-notices) rules are unchanged and still end at a root: a failed notice never returns to its
+sender and only climbs the creation tree, so a failure cannot bounce between two conversations on its own. A message steered
+into a Run that fails gets its one notice like any other, which applies across conversations too.
+
+**Compatibility.** `provenance` needs `runtime.sessionCollaboration` version 5 on a Local target and Runner
+Session-collaboration version 4 on a Cloud target. A same-conversation message reaches an older peer without it, on the frozen
+frame. A cross-conversation message to an older peer is `unreachable` with `unsupported_cross_conversation` before any frame
+leaves, since that peer would present it as its own conversation's work. A sender retries after the upgrade.
+
+The Server logs each attempted cross-conversation dispatch at `info` with `operation: session.message.cross_conversation`, and
+each send refused for another Agent with `session.message.other_agent`; see
+[Server observability](../../operations/observability.md#cross-conversation-session-messages).
 
 ## Run outcome notices
 
@@ -260,7 +332,7 @@ execution boundaries described in [Cloud Context](../cloud/cloud-context.md). Ag
 `services/sessions/session-closure.ts`.
 
 The Local CLI transport requires `runtime.sessionCollaboration` capability version 2. Version 3 adds scheduled
-origins. Version 4 adds the Client Run outcome report. The Client sends `session:message:outcome` only on a connection
+origins. Version 4 adds the Client Run outcome report. Version 5 adds message provenance. The Client sends `session:message:outcome` only on a connection
 that negotiated 4 or later; against an older Server it keeps the report pending (bounded) and never sends the frame.
 The Server answers `unsupported_capability` to a report on a connection below version 4. An older Client never reports,
 so its timed-out child produces no notice. Version checks use `>=`. Visible callback delivery also requires

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ImConversationKindSchema } from "./im-message.js";
 import { runtimeByteString } from "./runtime-config.js";
 import {
   RUNTIME_DIRECT_TEXT_MAX_BYTES,
@@ -111,6 +112,41 @@ export const SessionCliListResponseSchema = z
   })
   .strict();
 
+/** `session list --agent`: the live Sessions of the source's Agent, in every conversation. */
+export const SessionCliAgentListQuerySchema = z
+  .object({
+    /** Leaves out internal Sessions, which usually outnumber the conversations they work for. */
+    visibleOnly: z.boolean().optional(),
+    limit: z.number().int().min(1).max(SESSION_CLI_MAX_LIMIT).default(SESSION_CLI_DEFAULT_LIMIT),
+    cursor: z.string().min(1).max(2048).optional(),
+  })
+  .strict();
+
+export const SessionCliAgentListItemSchema = z
+  .object({
+    sessionId: z.string().uuid(),
+    sessionKind: z.enum(["channel", "thread", "internal"]),
+    conversationKind: ImConversationKindSchema,
+    channelId: z.string(),
+    threadKey: z.string().optional(),
+    createdAt: z.string().datetime({ offset: true }),
+    /** The Session's Task title, when it has one. */
+    title: z.string().optional(),
+    /** An internal Session's creator and first task. */
+    parentSessionId: z.string().uuid().optional(),
+    taskPreview: z.string().optional(),
+    /** The Session asking. */
+    current: z.boolean().optional(),
+  })
+  .strict();
+
+export const SessionCliAgentListResponseSchema = z
+  .object({
+    items: z.array(SessionCliAgentListItemSchema).max(SESSION_CLI_MAX_LIMIT),
+    nextCursor: z.string().min(1).max(2048).optional(),
+  })
+  .strict();
+
 /**
  * The Server-minted proof a managed Runtime hands to the in-Session CLI. The token is a bearer
  * credential bound to the exact Session/placement/execution connection; it is delivered only over
@@ -133,3 +169,6 @@ export type SessionCliStopResponse = z.infer<typeof SessionCliStopResponseSchema
 export type SessionCliListQuery = z.infer<typeof SessionCliListQuerySchema>;
 export type SessionCliListItem = z.infer<typeof SessionCliListItemSchema>;
 export type SessionCliListResponse = z.infer<typeof SessionCliListResponseSchema>;
+export type SessionCliAgentListQuery = z.infer<typeof SessionCliAgentListQuerySchema>;
+export type SessionCliAgentListItem = z.infer<typeof SessionCliAgentListItemSchema>;
+export type SessionCliAgentListResponse = z.infer<typeof SessionCliAgentListResponseSchema>;

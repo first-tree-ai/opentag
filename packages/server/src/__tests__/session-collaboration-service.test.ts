@@ -4,6 +4,7 @@ import {
   SESSION_CLI_PROOF_HEADER,
   type SessionCliCreateRequest,
   type SessionCliSendRequest,
+  type SessionMessageProvenance,
 } from "@opentag/shared";
 import Fastify from "fastify";
 import { describe, expect, it, vi } from "vitest";
@@ -18,6 +19,14 @@ import {
   sessionStoppedNoticeMessageId,
 } from "../services/sessions/session-run-outcome-notice.js";
 import { SessionServiceError } from "../services/sessions/session-service.js";
+
+const SAME_CONVERSATION_PROVENANCE: SessionMessageProvenance = {
+  source: { sessionKind: "channel", conversationKind: "channel", channelId: "C1" },
+  initiatorSessionId: "00000000-0000-4000-8000-000000000001",
+  initiator: { sessionKind: "channel", conversationKind: "channel", channelId: "C1" },
+  forwards: 0,
+  crossConversation: false,
+};
 
 describe("SessionCollaborationService", () => {
   describe("internal Session Run outcome notices", () => {
@@ -628,6 +637,88 @@ describe("SessionCollaborationService", () => {
     expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
   });
 
+  describe("message provenance", () => {
+    const crossing: SessionMessageProvenance = {
+      source: { sessionKind: "channel", conversationKind: "dm", channelId: "D1" },
+      initiatorSessionId: "00000000-0000-4000-8000-000000000002",
+      initiator: { sessionKind: "channel", conversationKind: "dm", channelId: "D1" },
+      forwards: 2,
+      crossConversation: true,
+    };
+
+    it("sends provenance to a peer that negotiated version 5", async () => {
+      const fixture = serviceFixture();
+      fixture.registry.capabilityVersion.mockReturnValue(5);
+      fixture.sessions.resolveMessageProvenance.mockResolvedValue(crossing);
+      await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+        status: "accepted",
+      });
+      expect(fixture.domain.requestSessionMessageDelivery.mock.calls[0]?.[2]).toMatchObject({ provenance: crossing });
+    });
+
+    it("keeps the frozen frame for a same-conversation message to an older peer", async () => {
+      const fixture = serviceFixture();
+      fixture.registry.capabilityVersion.mockReturnValue(4);
+      await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+        status: "accepted",
+      });
+      expect(fixture.domain.requestSessionMessageDelivery.mock.calls[0]?.[2]).not.toHaveProperty("provenance");
+    });
+
+    it("refuses a cross-conversation message to an older peer before any frame", async () => {
+      const fixture = serviceFixture();
+      fixture.registry.capabilityVersion.mockReturnValue(4);
+      fixture.sessions.resolveMessageProvenance.mockResolvedValue(crossing);
+      await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+        status: "unreachable",
+        code: "unsupported_cross_conversation",
+      });
+      expect(fixture.domain.requestReconcile).not.toHaveBeenCalled();
+    });
+
+    it("does not deliver a message whose provenance cannot be read", async () => {
+      const fixture = serviceFixture();
+      fixture.sessions.resolveMessageProvenance.mockRejectedValue(new Error("database"));
+      await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+        status: "unreachable",
+        code: "runtime_unavailable",
+      });
+      expect(fixture.domain.requestReconcile).not.toHaveBeenCalled();
+    });
+
+    it("records each cross-conversation attempt without its content, and only those", async () => {
+      const fixture = serviceFixture();
+      fixture.registry.capabilityVersion.mockReturnValue(5);
+      await fixture.service.send(sendRequest(fixture), fixture.source);
+      expect(fixture.logger.info).not.toHaveBeenCalled();
+      fixture.sessions.resolveMessageProvenance.mockResolvedValue(crossing);
+      await fixture.service.send(sendRequest(fixture), fixture.source);
+      const [bindings] = fixture.logger.info.mock.calls[0] ?? [];
+      expect(bindings).toMatchObject({
+        operation: "session.message.cross_conversation",
+        initiatorSessionId: crossing.initiatorSessionId,
+        forwards: 2,
+        outcome: "accepted",
+      });
+      expect(JSON.stringify(bindings)).not.toContain(sendRequest(fixture).message);
+    });
+
+    it("records a refused send to another Agent", async () => {
+      const fixture = serviceFixture();
+      fixture.sessions.authorizeAndRecordMessage.mockRejectedValue(
+        new SessionServiceError("SESSION_SCOPE_MISMATCH", "another Agent"),
+      );
+      await expect(fixture.service.send(sendRequest(fixture), fixture.source)).resolves.toMatchObject({
+        status: "rejected",
+        code: "scope_mismatch",
+      });
+      expect(fixture.logger.info).toHaveBeenCalledWith(
+        expect.objectContaining({ operation: "session.message.other_agent", code: "scope_mismatch" }),
+        expect.any(String),
+      );
+    });
+  });
+
   it("fails closed before reconcile when a visible target lacks credential grant v2", async () => {
     const fixture = serviceFixture({ targetSessionKind: "channel" });
     fixture.registry.capabilityVersion.mockReturnValue(1);
@@ -700,7 +791,7 @@ describe("SessionCollaborationService", () => {
     registerRuntimeSessionRoutes(app, {
       collaboration: fixture.service,
       proofs: { authenticate: async () => fixture.source },
-      sessions: { listInternalSessions: vi.fn() },
+      sessions: { listAgentSessions: vi.fn(async () => ({ items: [] })), listInternalSessions: vi.fn() },
     });
     try {
       const result = await app.inject({
@@ -827,6 +918,7 @@ function serviceFixture(
     attemptCount: options.attemptCount === undefined ? 1 : options.attemptCount,
   };
   const sessions = {
+    resolveMessageProvenance: vi.fn(async () => SAME_CONVERSATION_PROVENANCE),
     authorizeAndRecordMessage: vi.fn().mockImplementation(async (input: { content: string; messageId: string }) => ({
       ...attempt,
       message: { ...attempt.message, id: input.messageId, content: input.content },
@@ -866,7 +958,7 @@ function serviceFixture(
   };
   const diagnosticLogger = { error: vi.fn() };
   const onDiagnostic = vi.fn(createServerDiagnosticReporter(() => diagnosticLogger as never));
-  const logger = { error: vi.fn() };
+  const logger = { error: vi.fn(), info: vi.fn() };
   const registry = {
     capabilityVersion: vi.fn().mockReturnValue(2),
     currentInstanceId: vi.fn().mockReturnValue(instanceId),

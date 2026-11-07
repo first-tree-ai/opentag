@@ -279,14 +279,88 @@ describe("SessionReconciler", () => {
         runtime: withSessionRevision(firstRuntime, 2, "session-revision-2"),
       }),
     ).resolves.toMatchObject({ status: "busy", reason: "active_turn" });
+    // A newer Agent configuration waits for a Session's own Turn, and for no other Session's.
     await expect(
       reconciler.reconcile({
-        ...sibling,
+        ...first,
         requestId: randomUUID(),
-        runtime: withAgentRevision(siblingRuntime, 2, "agent-revision-2"),
+        runtime: withAgentRevision(firstRuntime, 2, "agent-revision-2"),
       }),
     ).resolves.toMatchObject({ status: "busy", reason: "agent_configuration_busy" });
     expect(reconciler.getAgent("agent-1")?.revisionSequence).toBe(1);
+    const newer = withAgentRevision(siblingRuntime, 2, "agent-revision-2");
+    await expect(reconciler.reconcile({ ...sibling, requestId: randomUUID(), runtime: newer })).resolves.toMatchObject({
+      status: "ready",
+    });
+    expect(reconciler.getAgent("agent-1")?.revisionSequence).toBe(2);
+    expect(reconciler.getSession("session-2")?.agentRevisionSequence).toBe(2);
+    expect(reconciler.checkDelivery(directDelivery({ ...sibling, runtime: newer }))).toBeUndefined();
+
+    // The running Session keeps the configuration it started with.
+    expect(reconciler.getSession("session-1")?.agentRevisionSequence).toBe(1);
+    await expect(reconciler.reconcile({ ...first, requestId: randomUUID() })).resolves.toMatchObject({
+      status: "running",
+      turn: { turnId: "turn-1", deliveryId: "delivery-1" },
+    });
+    expect(reconciler.checkDelivery(directDelivery(first))).toBeUndefined();
+    // Once it is idle, its next Turn prepares the newer configuration, and an older snapshot is stale.
+    reconciler.clearActivity("session-1", "turn-1");
+    await expect(
+      reconciler.reconcile({
+        ...first,
+        requestId: randomUUID(),
+        runtime: withAgentRevision(firstRuntime, 2, "agent-revision-2"),
+      }),
+    ).resolves.toMatchObject({ status: "ready" });
+    expect(reconciler.getSession("session-1")?.agentRevisionSequence).toBe(2);
+    await expect(reconciler.reconcile({ ...first, requestId: randomUUID() })).resolves.toMatchObject({
+      status: "rejected",
+      reason: "stale_configuration",
+    });
+  });
+
+  it("refuses a new Session's older Agent configuration, which its next attempt reassembles", async () => {
+    const computerId = randomUUID();
+    const reconciler = new SessionReconciler({ installationId: computerId });
+    const runtime = snapshot("agent-1", "workspace-1");
+    await reconciler.reconcile(
+      reconcileRequest(computerId, "session-1", withAgentRevision(runtime, 2, "agent-revision-2")),
+    );
+    await expect(reconciler.reconcile(reconcileRequest(computerId, "session-2", runtime))).resolves.toMatchObject({
+      status: "rejected",
+      reason: "stale_configuration",
+    });
+  });
+
+  it("resumes a Turn on its pinned configuration after another Session already prepared a newer one", async () => {
+    const computerId = randomUUID();
+    const resumer = { pending: vi.fn(() => true), resume: vi.fn(async () => true), abandon: vi.fn() };
+    const reconciler = new SessionReconciler({
+      installationId: computerId,
+      preparation: {
+        prepareAgent: vi.fn(async () => undefined),
+        prepareSession: vi.fn(async () => ({
+          unresolvedTurn: { deliveryId: "delivery-1", turnId: "turn-1" },
+        })) as never,
+        stopSession: vi.fn(async () => undefined),
+      },
+      resumer,
+    });
+    const pinned = snapshot("agent-1", "workspace-1");
+    const turn = { deliveryId: "delivery-1", turnId: "turn-1" };
+    // A restarted daemon: a new chat's reconcile happens to arrive before the old Turn's recovery.
+    await reconciler.reconcile(
+      reconcileRequest(computerId, "session-2", withAgentRevision(pinned, 2, "agent-revision-2")),
+    );
+    reconciler.setRecovery("session-1", turn);
+    await expect(reconciler.reconcile(reconcileRequest(computerId, "session-1", pinned))).resolves.toMatchObject({
+      status: "running",
+      turn,
+    });
+    expect(resumer.resume).toHaveBeenCalledExactlyOnceWith("session-1", turn);
+    expect(resumer.abandon).not.toHaveBeenCalled();
+    expect(reconciler.getSession("session-1")?.agentRevisionSequence).toBe(1);
+    expect(reconciler.getAgent("agent-1")?.revisionSequence).toBe(2);
   });
 
   it("B-14/B-16 keeps one agent workspace invariant and stops only the target binding", async () => {

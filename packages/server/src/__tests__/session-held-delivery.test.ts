@@ -546,6 +546,45 @@ describe("Server-held Session message delivery", () => {
     await s.collaboration.close();
   });
 
+  it("sends no delivery notice when a held Run outcome notice expires", async () => {
+    const s = await stack();
+    const reported = await s.send("the Run that fails");
+    s.state.answer = "client_busy";
+    await s.collaboration.notifyRunOutcome({
+      childSessionId: s.targetSessionId,
+      messageId: reported.messageId,
+      outcome: "failed",
+      reason: "provider_error",
+      source: { computerId: s.computerId, connectionInstanceId: s.source.connectionInstanceId, placementGeneration: 1 },
+    });
+    const noticeId = runOutcomeNoticeMessageId(s.targetSessionId, reported.messageId);
+    const [snapshot] = (await new SessionService(db.database).sweepHeldMessages(null, 10)).filter(
+      (m) => m.id === noticeId,
+    );
+    if (!snapshot) throw new Error("expected the held notice");
+
+    await s.collaboration.expireHeld(snapshot);
+
+    expect(await s.row(noticeId)).toMatchObject({ lastOutcome: "unreachable", lastErrorCode: "delivery_expired" });
+    await expect(s.row(deliveryFailureNoticeMessageId(noticeId))).resolves.toBeUndefined();
+  });
+
+  it("does not report a failed Run of a delivery notice back to the failed target", async () => {
+    const s = await stack();
+    s.state.answer = "client_busy";
+    const sent = await s.send("never delivered");
+    const service = new SessionService(db.database);
+    const [snapshot] = await service.sweepHeldMessages(null, 10);
+    if (!snapshot) throw new Error("expected a held message");
+    await s.collaboration.expireHeld(snapshot);
+    const noticeId = deliveryFailureNoticeMessageId(sent.messageId);
+    expect(await s.row(noticeId)).toMatchObject({ targetSessionId: s.senderSessionId });
+
+    await expect(
+      service.resolveRunOutcomeNotice({ childSessionId: s.senderSessionId, messageId: noticeId }),
+    ).resolves.toBeUndefined();
+  });
+
   it("still answers a permanent rejection on the first attempt", async () => {
     const s = await stack();
     s.state.answer = "target_mismatch";

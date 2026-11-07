@@ -32,7 +32,7 @@ import {
   SESSION_MESSAGE_HELD_EXPIRED_CODE,
   SESSION_MESSAGE_HELD_SUPERSEDED_CODE,
 } from "./session-held-delivery.js";
-import { renderRunOutcomeNotice, runOutcomeNoticeMessageId } from "./session-run-outcome-notice.js";
+import { isRunOutcomeNotice, renderRunOutcomeNotice, runOutcomeNoticeMessageId } from "./session-run-outcome-notice.js";
 import type {
   AuthorizedHeldMessageRoute,
   AuthorizedScheduledMessageRoute,
@@ -1471,7 +1471,7 @@ export class SessionCollaborationService {
   async #notifySenderOfFailure(message: HeldSessionMessage, code: string): Promise<void> {
     const failure = { code, messageId: message.id, targetSessionId: message.targetSessionId };
     if (!message.sourceSessionId) return;
-    if (isDeliveryFailureNotice(message.content)) {
+    if (isDeliveryFailureNotice(message) || isRunOutcomeNotice(message)) {
       this.#logInternalFailure("SESSION_DELIVERY_FAILURE_NOTICE_UNDELIVERED", failure);
       return;
     }

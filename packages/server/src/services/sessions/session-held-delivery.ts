@@ -35,8 +35,22 @@ export function deliveryFailureNoticeMessageId(messageId: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-export function isDeliveryFailureNotice(content: string): boolean {
-  return content.startsWith(SESSION_DELIVERY_FAILURE_NOTICE_HEADER);
+const NOTICE_IDENTITY = /^Session: ([0-9a-f-]{36})\nMessage: ([0-9a-f-]{36})\n/;
+
+/**
+ * Whether a stored message is a notice openTag wrote. As with Run outcome notices, the header alone proves
+ * nothing: a real notice's id derives from the message it names, and the failed target sent it.
+ */
+export function isDeliveryFailureNotice(message: {
+  id: string;
+  sourceSessionId: string | null;
+  content: string;
+}): boolean {
+  const header = `${SESSION_DELIVERY_FAILURE_NOTICE_HEADER}\n`;
+  if (!message.content.startsWith(header)) return false;
+  const named = NOTICE_IDENTITY.exec(message.content.slice(header.length));
+  if (!named?.[1] || !named[2] || named[1] !== message.sourceSessionId) return false;
+  return message.id === deliveryFailureNoticeMessageId(named[2]);
 }
 
 export function renderDeliveryFailureNotice(input: {

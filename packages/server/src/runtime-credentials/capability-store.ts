@@ -126,8 +126,8 @@ export class RuntimeCapabilityStore {
 
   /**
    * True when at least one unexpired capability (current or previous, so a healthy renewal may
-   * have replaced the original grant) still matches the exact execution/provider/binding/scope/
-   * revision being served. Long-lived streams call this on every revalidation: revocation and a
+   * have replaced the original grant) still matches the exact execution/provider/binding/scope
+   * being served; a capability does not pin the credential revision. Long-lived streams call this on every revalidation: revocation and a
    * missing renewal both stop within the revalidation bound without being tied to a grant id.
    */
   hasLiveMatching(input: {
@@ -135,7 +135,6 @@ export class RuntimeCapabilityStore {
     provider: RuntimeCredentialProvider;
     bindingId: string;
     scopeHash: string;
-    authorizationRevision: string;
     now?: number;
   }): boolean {
     const slot = this.#byKey.get(capabilitySlotKey(input.executionId, input.provider, input.bindingId));
@@ -144,14 +143,7 @@ export class RuntimeCapabilityStore {
     for (const hash of [slot.current, slot.previous]) {
       if (!hash) continue;
       const record = this.#byHash.get(hash);
-      if (
-        record &&
-        record.expiresAt > now &&
-        record.scopeHash === input.scopeHash &&
-        record.authorizationRevision === input.authorizationRevision
-      ) {
-        return true;
-      }
+      if (record && record.expiresAt > now && record.scopeHash === input.scopeHash) return true;
     }
     return false;
   }

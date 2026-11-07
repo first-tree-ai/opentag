@@ -80,8 +80,9 @@ mean the bound Computer needs an update.
 Operations carry expected Agent/runtime revisions. Connecting and disconnecting do not require
 pausing the Agent. A saved change advances the Agent revision, so it applies to the next turn
 like any other Agent settings change; a turn already running keeps the prompt and workspace it
-started with, while its later Context Tree commands fail closed against the stale revision and
-never reach a tree outside the current selection. Disconnect only changes the selection;
+started with, while each of its later Context Tree commands is checked against the current
+selection and never reaches a tree outside it. See
+[Platform access during a Turn](../runtime/platform-access-during-a-turn.md). Disconnect only changes the selection;
 it preserves cached content and unpublished work. Connecting an already selected source
 and disconnecting an absent source are idempotent.
 Repository creation never adopts or overwrites an existing repository. Remote writes are

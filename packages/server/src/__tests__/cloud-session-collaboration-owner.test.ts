@@ -278,6 +278,7 @@ function openExecution(
     accountId: fixture.accountId,
     agentId: fixture.agentId,
     agentRevision: 1,
+    agentAccessGeneration: 1,
     computerId: fixture.computerId,
     computerKind: "cloud",
     connectionId: connection.connectionId,

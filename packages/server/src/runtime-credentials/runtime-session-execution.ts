@@ -252,6 +252,7 @@ function openSessionRecord(
       accountId: snapshot.computer.ownerAccountId,
       agentId: snapshot.agent.id,
       agentRevision: snapshot.agent.revision,
+      agentAccessGeneration: snapshot.agent.accessGeneration,
       sessionId: snapshot.sessionId,
       computerId: context.computerId,
       instanceId: context.instanceId,

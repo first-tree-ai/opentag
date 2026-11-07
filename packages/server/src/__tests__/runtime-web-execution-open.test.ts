@@ -61,7 +61,14 @@ function sessionSnapshot(overrides: Partial<RuntimeScopeSnapshot> = {}): Runtime
       slackInstallationId: null,
     },
     slackInstallation: null,
-    agent: { id: AGENT, status: "active", revision: 4, computerId: COMPUTER, createdByUserId: ACCOUNT },
+    agent: {
+      id: AGENT,
+      status: "active",
+      revision: 4,
+      accessGeneration: 1,
+      computerId: COMPUTER,
+      createdByUserId: ACCOUNT,
+    },
     placement: { computerId: COMPUTER, generation: 2 },
     computer: { id: COMPUTER, kind: "local", ownerAccountId: ACCOUNT },
     sandbox: null,
@@ -217,7 +224,14 @@ describe("execution open web services", () => {
     // A different Account is not a different decision: the deployment config is the only input.
     const otherAccount = randomUUID();
     state.scopeResolver.session = sessionSnapshot({
-      agent: { id: AGENT, status: "active", revision: 4, computerId: COMPUTER, createdByUserId: otherAccount },
+      agent: {
+        id: AGENT,
+        status: "active",
+        revision: 4,
+        accessGeneration: 1,
+        computerId: COMPUTER,
+        createdByUserId: otherAccount,
+      },
       computer: { id: COMPUTER, kind: "local", ownerAccountId: otherAccount },
     });
     const second = executionFrame(await state.owner.handle(openFrame({ services: ["web"] }), state.context));

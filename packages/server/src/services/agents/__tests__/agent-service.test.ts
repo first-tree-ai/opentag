@@ -17,6 +17,8 @@ import {
   sessionPlacements,
   sessions,
 } from "../../../db/schema/index.js";
+import { RuntimeScopeResolver } from "../../../runtime-credentials/scope-resolver.js";
+import type { RuntimeExecutionRecord } from "../../../runtime-credentials/types.js";
 import { CloudCallStore } from "../../cloud-call-store.js";
 import { CloudUsageService } from "../../cloud-usage.js";
 import { EffectiveRuntimeSnapshotAssembler } from "../../runtime-config/effective-runtime-snapshot-assembler.js";
@@ -1103,6 +1105,64 @@ describe("AgentService", () => {
       hooked.updateById(bootstrap.userId, created.id, { expectedRevision: 2, receiveMode: "all_message" }),
     ).resolves.toMatchObject({ receiveMode: "all_message", revision: 3 });
     expect(afterMembershipLocked).toHaveBeenCalled();
+  });
+
+  it("keeps a running Turn's access across a configuration save but not across a suspension", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const agent = await createAgent(service, bootstrap.userId, computer.id, "access-agent");
+    const binding = await createBinding(agent.id);
+    const session = await createSession(binding.id, computer.id);
+    const resolver = new RuntimeScopeResolver(unitDatabase.database);
+    const opened = await resolver.load(session.id);
+    if (!opened) throw new Error("Scope fixture was not loaded");
+    const record = {
+      sessionId: session.id,
+      agentId: agent.id,
+      agentRevision: opened.agent.revision,
+      agentAccessGeneration: opened.agent.accessGeneration,
+      accountId: bootstrap.userId,
+      computerId: computer.id,
+      computerKind: "local",
+      placementGeneration: 1,
+    } as RuntimeExecutionRecord;
+    const fence = async () => {
+      const snapshot = await resolver.load(session.id);
+      return snapshot && resolver.assertExecutionFence(record, snapshot);
+    };
+    expect(await fence()).toBeUndefined();
+
+    const saved = await service.updateById(bootstrap.userId, agent.id, {
+      expectedRevision: agent.revision,
+      displayName: "Renamed",
+      runtimeConfig: { model: "next-model" },
+    });
+    expect(saved.revision).toBeGreaterThan(agent.revision);
+    expect(await fence()).toBeUndefined();
+
+    await service.suspendById(bootstrap.userId, agent.id);
+    expect(await fence()).toBe("agent_inactive");
+    await service.reactivateById(bootstrap.userId, agent.id);
+    expect(await fence()).toBe("agent_access_changed");
+  });
+
+  it("advances the access generation on suspension and deletion, not on reactivation", async () => {
+    const { bootstrap, computer, service } = await fixture();
+    const agent = await createAgent(service, bootstrap.userId, computer.id, "withdrawn-agent");
+    const generation = async () => {
+      const [row] = await unitDatabase.database
+        .select({ value: agents.accessGeneration })
+        .from(agents)
+        .where(eq(agents.id, agent.id));
+      return row?.value;
+    };
+    expect(await generation()).toBe(1);
+    await service.suspendById(bootstrap.userId, agent.id);
+    expect(await generation()).toBe(2);
+    await service.reactivateById(bootstrap.userId, agent.id);
+    expect(await generation()).toBe(2);
+    await service.suspendById(bootstrap.userId, agent.id);
+    await service.deleteById(bootstrap.userId, agent.id);
+    expect(await generation()).toBe(4);
   });
 
   it("suspends, reactivates, deletes, and reports failed best-effort stops", async () => {

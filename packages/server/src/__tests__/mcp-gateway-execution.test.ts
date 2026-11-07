@@ -65,7 +65,14 @@ function sessionSnapshot(): RuntimeScopeSnapshot {
       slackInstallationId: null,
     },
     slackInstallation: null,
-    agent: { id: AGENT, status: "active", revision: 4, computerId: COMPUTER, createdByUserId: ACCOUNT },
+    agent: {
+      id: AGENT,
+      status: "active",
+      revision: 4,
+      accessGeneration: 1,
+      computerId: COMPUTER,
+      createdByUserId: ACCOUNT,
+    },
     placement: { computerId: COMPUTER, generation: 2 },
     computer: { id: COMPUTER, kind: "local", ownerAccountId: ACCOUNT },
     sandbox: null,
@@ -93,6 +100,7 @@ function createHarness(
     accountId: ACCOUNT,
     agentId: AGENT,
     agentRevision: 4,
+    agentAccessGeneration: 1,
     sessionId: SESSION,
     computerId: COMPUTER,
     instanceId: INSTANCE,
@@ -231,7 +239,7 @@ describe("Session fence violations", () => {
     ["placement_stale", "execution_closed"],
     ["agent_mismatch", "execution_closed"],
     ["agent_inactive", "execution_closed"],
-    ["agent_revision_changed", "execution_closed"],
+    ["agent_access_changed", "execution_closed"],
     ["sandbox_mismatch", "execution_closed"],
   ] as const)("maps %s to %s", async (violation, expected) => {
     const harness = createHarness();

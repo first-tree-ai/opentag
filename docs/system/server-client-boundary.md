@@ -70,7 +70,7 @@ stop, `unknown / turn_state_unknown` (`may_have_occurred`) when found starting
 or running after a restart, `failed / provider_start_failed` (`not_started`)
 when it never reached the Provider, and `failed / turn_timeout` for a timeout;
 the Server shows the person an [error card](messaging/im-feedback.md). A Session
-message ends `failed` and an internal Session's creator gets a
+message ends `failed` and its sender gets a
 [Run outcome notice](messaging/internal-session-collaboration.md#run-outcome-notices).
 
 ### Delivery of completed Turn reports
@@ -114,8 +114,8 @@ Run time is recorded durably about once a minute while a Run works, so a crash
 loses at most that much of it.
 
 A failure that is not retried, and running out of retries, are reported as
-before: an IM Turn gets its terminal report and error card, an internal Session's
-creator gets its [Run outcome notice](messaging/internal-session-collaboration.md#run-outcome-notices).
+before: an IM Turn gets its terminal report and error card, a Session message's
+sender gets its [Run outcome notice](messaging/internal-session-collaboration.md#run-outcome-notices).
 While a retry is pending or running nothing is reported, so the Server shows no
 error card and sends no notice for it.
 
@@ -175,8 +175,8 @@ are acceptable: the Provider may or may not have persisted the interrupted turn.
   when the reconcile does not arrive. A refused reconcile, a refused request
   (for example the Session ended), a missing capability, or running out of
   attempts falls back: the IM Turn gets its `unknown / turn_state_unknown`
-  recovery report and waiting Session messages fail (with a creator notice
-  when the target is an internal Session).
+  recovery report and waiting Session messages fail, each with a notice to its
+  sender.
 - Session messages waiting for that preparation are not failures. Once the
   Turn is resumed they are steered into it in order; see
   [Session messages steered into an IM Turn](messaging/internal-session-collaboration.md#session-messages-steered-into-an-im-turn).

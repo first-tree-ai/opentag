@@ -1850,7 +1850,7 @@ describe("SessionMessageInbox", () => {
     },
   );
 
-  it("queues a second message behind the Session's running Session-message Run instead of steering it", async () => {
+  it("steers a second message into the Session's running Session-message Run instead of queueing it behind", async () => {
     const targetSessionId = randomUUID();
     const agentId = randomUUID();
     const state: { phase: string; activeRunId?: string } = { phase: "idle" };
@@ -1859,7 +1859,9 @@ describe("SessionMessageInbox", () => {
     const firstRunning = new Promise<void>((resolve) => {
       finishFirst = resolve;
     });
-    const steer = vi.fn();
+    const steer = vi.fn(async (_request: { expectedRunId: string; input: { items: readonly { text: string }[] } }) => ({
+      outcome: firstRunning.then(() => "processed" as const),
+    }));
     const runtime = {
       capabilities: { steer: "supported" },
       state,
@@ -1890,15 +1892,18 @@ describe("SessionMessageInbox", () => {
     });
     expect((await inbox.accept(delivery({ targetSessionId, agentId, text: "first" }))).status).toBe("accepted");
     await vi.waitFor(() => expect(state.activeRunId).toMatch(/^session-message-/));
-    expect((await inbox.accept(delivery({ targetSessionId, agentId, text: "second" }))).status).toBe("accepted");
-    // The per-Session drain awaits the running Session-message Run, so the next message is never steered into it.
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(steer).not.toHaveBeenCalled();
-    expect(prompts).toEqual(["first"]);
+    const second = delivery({ targetSessionId, agentId, text: "second" });
+    expect((await inbox.accept(second)).status).toBe("accepted");
+    await vi.waitFor(() => expect(steer).toHaveBeenCalledOnce());
+    expect(steer.mock.calls[0]?.[0].expectedRunId).toBe(state.activeRunId);
+    expect(steer.mock.calls[0]?.[0].input.items.at(-1)?.text).toBe("second");
+    await vi.waitFor(() => expect(inbox.getState(second.messageId)?.joinedRunId).toBe(state.activeRunId));
+    expect(inbox.getState(second.messageId)?.status).toBe("running");
     finishFirst();
-    await vi.waitFor(() => expect(prompts).toEqual(["first", "second"]));
     await inbox.settled();
-    expect(steer).not.toHaveBeenCalled();
+    // It finished inside the first Run: no second Run was started for it.
+    expect(prompts).toEqual(["first"]);
+    expect(inbox.getState(second.messageId)?.status).toBe("succeeded");
     inbox.stop();
   });
 

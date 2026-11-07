@@ -31,7 +31,7 @@ describe("SessionCollaborationService", () => {
       };
     }
 
-    it("sends a deterministic child-to-creator notice under the reporting connection's authority", async () => {
+    it("sends a deterministic notice to the recipient under the reporting connection's authority", async () => {
       const fixture = serviceFixture();
       const input = noticeInput(fixture);
 
@@ -60,7 +60,7 @@ describe("SessionCollaborationService", () => {
       expect(replayed).toEqual(recorded);
     });
 
-    it("ignores a report the Server cannot attribute to an active internal child", async () => {
+    it("ignores a report the Server cannot attribute to a recipient", async () => {
       const fixture = serviceFixture();
       fixture.sessions.resolveRunOutcomeNotice.mockResolvedValue(undefined);
 
@@ -609,7 +609,7 @@ function serviceFixture(
     recordMessageOutcome: vi.fn().mockResolvedValue(true),
     resolveRunOutcomeNotice: vi
       .fn()
-      .mockResolvedValue({ creatorSessionId: targetSessionId, installationId: targetInstallationId }),
+      .mockResolvedValue({ recipientSessionId: targetSessionId, installationId: targetInstallationId }),
     withCollaborationDispatchAdmission: vi.fn(),
   };
   const domain = {

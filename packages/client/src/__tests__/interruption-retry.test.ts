@@ -9,6 +9,7 @@ import {
   type SessionRecoverRequest,
 } from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AgentRuntimeError } from "../agent-runtime/errors.js";
 import type { AgentRunResult } from "../agent-runtime/types.js";
 import { AdmissionController } from "../runtime/admission-controller.js";
 import { AgentTurnRunner, buildRetryAgentInput } from "../runtime/agent-turn-runner.js";
@@ -920,6 +921,43 @@ describe("InterruptedWorkRecovery resume refusal", () => {
     expect(f.recovery.isPendingRetry(request.sessionId, "turn-1")).toBe(false);
     expect(f.inbox.failAwaitingPreparation).not.toHaveBeenCalled();
     f.recovery.stop();
+  });
+});
+
+describe("AgentTurnRunner steer refused after the Turn's result", () => {
+  it.each([
+    [
+      "the runtime refused it",
+      new AgentRuntimeError("run_mismatch", "Claude Code settled before steer was accepted"),
+      "turn_not_running",
+    ],
+    [
+      "a provider write failed",
+      new AgentRuntimeError("run_mismatch", "Claude Code did not accept the steer input", {
+        cause: new Error("EPIPE"),
+      }),
+      "steer_state_unknown",
+    ],
+  ])("when %s, the answer tells the Server what became of it", async (_label, error, reason) => {
+    const h = runnerHarness();
+    h.runtime.steer.mockRejectedValueOnce(error);
+    let finish: () => void = () => undefined;
+    h.prompt.mockImplementation(
+      () =>
+        new Promise<AgentRunResult>((resolve) => {
+          finish = () => resolve({ runId: "turn-1", status: "completed", output: [] });
+          h.emit({ type: "run_started", runId: "turn-1" } as never);
+        }),
+    );
+    h.runner.start(owner(h.request));
+    await vi.waitFor(() =>
+      expect(h.updateUnresolved).toHaveBeenCalledWith(expect.anything(), expect.anything(), "turn-1", "running"),
+    );
+    const steer = steerRequest(h.request, "more");
+    await expect(h.runner.steer(steer)).resolves.toMatchObject({ status: "deferred", reason });
+    expect(h.retries.removeSteer).toHaveBeenCalledWith(steer);
+    finish();
+    await h.runner.settled();
   });
 });
 

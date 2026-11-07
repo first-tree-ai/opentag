@@ -20,7 +20,7 @@ import {
   type TurnReportHashInput,
   type TurnReportRequest,
 } from "@opentag/shared";
-import { AgentProviderError } from "../agent-runtime/errors.js";
+import { AgentProviderError, AgentRuntimeError } from "../agent-runtime/errors.js";
 import type {
   AgentInput,
   AgentRunConfiguration,
@@ -353,8 +353,11 @@ export class AgentTurnRunner {
         input: buildAgentInput(request, undefined, turn.owner.request.runtime, new Date(this.#now())),
       });
       await this.#bindingStore.recordSteer(request, semanticHash);
-    } catch {
+    } catch (error) {
       await this.#retries.removeSteer(request).catch(() => undefined);
+      // The Turn already ended and nothing reached the provider, so the Server delivers it after this Turn.
+      // Only a failure that may have reached the provider is unknown; that one fails with the Turn.
+      if (steerNeverStarted(error)) return steerResult(request, "deferred", "turn_not_running");
       return steerResult(request, "deferred", "steer_state_unknown");
     }
     return steerResult(request, "steered");
@@ -1171,6 +1174,11 @@ const NO_TURN_RETRIES: NonNullable<AgentTurnRunnerOptions["retries"]> = {
   removeSteer: async () => undefined,
   update: async () => undefined,
 };
+
+/** The runtime refused the steer itself. A wrapped cause means a provider write failed, which may have landed. */
+function steerNeverStarted(error: unknown): boolean {
+  return error instanceof AgentRuntimeError && error.code === "run_mismatch" && error.cause === undefined;
+}
 
 function withRunTime(record: TurnRetryRecord, ranMs: number): TurnRetryRecord & { retryRanMs: number } {
   return { ...record, ranMs: (record.ranMs ?? 0) + ranMs, retryRanMs: (record.retryRanMs ?? 0) + ranMs };

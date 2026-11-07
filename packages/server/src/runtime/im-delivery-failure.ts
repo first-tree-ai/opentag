@@ -546,6 +546,12 @@ export async function settleLostReportOrDefer(
   await deferRecoveryRetry(deps, attempt, attemptCount, code);
 }
 
+/** PostgreSQL `lock_not_available`, from a `NOWAIT` lock, at the error or wrapped as its cause. */
+function isLockBusy(error: unknown): boolean {
+  const code = (candidate: unknown) => (candidate as { code?: unknown } | undefined)?.code;
+  return code(error) === "55P03" || code((error as { cause?: unknown } | undefined)?.cause) === "55P03";
+}
+
 export async function settleUnreportableTurn(
   deps: Pick<DeliveryFailureDeps, "custody" | "onDiagnostic">,
   row: {
@@ -566,19 +572,25 @@ export async function settleUnreportableTurn(
     placementGeneration: row.placement.generation,
   });
   if (!report) return false;
-  const status = await deps.custody.recordTurn(
-    report,
-    {
-      computerId: row.computer.id,
-      installationId: row.computer.currentInstallationId,
-      instanceId: ownerInstanceId,
-      signal: new AbortController().signal,
-    },
-    {
-      ...(options.requireAbsentAuthority ? { requireAbsentAuthority: true } : {}),
-      ...(options.requireCurrentInstance ? { requireCurrentInstance: options.requireCurrentInstance } : {}),
-    },
-  );
+  const status = await deps.custody
+    .recordTurn(
+      report,
+      {
+        computerId: row.computer.id,
+        installationId: row.computer.currentInstallationId,
+        instanceId: ownerInstanceId,
+        signal: new AbortController().signal,
+      },
+      {
+        ...(options.requireAbsentAuthority ? { requireAbsentAuthority: true } : {}),
+        ...(options.requireCurrentInstance ? { requireCurrentInstance: options.requireCurrentInstance } : {}),
+      },
+    )
+    .catch((error: unknown) => {
+      // Another transaction holds the Computer, such as a registration or a rebind: the next retry decides.
+      if (options.requireCurrentInstance && isLockBusy(error)) return undefined;
+      throw error;
+    });
   if (status !== "recorded" && status !== "already_recorded") return false;
   deps.onDiagnostic("IM_DELIVERY_TURN_STATE_UNKNOWN", {
     phase: options.phase ?? "recover",

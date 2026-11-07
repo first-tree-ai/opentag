@@ -132,7 +132,8 @@ export interface RecordTurnOptions {
   requireAbsentAuthority?: boolean;
   /**
    * Maintenance only: the instance whose answer justified a synthetic report. The write holds the Computer
-   * `FOR SHARE` and needs this instance still current, so an owner that re-registered keeps its own report.
+   * `FOR SHARE NOWAIT` and needs this instance still current, so an owner that re-registered keeps its own
+   * report. If the Computer is busy, the call rejects with PostgreSQL `55P03` and nothing is written.
    */
   requireCurrentInstance?: string;
 }
@@ -1093,7 +1094,9 @@ async function syntheticAuthorityHolds(
     .select({ currentInstanceId: computers.currentInstanceId })
     .from(computers)
     .where(eq(computers.id, scope.workspaceComputer.id))
-    .for("share");
+    // Never waits while holding the placement: a rebind takes the Computer first, then the placement. A
+    // busy Computer rejects this transaction and the settlement is deferred; see `isLockBusy`.
+    .for("share", { noWait: true });
   return computer?.currentInstanceId === options.requireCurrentInstance;
 }
 

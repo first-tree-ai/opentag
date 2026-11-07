@@ -287,24 +287,32 @@ completion, failure, or timeout to the parent, and the parent decides what to do
 
 ## Stopping an internal Session
 
-`opentag session stop <id>` ends an internal Session without its cooperation: its running Run is cancelled, its pending
-retries are cancelled and its queued messages are withdrawn.
+`opentag session stop <id>` ends an internal Session and every Session below it, recursively, without their cooperation:
+their running Runs are cancelled, their pending retries are cancelled and their queued messages are withdrawn. Only a stop
+does this. A parent that is merely idle between Turns, or whose Run failed or finished, does not affect its children. Agent
+suspend, delete, and transfer stop every live Session of the Agent, as described in
+[Agent, Session, and Computer model](../agent-session-computer-model.md#configuration-identity).
 
 - **A stop is final.** It sets `sessions.ended_at`, and nothing clears that field, so a later `session send` is rejected
   with `target_unavailable` and no stale message can wake the Session. The Session's files stay on disk; continuing its
   work takes a new Session.
 - **Who may stop.** Only an ancestor in the target's creation chain, proved by a `session_descendants` row. Everyone
   else, including the target itself, a sibling, and a target that does not exist or is not internal, gets `not_ancestor`.
-- **Order.** The Session ends in one transaction under the same lock order as `session send`, which is what takes away
-  its authority: its proof stops authenticating, so it can no longer send or create Sessions, and no message reaches it.
-  Its execution side is told after commit. A stop that is repeated answers `alreadyStopped` and tells it again.
+- **Order.** The Session and its descendants, read from the `session_descendants` closure, end in one transaction under
+  the same lock order as `session send`, which is what takes away their authority: their proofs stop authenticating, so
+  they can no longer send or create Sessions, and no message reaches them. The Agent lock keeps the tree from growing until
+  the commit. Their execution side is told after commit. A stop that is repeated answers `alreadyStopped` and tells the whole
+  tree again, which also finishes a tree stopped before this cascade existed.
 - **What the caller learns.** `execution` says how far the stop reached: `stopped` (the Client confirmed the Run and
   queue are gone), `requested` (the Cloud Runner was sent the cancellation), `pending` (the Computer or Runner could not
   be reached, or did not answer within 15 seconds, which stays below the CLI's 30-second request timeout) or `not_interrupted` (a Client older than this behavior answered `busy`, so its Run continues without
-  Session authority until it ends). `activeDescendantCount` says how many descendants keep running.
-- **Notice.** A creator that called `session stop` has its answer and is not woken. When another ancestor stopped the
-  child, the creator gets one SessionMessage from that ancestor, starting with the Run outcome notice header and saying
-  the child cannot be continued. Its ID is a Server-derived UUIDv5 over the child, so repeats converge. It is recorded before
+  Session authority until it ends). `execution` covers the whole tree and reports the Session reached least. `stoppedDescendantCount` says how many
+  descendants this stop ended.
+- **Notice.** A stop produces at most one notice, for the whole tree, to the target's creator. Every other creator in the
+  tree has ended too, so it cannot be told and nothing is sent to it; their aborted Runs report no outcome either. A creator
+  that called `session stop` has its answer and is not woken. When another ancestor stopped the child, the creator gets one
+  SessionMessage from that ancestor, starting with the Run outcome notice header, saying the child cannot be continued and
+  how many descendants stopped with it. Its ID is a Server-derived UUIDv5 over the child, so repeats converge. It is recorded before
   the stop answers and delivered in the background; a delivery lost to a Server crash is sent again only if the stop is
   repeated. Other senders whose queued
   messages were withdrawn are not told; their next `session send` is rejected.
@@ -327,15 +335,6 @@ restart loses nothing, since this read is against the database. A Cloud Runner r
 reconnects, and the Server answers an ended Session's entries with a cancellation.
 
 There is no Web entry point yet.
-
-## Stopping a parent stops its children
-
-> **Planned — not yet implemented.** Tracking: #1304
-
-When a parent Session is stopped or cancelled for good — not merely idle between Turns — every internal Session it
-created, recursively, is stopped as well. Today `session stop` ends only its target, so nothing cascades from a parent
-Session and a stopped parent's descendants keep running. Agent suspend, delete, and transfer already stop every live Session of the Agent, internal Sessions
-included; see [Agent, Session, and Computer model](../agent-session-computer-model.md#configuration-identity).
 
 ## Automatic retry before a notice
 

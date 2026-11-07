@@ -129,8 +129,12 @@ export interface InternalSessionStopTarget {
 
 export interface StoppedInternalSession {
   target: InternalSessionStopTarget;
+  /** The target and all its descendants, including any that ended earlier, so a repeated stop reaches them too. */
+  targets: InternalSessionStopTarget[];
   alreadyStopped: boolean;
-  activeDescendantCount: number;
+  /** The target's descendants: fixed once it has ended, so what a notice says about them does not change. */
+  descendantCount: number;
+  stoppedDescendantCount: number;
 }
 
 export interface AuthorizeAndRecordSessionMessageInput {
@@ -596,22 +600,14 @@ export class SessionService {
   }
 
   /**
-   * Ends an internal Session for good, on behalf of an ancestor in its creation chain. The commit is what
-   * stops it: from here its proof no longer authenticates and no message reaches it; telling its execution
-   * side is the caller's job, after commit. A Session that already ended answers the same way, so a stop
-   * whose execution side was not reached can be repeated. Descendants keep running.
+   * Ends an internal Session and every Session below it for good, on behalf of an ancestor in its creation
+   * chain. The commit is what stops them: from here their proofs no longer authenticate and no message reaches
+   * them; telling their execution side is the caller's job, after commit. A Session that already ended answers
+   * the same way, so a stop whose execution side was not reached can be repeated.
    */
   async stopInternalSession(input: StopInternalSessionInput): Promise<StoppedInternalSession> {
     return this.#database.transaction(async (transaction) => {
       const agent = await this.#lockSourceAgent(transaction, input.sourceSessionId);
-      const authority = await this.#lockCollaborationAuthority(transaction, agent, input.targetSessionId);
-      this.#activeSource(authority, {
-        sessionId: input.sourceSessionId,
-        installationId: input.sourceInstallationId,
-        connectionInstanceId: input.sourceConnectionInstanceId,
-        computerId: input.sourceComputerId,
-        placementGeneration: input.sourcePlacementGeneration,
-      });
       const [link] = await transaction
         .select({ depth: sessionDescendants.depth })
         .from(sessionDescendants)
@@ -625,28 +621,39 @@ export class SessionService {
       if (!link) {
         throw new SessionServiceError("SESSION_STOP_NOT_ANCESTOR", "Only an ancestor can stop an internal Session");
       }
-      const alreadyStopped = !authority.sessions.some((session) => session.id === input.targetSessionId);
-      if (!alreadyStopped) {
+      // Creating a Session takes the Agent lock held here, so this tree cannot grow until the commit, and
+      // after it every Session in the tree has lost the authority to create one.
+      const descendants = await transaction
+        .select({ id: sessionDescendants.descendantSessionId })
+        .from(sessionDescendants)
+        .where(eq(sessionDescendants.ancestorSessionId, input.targetSessionId));
+      const treeIds = [input.targetSessionId, ...descendants.map(({ id }) => id)];
+      const authority = await this.#lockCollaborationAuthority(transaction, agent, treeIds);
+      this.#activeSource(authority, {
+        sessionId: input.sourceSessionId,
+        installationId: input.sourceInstallationId,
+        connectionInstanceId: input.sourceConnectionInstanceId,
+        computerId: input.sourceComputerId,
+        placementGeneration: input.sourcePlacementGeneration,
+      });
+      const liveIds = authority.sessions.map(({ id }) => id).filter((id) => treeIds.includes(id));
+      if (liveIds.length > 0) {
         await transaction
           .update(sessions)
           .set({ endedAt: this.#now(), revision: sql`${sessions.revision} + 1` })
-          .where(and(eq(sessions.id, input.targetSessionId), isNull(sessions.endedAt)));
-        await markEndedDescendantsInactive(transaction, { sessionIds: [input.targetSessionId] });
+          .where(and(inArray(sessions.id, liveIds), isNull(sessions.endedAt)));
+        await markEndedDescendantsInactive(transaction, { sessionIds: liveIds });
       }
-      const [target] = await this.#internalStopTargets(transaction, eq(sessions.id, input.targetSessionId));
+      const targets = await this.#internalStopTargets(transaction, inArray(sessions.id, treeIds), treeIds.length);
+      const target = targets.find(({ sessionId }) => sessionId === input.targetSessionId);
       if (!target) throw new SessionServiceError("SESSION_TARGET_UNAVAILABLE", "The target Session is not available");
-      const [descendants] = await transaction
-        .select({ count: sql<number>`count(*)::int` })
-        .from(sessionDescendants)
-        .innerJoin(sessions, eq(sessions.id, sessionDescendants.descendantSessionId))
-        .where(
-          and(
-            eq(sessionDescendants.ancestorSessionId, input.targetSessionId),
-            eq(sessionDescendants.descendantActive, true),
-            isNull(sessions.endedAt),
-          ),
-        );
-      return { target, alreadyStopped, activeDescendantCount: descendants?.count ?? 0 };
+      return {
+        target,
+        targets,
+        alreadyStopped: !liveIds.includes(input.targetSessionId),
+        descendantCount: descendants.length,
+        stoppedDescendantCount: liveIds.filter((id) => id !== input.targetSessionId).length,
+      };
     });
   }
 
@@ -1402,8 +1409,9 @@ export class SessionService {
   async #lockCollaborationAuthority(
     transaction: DatabaseTransaction,
     source: SourceAgentAuthority,
-    targetSessionId?: string,
+    target?: string | readonly string[],
   ): Promise<LockedCollaborationAuthority> {
+    const targetSessionIds = target === undefined ? [] : typeof target === "string" ? [target] : target;
     const [binding] = await transaction
       .select({ id: imBindings.id })
       .from(imBindings)
@@ -1424,9 +1432,9 @@ export class SessionService {
           isNull(sessions.endedAt),
           or(
             eq(sessions.id, source.session.id),
-            targetSessionId
+            targetSessionIds.length > 0
               ? and(
-                  eq(sessions.id, targetSessionId),
+                  inArray(sessions.id, [...targetSessionIds]),
                   eq(sessions.imBindingId, source.session.imBindingId),
                   eq(sessions.channelId, source.session.channelId),
                   eq(sessions.conversationKind, source.session.conversationKind),

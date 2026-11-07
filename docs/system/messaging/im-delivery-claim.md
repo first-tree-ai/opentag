@@ -27,9 +27,7 @@ Custody is loaded fresh for each scan and grouped in memory by Agent and Session
 for custody in its own Session, so different Sessions of one Agent run concurrently, and a Local and a
 Cloud delivery of one Agent still fence each other. A Local Client bounds concurrency itself, at 10
 Sessions per Agent and 99 in total. Input it refuses at those limits stays pending and is tried again
-until it expires; a steered message takes no slot. An Agent configuration change still waits for the
-Agent's running Sessions, so a new Session answers `agent_configuration_busy` and retries until they end.
-These snapshots can postpone eligibility, but cannot authorize a dispatch.
+until it expires; a steered message takes no slot. These snapshots can postpone eligibility, but cannot authorize a dispatch.
 
 For each selected candidate, a short transaction tries the Agent advisory lock with
 `pg_try_advisory_xact_lock`. A busy Agent is skipped without taking its delivery lock or changing

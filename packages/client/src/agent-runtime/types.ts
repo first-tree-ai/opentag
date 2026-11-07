@@ -151,6 +151,8 @@ export interface AgentRunResult {
   readonly binding?: AgentRuntimeBinding;
   readonly error?: AgentRunError;
   readonly providerDiagnostics?: JsonValue;
+  /** Background work the Provider process may still have had when the Run ended; if so, it stopped with it. */
+  readonly abandonedBackgroundWork?: readonly string[];
 }
 
 export interface AgentRuntimeWorkspace {
@@ -315,6 +317,7 @@ export interface AgentProviderRunResult {
   readonly usage?: AgentUsage;
   readonly error?: AgentRunError;
   readonly diagnostics?: JsonValue;
+  readonly abandonedBackgroundWork?: readonly string[];
 }
 
 export interface AgentProviderRunContext {

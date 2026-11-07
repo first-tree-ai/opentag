@@ -4953,6 +4953,7 @@ describe("IM binding persistence", () => {
     "rejects a schema-valid %s payload mutation that no longer matches custody hashes",
     async (state) => {
       const value = await fixture();
+      let runtime: Awaited<ReturnType<typeof respondingRuntime>> | undefined;
       try {
         const instanceId = crypto.randomUUID();
         await value.database
@@ -4961,7 +4962,7 @@ describe("IM binding persistence", () => {
           .where(eq(computers.id, value.computer.id));
         await new ImMessageInbox(value.database).ingest(value.imBindingId, 1, inbound(`Ev-payload-hash-${state}`));
         const dispatched = deferred<DirectImMessageDeliveryRequest>();
-        const runtime = await respondingRuntime({
+        runtime = await respondingRuntime({
           acceptDeliveries: state === "accepted",
           database: value.database,
           computerId: value.computer.id,
@@ -4979,7 +4980,7 @@ describe("IM binding persistence", () => {
         });
         const run = worker.runOnce();
         await dispatched.promise;
-        if (state === "pending") runtime.domain.close();
+        if (state === "pending") await runtime.domain.close();
         await run;
         const [stored] = await value.database.select().from(imMessageDeliveries);
         if (stored?.dispatchPayload?.type !== "im:deliver") {
@@ -5003,9 +5004,12 @@ describe("IM binding persistence", () => {
             state === "accepted" ? "IM_DELIVERY_RECOVERY_PAYLOAD_INVALID" : "IM_DELIVERY_DISPATCH_PAYLOAD_INVALID",
           state,
         });
-        runtime.domain.close();
       } finally {
-        await value.sql.end();
+        try {
+          await runtime?.domain.close();
+        } finally {
+          await value.sql.end();
+        }
       }
     },
   );

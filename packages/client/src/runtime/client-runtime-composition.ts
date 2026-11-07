@@ -962,6 +962,7 @@ export async function createClientRuntime(
     sessionMessages: {
       input: sessionMessageInbox.joinedRunInput.bind(sessionMessageInbox),
       settle: sessionMessageInbox.settleJoined.bind(sessionMessageInbox),
+      inConversation: sessionMessageInbox.inConversation.bind(sessionMessageInbox),
     },
   });
   interruptedWork = new InterruptedWorkRecovery({

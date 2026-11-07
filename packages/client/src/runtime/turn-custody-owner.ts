@@ -33,7 +33,11 @@ export interface TurnCustodyOwnerOptions {
   onRetryInputUnavailable?(request: DirectImMessageDeliveryRequest, turnId: string): void;
   start?(
     owner: LiveTurnOwner,
-    options?: { continuation?: Interruption; steers?: readonly RuntimeImSteerRequest[] },
+    options?: {
+      continuation?: Interruption;
+      steers?: readonly RuntimeImSteerRequest[];
+      steerConversations?: Readonly<Record<string, string>>;
+    },
   ): Promise<void> | void;
   steer?(request: RuntimeImSteerRequest): Promise<RuntimeImSteerResult>;
 }
@@ -231,7 +235,11 @@ export class TurnCustodyOwner {
   resume(
     request: DirectImMessageDeliveryRequest,
     turnId: string,
-    options: { continuation: Interruption; steers?: readonly RuntimeImSteerRequest[] },
+    options: {
+      continuation: Interruption;
+      steers?: readonly RuntimeImSteerRequest[];
+      steerConversations?: Readonly<Record<string, string>>;
+    },
   ): boolean {
     if (this.#turns.has(turnId) || this.#deliveries.has(request.deliveryId)) return false;
     const admission = this.admission.reserve(request.sessionId, request.agentId, { acceptedWork: true });

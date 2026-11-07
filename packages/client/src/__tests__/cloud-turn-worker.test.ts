@@ -195,6 +195,47 @@ it("reports the original get_state abort and the Turn deadline through the Cloud
   expect(diagnostics.at(-1)).toMatchObject({ phase: "cleanup", event: "end" });
 });
 
+it("compacts a Channel Session on the first Turn after 8 idle hours in the continuity directory", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cloud-worker-idle-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  const start = Date.parse("2026-11-07T00:00:00.000Z");
+  const runAt = async (name: string, at: number, kind: "channel" | "thread" = "channel") => {
+    const request = turnRequest(await fixtureExecution(root, name));
+    request.delivery.sessionId = "channel-session";
+    request.delivery.deadlineAt = new Date(at + 60_000).toISOString();
+    // A thread reference on the message does not decide this: only the Session's own outbox does.
+    request.delivery.content.providerRef = {
+      ...request.delivery.content.providerRef,
+      threadId: "omt_1",
+    } as typeof request.delivery.content.providerRef;
+    request.outboxContext =
+      kind === "channel"
+        ? { provider: "feishu", sessionKind: "channel", chatId: "chat" }
+        : { provider: "feishu", sessionKind: "thread", chatId: "chat", threadId: "omt_1" };
+    const seen: AgentPromptRequest[] = [];
+    const runtime = {
+      close: async () => undefined,
+      prompt: async (input: AgentPromptRequest) => {
+        seen.push(input);
+        return { runId: input.runId, output: [], status: "completed" as const };
+      },
+    };
+    await runCloudTurnWorker(request, {
+      executionMount: join(root, "mount"),
+      localProxyLoopbackSeam: true,
+      workspace: join(root, "workspace"),
+      now: () => at,
+      createPiFactory: () => ({ create: async () => runtime, resume: async () => runtime }),
+    });
+    return seen[0]?.compactContext;
+  };
+  const hours = (count: number) => count * 60 * 60 * 1000;
+  await expect(runAt("first", start)).resolves.toBeUndefined();
+  await expect(runAt("at-threshold", start + hours(8))).resolves.toBeUndefined();
+  await expect(runAt("over-threshold", start + hours(16) + 1)).resolves.toBe(true);
+  await expect(runAt("thread", start + hours(40), "thread")).resolves.toBeUndefined();
+});
+
 it("captures a prompt rejection before runtime execution converts it to a completion", async () => {
   const root = await mkdtemp(join(tmpdir(), "cloud-worker-prompt-rejected-"));
   cleanup.push(() => rm(root, { recursive: true, force: true }));

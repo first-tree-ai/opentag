@@ -246,8 +246,8 @@ fully silent. The term resets on its own: registration and every heartbeat rewri
 so the first failure after a reconnect is scheduled at the 2-second floor again.
 
 A reconnect also makes parked retries due immediately. Registration advances `next_attempt_at` for
-that Computer's pending and accepted deliveries, but only for rows parked more than one minute into
-the future. A client that reconnects in a loop therefore cannot turn the backoff into a hot retry,
+that Computer's pending and accepted deliveries, and its expired deliveries that still hold a dispatch
+(they still fence the Agent), but only for rows parked more than one minute into the future. A client that reconnects in a loop therefore cannot turn the backoff into a hot retry,
 because a row that is already due soon is left alone.
 
 Two terminal outcomes bound the paths, and neither needs a schema change:

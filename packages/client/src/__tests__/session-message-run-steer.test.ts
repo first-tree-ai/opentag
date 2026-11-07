@@ -419,7 +419,7 @@ describe("a message accepted while the drain is running", () => {
     const { message } = conversation();
     await expect(inbox.accept(message("lost"))).resolves.toMatchObject({
       status: "rejected",
-      reason: "provider_unavailable",
+      reason: "client_busy",
     });
     expect(inbox.queuedCount).toBe(0);
     expect(inbox.pendingCount).toBe(0);

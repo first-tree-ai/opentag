@@ -29,7 +29,7 @@ export function sessionStoppedNoticeMessageId(childSessionId: string): string {
  * Told to the creator when someone else stopped its child. It keeps the outcome notice header the creator
  * already recognizes, but unlike a failed Run the child has ended, so it cannot be continued.
  */
-export function renderSessionStoppedNotice(childSessionId: string): string {
+export function renderSessionStoppedNotice(childSessionId: string, descendantCount: number): string {
   return [
     SESSION_RUN_OUTCOME_NOTICE_HEADER,
     `Session: ${childSessionId}`,
@@ -37,6 +37,7 @@ export function renderSessionStoppedNotice(childSessionId: string): string {
     "",
     "The internal Session you created was stopped by the Session that sent this notice.",
     "Its running Run was cancelled and its queued messages were withdrawn; work it did before stopping may be partial.",
+    ...(descendantCount > 0 ? [`The ${descendantCount} descendant Session(s) below it were stopped with it.`] : []),
     "This notice was written by openTag, not by the child Session.",
     "The child Session has ended and cannot receive messages. To continue its work, create a new Session.",
     "Decide what to do next; tell the user only what is useful.",

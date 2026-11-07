@@ -36,7 +36,7 @@ Provider-specific configuration, binding, and protocol validation.
   (it may have begun, but the Run did not complete). Claude Code writes steer input to stdin, where the process can
   still exit before `command_lifecycle` reports it started, so it reports that start. Codex and Pi acknowledge steer
   over RPC without a per-input start signal; their input counts as possibly started. If the Run settles while the
-  Provider is accepting steer, only a Provider that reports the input never started may reject it (`run_mismatch`)
+  Provider is accepting steer, only a Provider that reports the input never started may reject it (`steer_not_sent`)
   for redelivery; otherwise the receipt reports the settled Run, so the caller never replays owned input.
 - The Base Runtime serializes and awaits event delivery before settling a Run.
 - Provider terminal ingress may be claimed before queued translation finishes;
@@ -185,6 +185,26 @@ prompt, native configuration, model, or compaction can change it. The
 [Agent usage accounting](../agent-usage.md) provider rules define reported totals; they are not
 an invoice or a measurement of unique context. Cloud billing uses the model-call ledger rather
 than the Runner's Turn report.
+
+### Idle compaction
+
+`AgentPromptRequest.compactContext` asks a Provider to compact the existing native conversation before the Run's
+input. [Channel Sessions](../messaging/thread-sessions.md#channel-session-idle-compaction) set it on the first Turn after
+8 idle hours. A conversation with no history compacts nothing. Compaction has no budget of its own: its time counts
+against the Turn's deadline, so a slow compaction on a Turn near its deadline can time that Turn out before its input
+runs. An interrupt during compaction aborts the Run. Any other failure emits a `provider_warning` and the Run continues.
+Cancelling Codex's request does not stop a compaction Turn that is still starting, so an abort keeps ownership until that
+Turn ends. If it cannot be stopped within 5 seconds, the runtime closes and the next Run starts a new App Server.
+
+| Provider | Mechanism | Native identity | Usage in the Turn report |
+| --- | --- | --- | --- |
+| Claude Code | A separate `--resume` process receives the native `/compact` command; a `compact_boundary` message confirms it. The Run's own process then resumes from that boundary. Steer input waits for that process. | Same Session ID | Not included: `/compact` reports zero `usage`, and its `modelUsage` is cumulative for the Session |
+| Codex | `thread/compact/start` on the prepared App Server, after any execution-service rebind. It answers at once and compacts in its own native Turn, which must complete first because `turn/start` is refused until then. Its notifications do not reach the Run. | Same thread ID | Not included: the compaction Turn reports no token totals |
+| Pi | The `compact` RPC in the Run's process, before `prompt`. Pi's `compaction_start` and `compaction_end` events are handled as for threshold compaction, and a failed compaction warns through `compaction_end`. A Session too small to summarize, or already compacted, is skipped without a warning. | Same Session file | Included, from `compaction_end` |
+
+Cloud runs Pi and keeps the activity time in its continuity directory, inside the archived workspace, so it survives an
+idle reclaim with the Pi history. The Runner
+passes the execution's outbox context to the worker in its stdin document.
 
 ## Provider and Product Support
 

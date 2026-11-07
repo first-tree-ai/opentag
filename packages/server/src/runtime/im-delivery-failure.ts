@@ -12,6 +12,7 @@ import { ImDeliveryInputError, rejectInvalidImDelivery } from "./im-delivery-con
 import { isCloudReadinessRetry } from "./im-delivery-ready-wakeup.js";
 import { lockSteeredRecoverySessions, type SessionEnsurer } from "./im-delivery-recovery.js";
 import {
+  acceptedReportClosed,
   acceptedReportDeadlineMs,
   canonicalFailureCode,
   cappedRetryDelayMs,
@@ -20,6 +21,7 @@ import {
   operationTimeoutCode,
   operationTimeoutExhausted,
   operationTimeoutStreak,
+  recoveryRetryCode,
 } from "./im-delivery-retry.js";
 import type {
   DeliveryAttempt,
@@ -28,7 +30,7 @@ import type {
   RuntimeDeliveryWorkerMetric,
 } from "./im-delivery-worker.types.js";
 import { type PostgresRuntimeCustodyStore, writeTerminalReport } from "./runtime-custody-store.js";
-import { RuntimeDispatchDeferredError } from "./runtime-domain-owner.js";
+import { RuntimeDispatchDeferredError, type RuntimeReconcileResult } from "./runtime-domain-owner.js";
 
 /**
  * Every transition that gives up on a claimed delivery attempt, in one place: backoff, dispatch
@@ -517,6 +519,30 @@ export interface UnreportableTurnSettlement {
  * placement generation is refused by that fence and settles through `settleSupersededPlacement`
  * instead, and a rollover that already carries a retained `result_hash` is refused by both.
  */
+/**
+ * The answer to a recovery reconcile. It is where a reconnecting Client claims a retained report, so a
+ * different instance that answers with no claim, past the report window, has lost the report (a reset home,
+ * for example). Nothing else ends this custody while the Computer stays online, and it fences the Agent.
+ * Every other answer keeps custody until the actual report settles it.
+ */
+export async function settleLostReportOrDefer(
+  deps: DeliveryFailureDeps,
+  row: Parameters<typeof settleUnreportableTurn>[1],
+  attempt: DeliveryAttempt,
+  attemptCount: number,
+  result: RuntimeReconcileResult,
+  instanceId: string,
+  nowMs: number,
+): Promise<void> {
+  const code = recoveryRetryCode(result, row.delivery);
+  const lost =
+    code === "IM_DELIVERY_RECOVERY_AWAITING_REPORT" &&
+    row.delivery.reportOwnerInstanceId !== instanceId &&
+    acceptedReportClosed(row.delivery.acceptedAt, nowMs);
+  if (lost && (await settleUnreportableTurn(deps, row))) return;
+  await deferRecoveryRetry(deps, attempt, attemptCount, code);
+}
+
 export async function settleUnreportableTurn(
   deps: Pick<DeliveryFailureDeps, "custody" | "onDiagnostic">,
   row: {

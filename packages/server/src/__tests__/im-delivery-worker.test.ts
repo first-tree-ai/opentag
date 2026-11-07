@@ -35,6 +35,7 @@ import { ImDeliveryInputError, validateFreshImRequest } from "../runtime/im-deli
 import { fitDeliveryFrame } from "../runtime/im-delivery-custody.js";
 import { recordDeliveryFailure } from "../runtime/im-delivery-failure.js";
 import { runImDeliverySteerRecovery } from "../runtime/im-delivery-janitor.js";
+import { ACCEPTED_REPORT_WINDOW_MS } from "../runtime/im-delivery-retry.js";
 import { ImDeliveryWorker } from "../runtime/im-delivery-worker.js";
 import { KeyedTaskScheduler } from "../runtime/keyed-task-scheduler.js";
 import { PostgresRuntimeCustodyStore } from "../runtime/runtime-custody-store.js";
@@ -1000,6 +1001,48 @@ describe("ImDeliveryWorker database workflow", () => {
       }
       if (scenario.endsWith("tampered"))
         expect(diagnosticCodes(diagnostic)).toContain("IM_DELIVERY_RECOVERY_PAYLOAD_INVALID");
+    },
+  );
+
+  it.each([
+    ["another instance past the report window", "other", true, "ready", true],
+    ["another instance answering stopped", "other", true, "stopped", true],
+    ["the same instance past the report window", "same", true, "ready", false],
+    ["another instance inside the report window", "other", false, "ready", false],
+    ["another instance still running the Turn", "other", true, "running", false],
+  ] as const)(
+    "settles accepted custody that lost its report only for %s",
+    async (_label, owner, closed, status, settled) => {
+      const fixture = await workerFixture(unit);
+      const clock = Date.now();
+      await unit.database
+        .update(imMessageDeliveries)
+        .set({
+          state: "accepted",
+          inputHash: "frozen-hash",
+          turnId: "original-turn",
+          reportOwnerInstanceId: owner === "same" ? fixture.instanceId : randomUUID(),
+          acceptedAt: new Date(closed ? clock - ACCEPTED_REPORT_WINDOW_MS - 1_000 : clock),
+          nextAttemptAt: new Date(clock - 1),
+        })
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      const domain = fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture, { reconcileStatus: status });
+      const worker = new ImDeliveryWorker({
+        database: unit.database,
+        domain: domain as never,
+        assembler: { assembleForSession: vi.fn() },
+        registry: fixture.registry,
+        now: () => new Date(clock),
+      });
+      await worker.runOnce();
+      const [row] = await unit.database
+        .select()
+        .from(imMessageDeliveries)
+        .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+      expect(domain.requestReconcile).toHaveBeenCalledOnce();
+      expect(row?.reportedAt !== null).toBe(settled);
+      if (settled) expect(row?.turnReport).toMatchObject({ outcome: "unknown" });
+      worker.stop();
     },
   );
 

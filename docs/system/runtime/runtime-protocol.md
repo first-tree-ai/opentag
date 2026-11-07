@@ -146,6 +146,14 @@ require the expected status. Runtime test callers wait on their existing result
 TTL/cancellation promise immediately after dispatch; a delayed send callback does
 not extend that budget. Transport completion remains owned by the registry/socket.
 
+## Session configuration
+
+The optional `runtime.sessionConfiguration` capability (version 1) has no frames. A Client that offers it compares Agent
+configuration against what each Session prepared on, and keeps a recovering Turn on its pinned snapshot when another
+Session has already prepared a newer revision. Only for such a Client does the Server run Local IM Turns of one Agent
+concurrently. A Client without it compares per Agent and would abandon that recovery, so the Server keeps one Turn per
+Agent for it.
+
 ## Session recovery
 
 The optional `runtime.sessionRecovery` capability (version 1) lets a restarted Local daemon ask the Server to prepare

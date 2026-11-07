@@ -16,8 +16,9 @@ import { deliveryLaneKey, findOtherCustody } from "../runtime/im-delivery-custod
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 /**
- * The occupancy rule itself: a delivery owns only its Session, on any Computer, and a Local and a
- * Cloud delivery of one Agent still fence each other. The worker suites cover the claim and
+ * The occupancy rule itself: a delivery owns only its Session, on any Computer, a Local and a Cloud
+ * delivery of one Agent still fence each other, and a Local Client that didn't negotiate
+ * `runtime.sessionConfiguration` keeps the Agent-wide fence. The worker suites cover the claim and
  * scheduling projections of the same rule.
  */
 
@@ -85,21 +86,24 @@ describe("delivery occupancy scope", () => {
       agentId: fixture.agentId,
       sessionId: fixture.firstSessionId,
       computerKind: "local",
+      localSessionScoped: true,
     });
     expect(other?.id).toBe(occupant);
   });
 
-  it("lets different Local Sessions of one Agent own custody concurrently", async () => {
+  it("lets different Local Sessions own custody concurrently only for a Client that negotiated it", async () => {
     const fixture = await twoSessionFixture("local");
-    await createDelivery(fixture.firstSessionId, "occupied");
-    const subjectDeliveryId = await createDelivery(fixture.secondSessionId);
-    const other = await findOtherCustody(unit.database, {
-      deliveryId: subjectDeliveryId,
+    const occupant = await createDelivery(fixture.firstSessionId, "occupied");
+    const subject = {
+      deliveryId: await createDelivery(fixture.secondSessionId),
       agentId: fixture.agentId,
       sessionId: fixture.secondSessionId,
-      computerKind: "local",
-    });
-    expect(other).toBeUndefined();
+      computerKind: "local" as const,
+    };
+    expect(await findOtherCustody(unit.database, { ...subject, localSessionScoped: true })).toBeUndefined();
+    // An older Client compares configuration per Agent: it keeps the Agent-wide fence.
+    expect((await findOtherCustody(unit.database, { ...subject, localSessionScoped: false }))?.id).toBe(occupant);
+    expect((await findOtherCustody(unit.database, subject))?.id).toBe(occupant);
   });
 
   it("fences the same Local Session until its custody is reconciled", async () => {
@@ -111,6 +115,7 @@ describe("delivery occupancy scope", () => {
       agentId: fixture.agentId,
       sessionId: fixture.firstSessionId,
       computerKind: "local",
+      localSessionScoped: true,
     });
     expect(other?.id).toBe(occupant);
   });

@@ -1,6 +1,7 @@
 import {
   type DirectImMessageDeliveryRequest,
   type ProviderInboundContext,
+  RUNTIME_CAPABILITY,
   RUNTIME_IM_HISTORY_MAX_BYTES,
   RUNTIME_MAX_FRAME_BYTES,
   type RuntimeImSteerRequest,
@@ -14,6 +15,7 @@ import { alias } from "drizzle-orm/pg-core";
 import type { DatabaseClient, DatabaseTransaction } from "../db/client.js";
 import { imBindings, imMessageDeliveries, imMessages, type sessions } from "../db/schema/index.js";
 import { threadRootExternalId } from "../services/im/provider-thread-context.js";
+import type { ConnectionRegistry } from "./connection-registry.js";
 import { deliveryMessageText, ImDeliveryInputError } from "./im-delivery-content.js";
 import { DeliveryCustodySnapshot, loadDeliveryContexts, readDeliveryCustody } from "./im-delivery-work-query.js";
 import { runtimeProviderMessageRef } from "./runtime-provider-message-ref.js";
@@ -34,11 +36,25 @@ export interface ClaimLease {
 /**
  * Where a delivery waits for its turn: its Session, on any Computer. A Session runs one Turn at a time
  * and stays ordered, and different Sessions of one Agent run concurrently. A Local Client bounds how many
- * at once with its own admission limits, and the Server retries what it refuses. Custody also keeps one
- * fence across a whole Agent: a Local delivery and a Cloud delivery of one Agent never run together.
+ * at once with its own admission limits, and the Server retries what it refuses. Custody also keeps two
+ * fences across a whole Agent: a Local delivery and a Cloud delivery of one Agent never run together, and a
+ * Local Client that hasn't negotiated `runtime.sessionConfiguration` runs one Turn per Agent. Such a Client
+ * compares configuration per Agent, so a newer Session would make it abandon an older Turn's recovery.
  */
 export function deliveryLaneKey(subject: { sessionId: string }): string {
   return `session:${subject.sessionId}`;
+}
+
+/** Only a connected Client that negotiated it: a Computer with no connection can't be told apart from an older one. */
+export function localSessionScoped(
+  registry: Pick<ConnectionRegistry, "currentInstanceId" | "supportsCapability">,
+  computerId: string,
+): boolean {
+  const instanceId = registry.currentInstanceId(computerId);
+  return (
+    instanceId !== undefined &&
+    registry.supportsCapability(computerId, instanceId, RUNTIME_CAPABILITY.sessionConfiguration)
+  );
 }
 
 /** The identity a delivery needs to resolve its occupancy. */
@@ -47,6 +63,8 @@ export interface DeliveryOccupancySubject {
   agentId: string;
   sessionId: string;
   computerKind: "local" | "cloud";
+  /** The Local Client negotiated `runtime.sessionConfiguration`. Anything else keeps the Agent-wide fence. */
+  localSessionScoped?: boolean;
 }
 
 export async function hasOtherCustody(database: CustodyQuery, subject: DeliveryOccupancySubject): Promise<boolean> {

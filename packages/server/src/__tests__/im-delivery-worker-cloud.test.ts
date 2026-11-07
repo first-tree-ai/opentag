@@ -3,6 +3,7 @@ import {
   type CloudLatencyRecord,
   CloudLatencyRecordSchema,
   computeDirectInputHash,
+  RUNTIME_CAPABILITY,
   type RunnerServerFrame,
 } from "@opentag/shared";
 import { eq } from "drizzle-orm";
@@ -238,7 +239,7 @@ async function addCloudSession(
  * A minimal Local Agent with two Sessions on its Local Computer. Only the claim and its Agent-wide
  * occupancy fence are exercised, so the fixture stops at the claim's inputs (no runtime config).
  */
-async function localScope() {
+async function localScope(capabilities: Record<string, number> = {}) {
   const accountId = randomUUID();
   await unit.database
     .insert(users)
@@ -298,6 +299,7 @@ async function localScope() {
       installationId: randomUUID(),
       instanceId,
       lastHeartbeatAt: Date.now(),
+      negotiatedCapabilities: capabilities,
       socket: { close: vi.fn(), terminate: vi.fn() } as never,
     },
     async () => undefined,
@@ -2270,7 +2272,7 @@ describe("ImDeliveryWorker Cloud Session occupancy", () => {
   });
 
   it("keeps a Local Session to one delivery at a time", async () => {
-    const scope = await localScope();
+    const scope = await localScope({ [RUNTIME_CAPABILITY.sessionConfiguration]: 1 });
     const occupant = await pendingDelivery(scope.firstSessionId);
     const candidate = await pendingDelivery(scope.firstSessionId);
     await unit.database
@@ -2304,8 +2306,43 @@ describe("ImDeliveryWorker Cloud Session occupancy", () => {
     expect(row).toMatchObject({ state: "pending", dispatchRequestId: null });
   });
 
-  it("starts a second Local Session while the first holds custody", async () => {
+  it("keeps the Agent-wide fence for a Client older than the capability", async () => {
     const scope = await localScope();
+    const occupant = await pendingDelivery(scope.firstSessionId);
+    const candidate = await pendingDelivery(scope.secondSessionId);
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ lastErrorCode: dispatchClaimToken(), nextAttemptAt: new Date(Date.now() + 60_000) })
+      .where(eq(imMessageDeliveries.id, occupant.deliveryId));
+
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: {} as never,
+      assembler: {
+        assembleForSession: vi.fn(async (sessionId: string) => ({
+          contextTrees: [],
+          agentId: scope.agentId,
+          provider: "pi" as const,
+          revision: { agent: { id: scope.agentId, sequence: 1 }, session: { id: sessionId, sequence: 1 } },
+          instructions: { platform: "", agent: "" },
+          execution: { approvalPolicy: "never" as const, networkAccess: false },
+          workspace: { workspaceId: scope.agentId, mode: "empty_on_create" as const, sharing: "agent" as const },
+        })),
+      },
+      registry: scope.registry,
+    });
+    await worker.runOnce();
+
+    // It compares configuration per Agent, so a newer Session would make it abandon an older Turn's recovery.
+    const [row] = await unit.database
+      .select()
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, candidate.deliveryId));
+    expect(row).toMatchObject({ state: "pending", dispatchRequestId: null, lastErrorCode: null });
+  });
+
+  it("starts a second Local Session while the first holds custody, on a Client that negotiated it", async () => {
+    const scope = await localScope({ [RUNTIME_CAPABILITY.sessionConfiguration]: 1 });
     const occupant = await pendingDelivery(scope.firstSessionId);
     const candidate = await pendingDelivery(scope.secondSessionId);
     await unit.database

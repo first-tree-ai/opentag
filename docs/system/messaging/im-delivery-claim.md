@@ -25,7 +25,9 @@ keys, then joined in memory. The hint cache holds at most 2,048 Sessions for fiv
 notifications and attempted claims invalidate their Session; stopping the worker clears the cache.
 Custody is loaded fresh for each scan and grouped in memory by Agent and Session. A delivery waits only
 for custody in its own Session, so different Sessions of one Agent run concurrently, and a Local and a
-Cloud delivery of one Agent still fence each other. A Local Client bounds concurrency itself, at 10
+Cloud delivery of one Agent still fence each other. A Local Client gets this only if it negotiated
+`runtime.sessionConfiguration`. Any other Client, or a Computer with no current connection, keeps the
+Agent-wide fence. A Local Client bounds concurrency itself, at 10
 Sessions per Agent and 99 in total. Input it refuses at those limits stays pending and is tried again
 until it expires; a steered message takes no slot. These snapshots can postpone eligibility, but cannot authorize a dispatch.
 

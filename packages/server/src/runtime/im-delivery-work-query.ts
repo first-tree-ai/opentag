@@ -206,15 +206,21 @@ export class DeliveryCustodySnapshot {
     for (const row of group.values()) if (row.id !== id) return row;
     return undefined;
   }
-  other(subject: { deliveryId: string; sessionId: string; agentId: string; computerKind: "local" | "cloud" }) {
-    return (
-      this.#other(this.#sessions.get(subject.sessionId), subject.deliveryId) ??
-      // An Agent mid-move between its Local and Cloud Computers must not run on both.
-      this.#other(
-        (subject.computerKind === "local" ? this.#cloudAgents : this.#localAgents).get(subject.agentId),
-        subject.deliveryId,
-      )
-    );
+  other(subject: {
+    deliveryId: string;
+    sessionId: string;
+    agentId: string;
+    computerKind: "local" | "cloud";
+    localSessionScoped?: boolean;
+  }) {
+    const same = this.#other(this.#sessions.get(subject.sessionId), subject.deliveryId);
+    if (same) return same;
+    // An Agent mid-move between its Local and Cloud Computers must not run on both.
+    const across = (subject.computerKind === "local" ? this.#cloudAgents : this.#localAgents).get(subject.agentId);
+    const acrossOther = this.#other(across, subject.deliveryId);
+    if (acrossOther || subject.computerKind === "cloud" || subject.localSessionScoped) return acrossOther;
+    // A Client that can't keep a recovering Turn's older configuration: one Turn per Agent, as before.
+    return this.#other(this.#localAgents.get(subject.agentId), subject.deliveryId);
   }
   acceptedInSession(sessionId: string, id: string) {
     return this.#other(this.#accepted.get(sessionId), id);

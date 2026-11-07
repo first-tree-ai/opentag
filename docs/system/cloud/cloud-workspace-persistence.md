@@ -184,7 +184,8 @@ an archive catalogue. The Server keeps it out of the legacy object response shap
 Before sealing, the trusted Runner stops all writers and scans the saved tree again. A SHA-256
 fingerprint covers file contents, paths, types, modes, timestamps and link targets under the same
 archive exclusions and safety limits. It compares this with the local baseline taken after a
-verified restore or before a successful archive save. Absence of Turns alone never proves a clean
+verified restore or before a successful archive save. Confirmed upload pins and their fingerprint
+are retained together even if removing the temporary local archive fails. Absence of Turns alone never proves a clean
 workspace. If the fingerprint matches, an authenticated `POST /seal` conditionally updates only
 the existing object's seal using its exact generation and metageneration; it does not recompress,
 upload, replace content, or modify storage retention properties. Real changes still require a full

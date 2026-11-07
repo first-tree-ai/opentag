@@ -453,6 +453,43 @@ describe("Cloud workspace transfer", () => {
     expect(await readFile(join(replacement.workspace, "progress"), "utf8")).toBe("confirmed durable work");
   });
 
+  it.each([false, true])("keeps the uploaded fingerprint after cleanup fails, reverted=%s", async (reverted) => {
+    const store = storageFixture();
+    const runner = await client(store);
+    await runner.client.initialize();
+    const file = join(runner.workspace, "progress");
+    const timestamp = new Date("2026-01-01T00:00:00Z");
+    await writeFile(file, "versionA");
+    await utimes(file, timestamp, timestamp);
+    await runner.client.save();
+    await writeFile(file, "versionB");
+    await utimes(file, timestamp, timestamp);
+    const originalRm = fsPromises.rm;
+    let failCleanup = true;
+    vi.spyOn(fsPromises, "rm").mockImplementation(async (path, options) => {
+      if (failCleanup && String(path).startsWith(join(runner.stateDirectory, "workspace-"))) {
+        failCleanup = false;
+        throw new Error("local cleanup failed after upload");
+      }
+      return originalRm(path, options);
+    });
+    await expect(runner.client.save()).rejects.toMatchObject({ code: "save_failed" });
+    const uploaded = store.object();
+    const uploads = store.uploads.length;
+    if (reverted) {
+      await writeFile(file, "versionA");
+      await utimes(file, timestamp, timestamp);
+    }
+    await runner.client.save(true);
+    expect(runner.client.pendingSave).toBe(false);
+    expect(store.object().sealed).toBe(true);
+    const replacement = await client(store, 2);
+    await replacement.client.initialize();
+    expect(await readFile(join(replacement.workspace, "progress"), "utf8")).toBe(reverted ? "versionA" : "versionB");
+    expect(store.uploads).toHaveLength(uploads + Number(reverted));
+    expect(store.object().generation === uploaded.generation).toBe(!reverted);
+  });
+
   it("retries identical archive bytes and original CAS preconditions with bounded backoff", async () => {
     const store = storageFixture();
     const runner = await client(store);

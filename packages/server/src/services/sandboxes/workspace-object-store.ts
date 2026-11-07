@@ -276,7 +276,7 @@ function parseSnapshot(resource: unknown, location: ObjectLocation, scope: Works
 
 function parseWriteDisposition(value: unknown): Pick<StoredSnapshot, "writeId" | "contentDisposition"> {
   if (typeof value !== "string") return {};
-  const writeId = /^attachment; filename="state-([a-f0-9-]{36})\.tar\.gz"(?:; opentag-fence=[01])?$/.exec(value)?.[1];
+  const writeId = /^attachment;\s*filename="state-([a-f0-9-]{36})\.tar\.gz"(?:\s*;.*)?$/.exec(value)?.[1];
   return { contentDisposition: value, ...(writeId && WRITE_ID_PATTERN.test(writeId) ? { writeId } : {}) };
 }
 
@@ -286,7 +286,8 @@ function formatWriteDisposition(writeId?: string): string | undefined {
 
 function nextFenceDisposition(current: StoredSnapshot): string {
   const base = formatWriteDisposition(current.writeId) ?? 'attachment; filename="state.tar.gz"';
-  return `${base}; opentag-fence=${current.contentDisposition === `${base}; opentag-fence=0` ? "1" : "0"}`;
+  const previous = /;\s*opentag-fence\s*=\s*"?([01])"?\s*(?:;|$)/.exec(current.contentDisposition ?? "")?.[1];
+  return `${base}; opentag-fence=${previous === "0" ? "1" : "0"}`;
 }
 
 function parseCustomMetadata(
@@ -882,8 +883,7 @@ export class GcsWorkspaceObjectStore implements WorkspaceObjectStore {
       snapshot.bytes !== current.bytes ||
       snapshot.sha256 !== current.sha256 ||
       snapshot.md5 !== current.md5 ||
-      snapshot.writeId !== current.writeId ||
-      snapshot.contentDisposition !== (contentDisposition ?? current.contentDisposition)
+      snapshot.writeId !== current.writeId
     ) {
       fail("unknown_result", "Workspace metadata update response did not match the patched snapshot");
     }

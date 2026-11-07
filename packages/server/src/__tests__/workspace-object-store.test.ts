@@ -321,6 +321,40 @@ function createFakeGcs() {
 type FakeGcs = ReturnType<typeof createFakeGcs>;
 
 describe("workspace metadata fencing and sealing", () => {
+  it("accepts normalized disposition parameters and changes the fence on the next claim", async () => {
+    const fake = createFakeGcs();
+    const content = Buffer.from("unpublished work");
+    const planted = fake.plant(content, { owner: 1, saved: true, sealed: false });
+    const writeId = "d45b0afb-a231-4ffa-b562-72acd250613a";
+    planted.contentDisposition = `attachment; filename="state-${writeId}.tar.gz"`;
+    const original = previousOf(planted);
+    fake.setInterceptor(async ({ call, proceed }) => {
+      if (call.method !== "PATCH") return undefined;
+      await proceed();
+      const stored = must(fake.stored());
+      stored.contentDisposition = must(stored.contentDisposition).replace(
+        /; opentag-fence=([01])$/,
+        ';opentag-fence="$1"',
+      );
+      return jsonResponse(200, fake.resourceJson());
+    });
+    const store = createStore(fake);
+    const first = await store.claim(SCOPE, { fence: true });
+    expect(first).toEqual({ ...original, metageneration: "2" });
+    const second = await store.claim(SCOPE, { fence: true });
+    expect(second).toEqual({ ...original, metageneration: "3" });
+    expect(
+      fake.callsNamed("PATCH").map((call) => JSON.parse(Buffer.from(must(call.body)).toString()).contentDisposition),
+    ).toEqual([
+      `attachment; filename="state-${writeId}.tar.gz"; opentag-fence=0`,
+      `attachment; filename="state-${writeId}.tar.gz"; opentag-fence=1`,
+    ]);
+    fake.setInterceptor(undefined);
+    await expect(store.write(SCOPE, first, archiveInput(content))).rejects.toMatchObject({ code: "conflict" });
+    expect((await store.seal(SCOPE, second)).sealed).toBe(true);
+    expect(must(fake.stored()).content).toEqual(content);
+  });
+
   it.each([false, true])("changes metadata on every same-owner fence, including saved=%s", async (saved) => {
     const fake = createFakeGcs();
     const content = saved ? Buffer.from("unpublished work") : new Uint8Array();

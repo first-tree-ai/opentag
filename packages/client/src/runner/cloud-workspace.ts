@@ -304,8 +304,9 @@ export class CloudWorkspace {
                     onStats: (stats) => addMetrics(stats),
                   });
                   const uploaded = await this.#upload(path, previous, info, sealed);
-                  // Keep confirmed pins even if removing the local temporary archive fails.
+                  // Keep the confirmed version and its baseline together if local cleanup fails.
                   this.#object = uploaded;
+                  this.#fingerprint = fingerprint;
                   return uploaded;
                 });
           this.#object = object;

@@ -24,6 +24,7 @@ import {
 import {
   createImFeedbackTarget,
   type FeedbackTarget,
+  finishImFeedback,
   ImFeedbackStore,
   startImFeedback,
 } from "../../services/im/im-feedback-store.js";
@@ -529,6 +530,38 @@ async function failAnother(h: Awaited<ReturnType<typeof failed>>) {
     await new PostgresRuntimeCustodyStore(client.database, { now: () => clock }).recordTurn(report, h.context),
   ).toBe("recorded");
 }
+
+describe("workspace failure format", () => {
+  it("keeps the format of a send that started between the report's read and its update", async () => {
+    const h = await failed();
+    await client.database
+      .update(imFeedbackTargets)
+      .set({ messageFormat: "text_v1", cardState: "pending", cardMessageId: null })
+      .where(eq(imFeedbackTargets.id, h.target.id));
+    const started = deferred<void>();
+    const release = deferred<void>();
+    const worker = client.database.transaction(async (tx) => {
+      await tx.update(imFeedbackTargets).set({ cardState: "sending" }).where(eq(imFeedbackTargets.id, h.target.id));
+      started.resolve();
+      await release.promise;
+    });
+    await started.promise;
+    const report: TurnReportRequest = { ...h.report, errorReason: "workspace_failed" };
+    const finishing = client.database.transaction((tx) => finishImFeedback(tx, report, clock));
+    for (let i = 0; i < 100; i += 1) {
+      const blocked = await client.database.execute<{ count: string }>(
+        sql`select count(*)::text as count from pg_stat_activity where wait_event_type = 'Lock' and query ilike 'update "im_feedback_targets"%'`,
+      );
+      if (blocked[0]?.count !== "0") break;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    release.resolve();
+    await worker;
+    await finishing;
+    const [row] = await client.database.select().from(imFeedbackTargets).where(eq(imFeedbackTargets.id, h.target.id));
+    expect(row).toMatchObject({ state: "workspace_blocked", messageFormat: "text_v1" });
+  });
+});
 
 describe("existing installation cooldown", () => {
   it("keeps a definitely unsent card pending when the call pool is full and sends it after capacity returns", async () => {

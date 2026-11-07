@@ -176,6 +176,21 @@ reply. Confirm delivery by provider receipt and message readback, without
 replaying the old Turn's uncertain send. Run this sequence separately for Slack
 and Feishu when both authorized test bindings are available.
 
+A Local Agent's Sessions run concurrently, and a configuration change doesn't wait for them. Use two chats of one Agent:
+
+1. Start a long Turn in chat A. Before it ends, send a message in chat B. Chat B replies while chat A is still running.
+2. Send a follow-up in chat A. It joins the running Turn, with no second Turn and no extra report.
+3. Start another long Turn in chat A, then change the Agent's model while it runs. Send a message in chat B. Chat B starts
+   at once on the new model. It must not wait for chat A.
+4. Let chat A finish. It ran on the old model. As the case above says, its provider access fails from the save onwards,
+   so what it sends after the change may not arrive. Send another message in chat A. That Turn runs on the new model.
+5. Repeat step 3, then restart the daemon right after chat B's message is sent. Chat A resumes once on the old model and
+   completes, chat B completes on the new model, and neither chat gets an error card. The client log has no
+   `TURN_RETRY_ABANDONED`. The arrival order after a restart can't be forced by hand, so if chat A happened to recover
+   first, this step passes without covering the other order. `session-binding-store.test.ts` pins chat B arriving first.
+6. With 10 chats running, send a message in an 11th. It waits with no error, then runs once a slot opens. A follow-up in a
+   running chat still joins its Turn while the Agent is at the limit.
+
 ## Cloud Agent `/slackauthticket` automatic setup
 
 1. Create a Cloud Agent (or open **Messaging** settings on an unbound Cloud Agent) with fresh browser state and choose

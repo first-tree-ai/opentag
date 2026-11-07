@@ -49,6 +49,40 @@ describe("Runtime Session CLI routes", () => {
     await app.close();
   });
 
+  it("lets shutdown wait for the Agent's Session list to finish authenticating", async () => {
+    let finish: (value: typeof source) => void = () => undefined;
+    const authenticate = vi.fn(
+      () =>
+        new Promise<typeof source>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const listAgentSessions = vi.fn(async () => ({ items: [] }));
+    const app = createApp({
+      runtimeSessions: {
+        collaboration: { create: vi.fn(), send: vi.fn(), stop: vi.fn() },
+        proofs: { authenticate },
+        sessions: { listAgentSessions, listInternalSessions: vi.fn() },
+      },
+    });
+    const response = app.inject({
+      method: "GET",
+      url: HTTP_PATHS.runtimeAgentSessions,
+      headers: { [SESSION_CLI_PROOF_HEADER]: "proof" },
+    });
+    await vi.waitFor(() => expect(authenticate).toHaveBeenCalledOnce());
+    let closed = false;
+    const closing = app.close().then(() => {
+      closed = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(closed).toBe(false);
+    finish(source);
+    await closing;
+    await response.catch(() => undefined);
+    expect(closed).toBe(true);
+  });
+
   it("authenticates the Agent's Session list in the route options", async () => {
     const listAgentSessions = vi.fn(async () => ({ items: [] }));
     const authenticate = vi.fn(async (proof: string) => {

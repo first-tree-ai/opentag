@@ -69,7 +69,7 @@ outcomes are: an IM Turn reports `cancelled / client_shutdown` for an orderly
 stop, `unknown / turn_state_unknown` (`may_have_occurred`) when found starting
 or running after a restart, `failed / provider_start_failed` (`not_started`)
 when it never reached the Provider, and `failed / turn_timeout` for a timeout;
-the Server shows the person an [error card](messaging/im-feedback.md). A Session
+the Server shows the person a [failure message](messaging/im-feedback.md). A Session
 message ends `failed` and its sender gets a
 [Run outcome notice](messaging/internal-session-collaboration.md#run-outcome-notices).
 

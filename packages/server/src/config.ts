@@ -330,7 +330,7 @@ const ServerEnvironmentSchema = z
     OPENTAG_DEV_AUTH_BYPASS_ENABLED: booleanString("false"),
     OPENTAG_DEV_AUTH_EMAIL: z.string().trim().toLowerCase().email().optional(),
     OPENTAG_DEV_INTERNAL_TOOLS_ENABLED: booleanString("false"),
-    OPENTAG_IM_FEEDBACK_TEXT_ENABLED: booleanString("false"),
+    OPENTAG_IM_FEEDBACK_TEXT_ENABLED: booleanString("true"),
     /*
      * Defaults to off because turning it on opens Account creation to anyone who can reach the server. Every other
      * sign-in method the server offers requires something a deployment already granted — a Google client, a loopback

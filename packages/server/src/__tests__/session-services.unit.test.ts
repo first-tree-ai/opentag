@@ -1059,6 +1059,21 @@ describe("SessionService with the unit database", () => {
       expect(notice.message).toMatchObject({ initiatorSessionId: null, forwardCount: 1, legacyLocalSend: true });
     });
 
+    it("keeps a notice on the message it reports, whatever its Session accepted since", async () => {
+      const { service, dm, group, other, record, delivery } = await chats();
+      const reported = await record(dm.id, other.id, [await delivery(dm.id, "D1")]);
+      // The target has since taken on something from another conversation, accepted and running.
+      await record(group.id, other.id, [await delivery(group.id, "G1")]);
+      const notice = await record(other.id, dm.id, [handling(reported)]);
+      expect(notice.initiatorSessionId).toBe(dm.id);
+      await expect(service.resolveMessageProvenance(notice)).resolves.toMatchObject({
+        initiatorSessionId: dm.id,
+        forwards: 1,
+        // The direct sender is another conversation, so an old peer still refuses it.
+        crossConversation: true,
+      });
+    });
+
     it("says a same-conversation chain stays in its conversation", async () => {
       const { service, group, record, child, delivery } = await chats();
       const created = await child(group.id, [await delivery(group.id, "G1")]);

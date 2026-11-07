@@ -68,6 +68,7 @@ import type {
   RuntimeCredentialEnvironmentManager,
 } from "./runtime-credential-environment-manager.js";
 import type { SessionBindingStore } from "./session-binding-store.js";
+import { conversationIdentity } from "./session-message-run.js";
 import {
   ClientRuntimeProviderStartError,
   type SessionRuntimeManager,
@@ -128,6 +129,8 @@ export interface AgentTurnRunnerOptions {
     input(message: SessionMessageDeliveryRequestV3, processedAt: Date): AgentInput;
     /** Resolves once the message's outcome is durable. */
     settle(message: SessionMessageDeliveryRequestV3, outcome: AgentSteerOutcome): Promise<void>;
+    /** Whether this runtime's conversation durably holds the message, so a retry need not repeat it. */
+    inConversation?(message: SessionMessageDeliveryRequestV3, runId: string, runtime: AgentRuntime): boolean;
   };
 }
 
@@ -135,6 +138,7 @@ export interface TurnStartOptions {
   /** Set when this start is the automatic retry of an interrupted Turn. */
   readonly continuation?: Interruption;
   readonly steers?: readonly RuntimeImSteerRequest[];
+  readonly steerConversations?: Readonly<Record<string, string>>;
 }
 
 interface TurnAttempt {
@@ -191,8 +195,10 @@ interface RunningTurn {
   finalized: boolean;
   /** Run time of the latest attempt that is not recorded yet. */
   unrecordedRunMs: number;
-  /** Messages an earlier attempt held, replayed in the current attempt's input. */
+  /** Messages an earlier attempt held, replayed in the current attempt's input unless its conversation has them. */
   steers: readonly SteeredInput[];
+  /** Which provider conversation durably holds each IM steer, by delivery. */
+  steerConversations: Readonly<Record<string, string>>;
 }
 
 export interface TurnCompletion {
@@ -284,6 +290,7 @@ export class AgentTurnRunner {
       finalized: false,
       unrecordedRunMs: 0,
       steers: options.steers ?? [],
+      steerConversations: options.steerConversations ?? {},
     };
     turn.promise = this.#run(turn, abort.signal)
       .catch(
@@ -347,17 +354,46 @@ export class AgentTurnRunner {
     // Only a steer with a durable receipt transfers to this Turn; a retry replays exactly those, so a
     // capture whose steer or receipt failed (answered `deferred`) is dropped and stays with the Server.
     try {
-      await runtime.steer({
+      const receipt = await runtime.steer({
         expectedRunId: request.expectedTurnId,
         // Steer input assembles at the moment of the steer, so it carries its own UTC sample.
         input: buildAgentInput(request, undefined, turn.owner.request.runtime, new Date(this.#now())),
       });
       await this.#bindingStore.recordSteer(request, semanticHash);
+      void receipt.inConversation?.then(() => this.#recordSteerInConversation(turn, runtime, request));
     } catch {
       await this.#retries.removeSteer(request).catch(() => undefined);
       return steerResult(request, "deferred", "steer_state_unknown");
     }
     return steerResult(request, "steered");
+  }
+
+  /** Best effort: without it a retry repeats the steer, which it has always been allowed to. */
+  async #recordSteerInConversation(
+    turn: RunningTurn,
+    runtime: AgentRuntime,
+    request: RuntimeImSteerRequest,
+  ): Promise<void> {
+    const conversation = conversationIdentity(runtime.binding);
+    if (!conversation) return;
+    const steerConversations = { [request.deliveryId]: conversation };
+    turn.steerConversations = { ...turn.steerConversations, ...steerConversations };
+    await this.#retries
+      .update(request.sessionId, request.expectedTurnId, (record) => ({
+        ...record,
+        steerConversations: { ...record.steerConversations, ...steerConversations },
+      }))
+      .catch(() => undefined);
+  }
+
+  /** What a retry must still repeat: a conversation that durably holds a message has it already. */
+  #steersToRepeat(turn: RunningTurn, runtime: AgentRuntime): readonly SteeredInput[] {
+    const conversation = conversationIdentity(runtime.binding);
+    return turn.steers.filter((steer) =>
+      steer.type === "im:steer"
+        ? conversation === undefined || turn.steerConversations[steer.deliveryId] !== conversation
+        : !this.#sessionMessages.inConversation?.(steer, turn.owner.turnId, runtime),
+    );
   }
 
   /**
@@ -678,7 +714,7 @@ export class AgentTurnRunner {
         input: interruption
           ? buildRetryAgentInput(
               owner.request,
-              turn.steers,
+              this.#steersToRepeat(turn, runtime),
               interruption,
               new Date(this.#now()),
               this.#sessionMessages.input,

@@ -648,6 +648,48 @@ describe("a steered message the provider's conversation already holds", () => {
     expect(attempts).toHaveLength(0);
   });
 
+  it("is not repeated in a 429 retry when confirmed, and an unconfirmed one is; both still end with the Run", async () => {
+    const { attempts, confirmations, runtime, steers } = harness();
+    const inbox = makeInbox(runtime);
+    const { message } = conversation();
+    const [first, held, pending] = [message("first"), message("held"), message("pending")];
+    await inbox.accept(first);
+    const attempt = await started(attempts, 1);
+    await inbox.accept(held);
+    await inbox.accept(pending);
+    await vi.waitFor(() => expect(steers).toHaveLength(2));
+    await vi.waitFor(() => expect(inbox.getState(pending.messageId)?.status).toBe("running"));
+    confirmations.get("held")?.();
+    await vi.waitFor(() => expect(inbox.getState(held.messageId)?.steerInConversation).toBeDefined());
+    attempt.finish(rateLimited);
+    const retry = await started(attempts, 2);
+    expect(retry.texts).toContain("pending");
+    expect(retry.texts).not.toContain("held");
+    retry.finish(new Error("the provider broke"));
+    await inbox.settled();
+    for (const request of [first, held, pending]) expect(inbox.getState(request.messageId)?.status).toBe("failed");
+  });
+
+  it("is repeated in a 429 retry when the retry has a different conversation", async () => {
+    const { attempts, confirmations, runtime, steers } = harness();
+    const inbox = makeInbox(runtime);
+    const { message } = conversation();
+    const held = message("held");
+    await inbox.accept(message("first"));
+    const attempt = await started(attempts, 1);
+    await inbox.accept(held);
+    await vi.waitFor(() => expect(steers).toHaveLength(1));
+    await vi.waitFor(() => expect(inbox.getState(held.messageId)?.status).toBe("running"));
+    confirmations.get("held")?.();
+    await vi.waitFor(() => expect(inbox.getState(held.messageId)?.steerInConversation).toBeDefined());
+    (runtime as { binding: typeof BINDING }).binding = { ...BINDING, payload: { sessionId: "conversation-b" } };
+    attempt.finish(rateLimited);
+    const retry = await started(attempts, 2);
+    expect(retry.texts).toContain("held");
+    retry.finish();
+    await inbox.settled();
+  });
+
   it("does not bring a settled message back when the confirmation arrives during its settlement", async () => {
     const { attempts, confirmations, runtime, steers } = harness();
     const inbox = makeInbox(runtime);

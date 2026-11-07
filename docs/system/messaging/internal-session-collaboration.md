@@ -382,7 +382,8 @@ that Turn's retry and the Turn resumed after a process interruption
 shares the count of the Turn it joined, so they retry together and fail together.
 
 - **Model HTTP 429, retried in place.** Messages already steered into the Turn join the same retry, in their original order
-  among the Turn's IM steers, and stay `running`. They are not queued again. The list is kept in memory, not in the Turn's
+  among the Turn's IM steers, and stay `running`, without being repeated if the conversation already holds them. They are not
+  queued again. The list is kept in memory, not in the Turn's
   retry file. A message steered into that retry joins the next one the same way.
 - **Crash or restart.** The Turn is resumed with the continuation notice, without its Session messages. Messages already
   steered before the interruption, then queued messages, are steered into the resumed Turn in order once it is running. A
@@ -413,8 +414,8 @@ The same rule applies when the running Run is another Session message, normally 
 own message holds the count. A message steered into the Run has no count of its own, on the steer-capable runtimes of a
 Local Computer.
 
-- **Model HTTP 429.** The retry input is the continuation notice, the Run's own message, then the steered messages in their
-  original order. They stay `running`. A message that arrives during the backoff waits, then steers into the retry, and the
+- **Model HTTP 429.** The retry input is the continuation notice, the Run's own message, then the steered messages the conversation
+  does not already hold, in their original order. They all stay `running`. A message that arrives during the backoff waits, then steers into the retry, and the
   next retry carries it as well. A message the provider never began goes back to its place in the FIFO instead.
 - **Crash or restart.** The Run's own message is counted and runs again with the continuation notice. Messages already steered
   into it, then queued messages, steer into it in order once it is running. A message that was already steered carries the
@@ -433,8 +434,12 @@ other runs again on its own with the notice: this is the same accepted cost of r
 
 ### Messages the conversation already holds
 
-Injecting a steered message again after a restart costs tokens, and the Agent may act on an instruction that a later message
-replaced. So once the Provider confirms a steered message is durably in its conversation, the record says so
+A message that was steered successfully has already reached the Agent's session, so it is not steered again. It still fails and
+retries with its Run, and the Run's retry or restart reaches the Agent through the continuation notice. Injecting it again costs
+tokens, and the Agent may act on an instruction that a later message replaced.
+
+Successfully here means the Provider confirms it, not that it accepted the input: Claude Code can lose input it has accepted. So
+once the Provider confirms a steered message is durably in its conversation, the record says so
 (`steerInConversation`, naming the Provider conversation), and a Run that resumes that conversation does not inject it again. The
 message rejoins the Run without input and still shares its count, its retries, and its failure.
 
@@ -445,6 +450,8 @@ The signal differs by Provider, and each was measured by killing the process at 
 - **Codex:** the `turn/steer` answer. The rollout already holds the input.
 - **Pi:** no signal, so the message is injected again with the notice, as before.
 
+This covers an IM Turn's own steers as well as Session messages, and a retry after a model HTTP 429 as well as a restart: the retry
+input leaves out whatever the conversation it resumes already holds. For an IM steer, the Turn's retry file records the conversation.
+
 A message without a confirmation is injected again with the notice, so a crash before it, or a failed write of the record, costs a
-repeat and never a loss. So does a Run that resumes a different Provider conversation, including one that ends before the message could rejoin it: a Run's record names the conversation it ran in, and a confirmed message takes that Run's outcome, success or failure, only if it is the conversation holding the message. Otherwise it runs on its own with the notice, and the same goes for a Turn whose retries ran out at startup. A message without a confirmation still fails with a Run found failed at a restart. A retry after a model HTTP 429 still carries
-every message in the Run, confirmed or not. A failed attempt may not have recorded them, and that path is unchanged.
+repeat and never a loss. So does a Run that resumes a different Provider conversation, including one that ends before the message could rejoin it: a Run's record names the conversation it ran in, and a confirmed message takes that Run's outcome, success or failure, only if it is the conversation holding the message. Otherwise it runs on its own with the notice, and the same goes for a Turn whose retries ran out at startup. A message without a confirmation still fails with a Run found failed at a restart. 

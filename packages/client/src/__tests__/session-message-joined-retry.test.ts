@@ -100,6 +100,73 @@ describe("a Session message steered into an IM Turn that retries in place", () =
     await s.stop();
   });
 
+  it("does not repeat a steer its conversation holds in a 429 retry, and still repeats an unconfirmed one", async () => {
+    const s = await system();
+    s.prompt.mockImplementationOnce(attempt(s, "provider_rate_limited")).mockImplementationOnce(s.finishes);
+    await s.startTurn();
+    await expect(s.runner.steer(s.imSteer("im unconfirmed"))).resolves.toMatchObject({ status: "steered" });
+    s.fixture.confirmSteers = true;
+    await expect(s.runner.steer(s.imSteer("im confirmed"))).resolves.toMatchObject({ status: "steered" });
+    const held = s.message("session confirmed");
+    await s.steer(held);
+    await vi.waitFor(() => expect(s.inbox.getState(held.messageId)?.steerInConversation).toBeDefined());
+    await vi.waitFor(async () =>
+      expect(Object.keys((await s.retries.read(s.request.sessionId))?.steerConversations ?? {})).toHaveLength(1),
+    );
+    s.endAttempt();
+    await s.runner.settled();
+    const text = s.promptText(1);
+    expect(text).toContain("im unconfirmed");
+    expect(text).not.toContain("im confirmed");
+    expect(text).not.toContain("session confirmed");
+    // It still ends with the Turn.
+    expect(s.inbox.getState(held.messageId)?.status).toBe("succeeded");
+    await s.stop();
+  });
+
+  it("repeats a confirmed IM steer when the retry has a different conversation", async () => {
+    const s = await system();
+    s.prompt.mockImplementationOnce(attempt(s, "provider_rate_limited")).mockImplementationOnce(s.finishes);
+    await s.startTurn();
+    s.fixture.confirmSteers = true;
+    await expect(s.runner.steer(s.imSteer("im confirmed"))).resolves.toMatchObject({ status: "steered" });
+    await vi.waitFor(async () =>
+      expect(Object.keys((await s.retries.read(s.request.sessionId))?.steerConversations ?? {})).toHaveLength(1),
+    );
+    s.runtime.binding = { providerId: "claude-code", schemaVersion: 1, payload: { sessionId: "conversation-b" } };
+    s.endAttempt();
+    await s.runner.settled();
+    expect(s.promptText(1)).toContain("im confirmed");
+    await s.stop();
+  });
+
+  it("does not repeat a confirmed IM steer when the Turn resumes after a crash, and repeats an unconfirmed one", async () => {
+    const first = await system();
+    first.prompt.mockImplementationOnce(hangs(first));
+    await first.startTurn();
+    await expect(first.runner.steer(first.imSteer("im unconfirmed"))).resolves.toMatchObject({ status: "steered" });
+    first.fixture.confirmSteers = true;
+    await expect(first.runner.steer(first.imSteer("im confirmed"))).resolves.toMatchObject({ status: "steered" });
+    await vi.waitFor(async () =>
+      expect(Object.keys((await first.retries.read(first.request.sessionId))?.steerConversations ?? {})).toHaveLength(
+        1,
+      ),
+    );
+    const second = await system({ home: first.home, request: first.request, prepared: false });
+    second.receipts.push(...first.receipts);
+    second.prompt.mockImplementationOnce(second.finishes);
+    await second.inbox.ready();
+    await second.recovery.start();
+    second.prepare();
+    await expect(second.recovery.resume(second.request.sessionId, second.identity)).resolves.toBe(true);
+    await vi.waitFor(() => expect(second.prompt).toHaveBeenCalledOnce());
+    const text = second.promptText(0);
+    expect(text).toContain("im unconfirmed");
+    expect(text).not.toContain("im confirmed");
+    await second.stop();
+    await first.stop();
+  });
+
   it("keeps IM and Session messages in their original order", async () => {
     const s = await system();
     s.prompt.mockImplementationOnce(attempt(s, "provider_rate_limited")).mockImplementationOnce(s.finishes);
@@ -1070,7 +1137,7 @@ async function system(
   const runEnd = new Promise<AgentSteerOutcome>((resolve) => {
     runEnded = resolve;
   });
-  const fixture = { steerOutcome: undefined as AgentSteerOutcome | undefined };
+  const fixture = { steerOutcome: undefined as AgentSteerOutcome | undefined, confirmSteers: false };
   const prompt = vi.fn(
     async (_input: { signal?: AbortSignal; input?: unknown }): Promise<AgentRunResult> => ({
       runId: TURN_ID,
@@ -1083,9 +1150,13 @@ async function system(
     state: { phase: "running", activeRunId: TURN_ID as string | undefined },
     prompt,
     waitForIdle: async () => undefined,
+    binding: { providerId: "claude-code", schemaVersion: 1, payload: { sessionId: "conversation-a" } } as
+      | { providerId: string; schemaVersion: number; payload: { sessionId: string } }
+      | undefined,
     steer: vi.fn(
       async (_input: unknown): Promise<AgentSteerReceipt> => ({
         outcome: runEnd.then((outcome) => fixture.steerOutcome ?? outcome),
+        ...(fixture.confirmSteers ? { inConversation: Promise.resolve() } : {}),
       }),
     ),
   };
@@ -1172,6 +1243,8 @@ async function system(
           sessionMessages: {
             input: (message: SessionMessageDeliveryRequestV3, processedAt: Date) =>
               inbox.joinedRunInput(message, processedAt),
+            inConversation: (message: SessionMessageDeliveryRequestV3, runId: string, active: unknown) =>
+              inbox.inConversation(message, runId, active as never),
             settle: async (message: SessionMessageDeliveryRequestV3, outcome: AgentSteerOutcome) => {
               await inbox.settleJoined(message, outcome);
               order.push("settled");
@@ -1222,6 +1295,7 @@ async function system(
     logger,
     create,
     receipts,
+    fixture,
     onRunOutcome,
     outbox,
     writeFailures: () => writeFailures,

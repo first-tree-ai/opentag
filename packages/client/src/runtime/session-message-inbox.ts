@@ -835,6 +835,15 @@ export class SessionMessageInbox {
     return true;
   }
 
+  /** Whether this runtime's conversation durably holds the message, so a retry need not repeat it. */
+  inConversation(message: SessionMessageDeliveryRequestV3, runId: string, runtime: AgentRuntime): boolean {
+    return alreadyInConversation(this.#records.get(sessionMessageKey(message)), runId, runtime);
+  }
+
+  #carriedToRepeat(run: SessionMessageRun, runtime: AgentRuntime): readonly SessionMessageDeliveryRequestV3[] {
+    return run.carried.filter((message) => !this.inConversation(message, run.id, runtime));
+  }
+
   /** The Run this message joined ended; resolves once the message's outcome is durable. */
   settleJoined(message: SessionMessageDeliveryRequestV3, outcome: AgentSteerOutcome): Promise<void> {
     const key = sessionMessageKey(message);
@@ -1063,7 +1072,7 @@ export class SessionMessageInbox {
             buildSessionMessageInput(next.request, this.#cliCommand, context, new Date(this.#now())),
             continuation,
           ),
-          run.carried.map((message) =>
+          this.#carriedToRepeat(run, runtime).map((message) =>
             buildSessionMessageInput(message, this.#cliCommand, context, new Date(this.#now())),
           ),
         ),

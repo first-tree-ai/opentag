@@ -177,7 +177,7 @@ export class SessionMessageInbox {
   readonly #runStops = new Map<string, { controller: AbortController; placementGeneration: number }>();
   readonly #drains = new Map<string, Promise<void>>();
   /** Each Session's in-flight Run, which the drain does not wait for; a Session stop does. */
-  readonly #activeRuns = new Map<string, Promise<void>>();
+  readonly #activeRuns = new Map<string, { done: Promise<void>; placementGeneration: number }>();
   /** Sessions whose queued messages wait for the Server to prepare them (e.g. after a restart). */
   readonly #awaitingPreparation = new Set<string>();
   readonly #records = new Map<string, DurableWorkRecord<SessionMessageDeliveryRequestV3>>();
@@ -447,13 +447,16 @@ export class SessionMessageInbox {
   async stopSessionWork(sessionId: string, placementGeneration: number): Promise<void> {
     // Before any wait: a write already in flight must find the stop when it completes.
     this.#fenceStopped(sessionId, placementGeneration);
-    this.#awaitingPreparation.delete(sessionId);
     this.#abortStoppedRun(sessionId, placementGeneration);
     const queue = this.#queues.get(sessionId) ?? [];
     const kept = queue.filter((queued) => queued.request.placementGeneration > placementGeneration);
     this.#queuedTotal -= queue.length - kept.length;
-    if (kept.length > 0) this.#queues.set(sessionId, kept);
-    else this.#queues.delete(sessionId);
+    if (kept.length > 0) {
+      this.#queues.set(sessionId, kept);
+    } else {
+      this.#queues.delete(sessionId);
+      this.#awaitingPreparation.delete(sessionId);
+    }
     const withdrawn = [...this.#records.values()].filter(
       ({ payload, status }) =>
         payload.targetSessionId === sessionId &&
@@ -466,10 +469,20 @@ export class SessionMessageInbox {
       await this.#recordStopped(record, "runtime");
     }
     const running = this.#abortStoppedRun(sessionId, placementGeneration);
+    // An older stop leaves newer work alone, so it must not wait for that work either.
     const activeRun = this.#activeRuns.get(sessionId);
-    if (running && activeRun) await this.#closeRuntimeAfterGrace(sessionId, activeRun);
-    await activeRun;
-    await this.#drains.get(sessionId);
+    const coveredRun = activeRun && activeRun.placementGeneration <= placementGeneration ? activeRun.done : undefined;
+    if (running && coveredRun) await this.#closeRuntimeAfterGrace(sessionId, coveredRun);
+    await coveredRun;
+    if (!this.#hasNewerWork(sessionId, placementGeneration)) await this.#drains.get(sessionId);
+  }
+
+  /** Whatever is still queued survived the stop, and a drain stays busy for as long as it waits behind a Run. */
+  #hasNewerWork(sessionId: string, placementGeneration: number): boolean {
+    const activeRun = this.#activeRuns.get(sessionId);
+    return (
+      (this.#queues.get(sessionId)?.length ?? 0) > 0 || (activeRun?.placementGeneration ?? 0) > placementGeneration
+    );
   }
 
   #abortStoppedRun(sessionId: string, placementGeneration: number): boolean {
@@ -579,11 +592,14 @@ export class SessionMessageInbox {
         this.#dequeue(sessionId, next);
         reservation.reservation.markActive();
         // The drain goes on while the Run is in flight, so the next message can steer into it.
-        const running = this.#runMessage(sessionId, next, reservation.reservation)
-          .catch(() => undefined)
-          .finally(() => {
-            if (this.#activeRuns.get(sessionId) === running) this.#activeRuns.delete(sessionId);
-          });
+        const running = {
+          placementGeneration: next.request.placementGeneration,
+          done: this.#runMessage(sessionId, next, reservation.reservation)
+            .catch(() => undefined)
+            .finally(() => {
+              if (this.#activeRuns.get(sessionId) === running) this.#activeRuns.delete(sessionId);
+            }),
+        };
         this.#activeRuns.set(sessionId, running);
         continue;
       }

@@ -2411,6 +2411,185 @@ describe("SessionMessageInbox", () => {
         inbox.stop();
       });
 
+      describe("an older stop with newer work running", () => {
+        function hangingRuns() {
+          const signals: AbortSignal[] = [];
+          const finishes: Array<() => void> = [];
+          const prompt = vi.fn(
+            (input: { runId: string; signal?: AbortSignal }) =>
+              new Promise((resolve) => {
+                if (input.signal) signals.push(input.signal);
+                finishes.push(() => resolve({ runId: input.runId, status: "completed", output: [] }));
+              }),
+          );
+          return { finishes, prompt, signals };
+        }
+
+        it("answers stale_generation without waiting for or touching a Run a newer ready started meanwhile", async () => {
+          const computerId = randomUUID();
+          const older = delivery();
+          const reconciler = new SessionReconciler({ installationId: computerId });
+          const internal = { sessionKind: "internal" as const, creatorSessionId: randomUUID() };
+          const ready = { ...reconcileFor(computerId, older), ...internal };
+          await reconciler.reconcile(ready);
+          const { finishes, prompt, signals } = hangingRuns();
+          const close = vi.fn(async () => undefined);
+          const admission = new AdmissionController();
+          const store = new GatedStore();
+          const inbox = new SessionMessageInbox({
+            admission,
+            credentialEnvironment: credentialEnvironment(),
+            imCredentialGrantVersion: () => 2,
+            persistence: store,
+            sessionCollaborationVersion: () => 4,
+            reconciler,
+            runtimeManager: {
+              ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+              runtime: () => ({ close }) as never,
+              sessionKind: vi.fn(() => "internal" as const),
+            },
+            steerRetryMs: 5,
+          });
+          reconciler.setInternalWorkStopper(inbox);
+          // The older message waits in the queue, so the stop has a terminal write to yield on.
+          const held = admission.reserve(older.targetSessionId, older.agentId);
+          if (!held.accepted) throw new Error("Expected the host reservation");
+          held.reservation.markActive();
+          await inbox.accept(older);
+          const terminal = store.hold("failed");
+          const stopping = reconciler.reconcile({
+            ...ready,
+            requestId: randomUUID(),
+            desired: "stopped",
+            runtime: undefined,
+          });
+          await terminal.reached;
+
+          // The placement moves on while the older stop is held in its write.
+          const newer = { ...older, requestId: randomUUID(), messageId: randomUUID(), placementGeneration: 2 };
+          await expect(
+            reconciler.reconcile({ ...ready, requestId: randomUUID(), placementGeneration: 2 }),
+          ).resolves.toMatchObject({ status: "ready" });
+          held.reservation.release();
+          await expect(inbox.accept(newer)).resolves.toMatchObject({ status: "accepted" });
+          await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce());
+          terminal.open();
+
+          await expect(stopping).resolves.toMatchObject({ status: "rejected", reason: "stale_generation" });
+          expect(signals[0]?.aborted).toBe(false);
+          expect(close).not.toHaveBeenCalled();
+          expect(inbox.getState(older.messageId)).toMatchObject({ lastError: { code: SESSION_MESSAGE_STOPPED_CODE } });
+
+          finishes[0]?.();
+          await vi.waitFor(() => expect(inbox.getState(newer.messageId)?.status).toBe("succeeded"));
+          inbox.stop();
+        });
+
+        it("leaves a newer message waiting for preparation able to run", async () => {
+          let prepared = false;
+          const { finishes, prompt } = hangingRuns();
+          const inbox = new SessionMessageInbox({
+            admission: new AdmissionController(),
+            credentialEnvironment: credentialEnvironment(),
+            imCredentialGrantVersion: () => 2,
+            sessionCollaborationVersion: () => 4,
+            reconciler: inboxReconciler(),
+            runtimeManager: {
+              ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+              isPrepared: () => prepared,
+              sessionKind: vi.fn(() => "internal" as const),
+            },
+          });
+          const newer = { ...delivery(), placementGeneration: 2 };
+          await inbox.accept(newer);
+          await inbox.settled();
+
+          await inbox.stopSessionWork(newer.targetSessionId, 1);
+          prepared = true;
+          inbox.sessionPrepared(newer.targetSessionId);
+
+          await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce());
+          finishes[0]?.();
+          await inbox.settled();
+          expect(inbox.getState(newer.messageId)?.status).toBe("succeeded");
+          inbox.stop();
+        });
+
+        it("does not wait for a drain that is holding a newer message behind that Run", async () => {
+          const { finishes, prompt, signals } = hangingRuns();
+          const inbox = new SessionMessageInbox({
+            admission: new AdmissionController(),
+            credentialEnvironment: credentialEnvironment(),
+            imCredentialGrantVersion: () => 2,
+            sessionCollaborationVersion: () => 4,
+            reconciler: inboxReconciler(),
+            runtimeManager: {
+              ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+              sessionKind: vi.fn(() => "internal" as const),
+            },
+            steerRetryMs: 5,
+          });
+          const running = { ...delivery(), placementGeneration: 2 };
+          const queued = { ...running, requestId: randomUUID(), messageId: randomUUID() };
+          await inbox.accept(running);
+          await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce());
+          await inbox.accept(queued);
+          expect(inbox.queuedCount).toBe(1);
+
+          await inbox.stopSessionWork(running.targetSessionId, 1);
+
+          expect(signals[0]?.aborted).toBe(false);
+          expect(inbox.queuedCount).toBe(1);
+          finishes[0]?.();
+          await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(2));
+          finishes[1]?.();
+          await inbox.settled();
+          expect(inbox.getState(queued.messageId)?.status).toBe("succeeded");
+          inbox.stop();
+        });
+
+        it("still waits for its own covered Run when a newer message is queued behind it", async () => {
+          const { finishes, prompt, signals } = hangingRuns();
+          const inbox = new SessionMessageInbox({
+            admission: new AdmissionController(),
+            credentialEnvironment: credentialEnvironment(),
+            imCredentialGrantVersion: () => 2,
+            sessionCollaborationVersion: () => 4,
+            reconciler: inboxReconciler(),
+            runtimeManager: {
+              ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+              sessionKind: vi.fn(() => "internal" as const),
+            },
+            steerRetryMs: 5,
+          });
+          const covered = delivery();
+          await inbox.accept(covered);
+          await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce());
+          const newer = {
+            ...covered,
+            requestId: randomUUID(),
+            messageId: randomUUID(),
+            placementGeneration: covered.placementGeneration + 1,
+          };
+          await inbox.accept(newer);
+
+          let stopped = false;
+          const stopping = inbox.stopSessionWork(covered.targetSessionId, covered.placementGeneration).then(() => {
+            stopped = true;
+          });
+          await vi.waitFor(() => expect(signals[0]?.aborted).toBe(true));
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          expect(stopped).toBe(false);
+          finishes[0]?.();
+          await stopping;
+          await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(2));
+          finishes[1]?.();
+          await inbox.settled();
+          expect(inbox.getState(newer.messageId)?.status).toBe("succeeded");
+          inbox.stop();
+        });
+      });
+
       it("ends a retry whose failure write was in flight, and still runs a newer placement", async () => {
         const store = new GatedStore();
         const prompt = vi.fn(failedOnce);

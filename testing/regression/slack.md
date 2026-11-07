@@ -192,8 +192,8 @@ A Local Agent's Sessions run concurrently, and a configuration change doesn't wa
 2. Send a follow-up in chat A. It joins the running Turn, with no second Turn and no extra report.
 3. Start another long Turn in chat A, then change the Agent's model while it runs. Send a message in chat B. Chat B starts
    at once on the new model. It must not wait for chat A.
-4. Let chat A finish. It ran on the old model. As the case above says, its provider access fails from the save onwards,
-   so what it sends after the change may not arrive. Send another message in chat A. That Turn runs on the new model.
+4. Let chat A finish. It ran on the old model, and its provider access still works after the change, so what it sends
+   after the change arrives. Send another message in chat A. That Turn runs on the new model.
 5. Repeat step 3, then restart the daemon right after chat B's message is sent. Chat A resumes once on the old model and
    completes, chat B completes on the new model, and neither chat gets an error card. The client log has no
    `TURN_RETRY_ABANDONED`. The arrival order after a restart can't be forced by hand, so if chat A happened to recover

@@ -6,11 +6,7 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import type {
-  AgentAdminConfig,
-  ContextTreeOperationRequest,
-  GitHubConnectionStatus as CurrentGitHubConnectionStatus,
-} from "@opentag/shared";
+import type { AgentAdminConfig, ContextTreeOperationRequest } from "@opentag/shared";
 import { GITHUB_CONNECTION_ERROR_CODES } from "@opentag/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ContextTreeOperationService } from "../services/agents/context-tree-operation-service.js";
@@ -26,7 +22,10 @@ import { type GitProcessOptions, runTrustedProcess } from "../services/github-pr
 import type { PublicationRemote } from "../services/github-proxy/git-remote.js";
 import { GitWorkspace } from "../services/github-proxy/git-workspace.js";
 import { githubMcpFixture } from "./support/github-mcp.js";
-import type { GitHubRepositoryBinding } from "./support/legacy-github-fixtures.js";
+import type {
+  GitHubConnectionStatus as CurrentGitHubConnectionStatus,
+  GitHubRepositoryBinding,
+} from "./support/legacy-github-fixtures.js";
 import { createUnitDatabase } from "./support/unit-database.js";
 
 const exec = promisify(execFile);

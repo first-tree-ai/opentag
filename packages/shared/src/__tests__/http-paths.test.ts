@@ -80,17 +80,6 @@ import {
   feishuSetupAttemptCancelPath,
   feishuSetupAttemptCheckPath,
   feishuSetupAttemptPath,
-  GITHUB_INTEGRATION_AUTHORIZATION_PATH,
-  GITHUB_INTEGRATION_BINDINGS_PATH,
-  GITHUB_INTEGRATION_DISCONNECT_PATH,
-  GITHUB_INTEGRATION_PATH,
-  GITHUB_INTEGRATION_REPOSITORIES_PATH,
-  GITHUB_OAUTH_CALLBACK_PATH,
-  githubIntegrationAuthorizationPath,
-  githubIntegrationBindingsPath,
-  githubIntegrationDisconnectPath,
-  githubIntegrationPath,
-  githubIntegrationRepositoriesPath,
   HTTP_PATHS,
   imBindingDiagnosticsPath,
   imBindingDisablePath,
@@ -249,40 +238,6 @@ describe("http paths", () => {
     it("builds the im binding management paths", () => {
       expect(imBindingDisablePath(OTHER_ID)).toBe(`/api/v1/im-bindings/${OTHER_ID}/disable`);
       expect(imBindingDiagnosticsPath(OTHER_ID)).toBe(`/api/v1/im-bindings/${OTHER_ID}/diagnostics`);
-    });
-  });
-
-  describe("github integration paths", () => {
-    it("returns the deployment-level collection paths", () => {
-      expect(githubIntegrationPath()).toBe(GITHUB_INTEGRATION_PATH);
-      expect(githubIntegrationPath()).toBe("/api/v2/integrations/github");
-      expect(githubIntegrationAuthorizationPath()).toBe(GITHUB_INTEGRATION_AUTHORIZATION_PATH);
-      expect(githubIntegrationBindingsPath()).toBe(GITHUB_INTEGRATION_BINDINGS_PATH);
-      expect(githubIntegrationBindingsPath()).toBe("/api/v2/integrations/github/bindings");
-      expect(githubIntegrationDisconnectPath()).toBe(GITHUB_INTEGRATION_DISCONNECT_PATH);
-    });
-
-    it("omits the query when no cursor was given", () => {
-      expect(githubIntegrationRepositoriesPath()).toBe(GITHUB_INTEGRATION_REPOSITORIES_PATH);
-      expect(githubIntegrationRepositoriesPath(undefined)).toBe("/api/v2/integrations/github/repositories");
-    });
-
-    it("encodes a cursor as a query parameter", () => {
-      expect(githubIntegrationRepositoriesPath("abc")).toBe("/api/v2/integrations/github/repositories?cursor=abc");
-      expect(githubIntegrationRepositoriesPath("a b&c=d")).toBe(
-        "/api/v2/integrations/github/repositories?cursor=a+b%26c%3Dd",
-      );
-      expect(githubIntegrationRepositoriesPath("")).toBe("/api/v2/integrations/github/repositories?cursor=");
-    });
-
-    it("preserves a viewer authorization scope with or without a continuation", () => {
-      const scope = { id: "9f0f2f6c-2f5c-4d43-a9fb-9a1c9f0000bb", authorizationVersion: "2" };
-      for (const cursor of [undefined, "next"]) {
-        const url = new URL(githubIntegrationRepositoriesPath(cursor, scope), "https://opentag.example.com");
-        expect(url.searchParams.get("connectionId")).toBe(scope.id);
-        expect(url.searchParams.get("authorizationVersion")).toBe(scope.authorizationVersion);
-        expect(url.searchParams.get("cursor")).toBe(cursor ?? null);
-      }
     });
   });
 
@@ -499,8 +454,6 @@ describe("http paths", () => {
       expect(HTTP_PATHS.accountTasks).toBe(ACCOUNT_TASKS_PATH);
       expect(HTTP_PATHS.agentById).toBe(AGENT_BY_ID_TEMPLATE);
       expect(HTTP_PATHS.agentAvatar).toBe(AGENT_AVATAR_TEMPLATE);
-      expect(HTTP_PATHS.githubIntegration).toBe(GITHUB_INTEGRATION_PATH);
-      expect(HTTP_PATHS.githubOAuthCallback).toBe(GITHUB_OAUTH_CALLBACK_PATH);
       expect(HTTP_PATHS.mcpServers).toBe(MCP_SERVERS_PATH);
       expect(HTTP_PATHS.mcpOAuthCallback).toBe(MCP_OAUTH_CALLBACK_PATH);
       expect(HTTP_PATHS.mcpClientMetadata).toBe(MCP_CLIENT_METADATA_PATH);

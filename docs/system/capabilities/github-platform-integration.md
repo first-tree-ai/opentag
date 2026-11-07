@@ -11,6 +11,14 @@ sessions and restricted publication; it does not translate these operations into
 Ordinary Agent GitHub tasks use MCP. They receive no managed Git/gh credential, helper, launcher,
 provider binding or native GitHub socket. User-managed system Git credentials are outside this boundary.
 
+There is one managed authorization path: the current Agent's GitHub Connector OAuth flow. OpenTag
+does not offer a separate Account authorization, GitHub App installation flow, or repository grant
+list. The Connector's token, the user's repository permissions and GitHub organization policy determine
+actual access. Successful sign-in or MCP tool discovery is not evidence that a specific repository is
+readable. Verify that access with a completed tool result; pending approvals and interrupted calls are
+not permission denials or successful reads. An unrelated native GitHub connector or App installation
+does not establish this Connector's repository scope.
+
 ## Identity and storage
 
 GitHub OAuth authorization lives in `mcp_server_authorizations`. The current Agent must own an enabled
@@ -33,6 +41,9 @@ mount and authentication; removing it can select another mount only for subseque
 credential worker runs, and no Account OAuth flow exchanges or refreshes its tokens. Existing rows
 and encryption keys remain intact. Historical GitHub-side tokens may still consume upstream quotas;
 retiring local maintenance does not revoke them or the OAuth App grant.
+The retired Account management services, token transport, browser components and public management
+contracts are absent. The remaining GitHub REST client serves Context Tree with MCP-issued access
+tokens; it has no OAuth client secret, code exchange, refresh grant or Account repository discovery.
 
 ## User experience
 

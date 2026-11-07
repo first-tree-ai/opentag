@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import type { ProviderReadinessStatus, RuntimeCredentialServerFrame } from "@opentag/shared";
-import { MCP_OAUTH_CALLBACK_PATH, RUNTIME_CAPABILITY, redactForLog } from "@opentag/shared";
+import { RUNTIME_CAPABILITY, redactForLog } from "@opentag/shared";
 import { eq } from "drizzle-orm";
 import { createApp } from "./app.js";
 import { createBetterAuth } from "./auth/better-auth.js";
@@ -816,8 +816,6 @@ export async function startServer(): Promise<void> {
     const github = githubClient
       ? (() => {
           const api = new GitHubApiClient({
-            ...githubClient,
-            redirectUri: `${config.publicUrl}${MCP_OAUTH_CALLBACK_PATH}`,
             fetch: createInstrumentedFetch(perfLogger, { provider: "github" }),
           });
           return {

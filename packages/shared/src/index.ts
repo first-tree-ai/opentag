@@ -264,7 +264,6 @@ export {
 } from "./errors.js";
 export * from "./execution-services.js";
 export * from "./github-integration.js";
-export * from "./github-management.js";
 export * from "./github-proxy-http.js";
 export { type ServerDeepHealth, ServerDeepHealthSchema, type ServerHealth, ServerHealthSchema } from "./health.js";
 export {
@@ -384,17 +383,6 @@ export {
   feishuSetupAttemptCancelPath,
   feishuSetupAttemptCheckPath,
   feishuSetupAttemptPath,
-  GITHUB_INTEGRATION_AUTHORIZATION_PATH,
-  GITHUB_INTEGRATION_BINDINGS_PATH,
-  GITHUB_INTEGRATION_DISCONNECT_PATH,
-  GITHUB_INTEGRATION_PATH,
-  GITHUB_INTEGRATION_REPOSITORIES_PATH,
-  GITHUB_OAUTH_CALLBACK_PATH,
-  githubIntegrationAuthorizationPath,
-  githubIntegrationBindingsPath,
-  githubIntegrationDisconnectPath,
-  githubIntegrationPath,
-  githubIntegrationRepositoriesPath,
   HTTP_PATHS,
   IM_BINDING_BY_ID_TEMPLATE,
   IM_BINDING_DIAGNOSTICS_TEMPLATE,

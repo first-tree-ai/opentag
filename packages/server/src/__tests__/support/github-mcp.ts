@@ -12,9 +12,6 @@ export async function githubMcpFixture(database: DatabaseClient) {
     clientId: "github-client",
   });
   const api = new GitHubApiClient({
-    clientId: "github-client",
-    clientSecret: "test-secret",
-    redirectUri: "https://opentag.example.test/callback",
     fetch: async () => {
       throw new Error("Unexpected GitHub API request");
     },

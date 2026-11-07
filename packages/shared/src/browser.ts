@@ -18,7 +18,6 @@ export * from "./context-tree-operation.js";
 export * from "./error-report.js";
 export * from "./errors.js";
 export * from "./github-integration.js";
-export * from "./github-management.js";
 export * from "./health.js";
 export * from "./http-paths.js";
 export * from "./im-binding.js";

@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import type { AgentAdminConfig, ContextTreeOperationRequest, GitHubConnectionStatus } from "@opentag/shared";
+import type { AgentAdminConfig, ContextTreeOperationRequest } from "@opentag/shared";
 import { afterEach, expect, it, vi } from "vitest";
 import { ContextTreeOperationService } from "../services/agents/context-tree-operation-service.js";
 import {
@@ -9,6 +9,7 @@ import {
 } from "../services/agents/github-context-tree-operations.js";
 import { GitHubApiClient } from "../services/github/github-api-client.js";
 import { GitWorkspace } from "../services/github-proxy/git-workspace.js";
+import type { GitHubConnectionStatus } from "./support/legacy-github-fixtures.js";
 
 const operations: GitHubContextTreeOperations[] = [];
 afterEach(async () => {
@@ -47,9 +48,6 @@ function fixture(repository = "acme/memory") {
     Response.json(remote, { status: 201, headers: { "x-oauth-scopes": "repo, offline_access" } }),
   );
   const api = new GitHubApiClient({
-    clientId: "client",
-    clientSecret: "secret",
-    redirectUri: "http://localhost/callback",
     fetch: (url, init) =>
       String(url) === "https://api.github.com/user"
         ? Promise.resolve(

@@ -171,7 +171,11 @@ overwrite or automatic empty fallback is allowed.
 Each upload carries a random attempt identity, retained across its bounded retries and encoded in
 the standard GCS `contentDisposition` filename. The fixed seven custom metadata keys stay unchanged,
 so fixed-point Server readers can still claim, read and restore new archives during rollback.
-Metadata-only claims and seals preserve the standard disposition; legacy archive writes may omit it.
+Every unsealed fencing claim toggles an `opentag-fence` parameter in that standard disposition,
+preserving its upload identity. This makes the metadata change real even for a same-owner seed or
+restored archive; fencing does not depend on GCS advancing metageneration for an identical PATCH.
+The parameter is only a change marker: authority still requires the native generation/metageneration
+CAS, and changed uncertain readback still fails closed. Seals preserve the disposition; legacy archive writes may omit it.
 Upload readback verifies the identity and the new archive's initial
 metageneration of one: a later fencing claim or another byte-identical upload must never become
 the old uploader's next write base. This is an operation identity, not another runtime epoch or

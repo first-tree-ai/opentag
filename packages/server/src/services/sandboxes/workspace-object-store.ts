@@ -142,10 +142,10 @@ interface ObjectLocation {
 }
 
 /** Validated snapshot; identical to the wire contract once identity checks passed. */
-type StoredSnapshot = RunnerWorkspaceObject & { writeId?: string };
+type StoredSnapshot = RunnerWorkspaceObject & { writeId?: string; contentDisposition?: string };
 
 function publicSnapshot(snapshot: StoredSnapshot): WorkspaceObject {
-  const { writeId: _writeId, ...object } = snapshot;
+  const { writeId: _writeId, contentDisposition: _contentDisposition, ...object } = snapshot;
   return object;
 }
 
@@ -274,14 +274,19 @@ function parseSnapshot(resource: unknown, location: ObjectLocation, scope: Works
   };
 }
 
-function parseWriteDisposition(value: unknown): Pick<StoredSnapshot, "writeId"> {
+function parseWriteDisposition(value: unknown): Pick<StoredSnapshot, "writeId" | "contentDisposition"> {
   if (typeof value !== "string") return {};
-  const writeId = /^attachment; filename="state-([a-f0-9-]{36})\.tar\.gz"$/.exec(value)?.[1];
-  return writeId && WRITE_ID_PATTERN.test(writeId) ? { writeId } : {};
+  const writeId = /^attachment; filename="state-([a-f0-9-]{36})\.tar\.gz"(?:; opentag-fence=[01])?$/.exec(value)?.[1];
+  return { contentDisposition: value, ...(writeId && WRITE_ID_PATTERN.test(writeId) ? { writeId } : {}) };
 }
 
 function formatWriteDisposition(writeId?: string): string | undefined {
   return writeId ? `attachment; filename="state-${writeId}.tar.gz"` : undefined;
+}
+
+function nextFenceDisposition(current: StoredSnapshot): string {
+  const base = formatWriteDisposition(current.writeId) ?? 'attachment; filename="state.tar.gz"';
+  return `${base}; opentag-fence=${current.contentDisposition === `${base}; opentag-fence=0` ? "1" : "0"}`;
 }
 
 function parseCustomMetadata(
@@ -382,7 +387,12 @@ function requireFenceSnapshot(
 }
 
 function assertUnchangedFenceSnapshot(observed: StoredSnapshot | undefined, original: StoredSnapshot): void {
-  if (!observed || !snapshotsEqual(observed, original) || observed.writeId !== original.writeId) {
+  if (
+    !observed ||
+    !snapshotsEqual(observed, original) ||
+    observed.writeId !== original.writeId ||
+    observed.contentDisposition !== original.contentDisposition
+  ) {
     fail("unknown_result", "Workspace fencing result cannot be attributed to this claim");
   }
 }
@@ -600,10 +610,19 @@ export class GcsWorkspaceObjectStore implements WorkspaceObjectStore {
     const signal = AbortSignal.timeout(this.#timeoutMs);
     const original = requireFenceSnapshot(scope, await this.#getMetadata(location, scope, signal), sameOwnerOnly);
     if (original.ownerGeneration === scope.environmentGeneration && original.sealed) return original;
+    const contentDisposition = nextFenceDisposition(original);
     for (let attempt = 0; ; attempt += 1) {
       assertFenceDeadline(signal);
       try {
-        return await this.#patchMetadata(location, scope, original, scope.environmentGeneration, false, signal);
+        return await this.#patchMetadata(
+          location,
+          scope,
+          original,
+          scope.environmentGeneration,
+          false,
+          signal,
+          contentDisposition,
+        );
       } catch (error) {
         if (
           !(error instanceof WorkspaceObjectStoreError) ||
@@ -821,6 +840,7 @@ export class GcsWorkspaceObjectStore implements WorkspaceObjectStore {
     nextOwner: number,
     sealed: boolean,
     signal = AbortSignal.timeout(this.#timeoutMs),
+    contentDisposition?: string,
   ): Promise<StoredSnapshot> {
     // The full validated metadata map is resent so the result is identical whether GCS merges or
     // replaces custom metadata under PATCH semantics.
@@ -833,7 +853,7 @@ export class GcsWorkspaceObjectStore implements WorkspaceObjectStore {
     const url = `${metadataUrl(location)}?ifGenerationMatch=${current.generation}&ifMetagenerationMatch=${current.metageneration}`;
     const response = await this.#send("PATCH", url, {
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ metadata }),
+      body: JSON.stringify({ metadata, ...(contentDisposition === undefined ? {} : { contentDisposition }) }),
       signal,
     });
     if (response.status === 404) {
@@ -862,7 +882,8 @@ export class GcsWorkspaceObjectStore implements WorkspaceObjectStore {
       snapshot.bytes !== current.bytes ||
       snapshot.sha256 !== current.sha256 ||
       snapshot.md5 !== current.md5 ||
-      snapshot.writeId !== current.writeId
+      snapshot.writeId !== current.writeId ||
+      snapshot.contentDisposition !== (contentDisposition ?? current.contentDisposition)
     ) {
       fail("unknown_result", "Workspace metadata update response did not match the patched snapshot");
     }

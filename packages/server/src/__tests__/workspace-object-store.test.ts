@@ -209,11 +209,17 @@ function createFakeGcs() {
     }
     const patch = JSON.parse(Buffer.from(must(call.body, "patch body")).toString("utf8")) as {
       metadata?: Record<string, string>;
+      contentDisposition?: string;
     };
+    const metadata = { ...stored.metadata, ...(patch.metadata ?? {}) };
+    const contentDisposition = patch.contentDisposition ?? stored.contentDisposition;
+    const changed =
+      JSON.stringify(metadata) !== JSON.stringify(stored.metadata) || contentDisposition !== stored.contentDisposition;
     stored = {
       ...stored,
-      metageneration: String(Number(stored.metageneration) + 1),
-      metadata: { ...stored.metadata, ...(patch.metadata ?? {}) },
+      metageneration: String(Number(stored.metageneration) + Number(changed)),
+      metadata,
+      ...(contentDisposition === undefined ? {} : { contentDisposition }),
     };
     return jsonResponse(200, resourceJson());
   }
@@ -315,6 +321,38 @@ function createFakeGcs() {
 type FakeGcs = ReturnType<typeof createFakeGcs>;
 
 describe("workspace metadata fencing and sealing", () => {
+  it.each([false, true])("changes metadata on every same-owner fence, including saved=%s", async (saved) => {
+    const fake = createFakeGcs();
+    const content = saved ? Buffer.from("unpublished work") : new Uint8Array();
+    const planted = fake.plant(content, { owner: 1, saved, sealed: false });
+    const writeId = "d45b0afb-a231-4ffa-b562-72acd250613a";
+    if (saved) planted.contentDisposition = `attachment; filename="state-${writeId}.tar.gz"`;
+    const store = createStore(fake);
+    const original = previousOf(planted);
+    let previous = original;
+    let disposition = planted.contentDisposition;
+    for (let index = 0; index < 3; index += 1) {
+      const claimed = await store.claim(SCOPE, { fence: true });
+      expect(claimed).toEqual({ ...original, metageneration: String(index + 2) });
+      expect(must(fake.stored()).contentDisposition).not.toBe(disposition);
+      expect(must(fake.stored()).content).toEqual(content);
+      expect(must(fake.stored()).metadata).toEqual(planted.metadata);
+      if (saved) {
+        await expect(store.write(SCOPE, previous, archiveInput(content))).rejects.toMatchObject({ code: "conflict" });
+      }
+      disposition = must(fake.stored()).contentDisposition;
+      previous = claimed;
+    }
+    expect(fake.callsNamed("PATCH")).toHaveLength(3);
+    const latest = await store.claim(SCOPE);
+    expect(latest).toEqual(previous);
+    if (saved) {
+      const sealed = await store.seal(SCOPE, latest);
+      expect(must(fake.stored()).contentDisposition).toBe(disposition);
+      expect(await store.inspectWrite(SCOPE, { id: writeId, ...sealed })).toEqual(sealed);
+    }
+  });
+
   it("keeps a same-owner sealed fencing claim byte-identical without a PATCH", async () => {
     const fake = createFakeGcs();
     const content = Buffer.from("sealed unpublished work");

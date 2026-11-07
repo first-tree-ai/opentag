@@ -192,6 +192,8 @@ for stopping/replacing Instances separate from permission to run this catalogue.
 4. In the controlled transport harness, race an older upload with a same-allocation fencing claim,
    and race a seal with a claim. Expected: generation/metageneration preconditions prevent stale
    data or seals from replacing the current state; a same-owner claim cannot reopen a sealed object.
+   Make identical metadata PATCHes leave metageneration unchanged in the transport harness. Expected:
+   successive unsealed claims still change metadata and fence earlier pins, including for a new seed.
    Lose an older fencing response, then let a successor claim/save before readback. Expected: the
    older request neither advances nor receives the successor's pins, including when the old PATCH
    is rejected or never commits before response loss. The successor can still seal, while an old

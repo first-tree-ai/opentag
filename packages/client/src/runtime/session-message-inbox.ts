@@ -176,7 +176,11 @@ export class SessionMessageInbox {
   /** The abort of each Session's own running Run, for a Session stop. */
   readonly #runStops = new Map<string, { controller: AbortController; placementGeneration: number }>();
   readonly #drains = new Map<string, Promise<void>>();
-  /** Each Session's in-flight Run, which the drain does not wait for; a Session stop does. */
+  /**
+   * Each Session's Run, which the drain does not wait for and a Session stop does. A Run settles only after
+   * the messages steered into it, so this is all of a placement's work a stop must see finish. Runs start
+   * only from a queue the stop's fence keeps free of its placement, so none of it can begin after the fence.
+   */
   readonly #activeRuns = new Map<string, { done: Promise<void>; placementGeneration: number }>();
   /** Sessions whose queued messages wait for the Server to prepare them (e.g. after a restart). */
   readonly #awaitingPreparation = new Set<string>();
@@ -447,6 +451,9 @@ export class SessionMessageInbox {
   async stopSessionWork(sessionId: string, placementGeneration: number): Promise<void> {
     // Before any wait: a write already in flight must find the stop when it completes.
     this.#fenceStopped(sessionId, placementGeneration);
+    // Read at the fence, for good: whatever starts later is newer work, which this stop never waits for.
+    const activeRun = this.#activeRuns.get(sessionId);
+    const coveredRun = activeRun && activeRun.placementGeneration <= placementGeneration ? activeRun.done : undefined;
     this.#abortStoppedRun(sessionId, placementGeneration);
     const queue = this.#queues.get(sessionId) ?? [];
     const kept = queue.filter((queued) => queued.request.placementGeneration > placementGeneration);
@@ -468,28 +475,15 @@ export class SessionMessageInbox {
       this.#retryTimers.delete(record.key);
       await this.#recordStopped(record, "runtime");
     }
-    const running = this.#abortStoppedRun(sessionId, placementGeneration);
-    // An older stop leaves newer work alone, so it must not wait for that work either.
-    const activeRun = this.#activeRuns.get(sessionId);
-    const coveredRun = activeRun && activeRun.placementGeneration <= placementGeneration ? activeRun.done : undefined;
-    if (running && coveredRun) await this.#closeRuntimeAfterGrace(sessionId, coveredRun);
+    if (coveredRun) await this.#closeRuntimeAfterGrace(sessionId, coveredRun);
     await coveredRun;
-    if (!this.#hasNewerWork(sessionId, placementGeneration)) await this.#drains.get(sessionId);
   }
 
-  /** Whatever is still queued survived the stop, and a drain stays busy for as long as it waits behind a Run. */
-  #hasNewerWork(sessionId: string, placementGeneration: number): boolean {
-    const activeRun = this.#activeRuns.get(sessionId);
-    return (
-      (this.#queues.get(sessionId)?.length ?? 0) > 0 || (activeRun?.placementGeneration ?? 0) > placementGeneration
-    );
-  }
-
-  #abortStoppedRun(sessionId: string, placementGeneration: number): boolean {
+  #abortStoppedRun(sessionId: string, placementGeneration: number): void {
     const running = this.#runStops.get(sessionId);
-    if (!running || running.placementGeneration > placementGeneration) return false;
-    running.controller.abort(new Error("Session stopped"));
-    return true;
+    if (running && running.placementGeneration <= placementGeneration) {
+      running.controller.abort(new Error("Session stopped"));
+    }
   }
 
   #fenceStopped(sessionId: string, placementGeneration: number): void {
@@ -581,6 +575,8 @@ export class SessionMessageInbox {
         return;
       }
       if (await this.#holdFailingJoined(next)) continue;
+      // Withdrawn by a Session stop during that wait. From here to the Run starting nothing yields.
+      if (this.#queues.get(sessionId)?.[0] !== next) continue;
       // Waiting for the Server to prepare the Session is not a failure: after a restart nothing has
       // prepared it yet. The message runs once a ready reconcile arrives.
       if (this.#runtimeManager.isPrepared && !this.#runtimeManager.isPrepared(sessionId)) {
@@ -933,6 +929,8 @@ export class SessionMessageInbox {
     const timeout = new AbortController();
     const stop = new AbortController();
     this.#runStops.set(sessionId, { controller: stop, placementGeneration: next.request.placementGeneration });
+    // A retry's attempt can begin in the same moment a stop fences it, after that stop looked for a Run to abort.
+    if (this.#isStopped(next.request)) stop.abort(new Error("Session stopped"));
     let timer: { cancel(): void } | undefined;
     let runSignal: AbortSignal | undefined;
     let executionSignal: AbortSignal | undefined;

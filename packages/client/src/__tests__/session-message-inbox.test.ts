@@ -2473,6 +2473,9 @@ describe("SessionMessageInbox", () => {
           held.reservation.release();
           await expect(inbox.accept(newer)).resolves.toMatchObject({ status: "accepted" });
           await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce());
+          // A second one keeps the drain busy behind that Run.
+          const queuedNewer = { ...newer, requestId: randomUUID(), messageId: randomUUID() };
+          await expect(inbox.accept(queuedNewer)).resolves.toMatchObject({ status: "accepted" });
           terminal.open();
 
           await expect(stopping).resolves.toMatchObject({ status: "rejected", reason: "stale_generation" });
@@ -2482,6 +2485,113 @@ describe("SessionMessageInbox", () => {
 
           finishes[0]?.();
           await vi.waitFor(() => expect(inbox.getState(newer.messageId)?.status).toBe("succeeded"));
+          await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(2));
+          finishes[1]?.();
+          await vi.waitFor(() => expect(inbox.getState(queuedNewer.messageId)?.status).toBe("succeeded"));
+          inbox.stop();
+        });
+
+        it("never waits for the drain, so messages arriving after the stop began cannot hold it", async () => {
+          const { finishes, prompt, signals } = hangingRuns();
+          const admission = new AdmissionController();
+          const inbox = new SessionMessageInbox({
+            admission,
+            credentialEnvironment: credentialEnvironment(),
+            imCredentialGrantVersion: () => 2,
+            sessionCollaborationVersion: () => 4,
+            reconciler: inboxReconciler(),
+            runtimeManager: {
+              ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+              sessionKind: vi.fn(() => "internal" as const),
+            },
+            // The drain sleeps through this wait unless admission opens, so it outlives the stop.
+            steerRetryMs: 60_000,
+          });
+          const older = delivery();
+          const held = admission.reserve(older.targetSessionId, older.agentId);
+          if (!held.accepted) throw new Error("Expected the host reservation");
+          held.reservation.markActive();
+          await inbox.accept(older);
+
+          // The drain is parked on the withdrawn message: nothing newer exists when the stop looks.
+          let stopped = false;
+          const stopping = inbox.stopSessionWork(older.targetSessionId, older.placementGeneration).then(() => {
+            stopped = true;
+          });
+          await vi.waitFor(() => expect(stopped).toBe(true));
+          await stopping;
+          expect(inbox.getState(older.messageId)).toMatchObject({ lastError: { code: SESSION_MESSAGE_STOPPED_CODE } });
+
+          // Later arrivals go on to run, on that same drain, with no stop in their way.
+          const newer = { ...older, requestId: randomUUID(), messageId: randomUUID(), placementGeneration: 2 };
+          const secondNewer = { ...newer, requestId: randomUUID(), messageId: randomUUID() };
+          await inbox.accept(newer);
+          await inbox.accept(secondNewer);
+          held.reservation.release();
+          await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce());
+          expect(signals[0]?.aborted).toBe(false);
+          finishes[0]?.();
+          await vi.waitFor(() => expect(prompt).toHaveBeenCalledTimes(2));
+          finishes[1]?.();
+          await inbox.settled();
+          expect(inbox.getState(secondNewer.messageId)?.status).toBe("succeeded");
+          inbox.stop();
+        });
+
+        it("waits for a steer already in flight, through the Run that holds it", async () => {
+          let finishSteer: (receipt: { outcome: Promise<AgentSteerOutcome> }) => void = () => undefined;
+          const steer = vi.fn(
+            () =>
+              new Promise<{ outcome: Promise<AgentSteerOutcome> }>((resolve) => {
+                finishSteer = resolve;
+              }),
+          );
+          const state = { phase: "running", activeRunId: undefined as string | undefined };
+          const prompt = vi.fn(
+            (input: { runId: string; signal?: AbortSignal }) =>
+              new Promise((_resolve, reject) => {
+                state.activeRunId = input.runId;
+                input.signal?.addEventListener("abort", () => reject(input.signal?.reason), { once: true });
+              }),
+          );
+          const runtime = {
+            capabilities: { steer: "supported" },
+            state,
+            steer,
+            prompt,
+            waitForIdle: vi.fn(async () => undefined),
+          };
+          const inbox = new SessionMessageInbox({
+            admission: new AdmissionController(),
+            credentialEnvironment: credentialEnvironment(),
+            imCredentialGrantVersion: () => 2,
+            sessionCollaborationVersion: () => 4,
+            reconciler: inboxReconciler(),
+            runtimeManager: {
+              ensureRuntime: vi.fn(async () => runtime as never),
+              runtime: vi.fn(() => runtime as never),
+              sessionKind: vi.fn(() => "internal" as const),
+            },
+            steerRetryMs: 5,
+          });
+          const first = delivery();
+          const second = { ...first, requestId: randomUUID(), messageId: randomUUID() };
+          await inbox.accept(first);
+          await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce());
+          await inbox.accept(second);
+          await vi.waitFor(() => expect(steer).toHaveBeenCalledOnce());
+
+          let stopped = false;
+          const stopping = inbox.stopSessionWork(first.targetSessionId, first.placementGeneration).then(() => {
+            stopped = true;
+          });
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          expect(stopped).toBe(false);
+
+          finishSteer({ outcome: Promise.resolve("not_started") });
+          await stopping;
+          await vi.waitFor(() => expect(inbox.getState(second.messageId)?.status).toBe("failed"));
+          expect(inbox.getState(second.messageId)).toMatchObject({ lastError: { code: SESSION_MESSAGE_STOPPED_CODE } });
           inbox.stop();
         });
 

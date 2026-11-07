@@ -206,8 +206,9 @@ Needs a real Claude Code: the Lab's scripted Claude does not start background ta
    existing channel or thread outbox target; it does not wait to start a separate callback Run. Cover both channel and
    thread Sessions with Feishu and Slack.
 2. Kill and restart the daemon while the steered message is in the Turn.
-3. Expected: the Turn continues, and the message is steered into it again with the notice that it may already have been
-   handled. If that Turn fails, the message fails with it and does not run again: the person gets the error card, and the
+3. Expected: the Turn continues. If the Agent had already answered after the message, it is not injected again (Claude Code and
+   Codex). Otherwise, and always with Pi, it is steered in again with the notice that it may already have been handled. If that
+   Turn fails, the message fails with it and does not run again: the person gets the error card, and the
    message's sender gets a notice.
 4. Repeat with explicit `proxy` credential mode and verify the same steer and outbox target. A Server that does not
    negotiate credential grant v2 must refuse visible callback delivery; missing context never invents a target.
@@ -219,8 +220,11 @@ Use a steer-capable Provider (Claude Code on a current version). A child's long 
 1. While the child is working, have the parent run `opentag session send <child-id>` twice with short follow-ups.
 2. Expected: the follow-ups reach the running child at its next tool boundary, in order, with no new Provider Run for them;
    all messages succeed together when the Run completes.
-3. Repeat, then kill and restart the daemon after the follow-ups were steered. Expected: the child resumes with the crash
-   notice, the follow-ups arrive again in order, each with the notice, and the parent gets no failure notice.
+3. Repeat, then kill and restart the daemon after the child has answered the follow-ups. Expected: the child resumes with the crash
+   notice, the follow-ups are not injected again (its transcript holds each once), and the parent gets no failure notice. Check this
+   with Claude Code and Codex.
+   Repeat with Pi, which gives no confirmation, or kill the daemon right after a steer with Claude Code, before the model answers.
+   Expected: those follow-ups arrive again in order, each with the notice.
 4. Repeat the crash until the retries run out. Expected: the child's message fails, and the steered follow-ups fail with it:
    one notice per message to its sender, no further Run. A message queued but not yet steered runs on its own.
 5. Make the child's task fail without a retry while a follow-up is steered into it. Expected: both fail with one notice each to

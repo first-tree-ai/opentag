@@ -44,6 +44,7 @@ import {
   type AgentPromptRequest,
   type AgentProviderRunContext,
   type AgentProviderRunResult,
+  type AgentProviderSteerCustody,
   type AgentQuestionResponse,
   type AgentRunConfiguration,
   type AgentRuntimeBinding,
@@ -337,10 +338,11 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
 
   /**
    * `turn/steer` answers after the App Server appended the input to the expected native Turn. The
-   * protocol exposes no per-input start signal, so no custody probe is returned: the acknowledged
-   * input counts as possibly started, and a Run that does not complete reports it `interrupted`.
+   * protocol exposes no per-input start signal, so the acknowledged input counts as possibly started,
+   * and a Run that does not complete reports it `interrupted`. The rollout already holds it by then
+   * (measured on 0.163.0: killed right after the answer, a resumed thread still had it).
    */
-  protected override async steerProvider(request: AgentSteerRequest): Promise<undefined> {
+  protected override async steerProvider(request: AgentSteerRequest): Promise<AgentProviderSteerCustody> {
     const turnId = await this.#activeTurnId();
     const response = requireRecord(
       await this.#client.request("turn/steer", {
@@ -353,6 +355,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     if (requireString(response.turnId, "turn/steer returned no turnId") !== turnId) {
       throw protocolError("turn/steer accepted another turn");
     }
+    return { started: () => true, inConversation: Promise.resolve() };
   }
 
   protected override async respondProvider(response: AgentInteractionResponse): Promise<void> {

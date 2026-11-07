@@ -777,10 +777,10 @@ class SteerableClaudeCodeProcess implements ClaudeCodeProcessClient {
     this.#finish?.();
   }
 
-  async steer(message: Readonly<Record<string, unknown>> & { readonly uuid: string }): Promise<{ started(): boolean }> {
+  async steer(message: Readonly<Record<string, unknown>> & { readonly uuid: string }) {
     if (this.refuse) throw new Error("closed");
     this.steered.push(message);
-    return { started: () => true };
+    return { started: () => true, inConversation: new Promise<void>(() => undefined) };
   }
 
   async interrupt(): Promise<void> {}

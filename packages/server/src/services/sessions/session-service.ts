@@ -185,6 +185,8 @@ export interface AuthorizedScheduledMessageRoute {
   imBindingId: string;
   targetSessionId: string;
   targetSessionKind: SessionKind;
+  /** Null for a visible target. A reconcile of an internal target must name it. */
+  targetCreatorSessionId: string | null;
   targetInstallationId: string;
   targetComputerId: string;
   targetComputerKind: "local" | "cloud";
@@ -633,6 +635,16 @@ export class SessionService {
           .where(and(eq(sessions.id, input.targetSessionId), isNull(sessions.endedAt)));
         await markEndedDescendantsInactive(transaction, { sessionIds: [input.targetSessionId] });
       }
+      // A stopped Session's schedules stop with it, and can't be resumed. On a repeated stop this finds none.
+      await transaction
+        .update(agentSchedules)
+        .set({
+          enabled: false,
+          nextTriggerAt: null,
+          revision: sql`${agentSchedules.revision} + 1`,
+          updatedAt: this.#now(),
+        })
+        .where(and(eq(agentSchedules.targetSessionId, input.targetSessionId), eq(agentSchedules.enabled, true)));
       const [target] = await this.#internalStopTargets(transaction, eq(sessions.id, input.targetSessionId));
       if (!target) throw new SessionServiceError("SESSION_TARGET_UNAVAILABLE", "The target Session is not available");
       const [descendants] = await transaction
@@ -1043,6 +1055,7 @@ export class SessionService {
       .select({
         sessionId: sessions.id,
         sessionKind: sessions.kind,
+        sessionCreatorId: sessions.createdBySessionId,
         sessionEndedAt: sessions.endedAt,
         bindingId: imBindings.id,
         bindingAgentId: imBindings.agentId,
@@ -1089,6 +1102,7 @@ export class SessionService {
         imBindingId: row.bindingId,
         targetSessionId: row.sessionId,
         targetSessionKind: row.sessionKind,
+        targetCreatorSessionId: row.sessionCreatorId,
         targetInstallationId: row.computerInstallationId,
         targetComputerId: row.placementComputerId,
         targetComputerKind: row.computerKind,

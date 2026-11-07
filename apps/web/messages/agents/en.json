@@ -107,6 +107,7 @@
   "agents_schedules_resume": "Resume",
   "agents_schedules_target": "Posts to",
   "agents_schedules_target_channel": "{provider} · channel",
+  "agents_schedules_target_internal": "Internal Session {sessionId}",
   "agents_schedules_target_thread": "{provider} · thread",
   "agents_schedules_time_with_zone": "{time} ({zone})",
   "agents_schedules_timezone": "Timezone",

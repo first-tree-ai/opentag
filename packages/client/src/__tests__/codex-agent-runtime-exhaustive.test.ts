@@ -759,6 +759,8 @@ describe("CodexAgentRuntime exhaustive behavior", () => {
       const receipt = await steered;
       expect(JSON.stringify(client.calls.at(-1)?.params)).toContain("while waiting");
       expect(client.call("turn/steer")).toBeUndefined();
+      // Only a `turn/steer` answer was measured as durable, so this one promises nothing.
+      expect(receipt.inConversation).toBeUndefined();
       client.complete({ id: "turn-2", items: [] });
       await new Promise((resolve) => setImmediate(resolve));
       expect(turnStarts()).toBe(2);

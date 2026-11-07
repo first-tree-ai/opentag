@@ -14,6 +14,7 @@ import {
   slackInstallations,
   users,
 } from "../../db/schema/index.js";
+import { type FeedbackLanguage, feedbackLanguage } from "./im-feedback-copy.js";
 import { feedbackMessageFormat } from "./im-feedback-format.js";
 
 export type FeedbackTarget = typeof imFeedbackTargets.$inferSelect & { batchRetryBlocked?: boolean };
@@ -421,6 +422,16 @@ export class ImFeedbackStore {
     });
   }
 
+  /** Language of the exact input revision the target was created for; derived, so edits and retries agree. */
+  async messageLanguage(messageId: string): Promise<FeedbackLanguage> {
+    const [message] = await this.database
+      .select({ content: imMessages.content })
+      .from(imMessages)
+      .where(eq(imMessages.id, messageId))
+      .limit(1);
+    return message ? feedbackLanguage(message.content) : "en";
+  }
+
   async latestAction(feedbackId: string): Promise<FeedbackAction | undefined> {
     const [action] = await this.database
       .select()
@@ -499,6 +510,16 @@ function terminalFeedbackUpdate(target: FeedbackTarget, report: TurnReportReques
     state,
     desiredReaction: failed ? ("warning" as const) : ("none" as const),
     errorCode: failed ? report.errorReason : null,
+    // Only the recovery buttons need a card, and the kind of failure is unknown when the target is created.
+    // This is the one format change. The caller's snapshot is unlocked, so the decision reads the live row:
+    // a worker that has already started sending keeps the format it sent.
+    ...(state === "workspace_blocked"
+      ? {
+          messageFormat: sql<
+            FeedbackTarget["messageFormat"]
+          >`case when ${imFeedbackTargets.cardMessageId} is null and ${imFeedbackTargets.cardState} in ('none','pending') then 'interactive_v1' else ${imFeedbackTargets.messageFormat} end`,
+        }
+      : {}),
     effects: report.executionEffects,
     reportHash: report.resultHash,
     actionsExpireAt: new Date(now.getTime() + FEEDBACK_ACTION_TTL_MS),

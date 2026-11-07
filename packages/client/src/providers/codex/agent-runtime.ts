@@ -49,6 +49,7 @@ import {
   type AgentPromptRequest,
   type AgentProviderRunContext,
   type AgentProviderRunResult,
+  type AgentProviderSteerCustody,
   type AgentQuestionResponse,
   type AgentRunConfiguration,
   type AgentRuntimeBinding,
@@ -499,18 +500,20 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
 
   /**
    * `turn/steer` answers after the App Server appended the input to the expected native Turn. The
-   * protocol exposes no per-input start signal, so no custody probe is returned: the acknowledged
-   * input counts as possibly started, and a Run that does not complete reports it `interrupted`.
-   * While the Run waits between turns there is no Turn to steer, so the input starts the next one.
+   * protocol exposes no per-input start signal, so the acknowledged input counts as possibly started,
+   * and a Run that does not complete reports it `interrupted`. The rollout already holds it by then
+   * (measured on 0.163.0: killed right after the answer, a resumed thread still had it).
+   * While the Run waits between turns there is no Turn to steer, so the input starts the next one. That
+   * answer was not measured for durability, so it promises nothing and a resumed Run may repeat the input.
    */
-  protected override async steerProvider(request: AgentSteerRequest): Promise<undefined> {
+  protected override async steerProvider(request: AgentSteerRequest): Promise<AgentProviderSteerCustody> {
     if (this.#wait) {
       const accepted = deferred<void>();
       void accepted.promise.catch(() => undefined);
       this.#wakeInputs.push(...request.input.items.map((item, index) => (index === 0 ? { item, accepted } : { item })));
       this.#wait.resolve();
       await accepted.promise;
-      return;
+      return { started: () => true };
     }
     // Whatever this turn started as, it now carries input someone is waiting on: its failure is the Run's.
     this.#followUpOnly = false;
@@ -526,6 +529,7 @@ export class CodexAgentRuntime extends BaseAgentRuntime {
     if (requireString(response.turnId, "turn/steer returned no turnId") !== turnId) {
       throw protocolError("turn/steer accepted another turn");
     }
+    return { started: () => true, inConversation: Promise.resolve() };
   }
 
   protected override async respondProvider(response: AgentInteractionResponse): Promise<void> {

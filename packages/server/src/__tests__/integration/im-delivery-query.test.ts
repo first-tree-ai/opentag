@@ -5,7 +5,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { createDatabaseClient } from "../../db/client.js";
 import { ImDeliverySelector, lockEligibleDelivery } from "../../runtime/im-delivery-selector.js";
 import { deliveryCandidatePage, deliveryCustodyQuery, pendingHeadQuery } from "../../runtime/im-delivery-work-query.js";
-import { deliveryTestId, seedDeliveryQuery } from "../support/im-delivery-query-fixture.js";
+import { deliveryTestId, seedBlockedDeliveryQuery, seedDeliveryQuery } from "../support/im-delivery-query-fixture.js";
 import { type MigratedTestDatabase, startMigratedTestDatabase } from "./migrated-test-database.js";
 
 let testDatabase: MigratedTestDatabase;
@@ -110,7 +110,7 @@ async function selectAndLock(selector: ImDeliverySelector, expectedId: string) {
 
 describe("delivery query plans on PostgreSQL 16", { timeout: 60_000 }, () => {
   it.each([424, 4240])("bounds historical work with 80k reported rows and %i blocked inputs", async (blocked) => {
-    const fixture = await seedDeliveryQuery(client.database, 80_000, blocked);
+    const fixture = await seedBlockedDeliveryQuery(client.database, 80_000, blocked);
     const candidate = deliveryCandidatePage(client.database, new Date()).toSQL();
     const custody = dialect.sqlToQuery(deliveryCustodyQuery());
     const metrics = [];

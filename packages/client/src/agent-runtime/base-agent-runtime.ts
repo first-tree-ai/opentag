@@ -712,7 +712,10 @@ function immutableSnapshot<T>(value: T): T {
 }
 
 function steerReceipt(run: Promise<AgentRunResult>, custody: AgentProviderSteerCustody | undefined): AgentSteerReceipt {
-  return { outcome: run.then((result) => steerOutcome(result, custody)) };
+  return {
+    outcome: run.then((result) => steerOutcome(result, custody)),
+    ...(custody?.inConversation ? { inConversation: custody.inConversation } : {}),
+  };
 }
 
 function steerOutcome(result: AgentRunResult, custody: AgentProviderSteerCustody | undefined): AgentSteerOutcome {

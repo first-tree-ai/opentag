@@ -3,7 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { agents, computers, imMessageDeliveries } from "../db/schema/index.js";
 import { ImDeliverySelector, lockEligibleDelivery } from "../runtime/im-delivery-selector.js";
 import { type DeliveryCursor, deliveryCandidatePage, readDeliveryCustody } from "../runtime/im-delivery-work-query.js";
-import { deliveryTestId, seedDeliveryQuery } from "./support/im-delivery-query-fixture.js";
+import { deliveryTestId, seedBlockedDeliveryQuery, seedDeliveryQuery } from "./support/im-delivery-query-fixture.js";
 import { createUnitDatabase, type UnitDatabase } from "./support/unit-database.js";
 
 let unit: UnitDatabase;
@@ -15,7 +15,7 @@ afterAll(async () => unit?.close());
 
 describe("indexed delivery selection", () => {
   it("continues after eight fully blocked pages instead of starving the independent Agent", async () => {
-    const fixture = await seedDeliveryQuery(unit.database, 0, 1100);
+    const fixture = await seedBlockedDeliveryQuery(unit.database, 0, 1100);
     const selector = new ImDeliverySelector(unit.database);
     expect((await selector.candidates(new Date()).next()).done).toBe(true);
     const next = await selector.candidates(new Date()).next();
@@ -83,7 +83,7 @@ describe("indexed delivery selection", () => {
   });
 
   it("observes released custody on the next scan without waiting for metadata TTL", async () => {
-    const fixture = await seedDeliveryQuery(unit.database, 0, 1);
+    const fixture = await seedBlockedDeliveryQuery(unit.database, 0, 1);
     const selector = new ImDeliverySelector(unit.database);
     expect((await selector.candidates(new Date()).next()).value?.row.id).toBe(fixture.deliveryId);
     await unit.database
@@ -98,7 +98,7 @@ describe("indexed delivery selection", () => {
   });
 
   it("keeps a reason-bearing pending claim in the work set and custody fence", async () => {
-    const fixture = await seedDeliveryQuery(unit.database, 0, 1);
+    const fixture = await seedBlockedDeliveryQuery(unit.database, 0, 1);
     await unit.database
       .update(imMessageDeliveries)
       .set({ reason: "blocked" })

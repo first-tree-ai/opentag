@@ -391,6 +391,7 @@ export abstract class BaseAgentRuntime implements AgentRuntime {
       ...(this.#binding ? { binding: this.#binding } : {}),
       ...(error ? { error } : {}),
       ...(result.diagnostics !== undefined ? { providerDiagnostics: result.diagnostics } : {}),
+      ...(result.abandonedBackgroundWork ? { abandonedBackgroundWork: result.abandonedBackgroundWork } : {}),
     });
   }
 

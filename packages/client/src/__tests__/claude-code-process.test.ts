@@ -85,6 +85,427 @@ describe("ClaudeCodeProcess", () => {
     await process.close();
   });
 
+  it("waits past a result Claude Code generated itself on resume for the prompt's own result", async () => {
+    const child = fakeChild();
+    const process = fakeProcess(child);
+    const seen: [unknown, boolean | undefined][] = [];
+    const run = process.execute(
+      { type: "user", uuid: "prompt" },
+      (message, terminal) => seen.push([message.result, terminal]),
+      new AbortController().signal,
+    );
+    // Claude Code 2.1.319 on `--resume` after a background task was orphaned.
+    child.stdout.write(`${JSON.stringify(selfGeneratedResult)}\n`);
+    await process.send({ type: "control_response" });
+    child.stdout.write('{"type":"result","result":"answer","user_message_uuids":["prompt"]}\n');
+    expect(seen).toEqual([
+      ["", false],
+      ["answer", true],
+    ]);
+    child.emit("exit", 143, null);
+    await expect(run).resolves.toEqual({ stderr: "" });
+  });
+
+  it("ends the Run on a result that names user input even when it has an origin", async () => {
+    const child = fakeChild();
+    const process = fakeProcess(child);
+    const seen: (boolean | undefined)[] = [];
+    const run = process.execute(
+      { type: "user", uuid: "prompt" },
+      (_message, terminal) => seen.push(terminal),
+      new AbortController().signal,
+    );
+    child.stdout.write(`${JSON.stringify({ ...selfGeneratedResult, user_message_uuids: [] })}\n`);
+    child.stdout.write(`${JSON.stringify({ ...selfGeneratedResult, user_message_uuids: ["prompt"] })}\n`);
+    expect(seen).toEqual([false, true]);
+    child.emit("exit", 143, null);
+    await run;
+  });
+
+  it("ends the Run on a failed result that Claude Code generated itself", async () => {
+    const child = fakeChild();
+    const process = fakeProcess(child);
+    const seen: (boolean | undefined)[] = [];
+    const run = process.execute(
+      { type: "user", uuid: "prompt" },
+      (_message, terminal) => seen.push(terminal),
+      new AbortController().signal,
+    );
+    child.stdout.write(`${JSON.stringify({ ...selfGeneratedResult, is_error: true })}\n`);
+    expect(seen).toEqual([true]);
+    child.emit("exit", 1, null);
+    await run;
+  });
+
+  it("tells the Session once about background work that stops with the Run, then reports what was left", async () => {
+    const child = fakeChild();
+    const writes: Record<string, never>[] = [];
+    child.stdin.on("data", (line) => writes.push(JSON.parse(line.toString())));
+    const process = fakeProcess(child);
+    const seen: (boolean | undefined)[] = [];
+    const run = process.execute(
+      { type: "user", uuid: "prompt" },
+      (_message, terminal) => seen.push(terminal),
+      new AbortController().signal,
+    );
+    child.stdout.write(`${JSON.stringify(backgroundTasks({ task_id: "a", description: "Run the suite" }))}\n`);
+    child.stdout.write('{"type":"result","result":"started"}\n');
+    await vi.waitFor(() => expect(writes).toHaveLength(2));
+    const notice = writes[1] as unknown as { uuid: string; message: { content: [{ text: string }] } };
+    expect(notice.message.content[0].text).toContain("[openTag notice] This Run is about to end.");
+    expect(notice.message.content[0].text).toContain("- Run the suite (local_bash)");
+    child.stdout.write(
+      `${JSON.stringify({ type: "command_lifecycle", command_uuid: notice.uuid, state: "started" })}\n`,
+    );
+    child.stdout.write('{"type":"result","result":"told them"}\n');
+    // Stopping the process empties the task list; what was left is the list at the terminal result.
+    child.stdout.write(`${JSON.stringify(backgroundTasks())}\n`);
+    expect(seen.filter(Boolean)).toHaveLength(1);
+    expect(writes).toHaveLength(2);
+    child.emit("exit", 143, null);
+    await expect(run).resolves.toEqual({
+      stderr: "",
+      abandonedBackgroundWork: ["Run the suite (local_bash)"],
+    });
+  });
+
+  it("reports nothing when the Session finished its background work after the notice", async () => {
+    const child = fakeChild();
+    const writes: { uuid?: string }[] = [];
+    child.stdin.on("data", (line) => writes.push(JSON.parse(line.toString())));
+    const process = fakeProcess(child);
+    const run = process.execute({ type: "user" }, () => undefined, new AbortController().signal);
+    child.stdout.write(`${JSON.stringify(backgroundTasks({ task_id: "a" }))}\n`);
+    child.stdout.write('{"type":"result"}\n');
+    await vi.waitFor(() => expect(writes).toHaveLength(2));
+    child.stdout.write(`${JSON.stringify(backgroundTasks())}\n`);
+    child.stdout.write(
+      `${JSON.stringify({ type: "command_lifecycle", command_uuid: writes[1]?.uuid, state: "completed" })}\n`,
+    );
+    child.stdout.write('{"type":"result"}\n');
+    child.emit("exit", 143, null);
+    await expect(run).resolves.toEqual({ stderr: "" });
+  });
+
+  describe("timers in the process", () => {
+    const toolUse = (id: string, name: string, input: unknown = {}) => ({
+      type: "assistant",
+      message: { content: [{ type: "text" }, { type: "tool_use", id, name, input }, "invalid"] },
+    });
+    const toolResult = (id: string, extra: Record<string, unknown> = {}, toolUseResult?: unknown) => ({
+      type: "user",
+      message: { content: [{ type: "tool_result", tool_use_id: id, ...extra }] },
+      ...(toolUseResult === undefined ? {} : { tool_use_result: toolUseResult }),
+    });
+
+    /** Runs the frames, then a result; returns what was left and the notice, if one went out. */
+    async function runWith(frames: Record<string, unknown>[]) {
+      const child = fakeChild();
+      const writes: string[] = [];
+      child.stdin.on("data", (line) => writes.push(line.toString()));
+      const process = fakeProcess(child);
+      const run = process.execute({ type: "user" }, () => undefined, new AbortController().signal);
+      for (const frame of frames) child.stdout.write(`${JSON.stringify(frame)}\n`);
+      child.stdout.write('{"type":"assistant","message":{}}\n{"type":"result"}\n');
+      await new Promise((resolve) => setImmediate(resolve));
+      if (writes.length > 1) child.stdout.write('{"type":"result"}\n');
+      child.emit("exit", 143, null);
+      return { ...(await run), notice: writes[1] };
+    }
+
+    it("counts a cron job and a wakeup whose tool succeeded", async () => {
+      await expect(
+        runWith([
+          toolUse("a", "CronCreate"),
+          toolResult("a", {}, { id: "job-1", durable: false }),
+          toolUse("b", "ScheduleWakeup", { delaySeconds: 60 }),
+          toolResult("b"),
+          // Without a job id, the tool call identifies it.
+          toolUse("c", "CronCreate", "invalid"),
+          toolResult("c", {}, "invalid"),
+          // Not a timer, and a result for a call never seen.
+          toolUse("d", "Bash"),
+          toolResult("d"),
+          toolResult("unseen"),
+        ]),
+      ).resolves.toMatchObject({
+        abandonedBackgroundWork: ["CronCreate job job-1", "ScheduleWakeup timer", "CronCreate job c"],
+        notice: expect.stringContaining("- CronCreate job job-1"),
+      });
+    });
+
+    it("does not count a timer whose tool has no result yet or failed", async () => {
+      await expect(
+        runWith([
+          toolUse("a", "CronCreate", { cron: "not a cron" }),
+          toolResult("a", { is_error: true }, "Error: Invalid cron expression"),
+          toolUse("b", "ScheduleWakeup", { delaySeconds: 60 }),
+          toolResult("b", { is_error: true }),
+          toolUse("c", "CronCreate"),
+        ]),
+      ).resolves.toEqual({ stderr: "", notice: undefined });
+    });
+
+    it("does not count a cron job written to disk", async () => {
+      await expect(
+        runWith([toolUse("a", "CronCreate"), toolResult("a", {}, { id: "job-1", durable: true })]),
+      ).resolves.toEqual({ stderr: "", notice: undefined });
+    });
+
+    it("stops counting a cron job once it is deleted, and only that one", async () => {
+      await expect(
+        runWith([
+          toolUse("a", "CronCreate"),
+          toolResult("a", {}, { id: "job-1", durable: false }),
+          toolUse("b", "CronCreate"),
+          toolResult("b", {}, { id: "job-2", durable: false }),
+          toolUse("c", "CronDelete", { id: "job-1" }),
+          toolResult("c", {}, { id: "job-1" }),
+          toolUse("d", "CronDelete", { id: "job-2" }),
+          toolResult("d", { is_error: true }),
+        ]),
+      ).resolves.toMatchObject({ abandonedBackgroundWork: ["CronCreate job job-2"] });
+    });
+
+    it("stops counting a wakeup once it is stopped", async () => {
+      await expect(
+        runWith([
+          toolUse("a", "ScheduleWakeup", { delaySeconds: 60 }),
+          toolResult("a"),
+          toolUse("b", "ScheduleWakeup", { stop: true }),
+          toolResult("b"),
+        ]),
+      ).resolves.toEqual({ stderr: "", notice: undefined });
+    });
+
+    const fired = (uuid: string, source: string, state = "started", scheduledFor?: number) => ({
+      type: "command_lifecycle",
+      command_uuid: uuid,
+      state,
+      wakeup_source: source,
+      ...(scheduledFor === undefined ? {} : { scheduled_for: scheduledFor }),
+    });
+    const firedTurn = (uuid: string, source: string, scheduledFor?: number) => [
+      fired(uuid, source, "started", scheduledFor),
+      fired(uuid, source, "completed"),
+    ];
+    const wakeup = (id: string, scheduledFor: number) => [
+      toolUse(id, "ScheduleWakeup", { delaySeconds: 60 }),
+      toolResult(id, {}, { scheduledFor }),
+    ];
+    const cronJob = (id: string, recurring: boolean) => [
+      toolUse(id, "CronCreate"),
+      toolResult(id, {}, { id, recurring, durable: false, nextFireAt: 1000 }),
+    ];
+
+    it("does not count a wakeup whose firing names it", async () => {
+      await expect(runWith([...wakeup("a", 1000), ...firedTurn("w", "loop_wakeup", 1000)])).resolves.toEqual({
+        stderr: "",
+        notice: undefined,
+      });
+    });
+
+    it("keeps a wakeup when a firing does not name it", async () => {
+      const kept = { abandonedBackgroundWork: ["ScheduleWakeup timer"] };
+      // No time in the frame, a different time, a wakeup set again, a cron firing, and an unknown source.
+      await expect(runWith([...wakeup("a", 1000), ...firedTurn("w", "loop_wakeup")])).resolves.toMatchObject(kept);
+      await expect(runWith([...wakeup("a", 1000), ...firedTurn("w", "loop_wakeup", 999)])).resolves.toMatchObject(kept);
+      await expect(
+        runWith([...wakeup("a", 1000), ...firedTurn("w", "loop_wakeup", 1000), ...wakeup("b", 2000)]),
+      ).resolves.toMatchObject(kept);
+      await expect(runWith([...wakeup("a", 1000), ...firedTurn("c", "schedule_wakeup", 1000)])).resolves.toMatchObject(
+        kept,
+      );
+      await expect(runWith([...wakeup("a", 1000), ...firedTurn("c", "something_new", 1000)])).resolves.toMatchObject(
+        kept,
+      );
+      // A wakeup result with no time cannot be matched either.
+      await expect(
+        runWith([toolUse("a", "ScheduleWakeup"), toolResult("a"), ...firedTurn("w", "loop_wakeup")]),
+      ).resolves.toMatchObject(kept);
+    });
+
+    it("keeps every cron job when a cron firing names none, until CronDelete", async () => {
+      await expect(runWith([...cronJob("job", false), ...firedTurn("c", "schedule_wakeup")])).resolves.toMatchObject({
+        abandonedBackgroundWork: ["CronCreate job job"],
+        notice: expect.stringContaining("may still be running or pending"),
+      });
+      await expect(
+        runWith([...cronJob("first", false), ...cronJob("second", false), ...firedTurn("c", "schedule_wakeup")]),
+      ).resolves.toMatchObject({ abandonedBackgroundWork: ["CronCreate job first", "CronCreate job second"] });
+      await expect(
+        runWith([
+          ...cronJob("job", false),
+          ...firedTurn("c", "schedule_wakeup"),
+          toolUse("d", "CronDelete", { id: "job" }),
+          toolResult("d", {}, { id: "job" }),
+        ]),
+      ).resolves.toEqual({ stderr: "", notice: undefined });
+    });
+
+    it("keeps a one-shot job when a recurring job fired and was then deleted", async () => {
+      await expect(
+        runWith([
+          ...cronJob("every", true),
+          ...cronJob("nearby", false),
+          ...firedTurn("c", "schedule_wakeup"),
+          toolUse("d", "CronDelete", { id: "every" }),
+          toolResult("d", {}, { id: "every" }),
+        ]),
+      ).resolves.toMatchObject({ abandonedBackgroundWork: ["CronCreate job nearby"] });
+    });
+
+    it("keeps a one-shot job when a durable job of an earlier Run fires, with no creation frame here", async () => {
+      await expect(runWith([...cronJob("job", false), ...firedTurn("c", "schedule_wakeup")])).resolves.toMatchObject({
+        abandonedBackgroundWork: ["CronCreate job job"],
+      });
+    });
+
+    it("does not let a fired timer's result end the Run ahead of the notice's result", async () => {
+      const child = fakeChild();
+      const writes: string[] = [];
+      child.stdin.on("data", (line) => writes.push(line.toString()));
+      const process = fakeProcess(child);
+      const seen: (boolean | undefined)[] = [];
+      const run = process.execute(
+        { type: "user" },
+        (_message, terminal) => seen.push(terminal),
+        new AbortController().signal,
+      );
+      const before = [
+        ...wakeup("a", 1000),
+        ...cronJob("job", false),
+        { type: "result", user_message_uuids: ["prompt"] },
+      ];
+      for (const frame of before) child.stdout.write(`${JSON.stringify(frame)}\n`);
+      await vi.waitFor(() => expect(writes).toHaveLength(2));
+      seen.length = 0;
+      const after = [
+        // Each fired timer gets its own turn and result. Neither is the notice's.
+        fired("w", "loop_wakeup", "started", 1000),
+        { type: "result", result: "WAKE-OK", num_turns: 1 },
+        fired("w", "loop_wakeup", "completed"),
+        fired("c", "schedule_wakeup"),
+        { type: "result", result: "CRON-OK", num_turns: 1 },
+        fired("c", "schedule_wakeup", "completed"),
+        { type: "result", result: "told them", user_message_uuids: [JSON.parse(writes[1] as string).uuid] },
+      ];
+      for (const frame of after) child.stdout.write(`${JSON.stringify(frame)}\n`);
+      expect(seen).toEqual([false, false, false, false, false, false, true]);
+      child.emit("exit", 143, null);
+      await expect(run).resolves.toEqual({ stderr: "", abandonedBackgroundWork: ["CronCreate job job"] });
+    });
+
+    it("ends the Run at the notice's result even while a fired timer's turn is open", async () => {
+      const child = fakeChild();
+      const writes: string[] = [];
+      child.stdin.on("data", (line) => writes.push(line.toString()));
+      const process = fakeProcess(child);
+      const seen: (boolean | undefined)[] = [];
+      const run = process.execute(
+        { type: "user" },
+        (_message, terminal) => seen.push(terminal),
+        new AbortController().signal,
+      );
+      child.stdout.write(`${JSON.stringify(backgroundTasks({ task_id: "a" }))}\n{"type":"result"}\n`);
+      await vi.waitFor(() => expect(writes).toHaveLength(2));
+      const named = { type: "result", user_message_uuids: [JSON.parse(writes[1] as string).uuid] };
+      child.stdout.write(`${JSON.stringify(fired("w", "loop_wakeup"))}\n${JSON.stringify(named)}\n`);
+      expect(seen.at(-1)).toBe(true);
+      child.emit("exit", 143, null);
+      await run;
+    });
+
+    it("reports nothing when the Session deletes its cron job in the notice turn", async () => {
+      const child = fakeChild();
+      const writes: string[] = [];
+      child.stdin.on("data", (line) => writes.push(line.toString()));
+      const process = fakeProcess(child);
+      const run = process.execute({ type: "user" }, () => undefined, new AbortController().signal);
+      const frames = [toolUse("a", "CronCreate"), toolResult("a", {}, { id: "job-1", durable: false })];
+      for (const frame of frames) child.stdout.write(`${JSON.stringify(frame)}\n`);
+      child.stdout.write('{"type":"result"}\n');
+      await vi.waitFor(() => expect(writes).toHaveLength(2));
+      for (const frame of [toolUse("b", "CronDelete", { id: "job-1" }), toolResult("b", {}, { id: "job-1" })])
+        child.stdout.write(`${JSON.stringify(frame)}\n`);
+      child.stdout.write('{"type":"result"}\n');
+      child.emit("exit", 143, null);
+      await expect(run).resolves.toEqual({ stderr: "" });
+    });
+  });
+
+  it("ends the Run at the result after the notice when Claude Code reports no lifecycle for it", async () => {
+    const child = fakeChild();
+    const writes: string[] = [];
+    child.stdin.on("data", (line) => writes.push(line.toString()));
+    const process = fakeProcess(child);
+    const seen: (boolean | undefined)[] = [];
+    const run = process.execute(
+      { type: "user" },
+      (_message, terminal) => seen.push(terminal),
+      new AbortController().signal,
+    );
+    child.stdout.write(`${JSON.stringify(backgroundTasks({ task_id: "a" }))}\n`);
+    child.stdout.write('{"type":"result","result":"started"}\n');
+    await vi.waitFor(() => expect(writes).toHaveLength(2));
+    child.stdout.write('{"type":"result","result":"told them"}\n');
+    expect(seen.slice(-2)).toEqual([false, true]);
+    child.emit("exit", 143, null);
+    await expect(run).resolves.toEqual({ stderr: "", abandonedBackgroundWork: ["local_bash"] });
+  });
+
+  it("still waits for Claude Code's own result and a later steer after the notice", async () => {
+    const child = fakeChild();
+    const writes: string[] = [];
+    child.stdin.on("data", (line) => writes.push(line.toString()));
+    const process = fakeProcess(child);
+    const seen: (boolean | undefined)[] = [];
+    const run = process.execute(
+      { type: "user" },
+      (_message, terminal) => seen.push(terminal),
+      new AbortController().signal,
+    );
+    child.stdout.write(`${JSON.stringify(backgroundTasks({ task_id: "a" }))}\n`);
+    child.stdout.write('{"type":"result"}\n');
+    await vi.waitFor(() => expect(writes).toHaveLength(2));
+    await process.steer({ type: "user", uuid: "after-notice" });
+    child.stdout.write(`${JSON.stringify(selfGeneratedResult)}\n`);
+    child.stdout.write('{"type":"result"}\n');
+    child.stdout.write('{"type":"command_lifecycle","command_uuid":"after-notice","state":"started"}\n');
+    child.stdout.write('{"type":"result"}\n');
+    expect(seen.slice(-5)).toEqual([false, false, false, false, true]);
+    child.emit("exit", 143, null);
+    await run;
+  });
+
+  it("writes no notice into an aborted Run", async () => {
+    const child = fakeChild();
+    const writes: string[] = [];
+    child.stdin.on("data", (line) => writes.push(line.toString()));
+    const process = fakeProcess(child);
+    const controller = new AbortController();
+    const run = process.execute({ type: "user" }, () => undefined, controller.signal);
+    child.stdout.write(`${JSON.stringify(backgroundTasks({ task_id: "a" }))}\n`);
+    controller.abort();
+    child.stdout.write('{"type":"result"}\n');
+    child.emit("exit", 143, null);
+    await expect(run).resolves.toEqual({ stderr: "", abandonedBackgroundWork: ["local_bash"] });
+    expect(writes).toHaveLength(1);
+  });
+
+  it("fails the Run when the background notice cannot be written", async () => {
+    const child = fakeChild();
+    const process = fakeProcess(child);
+    const run = process.execute({ type: "user" }, () => undefined, new AbortController().signal);
+    child.stdout.write(`${JSON.stringify(backgroundTasks({ task_id: "a" }))}\n`);
+    child.stdin.write = ((_line: string, callback: (error: Error) => void) => {
+      callback(new Error("closed"));
+      return false;
+    }) as never;
+    child.stdout.write('{"type":"result"}\n');
+    await expect(run).rejects.toMatchObject({ code: "write" });
+  });
+
   it("queues steer input behind the prompt while permission control initializes", async () => {
     const child = fakeChild();
     const writes: string[] = [];
@@ -428,6 +849,23 @@ async function fixtureProcess(scenario: string, maxLineBytes?: number): Promise<
     env: { PATH: process.env.PATH, CLAUDE_CODE_FIXTURE_SCENARIO: scenario },
     maxLineBytes,
   });
+}
+
+const selfGeneratedResult = {
+  type: "result",
+  subtype: "success",
+  is_error: false,
+  num_turns: 0,
+  result: "",
+  origin: { kind: "task-notification", producer: "session-task" },
+};
+
+function backgroundTasks(...tasks: Record<string, unknown>[]) {
+  return {
+    type: "system",
+    subtype: "background_tasks_changed",
+    tasks: tasks.map((task) => ({ task_type: "local_bash", ...task })),
+  };
 }
 
 function fakeProcess(child: ChildProcessWithoutNullStreams): ClaudeCodeProcess {

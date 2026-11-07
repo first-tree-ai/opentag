@@ -178,6 +178,7 @@ describe("ClaudeCodeAgentRuntime", () => {
     ]);
     expect(processes[0]?.input).toEqual({
       type: "user",
+      uuid: expect.stringMatching(/^[0-9a-f-]{36}$/),
       message: { role: "user", content: [{ type: "text", text: "hello" }] },
       parent_tool_use_id: null,
     });
@@ -586,6 +587,41 @@ describe("ClaudeCodeAgentRuntime steer", () => {
     }
   });
 
+  it("adds no output for a result Claude Code generated itself, and reports abandoned background work", async () => {
+    const steerable = new SteerableClaudeCodeProcess();
+    steerable.abandonedBackgroundWork = ["Run the suite (local_bash)"];
+    const runtime = await steerableFactory(steerable).create(createRequest(() => undefined));
+    try {
+      const run = runtime.prompt({ runId: "resume-run", input: input("work") });
+      await vi.waitFor(() => expect(steerable.executing).toBe(true));
+      steerable.emit(result("", 0, 0, 0), false);
+      steerable.emit(result("answer", 1, 0.01, 5), true);
+      steerable.finish();
+      await expect(run).resolves.toMatchObject({
+        status: "completed",
+        output: [{ type: "text", text: "answer" }],
+        abandonedBackgroundWork: ["Run the suite (local_bash)"],
+      });
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  it("adds no output item for an empty earlier result, whatever produced it, and keeps a final empty one", async () => {
+    const steerable = new SteerableClaudeCodeProcess();
+    const runtime = await steerableFactory(steerable).create(createRequest(() => undefined));
+    try {
+      const run = runtime.prompt({ runId: "empty-run", input: input("work") });
+      await vi.waitFor(() => expect(steerable.executing).toBe(true));
+      steerable.emit(result("", 1, 0, 1), false);
+      steerable.emit(result("", 1, 0, 1), true);
+      steerable.finish();
+      await expect(run).resolves.toMatchObject({ status: "completed", output: [{ type: "text", text: "" }] });
+    } finally {
+      await runtime.close();
+    }
+  });
+
   it("reports the latest cumulative cost while summing per-turn usage and turns across steered results", async () => {
     const steerable = new SteerableClaudeCodeProcess();
     const spawned: (readonly string[])[] = [];
@@ -713,6 +749,7 @@ class SteerableClaudeCodeProcess implements ClaudeCodeProcessClient {
   readonly steered: Readonly<Record<string, unknown>>[] = [];
   executing = false;
   refuse = false;
+  abandonedBackgroundWork?: readonly string[];
   #onMessage?: (message: Readonly<Record<string, unknown>>, terminal?: boolean) => void;
   #finish?: () => void;
 
@@ -724,7 +761,11 @@ class SteerableClaudeCodeProcess implements ClaudeCodeProcessClient {
     this.executing = true;
     onMessage({ type: "system", subtype: "init", session_id: SESSION_ID });
     return new Promise((resolve) => {
-      this.#finish = () => resolve({ stderr: "" });
+      this.#finish = () =>
+        resolve({
+          stderr: "",
+          ...(this.abandonedBackgroundWork ? { abandonedBackgroundWork: this.abandonedBackgroundWork } : {}),
+        });
     });
   }
 

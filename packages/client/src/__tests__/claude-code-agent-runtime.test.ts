@@ -591,7 +591,7 @@ describe("ClaudeCodeAgentRuntime steer", () => {
       steerable.refuse = false;
       steerable.emit(result("done", 1, 0.01, 1), true);
       await expect(runtime.steer({ expectedRunId: "late-run", input: input("late") })).rejects.toMatchObject({
-        code: "run_mismatch",
+        code: "steer_not_sent",
       });
       steerable.finish();
       await expect(run).resolves.toMatchObject({ status: "completed", output: [{ type: "text", text: "done" }] });

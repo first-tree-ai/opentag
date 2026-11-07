@@ -3297,6 +3297,29 @@ describe("ImDeliveryWorker database workflow", () => {
     expect(row?.nextAttemptAt.getTime()).toBeLessThanOrEqual(clock + 1_000);
   });
 
+  it("leaves an expired delivery with no dispatch alone when the Computer registers", async () => {
+    const fixture = await workerFixture(unit);
+    const clock = Date.now();
+    const parked = new Date(clock + 30 * 60_000);
+    await unit.database
+      .update(imMessageDeliveries)
+      .set({ state: "expired", reason: "ttl", expiresAt: new Date(clock - 1_000), nextAttemptAt: parked })
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    const worker = new ImDeliveryWorker({
+      database: unit.database,
+      domain: fakeDomain(new PostgresRuntimeCustodyStore(unit.database), fixture) as never,
+      assembler: { assembleForSession: vi.fn().mockResolvedValue(fixture.runtime) },
+      registry: fixture.registry,
+      now: () => new Date(clock),
+    });
+    await worker.notifyComputerReady(fixture.computerId);
+    const [row] = await unit.database
+      .select({ nextAttemptAt: imMessageDeliveries.nextAttemptAt })
+      .from(imMessageDeliveries)
+      .where(eq(imMessageDeliveries.id, fixture.deliveryId));
+    expect(row?.nextAttemptAt).toEqual(parked);
+  });
+
   it("populates delivery row performance context for subsequent DB and runtime operations across deliver, steer, and recover", async () => {
     const records: Record<string, unknown>[] = [];
     const perfLogger = createPerformanceLogger(

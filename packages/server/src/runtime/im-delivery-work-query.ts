@@ -252,7 +252,7 @@ export async function advanceParkedRetries(database: DeliveryWorkQuery, computer
     from session_placements as placement
     where placement.session_id = delivery.session_id
       and placement.computer_id = ${computerId}::uuid
-      and delivery.state in ('pending', 'accepted', 'expired')
+      and (delivery.state in ('pending', 'accepted') or (delivery.state = 'expired' and delivery.dispatch_request_id is not null))
       and delivery.next_attempt_at > ${new Date(nowMs + RECONNECT_ADVANCE_THRESHOLD_MS).toISOString()}::timestamptz
   `);
 }

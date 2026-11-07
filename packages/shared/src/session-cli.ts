@@ -76,8 +76,8 @@ export const SessionCliStopResponseSchema = z
     code: z.string().min(1).max(128).optional(),
     execution: SessionCliStopExecutionSchema.optional(),
     alreadyStopped: z.boolean().optional(),
-    /** Descendants of the stopped Session that keep running: a stop does not cascade to them. */
-    activeDescendantCount: z.number().int().min(0).optional(),
+    /** Descendants this stop ended along with its target. `execution` covers them too. */
+    stoppedDescendantCount: z.number().int().min(0).optional(),
   })
   .strict();
 

@@ -387,10 +387,13 @@ describe("SessionCollaborationService", () => {
       creatorSessionId: string,
       childSessionId = randomUUID(),
     ) {
+      const target = { sessionId: childSessionId, creatorSessionId, computerKind: "local" };
       fixture.sessions.stopInternalSession.mockResolvedValue({
-        target: { sessionId: childSessionId, creatorSessionId, computerKind: "local" },
+        target,
+        targets: [target],
         alreadyStopped: false,
-        activeDescendantCount: 2,
+        descendantCount: 2,
+        stoppedDescendantCount: 2,
         heldNoticeComputerIds: [],
       });
       return childSessionId;
@@ -405,7 +408,7 @@ describe("SessionCollaborationService", () => {
         sessionId,
         execution: "stopped",
         alreadyStopped: false,
-        activeDescendantCount: 2,
+        stoppedDescendantCount: 2,
       });
       expect(fixture.sessions.stopInternalSession).toHaveBeenCalledWith(
         expect.objectContaining({ sourceSessionId: fixture.source.sessionId, targetSessionId: sessionId }),
@@ -429,7 +432,8 @@ describe("SessionCollaborationService", () => {
         sourceSessionId: fixture.source.sessionId,
         targetSessionId: creator,
       });
-      expect(notice.content).toBe(renderSessionStoppedNotice(sessionId));
+      expect(notice.content).toBe(renderSessionStoppedNotice(sessionId, 2));
+      expect(notice.content).toContain("The 2 descendant Session(s) below it were stopped with it.");
       expect(notice.content).toContain("cannot receive messages");
       expect(fixture.domain.requestSessionMessageDelivery).toHaveBeenCalledOnce();
       expect(fixture.logger.error).not.toHaveBeenCalled();
@@ -562,6 +566,33 @@ describe("SessionCollaborationService", () => {
         expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
         expect(fixture.onDiagnostic).toHaveBeenCalledWith("SESSION_STOP_BACKGROUND_FAILED");
       });
+    });
+
+    it.each([
+      [["stopped", "stopped"], "stopped"],
+      [["stopped", "requested"], "requested"],
+      [["requested", "pending"], "pending"],
+      [["pending", "not_interrupted"], "not_interrupted"],
+      [["stopped", undefined], "pending"],
+    ] as const)("answers %j for the tree as %s, the Session reached least", async (reached, answer) => {
+      const fixture = serviceFixture();
+      const sessionId = stopped(fixture, fixture.source.sessionId);
+      const descendant = randomUUID();
+      const stop = await fixture.sessions.stopInternalSession();
+      fixture.sessions.stopInternalSession.mockResolvedValue({
+        ...stop,
+        targets: [stop.target, { ...stop.target, sessionId: descendant }],
+      });
+      fixture.stopEnded.mockResolvedValue(
+        new Map([[sessionId, reached[0]], ...(reached[1] ? ([[descendant, reached[1]]] as const) : [])]) as never,
+      );
+
+      await expect(fixture.service.stop({ targetSessionId: sessionId }, fixture.source)).resolves.toMatchObject({
+        execution: answer,
+      });
+      expect(fixture.stopEnded).toHaveBeenCalledWith(
+        expect.arrayContaining([expect.objectContaining({ sessionId: descendant })]),
+      );
     });
 
     it("maps refusals and hides unexpected failures", async () => {

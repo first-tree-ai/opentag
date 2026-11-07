@@ -891,9 +891,10 @@ export class SessionCollaborationService {
   }
 
   /**
-   * Stop an internal Session for good on behalf of an ancestor. The Session ends first, so a stop that cannot
-   * reach its execution side still takes away its authority. A creator that asked for the stop has its
-   * answer here and is not woken for it; a creator someone else overruled is told.
+   * Stop an internal Session and all its descendants for good on behalf of an ancestor. They end first, so a
+   * stop that cannot reach their execution side still takes away their authority. Only the target's creator can
+   * hear of it: every other creator in the tree has ended too. A creator that asked for the stop has its answer
+   * here and is not woken for it; a creator someone else overruled gets one notice for the whole tree.
    */
   async stop(input: SessionCliStopRequest, source: SessionCliSourceContext): Promise<SessionCliStopResponse> {
     const sessionId = input.targetSessionId;
@@ -919,12 +920,10 @@ export class SessionCollaborationService {
     let execution: SessionCliStopExecution = "pending";
     // Recorded before the answer: after a successful stop the caller has no reason to ask again.
     const notice =
-      stopped.target.creatorSessionId === source.sessionId
-        ? undefined
-        : await this.#recordStopNotice(stopped.target, source);
+      stopped.target.creatorSessionId === source.sessionId ? undefined : await this.#recordStopNotice(stopped, source);
     const finished = this.#trackStopWork(async () => {
-      const executions = await this.#stopEnded?.([stopped.target]);
-      execution = executions?.get(sessionId) ?? "pending";
+      const executions = await this.#stopEnded?.(stopped.targets);
+      execution = leastReachedExecution(stopped.targets, executions);
       if (notice && !this.#closing) await this.#deliverStopNotice(notice, stopped.target);
     });
     await this.#withinStopAnswerBudget(finished);
@@ -933,7 +932,7 @@ export class SessionCollaborationService {
       sessionId,
       execution,
       alreadyStopped: stopped.alreadyStopped,
-      activeDescendantCount: stopped.activeDescendantCount,
+      stoppedDescendantCount: stopped.stoppedDescendantCount,
     };
   }
 
@@ -967,7 +966,7 @@ export class SessionCollaborationService {
   }
 
   async #recordStopNotice(
-    target: InternalSessionStopTarget,
+    { target, descendantCount }: StoppedInternalSession,
     source: SessionCliSourceContext,
   ): Promise<SessionMessageAttempt | undefined> {
     const noticeId = sessionStoppedNoticeMessageId(target.sessionId);
@@ -980,7 +979,7 @@ export class SessionCollaborationService {
         sourceConnectionInstanceId: source.connectionInstanceId,
         sourcePlacementGeneration: source.placementGeneration,
         targetSessionId: target.creatorSessionId,
-        content: renderSessionStoppedNotice(target.sessionId),
+        content: renderSessionStoppedNotice(target.sessionId, descendantCount),
         serverDerivedId: true,
       });
     } catch (error) {
@@ -1735,6 +1734,15 @@ export class SessionCollaborationService {
 
 function deliveryOutcomeUnknown(error: unknown, signal?: AbortSignal): boolean {
   return Boolean(signal?.aborted) || (error instanceof RuntimeDomainRequestError && error.code === "timeout");
+}
+
+/** The answer speaks for the whole tree, so it reports the Session the stop reached least. */
+function leastReachedExecution(
+  targets: readonly InternalSessionStopTarget[],
+  executions: ReadonlyMap<string, SessionCliStopExecution> | undefined,
+): SessionCliStopExecution {
+  const reached = targets.map(({ sessionId }) => executions?.get(sessionId) ?? "pending");
+  return (["not_interrupted", "pending", "requested"] as const).find((value) => reached.includes(value)) ?? "stopped";
 }
 
 /** The delivery result as an outcome and a stable code. */

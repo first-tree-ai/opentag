@@ -197,9 +197,10 @@ Client is upgrading, restarting or full.
 - **Run outcome notices.** A Local report's background notice can be held like any message. The reporter keeps its report
   and retries until the notice is accepted, so a report answers `notified` only after delivery. A background attempt
   has no waiting sender, so it has no 5-second budget, and shutdown drains it.
-- **Stopped targets.** `session stop` ends the target's held messages in the same commit as `rejected / target_stopped`, and
-  a hand-off still in flight loses its write. The sender that asked for the stop gets no notice. Any other sender was told
-  `accepted`, so it gets one, which says not to send again. The sweep settles a held message whose target ended some other
+- **Stopped targets.** `session stop` ends the held messages of the target and of every descendant it stops, in the same
+  commit, as `rejected / target_stopped`, and a hand-off still in flight loses its write. The Session that asked for the stop
+  and any Session stopped with it get no notice. Any other sender was told `accepted`, so it gets one, which says not to
+  send again. The sweep settles a held message whose target ended some other
   way, or that became held just after the stop, the same way; there, every sender gets a notice.
 - **Scheduled messages.** A Local occurrence that provably never reached the Client is held the same way, as an exception
   to the one-shot hand-off. An `unknown` hand-off is not retried. Once the next occurrence is claimed the held one ends as
@@ -228,7 +229,7 @@ kind of Session the target is. A scheduled message has no sender: its notice goe
   After a restart, accepted messages wait without failing until the Server prepares their Session; if the Server
   refuses (for example the Session ended), they fail with that reason. The daemon then reports the outcome with
   `session:message:outcome`. Reports are kept in a local durable file and resent until the Server gives a final
-  answer or one day passes. The terminal inbox record and an `outcomeReport: pending` marker are written in one
+  answer or one day passes; a report that aged past that while the Computer was off still gets one attempt. The terminal inbox record and an `outcomeReport: pending` marker are written in one
   record write; the marker becomes `published` once the report is durable in the reporter's file. On startup a
   terminal record still marked `pending` (for example after a crash between the two writes) hands its report over
   again, and the child is never rerun. Terminal records written before the marker existed carry no marker and are
@@ -340,24 +341,32 @@ completion, failure, or timeout to the parent, and the parent decides what to do
 
 ## Stopping an internal Session
 
-`opentag session stop <id>` ends an internal Session without its cooperation: its running Run is cancelled, its pending
-retries are cancelled and its queued messages are withdrawn.
+`opentag session stop <id>` ends an internal Session and every Session below it, recursively, without their cooperation:
+their running Runs are cancelled, their pending retries are cancelled and their queued messages are withdrawn. Only a stop
+does this. A parent that is merely idle between Turns, or whose Run failed or finished, does not affect its children. Agent
+suspend, delete, and transfer stop every live Session of the Agent, as described in
+[Agent, Session, and Computer model](../agent-session-computer-model.md#configuration-identity).
 
 - **A stop is final.** It sets `sessions.ended_at`, and nothing clears that field, so a later `session send` is rejected
   with `target_unavailable` and no stale message can wake the Session. The Session's files stay on disk; continuing its
   work takes a new Session.
 - **Who may stop.** Only an ancestor in the target's creation chain, proved by a `session_descendants` row. Everyone
   else, including the target itself, a sibling, and a target that does not exist or is not internal, gets `not_ancestor`.
-- **Order.** The Session ends in one transaction under the same lock order as `session send`, which is what takes away
-  its authority: its proof stops authenticating, so it can no longer send or create Sessions, and no message reaches it.
-  Its execution side is told after commit. A stop that is repeated answers `alreadyStopped` and tells it again.
+- **Order.** The Session and its descendants, read from the `session_descendants` closure, end in one transaction under
+  the same lock order as `session send`, which is what takes away their authority: their proofs stop authenticating, so
+  they can no longer send or create Sessions, and no message reaches them. The Agent lock keeps the tree from growing until
+  the commit. Their execution side is told after commit. A stop that is repeated answers `alreadyStopped` and tells the whole
+  tree again, which also finishes a tree stopped before this cascade existed.
 - **What the caller learns.** `execution` says how far the stop reached: `stopped` (the Client confirmed the Run and
   queue are gone), `requested` (the Cloud Runner was sent the cancellation), `pending` (the Computer or Runner could not
   be reached, or did not answer within 15 seconds, which stays below the CLI's 30-second request timeout) or `not_interrupted` (a Client older than this behavior answered `busy`, so its Run continues without
-  Session authority until it ends). `activeDescendantCount` says how many descendants keep running.
-- **Notice.** A creator that called `session stop` has its answer and is not woken. When another ancestor stopped the
-  child, the creator gets one SessionMessage from that ancestor, starting with the Run outcome notice header and saying
-  the child cannot be continued. Its ID is a Server-derived UUIDv5 over the child, so repeats converge. It is recorded before
+  Session authority until it ends). `execution` covers the whole tree and reports the Session reached least. `stoppedDescendantCount` says how many
+  descendants this stop ended.
+- **Notice.** A stop produces at most one notice, for the whole tree, to the target's creator. Every other creator in the
+  tree has ended too, so it cannot be told and nothing is sent to it; their aborted Runs report no outcome either. A creator
+  that called `session stop` has its answer and is not woken. When another ancestor stopped the child, the creator gets one
+  SessionMessage from that ancestor, starting with the Run outcome notice header, saying the child cannot be continued and
+  how many descendants stopped with it. Its ID is a Server-derived UUIDv5 over the child, so repeats converge. It is recorded before
   the stop answers and delivered in the background; a delivery lost to a Server crash is sent again only if the stop is
   repeated. Other senders whose queued
   messages were withdrawn are not told; their next `session send` is rejected.
@@ -389,7 +398,8 @@ schedule created from an internal Session before this rule keeps its visible tar
 
 - **Delivery.** An occurrence reaches the Session as a scheduled message, through the same path as a visible target. It has no
   IM outbox: a scheduled Run reports with `opentag session send`, like any other Run of that Session.
-- **Stopping.** `session stop` turns off the target's schedules in the transaction that ends it, and they can't be resumed.
+- **Stopping.** `session stop` turns off the schedules of the target and every descendant in the transaction that ends them,
+  and they can't be resumed.
   Any other end of a Session, such as a disabled binding, is found at the next occurrence, which turns the schedule off.
   The Agent's schedule commands are unchanged, so any of its Sessions can list, pause or delete a schedule, and each
   schedule shows its target Session.
@@ -406,17 +416,8 @@ tabs drop the unknown key and still read the whole list, following
 such a schedule as that channel or thread.
 
 An occurrence for a Local internal Session can be [held](#held-delivery) like any other. If it is given up, it is a missed
-occurrence, so nobody is messaged and only the schedule's summary shows it. `session stop` turns the Session's schedules off
-and settles its held occurrences as `target_stopped` in one commit, including their summary.
-
-## Stopping a parent stops its children
-
-> **Planned — not yet implemented.** Tracking: #1304
-
-When a parent Session is stopped or cancelled for good — not merely idle between Turns — every internal Session it
-created, recursively, is stopped as well. Today `session stop` ends only its target, so nothing cascades from a parent
-Session and a stopped parent's descendants keep running. Agent suspend, delete, and transfer already stop every live Session of the Agent, internal Sessions
-included; see [Agent, Session, and Computer model](../agent-session-computer-model.md#configuration-identity).
+occurrence, so nobody is messaged and only the schedule's summary shows it. `session stop` turns off the schedules of the Sessions it
+stops and settles their held occurrences as `target_stopped` in one commit, including their summary.
 
 ## Automatic retry before a notice
 

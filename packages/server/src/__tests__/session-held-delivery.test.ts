@@ -621,6 +621,41 @@ describe("Server-held Session message delivery", () => {
       expect(notice?.content).not.toContain("session send");
     });
 
+    it("settles a stopped descendant's held messages and tells only senders outside the stop", async () => {
+      const s = await stoppable();
+      const childSource = { ...s.source, sessionId: s.targetSessionId } as SessionCliSourceContext;
+      const created = await s.collaboration.create(
+        { messageId: randomUUID(), message: "grandchild" } as never,
+        childSource,
+      );
+      const grandchildId = created.sessionId as string;
+      const sendTo = (source: SessionCliSourceContext) => {
+        const messageId = randomUUID();
+        return s.collaboration
+          .send({ messageId, targetSessionId: grandchildId, message: "to the grandchild" }, source)
+          .then((result) => ({ ...result, messageId }));
+      };
+      s.state.answer = "client_busy";
+      const fromStopper = await sendTo(s.source);
+      const fromStopped = await sendTo(childSource);
+      const fromOutside = await sendTo({ ...s.source, sessionId: s.siblingId } as SessionCliSourceContext);
+
+      await expect(s.collaboration.stop({ targetSessionId: s.targetSessionId }, s.source)).resolves.toMatchObject({
+        status: "stopped",
+        stoppedDescendantCount: 1,
+      });
+
+      for (const { messageId } of [fromStopper, fromStopped, fromOutside]) {
+        expect(await s.row(messageId)).toMatchObject({ lastOutcome: "rejected", lastErrorCode: "target_stopped" });
+      }
+      await expect(s.row(deliveryFailureNoticeMessageId(fromStopper.messageId))).resolves.toBeUndefined();
+      await expect(s.row(deliveryFailureNoticeMessageId(fromStopped.messageId))).resolves.toBeUndefined();
+      expect(await s.row(deliveryFailureNoticeMessageId(fromOutside.messageId))).toMatchObject({
+        sourceSessionId: grandchildId,
+        targetSessionId: s.siblingId,
+      });
+    });
+
     it("delivers the notice to the other sender and leaves nothing to expire", async () => {
       const s = await stoppable();
       s.state.answer = "client_busy";

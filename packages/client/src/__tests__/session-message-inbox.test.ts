@@ -1852,7 +1852,7 @@ describe("SessionMessageInbox", () => {
     },
   );
 
-  it("queues a second message behind the Session's running Session-message Run instead of steering it", async () => {
+  it("steers a second message into the Session's running Session-message Run instead of queueing it behind", async () => {
     const targetSessionId = randomUUID();
     const agentId = randomUUID();
     const state: { phase: string; activeRunId?: string } = { phase: "idle" };
@@ -1861,7 +1861,9 @@ describe("SessionMessageInbox", () => {
     const firstRunning = new Promise<void>((resolve) => {
       finishFirst = resolve;
     });
-    const steer = vi.fn();
+    const steer = vi.fn(async (_request: { expectedRunId: string; input: { items: readonly { text: string }[] } }) => ({
+      outcome: firstRunning.then(() => "processed" as const),
+    }));
     const runtime = {
       capabilities: { steer: "supported" },
       state,
@@ -1892,15 +1894,18 @@ describe("SessionMessageInbox", () => {
     });
     expect((await inbox.accept(delivery({ targetSessionId, agentId, text: "first" }))).status).toBe("accepted");
     await vi.waitFor(() => expect(state.activeRunId).toMatch(/^session-message-/));
-    expect((await inbox.accept(delivery({ targetSessionId, agentId, text: "second" }))).status).toBe("accepted");
-    // The per-Session drain awaits the running Session-message Run, so the next message is never steered into it.
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(steer).not.toHaveBeenCalled();
-    expect(prompts).toEqual(["first"]);
+    const second = delivery({ targetSessionId, agentId, text: "second" });
+    expect((await inbox.accept(second)).status).toBe("accepted");
+    await vi.waitFor(() => expect(steer).toHaveBeenCalledOnce());
+    expect(steer.mock.calls[0]?.[0].expectedRunId).toBe(state.activeRunId);
+    expect(steer.mock.calls[0]?.[0].input.items.at(-1)?.text).toBe("second");
+    await vi.waitFor(() => expect(inbox.getState(second.messageId)?.joinedRunId).toBe(state.activeRunId));
+    expect(inbox.getState(second.messageId)?.status).toBe("running");
     finishFirst();
-    await vi.waitFor(() => expect(prompts).toEqual(["first", "second"]));
     await inbox.settled();
-    expect(steer).not.toHaveBeenCalled();
+    // It finished inside the first Run: no second Run was started for it.
+    expect(prompts).toEqual(["first"]);
+    expect(inbox.getState(second.messageId)?.status).toBe("succeeded");
     inbox.stop();
   });
 
@@ -2300,6 +2305,8 @@ describe("SessionMessageInbox", () => {
         write.open();
 
         await expect(accepting).resolves.toMatchObject({ status: "rejected", reason: "session_not_ready" });
+        // The capacity this write held is released even though the message never reached the queue.
+        expect(inbox.queuedCount).toBe(0);
         await expect(inbox.accept({ ...delivery(), targetSessionId: request.targetSessionId })).resolves.toMatchObject({
           status: "rejected",
           reason: "session_not_ready",
@@ -2341,7 +2348,6 @@ describe("SessionMessageInbox", () => {
         expect(inbox.queuedCount).toBe(1);
 
         await inbox.stopSessionWork(request.targetSessionId, request.placementGeneration);
-        expect(inbox.queuedCount).toBe(0);
         write.fail();
 
         await expect(accepting).resolves.toMatchObject({ status: "rejected", reason: "session_not_ready" });
@@ -2443,6 +2449,47 @@ describe("SessionMessageInbox", () => {
         expect(inbox.getState(moved.messageId)?.status).toBe("succeeded");
         inbox.stop();
       });
+    });
+
+    it("waits for the Run itself, which the drain no longer waits for", async () => {
+      let finishRun: (reason: Error) => void = () => undefined;
+      const prompt = vi.fn(
+        () =>
+          new Promise((_resolve, reject) => {
+            finishRun = reject;
+          }),
+      );
+      const close = vi.fn(async () => undefined);
+      const inbox = new SessionMessageInbox({
+        admission: new AdmissionController(),
+        credentialEnvironment: credentialEnvironment(),
+        imCredentialGrantVersion: () => 2,
+        sessionCollaborationVersion: () => 4,
+        reconciler: inboxReconciler(),
+        runtimeManager: {
+          ensureRuntime: vi.fn(async () => ({ waitForIdle: vi.fn(async () => undefined), prompt }) as never),
+          runtime: () => ({ close }) as never,
+          sessionKind: vi.fn(() => "internal" as const),
+        },
+      });
+      const request = delivery();
+      await inbox.accept(request);
+      await vi.waitFor(() => expect(prompt).toHaveBeenCalledOnce());
+
+      let stopped = false;
+      const stopping = inbox.stopSessionWork(request.targetSessionId, request.placementGeneration).then(() => {
+        stopped = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(stopped).toBe(false);
+      finishRun(new Error("ended"));
+      await stopping;
+
+      expect(inbox.getState(request.messageId)).toMatchObject({
+        status: "failed",
+        lastError: { code: SESSION_MESSAGE_STOPPED_CODE },
+      });
+      inbox.stop();
     });
 
     it("cancels a pending retry", async () => {
@@ -3557,6 +3604,29 @@ describe("SessionMessageInbox steer custody with Claude Code", () => {
       steerInto,
     };
   }
+
+  it("ends a message steered into a Turn when a Session stop ended that Turn, without a notice or a rerun", async () => {
+    const h = await harness();
+    try {
+      const inbox = h.inbox(() => h.host);
+      await h.steerInto(inbox);
+
+      const stopping = inbox.stopSessionWork(h.message.targetSessionId, h.message.placementGeneration);
+      h.hostChild.emit("exit", 1, null);
+      await h.hostRun;
+      h.held.reservation.release();
+      await stopping;
+      await vi.waitFor(() => expect(inbox.getState(h.message.messageId)?.status).toBe("failed"));
+      await inbox.settled();
+
+      expect(inbox.getState(h.message.messageId)).toMatchObject({ lastError: { code: SESSION_MESSAGE_STOPPED_CODE } });
+      expect(h.outcomes).toEqual([]);
+      expect(h.children).toHaveLength(1);
+      inbox.stop();
+    } finally {
+      await h.close();
+    }
+  });
 
   it("kills the provider process of a Run its Session stop aborts", async () => {
     const h = await harness();

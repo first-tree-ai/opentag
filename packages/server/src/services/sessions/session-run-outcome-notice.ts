@@ -6,7 +6,7 @@ const RUN_OUTCOME_NOTICE_NAMESPACE = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
 
 /**
  * UUIDv5 over `opentag:session-run-outcome:<childSessionId>:<messageId>`. One reported message
- * yields exactly one creator notice id, so report retries, Runner settlement replays, and
+ * yields exactly one notice id, so report retries, Runner settlement replays, and
  * concurrent reports converge on the same SessionMessage row instead of a second notice.
  */
 export function runOutcomeNoticeMessageId(childSessionId: string, messageId: string): string {
@@ -43,6 +43,22 @@ export function renderSessionStoppedNotice(childSessionId: string): string {
   ].join("\n");
 }
 
+const NOTICE_IDENTITY = /^Session: ([0-9a-f-]{36})\nMessage: ([0-9a-f-]{36})\n/;
+
+/**
+ * Whether a stored message is a notice openTag wrote. The header alone proves nothing: ordinary content
+ * can start with it, for example when quoting a notice. A real notice's id derives from the Session and
+ * message it names, and that Session sent it, which a quote under its own id does not satisfy. Ordinary
+ * create/send cannot record a new version 5 id, so only the Server can.
+ */
+export function isRunOutcomeNotice(message: { id: string; sourceSessionId: string | null; content: string }): boolean {
+  const header = `${SESSION_RUN_OUTCOME_NOTICE_HEADER}\n`;
+  if (!message.content.startsWith(header)) return false;
+  const named = NOTICE_IDENTITY.exec(message.content.slice(header.length));
+  if (!named?.[1] || !named[2] || named[1] !== message.sourceSessionId) return false;
+  return message.id === runOutcomeNoticeMessageId(named[1], named[2]);
+}
+
 const OUTCOME_SUMMARY: Record<SessionMessageRunOutcome, string> = {
   timed_out: "it reached its maximum Run duration and was stopped",
   failed: "it failed",
@@ -67,9 +83,9 @@ export function renderRunOutcomeNotice(input: {
     `Message: ${input.messageId}`,
     `Outcome: ${input.outcome} (reason: ${input.reason})`,
     "",
-    `The internal Session you created stopped working on that message because ${OUTCOME_SUMMARY[input.outcome]}.`,
-    "This notice was written by openTag, not by the child Session. openTag will not rerun the message automatically.",
-    "The child Session is still active and keeps its conversation context; work it did before stopping may be partial.",
+    `That Session stopped working on that message because ${OUTCOME_SUMMARY[input.outcome]}.`,
+    "This notice was written by openTag, not by that Session. openTag will not rerun the message automatically.",
+    "That Session is still active and keeps its conversation context; work it did before stopping may be partial.",
     `To continue it, send it a follow-up: opentag session send ${input.childSessionId} --message "<what to do next>"`,
     "Decide whether to continue, retry differently, or report the result; tell the user only what is useful.",
   ].join("\n");

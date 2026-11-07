@@ -35,7 +35,7 @@ describe("SessionCollaborationService", () => {
       };
     }
 
-    it("sends a deterministic child-to-creator notice under the reporting connection's authority", async () => {
+    it("sends a deterministic notice to the recipient under the reporting connection's authority", async () => {
       const fixture = serviceFixture();
       const input = noticeInput(fixture);
 
@@ -64,7 +64,7 @@ describe("SessionCollaborationService", () => {
       expect(replayed).toEqual(recorded);
     });
 
-    it("ignores a report the Server cannot attribute to an active internal child", async () => {
+    it("ignores a report the Server cannot attribute to a recipient", async () => {
       const fixture = serviceFixture();
       fixture.sessions.resolveRunOutcomeNotice.mockResolvedValue(undefined);
 
@@ -424,6 +424,7 @@ describe("SessionCollaborationService", () => {
       const notice = fixture.sessions.authorizeAndRecordMessage.mock.calls[0]?.[0];
       expect(notice).toMatchObject({
         messageId: sessionStoppedNoticeMessageId(sessionId),
+        serverDerivedId: true,
         sourceSessionId: fixture.source.sessionId,
         targetSessionId: creator,
       });
@@ -492,14 +493,35 @@ describe("SessionCollaborationService", () => {
         await service.close();
       });
 
-      it("does not let a slow notice hide the confirmed execution, and still delivers it", async () => {
+      it("records another ancestor's notice under its server-derived ID before answering pending", async () => {
+        const fixture = serviceFixture();
+        const creator = randomUUID();
+        const sessionId = stopped(fixture, creator);
+        const { answer, service } = frozen(fixture);
+
+        await expect(service.stop({ targetSessionId: sessionId }, fixture.source)).resolves.toMatchObject({
+          execution: "pending",
+        });
+
+        expect(fixture.sessions.authorizeAndRecordMessage).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            messageId: sessionStoppedNoticeMessageId(sessionId),
+            targetSessionId: creator,
+            serverDerivedId: true,
+          }),
+        );
+        // Delivery stays behind the frozen Client, and is not lost once it answers.
+        expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
+        answer.resolve(new Map([[sessionId, "stopped"]]));
+        await vi.waitFor(() => expect(fixture.domain.requestSessionMessageDelivery).toHaveBeenCalledOnce());
+        await service.close();
+      });
+
+      it("does not let a slow notice delivery hide the confirmed execution, and logs a failed one", async () => {
         const fixture = serviceFixture();
         const sessionId = stopped(fixture, randomUUID());
-        const delivered = deferred<void>();
-        fixture.sessions.authorizeAndRecordMessage.mockImplementation(async () => {
-          await delivered.promise;
-          throw new SessionServiceError("SESSION_TARGET_UNAVAILABLE", "the creator ended");
-        });
+        const delivery = deferred<never>();
+        fixture.domain.requestSessionMessageDelivery.mockReturnValue(delivery.promise);
         const service = new SessionCollaborationService({
           assembler: fixture.assembler,
           domain: fixture.domain as never,
@@ -513,16 +535,15 @@ describe("SessionCollaborationService", () => {
         await expect(service.stop({ targetSessionId: sessionId }, fixture.source)).resolves.toMatchObject({
           execution: "stopped",
         });
-        expect(fixture.logger.error).not.toHaveBeenCalled();
-        delivered.resolve();
+        delivery.reject(new RuntimeDomainRequestError("timeout", "confirmation was lost"));
         await service.close();
         expect(fixture.logger.error).toHaveBeenCalledWith(
-          expect.objectContaining({ code: "SESSION_STOP_NOTICE_NOT_DELIVERED" }),
+          expect.objectContaining({ code: "SESSION_STOP_NOTICE_NOT_DELIVERED", childSessionId: sessionId }),
           expect.any(String),
         );
       });
 
-      it("makes shutdown wait for the late answer, skips the notice, and reports a failure", async () => {
+      it("makes shutdown wait for the late answer, skips delivery, and reports a failure", async () => {
         const fixture = serviceFixture();
         const sessionId = stopped(fixture, randomUUID());
         const { answer, service } = frozen(fixture);
@@ -536,7 +557,8 @@ describe("SessionCollaborationService", () => {
         expect(closed).toBe(false);
         answer.reject(new Error("the domain closed"));
         await closing;
-        expect(fixture.sessions.authorizeAndRecordMessage).not.toHaveBeenCalled();
+        expect(fixture.sessions.authorizeAndRecordMessage).toHaveBeenCalledOnce();
+        expect(fixture.domain.requestSessionMessageDelivery).not.toHaveBeenCalled();
         expect(fixture.onDiagnostic).toHaveBeenCalledWith("SESSION_STOP_BACKGROUND_FAILED");
       });
     });
@@ -822,7 +844,7 @@ function serviceFixture(
     stopInternalSession: vi.fn(),
     resolveRunOutcomeNotice: vi
       .fn()
-      .mockResolvedValue({ creatorSessionId: targetSessionId, installationId: targetInstallationId }),
+      .mockResolvedValue({ recipientSessionId: targetSessionId, installationId: targetInstallationId }),
     withCollaborationDispatchAdmission: vi.fn(),
   };
   const domain = {

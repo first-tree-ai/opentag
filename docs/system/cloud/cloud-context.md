@@ -110,7 +110,7 @@ a successful or identical commit and names that exact Turn, preserving newer wor
 On a Runner collaboration-v3 channel, the settled frame also carries the Run's failure reason (for
 example `turn_timeout`), journaled with the immutable settlement. A Runner sends it only after a
 v3 welcome; a Server that negotiated v1 or v2 receives the exact older frame. After a non-completed
-terminal commit (new or identical replay), the Server notifies an internal child's creator and
+terminal commit (new or identical replay), the Server notifies the message's sender and
 withholds that settlement's ack until the notice has a final answer, so the journaled settlement
 remains the replay owner; see
 [Run outcome notices](../messaging/internal-session-collaboration.md#run-outcome-notices).

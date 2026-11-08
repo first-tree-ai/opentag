@@ -375,9 +375,10 @@ such a schedule as that channel or thread.
 Session messages running on their own on a Local Computer follow
 [Automatic retry of accepted work](../server-client-boundary.md#automatic-retry-of-accepted-work)
 for retry causes, limits, duration accounting, continuation input, and in-place backoff. The sender receives a
-[Run outcome notice](#run-outcome-notices) only after final failure. After a daemon restart, each interrupted Session's
-message runs once the Server has prepared the Session again, before the Session's queued messages. A replay of a message
-the inbox still holds, including one waiting for its retry, is answered `accepted` and changes nothing.
+[Run outcome notice](#run-outcome-notices) only after final failure. A retry after a model HTTP 429 keeps holding the
+Session through its backoff, so no other work overtakes it. After a daemon restart, each interrupted Session's message runs
+once the Server has prepared the Session again, before the Session's queued messages. A replay of a message the inbox still
+holds, including one waiting for its retry, is answered `accepted` and changes nothing.
 
 ### Session messages steered into an IM Turn
 

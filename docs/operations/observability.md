@@ -122,7 +122,7 @@ The worker writes fixed-prefix JSON lines to stderr; the parent consumes them wh
 No diagnostic is stored in the workspace, database, or Turn report. Local Pi runs do not enable
 this stream.
 
-The parent owns `turnId`, `deliveryId` (or `messageId` for Session collaboration), `sessionId`,
+The parent owns `turnId`, `dispatchRequestId`, `deliveryId` (or `messageId` for Session collaboration), `sessionId`,
 `sandboxId`, `environmentGeneration`, and the Instance's `resourceName`. Child fields cannot
 replace them. The parent's startup record includes the probed Runner and Pi versions once.
 Use `module=cloud-pi`, `operation=pi.diagnostic`, and `provider=pi` to identify this stream.
@@ -164,6 +164,12 @@ and elapsed time, and whether its timer is paused. These observe the existing pa
 Total prompt wall time can exceed the RPC budget during compaction. An acknowledged prompt's
 timer is already cleared, so its end record reports it as paused. Cancellation before acknowledgement
 records the aborted RPC in `prompt_acceptance` and does not enter `await_terminal`.
+
+A failed result returned after acknowledgement adds `terminalFailureCategory` to the
+`await_terminal` end record with `outcome=failed`. An allowlisted runtime provider failure code
+takes precedence. Without one, the category is `unfinished_tool_use` for Pi's `toolUse` stop
+or `unknown` otherwise. Only the category is emitted. The Cloud delivery v1 Turn report still
+uses `provider_failed` for these results.
 
 The first failure has `primaryFailure=true`; the parent summary retains `failurePhase` even
 when later cleanup fails. Errors preserve safe name/code, including the owned `AgentRuntimeError`

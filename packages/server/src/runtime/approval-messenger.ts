@@ -25,24 +25,40 @@ export class ApprovalMessenger {
     const material = await this.bindings.getSlackConnectionMaterial(approval.imBindingId);
     if (!material || material.generation !== authority.generation) throw new Error("APPROVAL_BINDING_STALE");
     const client = new WebClient(material.botAccessToken, { retryConfig: { retries: 0 } });
-    const channelId =
-      authority.channelId ||
-      (
-        await this.policy.run(
-          "slack.approval.open",
-          () => client.conversations.open({ users: authority.senderExternalId }),
+    const card = slackCard(approval, this.modelSettingsUrl(material.agentId));
+    if (authority.channelId) {
+      const threadTs = authority.threadKey ?? authority.externalMessageId;
+      try {
+        const result = await this.policy.run(
+          "slack.approval.post",
+          () =>
+            client.chat.postMessage({
+              channel: authority.channelId,
+              ...(threadTs ? { thread_ts: threadTs } : {}),
+              ...card,
+            }),
           { maxAttempts: 1 },
-        )
-      ).channel?.id;
+        );
+        if (result.ts) {
+          return { messageId: result.ts, channelId: authority.channelId };
+        }
+      } catch {
+        // Fall back to direct message when posting in the originating conversation fails.
+      }
+    }
+    const opened = await this.policy.run(
+      "slack.approval.open",
+      () => client.conversations.open({ users: authority.senderExternalId }),
+      { maxAttempts: 1 },
+    );
+    const channelId = opened.channel?.id;
     if (!channelId) throw new Error("APPROVAL_DM_UNAVAILABLE");
-    const threadTs = authority.channelId ? (authority.threadKey ?? authority.externalMessageId) : undefined;
     const result = await this.policy.run(
       "slack.approval.post",
       () =>
         client.chat.postMessage({
           channel: channelId,
-          ...(threadTs ? { thread_ts: threadTs } : {}),
-          ...slackCard(approval, this.modelSettingsUrl(material.agentId)),
+          ...card,
         }),
       { maxAttempts: 1 },
     );
@@ -55,34 +71,46 @@ export class ApprovalMessenger {
     const connection = await this.feishuConnection(approval);
     if (!connection) throw new Error("APPROVAL_BINDING_STALE");
     const content = feishuCard(approval, connection.modelSettingsUrl);
-    const useChatId = Boolean(authority.channelId && authority.channelId !== authority.senderExternalId);
-    const result = await this.policy.run(
-      "feishu.approval.post",
-      () =>
-        authority.externalMessageId
-          ? connection.client.im.v1.message.reply({
+    if (authority.externalMessageId) {
+      try {
+        const replyResult = await this.policy.run(
+          "feishu.approval.post",
+          () =>
+            connection.client.im.v1.message.reply({
               path: { message_id: authority.externalMessageId },
               data: {
                 msg_type: "interactive",
                 content,
                 reply_in_thread: Boolean(authority.threadKey),
               },
-            })
-          : connection.client.im.v1.message.create({
-              params: { receive_id_type: useChatId ? "chat_id" : "open_id" },
-              data: {
-                receive_id: useChatId ? authority.channelId : authority.senderExternalId,
-                msg_type: "interactive",
-                content,
-              },
             }),
+          { maxAttempts: 1 },
+        );
+        const replyChannelId = replyResult.data?.chat_id ?? authority.channelId;
+        if (replyResult.code === 0 && replyResult.data?.message_id && replyChannelId) {
+          return { messageId: replyResult.data.message_id, channelId: replyChannelId };
+        }
+      } catch {
+        // Fall back to direct message when replying to the originating message fails.
+      }
+    }
+    const result = await this.policy.run(
+      "feishu.approval.post",
+      () =>
+        connection.client.im.v1.message.create({
+          params: { receive_id_type: "open_id" },
+          data: {
+            receive_id: authority.senderExternalId,
+            msg_type: "interactive",
+            content,
+          },
+        }),
       { maxAttempts: 1 },
     );
-    const channelId = result.data?.chat_id ?? authority.channelId;
-    if (result.code !== 0 || !result.data?.message_id || !channelId) {
+    if (result.code !== 0 || !result.data?.message_id || !result.data.chat_id) {
       throw new Error("APPROVAL_MESSAGE_FAILED");
     }
-    return { messageId: result.data.message_id, channelId };
+    return { messageId: result.data.message_id, channelId: result.data.chat_id };
   }
 
   async finish(approval: Approval): Promise<void> {
@@ -210,7 +238,7 @@ function slackCard(approval: Approval, modelSettingsUrl: string) {
         elements: [
           {
             type: "mrkdwn" as const,
-            text: `Whitelist command or disable approvals in <${modelSettingsUrl}|Agent Model Settings>`,
+            text: `Requested by <@${approval.authority.senderExternalId}> · Whitelist command or disable approvals in <${modelSettingsUrl}|Agent Model Settings>`,
           },
         ],
       },
@@ -260,7 +288,7 @@ function feishuCard(approval: Approval, modelSettingsUrl: string): string {
         elements: [
           {
             tag: "lark_md",
-            content: `Whitelist command or disable approvals in [Agent Model Settings](${modelSettingsUrl})`,
+            content: `Requested by <at id=${approval.authority.senderExternalId}></at> · Whitelist command or disable approvals in [Agent Model Settings](${modelSettingsUrl})`,
           },
         ],
       },

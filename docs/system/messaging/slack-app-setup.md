@@ -95,8 +95,8 @@ keeps the existing two-field binding and credential update flow. Public OAuth re
 
 Enable Interactivity with request URL `{OPENTAG_PUBLIC_URL}/api/v1/im-bindings/slack/interactions`.
 The distribution manifest includes this setting. Local Agents send approval buttons in the conversation
-or thread where the task was started (falling back to a private message to the task sender when no
-conversation target is available), and only the task sender can approve or deny the pending action.
+or thread where the task was started (falling back to a private message to the task sender if posting in
+the originating conversation fails), and only the task sender can approve or deny the pending action.
 See [Agent permissions](../runtime/agent-permissions.md) for setup and allowed-command settings.
 
 ## Bot avatars

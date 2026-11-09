@@ -11,7 +11,7 @@ const slackFooter = {
   elements: [
     {
       type: "mrkdwn",
-      text: `Whitelist command or disable approvals in <${modelSettingsUrl}|Agent Model Settings>`,
+      text: `Requested by <@sender> · Whitelist command or disable approvals in <${modelSettingsUrl}|Agent Model Settings>`,
     },
   ],
 };
@@ -20,7 +20,7 @@ const feishuFooter = {
   elements: [
     {
       tag: "lark_md",
-      content: `Whitelist command or disable approvals in [Agent Model Settings](${modelSettingsUrl})`,
+      content: `Requested by <at id=sender></at> · Whitelist command or disable approvals in [Agent Model Settings](${modelSettingsUrl})`,
     },
   ],
 };
@@ -196,7 +196,7 @@ describe("ApprovalMessenger", () => {
     },
   );
 
-  it("posts approval cards in conversations or falls back to direct messages when conversation targets are absent", async () => {
+  it("posts approval cards in conversations or falls back to direct messages when posting in the conversation fails", async () => {
     const messenger = new ApprovalMessenger(
       {
         getFeishuConnectionMaterial: async () => ({
@@ -226,27 +226,10 @@ describe("ApprovalMessenger", () => {
       }),
     );
 
-    const feishuChatCreate = approvalFor("feishu");
-    feishuChatCreate.authority.externalMessageId = "";
-    feishuChatCreate.authority.threadKey = null;
-    sdk.create.mockResolvedValueOnce({ code: 0, data: { message_id: "card-chat", chat_id: "channel" } });
-    await expect(messenger.post(feishuChatCreate)).resolves.toEqual({
-      messageId: "card-chat",
-      channelId: "channel",
-    });
-    expect(sdk.create).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        params: { receive_id_type: "chat_id" },
-        data: expect.objectContaining({ receive_id: "channel" }),
-      }),
-    );
-
-    const feishuDmFallback = approvalFor("feishu");
-    feishuDmFallback.authority.externalMessageId = "";
-    feishuDmFallback.authority.channelId = "";
-    feishuDmFallback.authority.threadKey = null;
+    const feishuReplyFailedFallback = approvalFor("feishu");
+    sdk.reply.mockRejectedValueOnce(new Error("message recalled"));
     sdk.create.mockResolvedValueOnce({ code: 0, data: { message_id: "card-dm", chat_id: "sender-dm" } });
-    await expect(messenger.post(feishuDmFallback)).resolves.toEqual({
+    await expect(messenger.post(feishuReplyFailedFallback)).resolves.toEqual({
       messageId: "card-dm",
       channelId: "sender-dm",
     });
@@ -271,11 +254,9 @@ describe("ApprovalMessenger", () => {
     );
     expect(sdk.open).not.toHaveBeenCalled();
 
-    const slackDmFallback = approvalFor("slack");
-    slackDmFallback.authority.channelId = "";
-    slackDmFallback.authority.threadKey = null;
-    slackDmFallback.authority.externalMessageId = "";
-    await expect(messenger.post(slackDmFallback)).resolves.toEqual({
+    const slackChannelFailedFallback = approvalFor("slack");
+    sdk.post.mockRejectedValueOnce(new Error("is_archived"));
+    await expect(messenger.post(slackChannelFailedFallback)).resolves.toEqual({
       messageId: "card",
       channelId: "sender-dm",
     });

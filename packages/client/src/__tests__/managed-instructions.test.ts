@@ -627,24 +627,23 @@ it("includes schedule self-management and permission pre-verification instructio
   expect(localPrompt).toContain(
     "`opentag-dev self schedule create --name <name> --timezone <iana> (--at <iso> | --every <seconds> | --cron <expression>) (--prompt <text> | --prompt-file <path>) [--json]`",
   );
-  expect(localPrompt).toContain("`opentag-dev self schedule list [--limit <n>] [--cursor <cursor>] [--json]`");
-  expect(localPrompt).toContain("`opentag-dev self schedule show <id> [--json]`");
-  expect(localPrompt).toContain("`opentag-dev self schedule update <id>");
-  expect(localPrompt).toContain("`opentag-dev self schedule pause <id> [--json]`");
-  expect(localPrompt).toContain("`opentag-dev self schedule resume <id> [--json]`");
-  expect(localPrompt).toContain("`opentag-dev self schedule delete <id> [--json]`");
-  expect(localPrompt).toContain("`opentag-dev self schedule preview [id]");
-  expect(localPrompt).toContain("Every schedule fires back into the Session that created it.");
   expect(localPrompt).toContain(
-    "Scheduled Runs execute unattended without a human sender, so they cannot receive interactive command approval cards or complete OAuth flows at trigger time.",
+    "`opentag-dev self schedule <list|show|update|pause|resume|delete|preview> ...` (pass `--help` for flags).",
   );
   expect(localPrompt).toContain(
-    "Before creating or updating a schedule, verify and exercise the commands, MCP tools, and external access the scheduled task will need during the current interactive Turn.",
+    "Scheduled Runs fire back into this Session and execute unattended without a human sender, so they cannot receive interactive command approval cards or complete OAuth flows at trigger time.",
   );
+  expect(localPrompt).toContain(
+    "Before creating or updating a schedule, verify required commands, MCP tools, and external access using read-only checks or dry runs only; do not execute side-effecting steps during schedule creation or update unless the user asked to run the task now or confirmed a trial with side effects first.",
+  );
+  expect(localPrompt).not.toContain("verify and exercise");
 
   const cloudPrompt = renderManagedSystemPrompt(snapshot, cloudSession);
   expect(cloudPrompt).toContain("## Schedules");
   expect(cloudPrompt).toContain("`opentag self schedule create");
+  expect(cloudPrompt).toContain(
+    "using read-only checks or dry runs only; do not execute side-effecting steps during schedule creation or update",
+  );
 
   const withoutCli = renderManagedSystemPrompt(snapshot, { ...session, sessionCliAvailable: false });
   expect(withoutCli).not.toContain("## Schedules");

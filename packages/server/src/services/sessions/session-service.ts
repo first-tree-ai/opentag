@@ -262,6 +262,9 @@ function assertOrdinaryMessageIdFree(messageId: string): void {
   }
 }
 
+/** How far up the creation chain a Run outcome notice looks for an active Session. */
+const RUN_OUTCOME_NOTICE_MAX_CHAIN_DEPTH = 32;
+
 export class SessionServiceError extends Error {
   constructor(
     readonly code: string,
@@ -715,7 +718,8 @@ export class SessionService {
    * Who hears that a message's Run did not complete: its sender, whatever kind of Session the target
    * is. A message with no other sender (scheduled, or sent to itself) and a notice that itself failed
    * go to an internal target's creator instead, so notices can only climb the creation tree from
-   * there and never bounce between two Sessions.
+   * there and never bounce between two Sessions. A recipient that has ended is replaced by the
+   * nearest active Session up its own creation chain, so the notice still reaches someone.
    *
    * An unlocked eligibility read: the reported message must be stored and addressed to that active
    * Session. The facts only select the notice route; the subsequent `authorizeAndRecordMessage`
@@ -752,8 +756,30 @@ export class SessionService {
       content: row.content,
     });
     const sender = !isNotice && row.sourceSessionId !== input.childSessionId ? row.sourceSessionId : null;
-    const recipientSessionId = sender ?? (row.kind === "internal" ? row.creatorSessionId : null);
+    const candidate = sender ?? (row.kind === "internal" ? row.creatorSessionId : null);
+    const recipientSessionId = candidate ? await this.#firstActiveCreator(candidate, input.childSessionId) : undefined;
     return recipientSessionId ? { recipientSessionId, installationId: row.installationId } : undefined;
+  }
+
+  /**
+   * The candidate when it is still active, else the nearest active Session up its creation chain: a
+   * sender that has ended leaves the work to whoever created it. The chain never reaches the reporting
+   * Session itself (a notice to itself would tell it nothing) and gives up past a bounded depth.
+   */
+  async #firstActiveCreator(candidate: string, reporterSessionId: string): Promise<string | undefined> {
+    let current: string | null = candidate;
+    for (let depth = 0; current !== null && current !== reporterSessionId; depth += 1) {
+      if (depth >= RUN_OUTCOME_NOTICE_MAX_CHAIN_DEPTH) return undefined;
+      const [row] = await this.#database
+        .select({ creatorSessionId: sessions.createdBySessionId, endedAt: sessions.endedAt })
+        .from(sessions)
+        .where(eq(sessions.id, current))
+        .limit(1);
+      if (!row) return undefined;
+      if (row.endedAt === null) return current;
+      current = row.creatorSessionId;
+    }
+    return undefined;
   }
 
   async withCollaborationDispatchAdmission<T>(

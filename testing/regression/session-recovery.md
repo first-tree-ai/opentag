@@ -244,6 +244,39 @@ Needs a real Claude Code: the Lab's scripted Claude does not start background ta
 4. Repeat with explicit `proxy` credential mode and verify the same steer and outbox target. A Server that does not
    negotiate credential grant v2 must refuse visible callback delivery; missing context never invents a target.
 
+## Cloud workspace restore and idle seal
+
+Use an authorized disposable Cloud Session with persistence enabled. Keep operational approval
+for stopping/replacing Instances separate from permission to run this catalogue.
+
+1. Save a workspace containing Git state, Pi history and unpublished Context Tree drafts. Stop
+   and replace its Instance through the normal release path. Expected: the replacement verifies
+   and restores all saved content before readiness, advances the storage metadata fence and does
+   not repack or upload the restored archive. The first empty workspace still saves a valid archive.
+2. Let the restored workspace become idle without a Turn, then release it. Expected: after
+   quiescing writers, the Runner checks actual file contents and seals the same archive generation
+   by a conditional metadata update. Restart and verify the unpublished files and history again.
+3. Make a real file change through a controlled tool or background writer between checkpoint and
+   idle release, including a same-length change with a restored mtime. Expected: release saves and
+   restores the changed bytes instead of treating absence of Turns as proof of cleanliness.
+4. In the controlled transport harness, race an older upload with a same-allocation fencing claim,
+   and race a seal with a claim. Expected: generation/metageneration preconditions prevent stale
+   data or seals from replacing the current state; a same-owner claim cannot reopen a sealed object.
+   Make identical metadata PATCHes leave metageneration unchanged in the transport harness. Expected:
+   successive unsealed claims still change metadata and fence earlier pins, including for a new seed.
+   Lose an older fencing response, then let a successor claim/save before readback. Expected: the
+   older request neither advances nor receives the successor's pins, including when the old PATCH
+   is rejected or never commits before response loss. The successor can still seal, while an old
+   upload with original pins is rejected. Restart a real Runner while the allocation
+   is releasing and retry stop: it restores the same-owner object and completes the final seal.
+5. Inject missing/corrupt media, failed metadata updates, lost responses, transfer timeouts and
+   cancellation. Expected: only exact durable readback proves success; uncertain results retain
+   local state and block execution. Retry/restart preserves the latest complete archive and never
+   replays a business action. Check durable bytes and object versions, not only diagnostic logs.
+6. Read and restore a newly written/sealed object with the fixed-point Server adapter, then write
+   through that adapter and read it again with the new one. Expected: the seven custom metadata
+   keys and archive bytes remain compatible in both directions; attempt hints do not block rollback.
+
 ## Parent message steered into a running child
 
 Use a steer-capable Provider (Claude Code on a current version). A child's long task is its parent's Session message Run.
